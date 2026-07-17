@@ -230,11 +230,26 @@ create table roadmap_rows (
               case when btrim(covers) = ''       then 'covers'  end,
               case when cardinality(prompts) = 0 then 'prompts' end], null)) stored,
 
-  unique (sheet_id, row_index),
-  unique (client_id, topic_slug)
+  unique (sheet_id, row_index)
 );
 
 create index roadmap_rows_client on roadmap_rows (client_id);
+
+-- NOT UNIQUE, and the live corpus is why. A UNIQUE (client_id, topic_slug) here
+-- looks obviously right and is wrong: clients/demo/roadmap.csv holds two rows
+-- that are both topic='x', covers='y', prompts=['z'], and the real migration
+-- refused them with a 23505.
+--
+-- The engine does not hold this invariant. roadmap.index_by_slug builds
+-- {row["topic_slug"]: row["index"]} as a plain dict comprehension, so duplicate
+-- slugs silently collapse and the LAST row wins. That is a quirk worth knowing
+-- (the earlier row becomes unreachable from a blog's back-reference), but it is
+-- the engine's quirk to change, not this migration's to enforce. A schema
+-- stricter than its app rejects the operator's actual file.
+--
+-- topics (client_id, slug) IS unique, and that is a different claim: one OUTPUT
+-- folder per slug. Two roadmap rows may race for one output; only one exists.
+create index roadmap_rows_slug on roadmap_rows (client_id, topic_slug);
 
 -- ---------------------------------------------------------------------------
 -- topics / blog_versions
