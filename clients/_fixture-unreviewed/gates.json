@@ -1,0 +1,12 @@
+{
+  "client": "_fixture-unreviewed",
+  "name": "Fixture Unreviewed",
+  "word_band": {"min": 1200, "soft_max": 2000, "hard_max": 2500},
+  "banned_phrases": [],
+  "entity_names": ["Fixture Unreviewed"],
+  "generic_entity_terms": [],
+  "passive_whitelist": [],
+  "required_links": [],
+  "forbidden_link_patterns": [],
+  "forbidden_claim_patterns": []
+}

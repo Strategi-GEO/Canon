@@ -1,0 +1,141 @@
+"use client";
+
+import * as React from "react";
+import { cn } from "@/lib/utils";
+import type { RowState } from "@/components/create/row-status";
+import type { RoadmapRow } from "@/types";
+
+/**
+ * How a row's state LOOKS and what it SAYS, in one place.
+ *
+ * row-status.ts decides what a row's state IS. This file decides how that state is worn, and
+ * it is shared rather than copied so that no two renderings of one row can disagree about it:
+ * "generating" in one place and "failed" in another would be two opinions about one fact, and
+ * the operator would have no way to tell which one lied.
+ *
+ * This once said "for every view", written when a card view stood beside the table. That view
+ * is deleted and the claim outlived it. Today the readers are roadmap-table's two modes,
+ * Create Blogs picking rows and the Content Roadmap tab reading them, which is the same table
+ * and therefore already the same colours. The sharing still earns its place: the states are
+ * the operator's rules rather than one table's styling, and the next reader gets them right by
+ * importing rather than by remembering.
+ */
+
+/**
+ * Row colour, one entry per state.
+ *
+ * These are the status tokens, deliberately off the accent hue. `chip` is the redundant
+ * signal that makes the roadmap usable without colour vision, so no state that paints a row
+ * may leave it null.
+ */
+export const ROW_STYLES: Record<
+  RowState,
+  { row: string; chip: string; chipLabel: string } | null
+> = {
+  generated: {
+    row: "bg-ship-bg",
+    chip: "border-ship/25 bg-ship-bg text-ship",
+    chipLabel: "generated",
+  },
+  in_progress: {
+    row: "bg-review-bg",
+    chip: "border-review/25 bg-review-bg text-review",
+    chipLabel: "generating",
+  },
+  failed: {
+    row: "bg-fail-bg",
+    chip: "border-fail/25 bg-fail-bg text-fail",
+    chipLabel: "failed",
+  },
+  // Incomplete is not one of the three coloured states. It stays neutral on purpose: red now
+  // means "the last run failed, tick it to retry", and painting an unwritable row the same
+  // colour would tell the operator to retry something the engine refuses with a 422.
+  incomplete: null,
+  ready: null,
+};
+
+/** Machine values render in a stable, locale free shape so two operators read the same date. */
+export function formatDate(iso: string | null): string {
+  if (!iso) {
+    return "an unknown date";
+  }
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) {
+    return iso;
+  }
+  return parsed.toISOString().slice(0, 10);
+}
+
+/** The state as a word, next to the state as a colour. Never one without the other. */
+export function StateChip({ state, className }: { state: RowState; className?: string }) {
+  const style = ROW_STYLES[state];
+  if (!style) {
+    return null;
+  }
+  return (
+    <span
+      className={cn(
+        "machine inline-flex h-5 shrink-0 items-center rounded border px-1.5 text-[0.6875rem] leading-none",
+        style.chip,
+        className,
+      )}
+    >
+      {style.chipLabel}
+    </span>
+  );
+}
+
+/**
+ * The text label every coloured row carries. Colour alone is not a signal an operator can
+ * rely on, and the label is also where the state stops being a hue and starts being a
+ * sentence someone can act on.
+ */
+export function RowNote({
+  row,
+  state,
+  missing,
+}: {
+  row: RoadmapRow;
+  state: RowState;
+  /** Fields the engine itself named in a 422, or null if it has not refused this row. */
+  missing: string[] | null;
+}) {
+  // A 422 names the fields the engine itself refused, so it outranks the row's own missing
+  // list: the engine read the archived sheet, the browser only read the parse of it.
+  if (missing) {
+    return (
+      <p className="mt-1.5 text-xs text-fail">
+        The engine refused this row. Missing:{" "}
+        <span className="machine">{missing.join(", ")}</span>
+      </p>
+    );
+  }
+
+  if (state === "in_progress") {
+    return <p className="mt-1.5 text-xs text-review">Generating now.</p>;
+  }
+
+  if (state === "generated") {
+    return (
+      <p className="mt-1.5 text-xs text-ship">
+        Generated. Scored{" "}
+        <span className="machine">{row.ledger?.score ?? "an unrecorded score"}</span> on{" "}
+        <span className="machine">{formatDate(row.ledger?.generated_at ?? null)}</span>.
+      </p>
+    );
+  }
+
+  if (state === "failed") {
+    return <p className="mt-1.5 text-xs text-fail">Last run failed. Tick it to try again.</p>;
+  }
+
+  if (state === "incomplete") {
+    return (
+      <p className="mt-1.5 text-xs text-muted-foreground">
+        Not selectable. Missing: <span className="machine">{row.missing.join(", ")}</span>
+      </p>
+    );
+  }
+
+  return null;
+}

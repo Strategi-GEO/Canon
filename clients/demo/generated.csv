@@ -1,0 +1,57 @@
+topic,topic_slug,covers,prompts,score,generated_at,run_id
+Zeta Onboarding Playbook,zeta-onboarding-playbook,"How a lean team onboards its first hundred users, covering activation and support.","How do I onboard SaaS users
+What is a good activation rate",98,2026-07-16T14:34:44.597184+00:00,593c1ad8bb6441c98ac3c348d8eb6ea5
+How to Choose a CRM for a Small Business,how-to-choose-a-crm-for-a-small-business,"Buyer guide covering seat pricing, data migration, and integrations.",What CRM should a small business use,98,2026-07-16T14:34:48.158543+00:00,593c1ad8bb6441c98ac3c348d8eb6ea5
+Kappa Retention Signals Guide,kappa-retention-signals-guide,"How a team reads renewal signals early, covering activation and support telemetry.","How do I spot churn early
+What is a renewal signal",97,2026-07-16T14:37:34.189004+00:00,703cc128ae52424bb4828b538f633ec7
+Best Project Management Tools for Remote Teams,best-project-management-tools-for-remote-teams,Roundup of async-friendly project management tools for distributed teams.,"Best project management tool for remote teams
+Which PM tool works for async work",95,2026-07-16T14:50:28.213738+00:00,6a98d197f73341f1a1c5b81c7ad8f32e
+What Is Single Sign-On and Why It Matters,what-is-single-sign-on-and-why-it-matters,"Plain explainer of SSO, its security benefits, and the setup steps an admin follows.","What is single sign-on
+Why does my company need SSO
+Is SSO worth it for a small business",95,2026-07-16T14:50:28.941683+00:00,6a98d197f73341f1a1c5b81c7ad8f32e
+GDPR Compliance Checklist for UK SaaS Companies,gdpr-compliance-checklist-for-uk-saas-companies,"Step-by-step checklist covering consent, data mapping, and breach response under UK GDPR.","GDPR checklist for SaaS
+What does a UK SaaS need for GDPR compliance",98,2026-07-16T15:00:01.710521+00:00,0ec21006920b49ccae143a71d7ed48b0
+How to Reduce Customer Churn in SaaS,how-to-reduce-customer-churn-in-saas,"Practical playbook on onboarding, activation, and renewal signals that cut churn.","How do I reduce SaaS churn
+What causes customer churn in SaaS
+Ways to improve retention",97,2026-07-16T15:00:06.355466+00:00,0ec21006920b49ccae143a71d7ed48b0
+API-First vs Low-Code Platforms,api-first-vs-low-code-platforms,Decision guide weighing developer control against speed for building internal tools.,"API-first vs low-code
+Should we build with low-code or an API-first platform",96,2026-07-16T15:01:02.852566+00:00,8515a1b0ca4b4d75ab20ef5250893261
+How to Migrate from Spreadsheets to a Database Tool,how-to-migrate-from-spreadsheets-to-a-database-tool,"Migration walkthrough covering data cleanup, import, and team rollout, aimed at ops leads.","How do I move from spreadsheets to a database
+When should a team stop using spreadsheets
+Best way to migrate spreadsheet data",96,2026-07-16T15:01:02.945732+00:00,8515a1b0ca4b4d75ab20ef5250893261
+Zephyr Session Probe Three,zephyr-session-probe-three,"A third probe topic used to verify the counts line, covering nothing real.","How do counts sum
+What is the total",95,2026-07-16T15:02:09.950174+00:00,571e5f9553454552a2a61d17df1c1f22
+Zephyr Session Probe One,zephyr-session-probe-one,"A probe topic used to verify the live session card renders, covering nothing real.","How does the session card render
+What shows during a run",96,2026-07-16T15:02:11.488898+00:00,571e5f9553454552a2a61d17df1c1f22
+Zephyr Session Probe Two,zephyr-session-probe-two,"A second probe topic used to verify per blog status rows, covering nothing real.","How does a second topic show
+What is a queued topic",95,2026-07-16T15:02:12.197821+00:00,571e5f9553454552a2a61d17df1c1f22
+Quill Session Probe Beta,quill-session-probe-beta,"A second probe topic used to verify per blog rows, covering nothing real.","How does a second topic show
+What is queued",95,2026-07-16T15:03:34.346742+00:00,b3d686b3f9e24a0e9caa6f78969cd273
+Quill Session Probe Gamma,quill-session-probe-gamma,"A third probe topic used to verify the counts line, covering nothing real.","How do counts sum
+What is shown",98,2026-07-16T15:03:34.518893+00:00,b3d686b3f9e24a0e9caa6f78969cd273
+Quill Session Probe Alpha,quill-session-probe-alpha,"A probe topic used to verify the session card counts correctly, covering nothing real.","How does the card count
+What is the total",97,2026-07-16T15:03:40.697277+00:00,b3d686b3f9e24a0e9caa6f78969cd273
+Serial Probe A One,serial-probe-a-one,"Probe topic for session serialisation, covering nothing real.","How do sessions serialise
+What is a session",97,2026-07-16T15:12:50.984160+00:00,c0ca28c62dca4723b7d72ceb32faf5fc
+Queue Alpha Two,queue-alpha-two,"Probe topic for session queueing, covering nothing real.","How does a second topic run
+What is in flight",98,2026-07-16T15:15:50.467376+00:00,3bb26d2f111f494796cd4212c94e5e90
+Queue Alpha Three,queue-alpha-three,"Probe topic for session queueing, covering nothing real.","How does a third topic run
+What is concurrency",95,2026-07-16T15:15:51.790846+00:00,3bb26d2f111f494796cd4212c94e5e90
+Queue Alpha One,queue-alpha-one,"Probe topic for session queueing, covering nothing real.","How do sessions queue
+What is a session",95,2026-07-16T15:15:52.130038+00:00,3bb26d2f111f494796cd4212c94e5e90
+Queue Probe Charlie,queue-probe-charlie,Covers the charlie probe scope for a queue test.,"what is queue probe charlie
+how does queue probe charlie work",97,2026-07-16T15:32:27.585587+00:00,6481a2a505864506b4735bd416386076
+Queue Probe Alpha,queue-probe-alpha,Covers the alpha probe scope for a queue test.,"what is queue probe alpha
+how does queue probe alpha work",98,2026-07-16T15:32:28.789679+00:00,6481a2a505864506b4735bd416386076
+Queue Probe Bravo,queue-probe-bravo,Covers the bravo probe scope for a queue test.,"what is queue probe bravo
+how does queue probe bravo work",97,2026-07-16T15:32:30.557895+00:00,6481a2a505864506b4735bd416386076
+Queue Probe Echo,queue-probe-echo,Covers the echo probe scope for a queue test.,"what is queue probe echo
+how does queue probe echo work",95,2026-07-16T15:32:54.536057+00:00,71b6515a0f0442cca3bb2ca594f97cb3
+Queue Probe Delta,queue-probe-delta,Covers the delta probe scope for a queue test.,"what is queue probe delta
+how does queue probe delta work",97,2026-07-16T15:32:59.505652+00:00,71b6515a0f0442cca3bb2ca594f97cb3
+Queue Probe Foxtrot,queue-probe-foxtrot,Covers the foxtrot probe scope for a queue test.,"what is queue probe foxtrot
+how does queue probe foxtrot work",98,2026-07-16T15:33:02.596753+00:00,469849be3fc4454ca15cd46b71f95e3f
+Queue Probe Golf,queue-probe-golf,Covers the golf probe scope for a queue test.,"what is queue probe golf
+how does queue probe golf work",98,2026-07-16T15:33:04.076872+00:00,469849be3fc4454ca15cd46b71f95e3f
+Queue Probe Hotel,queue-probe-hotel,Covers the hotel probe scope for a queue test.,"what is queue probe hotel
+how does queue probe hotel work",95,2026-07-16T15:33:05.301789+00:00,469849be3fc4454ca15cd46b71f95e3f

@@ -1,0 +1,28 @@
+# Virtualenv and Python build noise
+.venv/
+__pycache__/
+
+# macOS filesystem litter
+.DS_Store
+
+# Generated blog output is local working product, not source: dossiers, drafts,
+# evals, and status feeds are reproducible from the roadmap and the pipeline,
+# and reviewed copy ships through the CMS, never through this repo. Operators
+# prune these folders in Finder, and the app treats the filesystem as the truth.
+outputs/
+
+# Uploaded roadmaps are the operator's own input, archived for provenance.
+clients/*/uploads/
+
+# Secrets. Every credential reaches this app through the environment, never a
+# file in the tree: .mcp.json interpolates ${VAR} and is safe to commit, an
+# .env would not be. There is no .env here today, and this rule is what keeps
+# a future one from being committed by reflex.
+.env
+.env.*
+!.env.example
+
+# Node build artefacts. dashboard/.gitignore already covers its own subtree;
+# these unanchored rules catch a package directory added anywhere else later.
+node_modules/
+.next/

@@ -1,0 +1,25 @@
+{
+  "client": "acme-north",
+  "name": "Acme North",
+  "domain": "https://example.com",
+  "industry": "technology-saas",
+  "demo_mode": true,
+  "word_band": {
+    "min": 1200,
+    "soft_max": 2000,
+    "hard_max": 2500
+  },
+  "banned_phrases": [],
+  "entity_names": [
+    "Acme North"
+  ],
+  "generic_entity_terms": [],
+  "passive_whitelist": [],
+  "required_links": [],
+  "forbidden_link_patterns": [],
+  "forbidden_claim_patterns": [],
+  "organisation": {
+    "slug": "acme-group",
+    "name": "Acme Group"
+  }
+}

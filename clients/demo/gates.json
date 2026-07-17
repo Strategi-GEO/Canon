@@ -1,0 +1,21 @@
+{
+  "client": "demo",
+  "name": "Demo",
+  "domain": "https://example.com",
+  "industry": "technology-saas",
+  "demo_mode": true,
+  "word_band": {
+    "min": 200,
+    "soft_max": 700,
+    "hard_max": 1200
+  },
+  "banned_phrases": [],
+  "entity_names": [
+    "Demo"
+  ],
+  "generic_entity_terms": [],
+  "passive_whitelist": [],
+  "required_links": [],
+  "forbidden_link_patterns": [],
+  "forbidden_claim_patterns": []
+}

@@ -1,0 +1,73 @@
+{
+  "client": "vacation-village",
+  "name": "Vacation Village",
+  "domain": "https://vacationvillage.co.in/",
+  "industry": "real-estate",
+  "word_band": {
+    "min": 1200,
+    "soft_max": 2000,
+    "hard_max": 2500
+  },
+  "banned_phrases": [
+    "seamlessly"
+  ],
+  "entity_names": [
+    "Vacation Village",
+    "Vacation Village Chikkamagaluru",
+    "Agrocorp Landbase",
+    "ALPL 3 LLP",
+    "The Manor"
+  ],
+  "generic_entity_terms": [],
+  "passive_whitelist": [
+    "rera-registered",
+    "rera registered"
+  ],
+  "required_links": [
+    {
+      "url": "https://vacationvillage.co.in/projects.php",
+      "min": 1,
+      "note": "every Vacation Village Chikkamagaluru mention links here"
+    }
+  ],
+  "forbidden_link_patterns": [
+    {
+      "pattern": "https://vacationvillage\\.co\\.in/blog",
+      "note": "client blog is marketing copy, never evidence for a fact"
+    }
+  ],
+  "forbidden_claim_patterns": [
+    {
+      "pattern": "\\b(guaranteed|assured)\\s+(return|returns|appreciation|yield)",
+      "note": "canonical-facts.md section 6: no returns language"
+    },
+    {
+      "pattern": "\\brental yield\\b",
+      "note": "canonical-facts.md section 6"
+    },
+    {
+      "pattern": "\\bROI\\b",
+      "note": "canonical-facts.md section 6"
+    },
+    {
+      "pattern": "\\b(clear|clean) title\\b",
+      "note": "canonical-facts.md section 6: no title claims"
+    },
+    {
+      "pattern": "\\bkhata\\b",
+      "note": "canonical-facts.md section 6"
+    },
+    {
+      "pattern": "\\bDTCP\\b",
+      "note": "canonical-facts.md section 6"
+    },
+    {
+      "pattern": "\\bland conversion\\b",
+      "note": "canonical-facts.md section 6"
+    },
+    {
+      "pattern": "\\b13\\.[34]\\d{2,}\\s*,\\s*75\\.[78]\\d{2,}\\b",
+      "note": "canonical-facts.md 7 #8: coordinates unresolved, do not publish"
+    }
+  ]
+}

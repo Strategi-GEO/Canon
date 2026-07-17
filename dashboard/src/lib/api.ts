@@ -1,0 +1,381 @@
+import { API_BASE } from "@/lib/config";
+import type {
+  AnswersBody,
+  BlogQuestions,
+  BlogsResponse,
+  ClientsResponse,
+  CreateClientBody,
+  DescribeJob,
+  DescribeJobsResponse,
+  FactsGenJob,
+  GenerateAccepted,
+  GenerateBody,
+  GenerateRoadmapBody,
+  IndustriesResponse,
+  Org,
+  OrgsResponse,
+  OutputFile,
+  PublishResult,
+  ResourcesResponse,
+  RoadmapGenJob,
+  RoadmapResponse,
+  RoadmapSheet,
+  RunSummary,
+  RunsResponse,
+  StopRunsResult,
+  UpdateClientBody,
+  Client,
+} from "@/types";
+
+/**
+ * The engine answers refusals with real reasons: 409 carries a duplicates array, 422 a
+ * per-row missing list, 400 a plain detail string, 413 an oversized upload. Those reasons
+ * are the whole point of the error, so ApiError carries the parsed body through untouched
+ * and a page renders the server's own words instead of "something went wrong".
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail: unknown;
+  readonly body: unknown;
+
+  constructor(status: number, detail: unknown, body: unknown) {
+    super(describe(status, detail));
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+    this.body = body;
+  }
+
+  /** True when the network never reached the engine, as opposed to the engine refusing. */
+  get isOffline(): boolean {
+    return this.status === 0;
+  }
+}
+
+/**
+ * A best effort one line summary for logs and toasts. Pages that care about structure
+ * should read `body` rather than parse this string.
+ */
+function describe(status: number, detail: unknown): string {
+  if (status === 0) {
+    return "Cannot reach the engine";
+  }
+  if (typeof detail === "string" && detail.trim() !== "") {
+    return detail;
+  }
+  if (Array.isArray(detail) && detail.length > 0) {
+    const first = detail[0] as { msg?: string; missing?: string[] };
+    if (typeof first?.msg === "string") {
+      return first.msg;
+    }
+    if (Array.isArray(first?.missing)) {
+      return `Row is missing: ${first.missing.join(", ")}`;
+    }
+  }
+  return `Request failed with status ${status}`;
+}
+
+function url(path: string): string {
+  return `${API_BASE}${path}`;
+}
+
+/**
+ * Reads the body once, as text, then tries JSON. A 413 from a proxy can arrive as HTML and
+ * a stream can only be consumed once, so text first is the only way to never lose a body.
+ */
+async function readBody(res: Response): Promise<unknown> {
+  const text = await res.text();
+  if (text === "") {
+    return null;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+type RequestOptions = {
+  method?: string;
+  body?: unknown;
+  signal?: AbortSignal;
+  /** Multipart uploads set their own Content-Type boundary, so pass FormData here. */
+  form?: FormData;
+};
+
+export async function request<T>(
+  path: string,
+  options: RequestOptions = {},
+): Promise<T> {
+  const { method = "GET", body, signal, form } = options;
+
+  let res: Response;
+  try {
+    res = await fetch(url(path), {
+      method,
+      signal,
+      headers: form || body === undefined ? undefined : { "Content-Type": "application/json" },
+      body: form ?? (body === undefined ? undefined : JSON.stringify(body)),
+    });
+  } catch (cause) {
+    // A refused connection or a CORS block is not a server refusal, and pretending it is
+    // would send an operator hunting for a bug in their CSV. Status 0 keeps them apart.
+    if (cause instanceof DOMException && cause.name === "AbortError") {
+      throw cause;
+    }
+    throw new ApiError(0, "Cannot reach the engine", { cause: String(cause) });
+  }
+
+  const parsed = await readBody(res);
+
+  if (!res.ok) {
+    const detail =
+      parsed && typeof parsed === "object" && "detail" in parsed
+        ? (parsed as { detail: unknown }).detail
+        : parsed;
+    throw new ApiError(res.status, detail, parsed);
+  }
+
+  return parsed as T;
+}
+
+/** Artifacts come back as text/plain, so they bypass the JSON path entirely. */
+export async function requestText(path: string, signal?: AbortSignal): Promise<string> {
+  let res: Response;
+  try {
+    res = await fetch(url(path), { signal });
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === "AbortError") {
+      throw cause;
+    }
+    throw new ApiError(0, "Cannot reach the engine", { cause: String(cause) });
+  }
+
+  const text = await res.text();
+  if (!res.ok) {
+    throw new ApiError(res.status, text, text);
+  }
+  return text;
+}
+
+export const api = {
+  clients: (signal?: AbortSignal) => request<ClientsResponse>("/api/clients", { signal }),
+
+  /** The org grouping over brands. Derived by the engine, so it never drifts from clients. */
+  orgs: (signal?: AbortSignal) => request<OrgsResponse>("/api/orgs", { signal }),
+
+  org: (slug: string, signal?: AbortSignal) => request<Org>(`/api/orgs/${slug}`, { signal }),
+
+  industries: (signal?: AbortSignal) =>
+    request<IndustriesResponse>("/api/industries", { signal }),
+
+  createClient: (body: CreateClientBody) =>
+    request<Client>("/api/clients", { method: "POST", body }),
+
+  client: (slug: string, signal?: AbortSignal) =>
+    request<Client>(`/api/clients/${slug}`, { signal }),
+
+  updateClient: (slug: string, body: UpdateClientBody) =>
+    request<Client>(`/api/clients/${slug}`, { method: "PATCH", body }),
+
+  /**
+   * Starts a draft and returns the JOB, never the description: 202, and the field is null at
+   * this instant. The engine owns the session, so the browser starts it and then watches.
+   * A POST while one is already running returns that job rather than starting a rival.
+   */
+  startDescribe: (slug: string) =>
+    request<DescribeJob>(`/api/clients/${slug}/describe`, { method: "POST" }),
+
+  /** One brand's draft job, or 404 when the engine holds none. This is what survives a refresh. */
+  describeJob: (slug: string, signal?: AbortSignal) =>
+    request<DescribeJob>(`/api/clients/${slug}/describe`, { signal }),
+
+  /** Every draft job the engine holds, so a watcher discovers one it never started. */
+  describeJobs: (signal?: AbortSignal) =>
+    request<DescribeJobsResponse>("/api/describe-jobs", { signal }),
+
+  /**
+   * Drops a SETTLED job once the operator has taken or dismissed the draft. 204, so there is no
+   * body to hand back. A running job is deliberately not cancellable: the session is already
+   * spending quota, so it lands and the operator discards the result.
+   */
+  clearDescribeJob: (slug: string) =>
+    request<null>(`/api/clients/${slug}/describe`, { method: "DELETE" }),
+
+  resources: (slug: string, signal?: AbortSignal) =>
+    request<ResourcesResponse>(`/api/clients/${slug}/resources`, { signal }),
+
+  uploadResource: (slug: string, form: FormData) =>
+    request<ResourcesResponse>(`/api/clients/${slug}/resources`, { method: "POST", form }),
+
+  deleteResource: (slug: string, name: string) =>
+    request<ResourcesResponse>(
+      `/api/clients/${slug}/resources/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
+
+  uploadRoadmap: (slug: string, form: FormData) =>
+    request<RoadmapResponse>(`/api/clients/${slug}/roadmap/upload`, {
+      method: "POST",
+      form,
+    }),
+
+  roadmap: (slug: string, signal?: AbortSignal) =>
+    request<RoadmapResponse>(`/api/clients/${slug}/roadmap`, { signal }),
+
+  /**
+   * The whole sheet, every column of it, for the preview. This is the file rather than the
+   * engine's three-column reading of it, so it is a separate call from `roadmap` and is worth
+   * a second round trip: it carries columns nothing acts on, and most visits never ask for it.
+   * 404 means the brand has no roadmap.csv, the same empty state `roadmap` answers with.
+   */
+  roadmapSheet: (slug: string, signal?: AbortSignal) =>
+    request<RoadmapSheet>(`/api/clients/${slug}/roadmap/sheet`, { signal }),
+
+  /**
+   * Removes roadmap.csv and NOTHING else: blogs already written stay on disk and the ledger
+   * still records them. 204, so there is no body to hand back and the caller drops its copy.
+   */
+  deleteRoadmap: (slug: string) =>
+    request<null>(`/api/clients/${slug}/roadmap`, { method: "DELETE" }),
+
+  /**
+   * Starts ONE agent session that researches the brand and writes its roadmap.csv, and answers
+   * 202 in single digit milliseconds. The job it hands back is a record, not a promise: the
+   * work runs in the engine's own background task, so nothing in this browser is holding it up
+   * and closing the tab does not stop it.
+   *
+   * Its refusals are all 409s worth reading: a roadmap already exists (delete it first), a
+   * blog run is live for this brand (the sheet must not change under it), or a generation is
+   * already running. 422 bounds the inputs.
+   */
+  generateRoadmap: (slug: string, body: GenerateRoadmapBody) =>
+    request<RoadmapGenJob>(`/api/clients/${slug}/roadmap/generate`, {
+      method: "POST",
+      body,
+    }),
+
+  /**
+   * The brand's generation job, running or settled. THE authority on it: a browser that was
+   * not open when the job started reads it here and shows it exactly as the one that was.
+   * 404 means this brand has never had a generation, which is an empty state and not an error.
+   */
+  roadmapGeneration: (slug: string, signal?: AbortSignal) =>
+    request<RoadmapGenJob>(`/api/clients/${slug}/roadmap/generate`, { signal }),
+
+  /**
+   * Forgets a SETTLED job, so its report stops being the answer to "what happened here". 409
+   * while it runs, because a job in flight is not the operator's to forget. 204, so there is
+   * no body and the caller drops its copy.
+   */
+  clearRoadmapGeneration: (slug: string) =>
+    request<null>(`/api/clients/${slug}/roadmap/generate`, { method: "DELETE" }),
+
+  /**
+   * The brand's canonical-facts.md, as text. 404 means the brand has no fact base yet, which is
+   * the empty state `has_canonical_facts` reports and not an error.
+   *
+   * Read only, and there is no writer beside it on purpose: the file is binding for every blog
+   * this brand ever ships, so it is reviewed and edited on disk by a human. This endpoint exists
+   * so an operator can SEE what a draft was written against without opening a terminal.
+   */
+  facts: (slug: string, signal?: AbortSignal) =>
+    requestText(`/api/clients/${slug}/facts`, signal),
+
+  /**
+   * The brand's canonical-facts.md build, running or settled. 404 means the engine has never
+   * built one for this brand, which is an empty state and not an error.
+   *
+   * There is no POST here on purpose. A blog run starts this build, so a button that also
+   * started one would be a second way to do the same thing, and the two could disagree about
+   * whether a brand's fact base is being written.
+   */
+  factsGeneration: (slug: string, signal?: AbortSignal) =>
+    request<FactsGenJob>(`/api/clients/${slug}/facts/generate`, { signal }),
+
+  /**
+   * Forgets a SETTLED build. 409 while it runs, because a build in flight is not the
+   * operator's to forget: the blog run behind it is waiting on the file. 204, so there is no
+   * body and the caller drops its copy.
+   */
+  clearFactsGeneration: (slug: string) =>
+    request<null>(`/api/clients/${slug}/facts/generate`, { method: "DELETE" }),
+
+  generate: (slug: string, body: GenerateBody) =>
+    request<GenerateAccepted>(`/api/clients/${slug}/generate`, { method: "POST", body }),
+
+  runs: (signal?: AbortSignal) => request<RunsResponse>("/api/runs", { signal }),
+
+  /**
+   * Stops every live run for ONE brand, and deletes nothing.
+   *
+   * This is the one cancel in this app, and it reverses the policy every other DELETE here
+   * states: a describe job, a roadmap generation and a facts build are all left to land because
+   * the session is already spending quota. A blog run is different only in size. It is minutes
+   * of sessions rather than one, so "let it land and discard the result" means watching the
+   * engine spend an hour on work the operator has already decided against.
+   *
+   * What the engine does with it, in the operator's terms: blogs already finished are KEPT, on
+   * disk and in the ledger; blogs in flight are marked stopped and never ship; queued topics
+   * never start. Nothing is deleted, which is the whole reason a stop is safe to press: a
+   * stopped topic keeps its dossier and whatever draft it had, so generating it again resumes
+   * from real work rather than from nothing.
+   *
+   * Brand-scoped, never run-scoped, because a brand can hold several live sessions at once and
+   * a per-run stop would have the operator press it once per session while the queue moved
+   * underneath them. Idempotent: stopping a brand that has already stopped is a 200 and a no-op.
+   */
+  stopRuns: (slug: string) =>
+    request<StopRunsResult>(`/api/clients/${slug}/runs`, { method: "DELETE" }),
+
+  /** The SSE endpoint, for an EventSource. Not fetched here. */
+  eventsUrl: (runId: string) => url(`/api/runs/${runId}/events`),
+
+  blogs: (slug: string, signal?: AbortSignal) =>
+    request<BlogsResponse>(`/api/clients/${slug}/blogs`, { signal }),
+
+  output: (slug: string, topicSlug: string, name: OutputFile, signal?: AbortSignal) =>
+    requestText(`/api/clients/${slug}/output/${topicSlug}/${name}`, signal),
+
+  /**
+   * The evaluator's questions for one blog, decorated with `stale`, `blocking` and `answered`.
+   *
+   * 404 is the EMPTY STATE and not an error: most blogs are written without the evaluator ever
+   * needing a human, so most topics have no questions.json and every caller here treats that
+   * answer as "nothing to ask".
+   */
+  blogQuestions: (slug: string, topicSlug: string, signal?: AbortSignal) =>
+    request<BlogQuestions>(`/api/clients/${slug}/blogs/${topicSlug}/questions`, { signal }),
+
+  /**
+   * Files the operator's answers and starts the surgical revise that uses them. 202, and what
+   * comes back is the RUN, not a result: the revise is an engine session that takes minutes, so
+   * the browser starts it and then watches the run list exactly as it watches every other job.
+   *
+   * Its refusals are all worth reading rather than retrying: 422 names the ids left blank, and
+   * 409 means either a session is already live for this brand or the questions are stale, which
+   * is the engine refusing to feed notes about a superseded draft into a revise of a live one.
+   */
+  answerQuestions: (slug: string, topicSlug: string, body: AnswersBody) =>
+    request<RunSummary>(`/api/clients/${slug}/blogs/${topicSlug}/answers`, {
+      method: "POST",
+      body,
+    }),
+
+  /**
+   * Pushes one shipped blog to the Strategi CMS as a draft for a human to review.
+   *
+   * The browser sends a brand and a topic and NOTHING ELSE: no title, no body, no key. The
+   * engine reads the blog off its own disk, refuses anything that is not `done`, and holds
+   * the write key server-side. A payload built here would be a payload a stale tab could
+   * lie about, and the key would be in the bundle.
+   *
+   * 409 means the engine refused the blog's state (needs_review, running, failed) and the
+   * detail names it. 503 means no key is configured for the org. 502 carries the CMS's own
+   * words. No retry here: client.py already exhausted the retryable ones.
+   */
+  publishBlog: (slug: string, topicSlug: string) =>
+    request<PublishResult>(`/api/clients/${slug}/blogs/${topicSlug}/publish`, {
+      method: "POST",
+    }),
+};

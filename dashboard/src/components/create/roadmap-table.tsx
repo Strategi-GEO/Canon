@@ -1,0 +1,347 @@
+"use client";
+
+import * as React from "react";
+import { Trash2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { cn } from "@/lib/utils";
+import {
+  isSelectable,
+  resolveRowState,
+  selectableRows,
+  type RowFacts,
+  type RowState,
+} from "@/components/create/row-status";
+// The colours and the state labels are shared with the roadmap tab's read mode rather than
+// owned here, so the two modes cannot come to describe the same row differently.
+import { ROW_STYLES, RowNote, StateChip } from "@/components/create/row-presentation";
+import type { RoadmapRow } from "@/types";
+
+/**
+ * ONE table, two modes, because there is one roadmap and it has one shape.
+ *
+ * Create Blogs PICKS rows and the Content Roadmap tab READS them. That is a difference of two
+ * columns, not of a table: the topic, what it covers and the prompts are laid out identically
+ * in both, and the column widths below were measured against real content. A second component
+ * would drift from this one the first time either changed, and this codebase has already paid
+ * that bill twice, with two roadmap cards fetching the same CSV and two "Create blogs" buttons.
+ *
+ * The modes are a union rather than optional props: a read mode carrying a `selected` set, or
+ * a pick mode carrying an `onDelete`, are both states that cannot happen, so they are made
+ * unrepresentable rather than merely unused.
+ */
+type PickMode = {
+  /** Create Blogs: a checkbox column, select all, shift-click ranges. */
+  mode: "pick";
+  selected: Set<number>;
+  /** Rows the engine called incomplete on the last submit, keyed by row index. */
+  incomplete: Map<number, string[]>;
+  /** `extend` is a shift-click: select every selectable row between the anchor and this one. */
+  onToggle: (index: number, extend: boolean) => void;
+  onToggleAll: (checked: boolean) => void;
+};
+
+type ReadMode = {
+  /** The Content Roadmap tab: no checkbox and no select all, one Delete record per row. */
+  mode: "read";
+  onDelete: (row: RoadmapRow) => void;
+  /**
+   * True while a run is live for this brand. The engine 409s every roadmap edit for the
+   * duration, so the button says so rather than offering a click that can only be refused.
+   */
+  editingLocked: boolean;
+};
+
+export function RoadmapTable(
+  props: {
+    rows: RoadmapRow[];
+    /** What is live, what failed, and what the engine just refused. See row-status.ts. */
+    facts: RowFacts;
+    // HTMLElement, not HTMLTableRowElement: only scrollIntoView reads this map, which every
+    // element has. Pick mode scrolls to a refused row, read mode to a row just added.
+    rowRefs: React.RefObject<Map<number, HTMLElement>>;
+  } & (PickMode | ReadMode),
+) {
+  const { rows, facts, rowRefs } = props;
+
+  // Green and yellow rows are excluded from select all, and their checkbox is genuinely
+  // disabled rather than merely unchecked.
+  const selectable = selectableRows(rows, facts);
+  const selected = props.mode === "pick" ? props.selected : null;
+  const selectedCount = selected
+    ? selectable.filter((r) => selected.has(r.index)).length
+    : 0;
+  const allSelected = selectable.length > 0 && selectedCount === selectable.length;
+  const someSelected = selectedCount > 0;
+
+  // Shift state is read off the click that caused the change rather than tracked globally:
+  // Radix runs this onClick before its own handler calls onCheckedChange, so by the time the
+  // toggle fires the flag describes exactly the click that fired it. A keyboard space press
+  // arrives here as a click with shiftKey false, which is the correct answer for it.
+  //
+  // The ref stays private to this component and the rows get handlers instead. A ref handed
+  // down as a prop and written to by the child is the child mutating its own props, which the
+  // compiler rejects, and rightly: ownership of the value would be split across two files.
+  const extending = React.useRef(false);
+  const noteShift = React.useCallback((event: React.MouseEvent) => {
+    extending.current = event.shiftKey;
+  }, []);
+  // Narrowed out of the union before the hook, never inside it: hooks run on every render in
+  // the same order regardless of which mode this is.
+  const onToggle = props.mode === "pick" ? props.onToggle : null;
+  const toggleRow = React.useCallback(
+    (index: number) => onToggle?.(index, extending.current),
+    [onToggle],
+  );
+
+  return (
+    // The scroll container lives here rather than in ui/table, because `position: sticky`
+    // pins to the nearest scrolling ancestor: with the shared wrapper's overflow-x the header
+    // would pin to a box the height of the whole table and never actually stick. Owning the
+    // container is what makes the header hold on a 25 row roadmap, and it keeps the sideways
+    // overflow on the same element rather than on the page.
+    // overflow-y only, never overflow-x. The table is exactly as wide as this container and
+    // every cell wraps inside its share of it, so there is nothing to scroll sideways to. The
+    // vertical scroll stays because the sticky header pins to the nearest scrolling ancestor,
+    // and that is what holds the column names on a 25 row roadmap.
+    <div className="max-h-[65vh] w-full overflow-x-hidden overflow-y-auto">
+      {/*
+        table-fixed is what makes the promise above true. Under the default `auto` layout a
+        browser widens a column to fit its longest unbroken content, so one long prompt pushed
+        the table past the container and produced the sideways scroll. Fixed layout hands each
+        column a share of the width up front and makes the CONTENT wrap to it, which is the
+        whole point: the row grows downward instead of the table growing rightward.
+
+        The percentages are the content's real shape: a topic is a title, a scope is a sentence
+        or two, and the prompts are three or four full questions, so they get the most room.
+
+        Both modes spend the same fixed sliver on their own column, the checkbox on the left in
+        pick mode and the row action on the right in read mode, so the three prose columns get
+        the identical share of the container either way and neither mode can overflow the other's
+        measurements.
+      */}
+      <table className="w-full table-fixed caption-bottom text-sm">
+        <TableHeader className="sticky top-0 z-10 bg-card [&_tr]:border-b">
+          <TableRow className="hover:bg-transparent">
+            {props.mode === "pick" ? (
+              <TableHead className="w-9 align-middle">
+                <Checkbox
+                  checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                  disabled={selectable.length === 0}
+                  onCheckedChange={(checked) => props.onToggleAll(checked === true)}
+                  aria-label={
+                    selectable.length === 0
+                      ? "No topics can be generated"
+                      : `Select all ${selectable.length} topics that can be generated`
+                  }
+                />
+              </TableHead>
+            ) : null}
+            <TableHead className="machine w-[26%] align-middle text-xs font-medium">topic</TableHead>
+            <TableHead className="machine w-[30%] align-middle text-xs font-medium">what it covers</TableHead>
+            <TableHead className="machine align-middle text-xs font-medium">target prompts</TableHead>
+            {props.mode === "read" ? (
+              // Unlabelled on screen and named for a screen reader. A column of one icon button
+              // needs no title, and "actions" over a 25 row sheet is a word that earns nothing.
+              <TableHead className="w-12 align-middle">
+                <span className="sr-only">row actions</span>
+              </TableHead>
+            ) : null}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((row) => (
+            <Row
+              key={row.index}
+              row={row}
+              state={resolveRowState(row, facts)}
+              missing={props.mode === "pick" ? (props.incomplete.get(row.index) ?? null) : null}
+              selection={
+                props.mode === "pick"
+                  ? {
+                      checked: props.selected.has(row.index),
+                      onCheckboxClick: noteShift,
+                      onCheckboxChange: toggleRow,
+                    }
+                  : null
+              }
+              remove={
+                props.mode === "read"
+                  ? { onDelete: props.onDelete, locked: props.editingLocked }
+                  : null
+              }
+              rowRefs={rowRefs}
+            />
+          ))}
+        </TableBody>
+      </table>
+    </div>
+  );
+}
+
+type Selection = {
+  checked: boolean;
+  /** Records whether the click held shift, before the change handler reads it. */
+  onCheckboxClick: (event: React.MouseEvent) => void;
+  onCheckboxChange: (index: number) => void;
+};
+
+type Remove = {
+  onDelete: (row: RoadmapRow) => void;
+  locked: boolean;
+};
+
+function Row({
+  row,
+  state,
+  missing,
+  selection,
+  remove,
+  rowRefs,
+}: {
+  row: RoadmapRow;
+  state: RowState;
+  missing: string[] | null;
+  /** Pick mode's checkbox, or null in read mode where there is nothing to pick. */
+  selection: Selection | null;
+  /** Read mode's Delete record, or null in pick mode where the roadmap is not edited. */
+  remove: Remove | null;
+  // HTMLElement, not HTMLTableRowElement: only scrollIntoView reads this map, which every
+  // element has.
+  rowRefs: React.RefObject<Map<number, HTMLElement>>;
+}) {
+  const style = ROW_STYLES[state];
+  const selectable = isSelectable(state);
+
+  return (
+    <TableRow
+      ref={(node) => {
+        if (node) {
+          rowRefs.current.set(row.index, node);
+        } else {
+          rowRefs.current.delete(row.index);
+        }
+      }}
+      className={cn("align-top", style?.row)}
+      data-row-state={state}
+      // The row's own state, named for a screen reader on the row rather than only in the
+      // chip, so tabbing to the checkbox says why it is disabled. Read mode never sets this:
+      // nothing there is disabled BY the row's state, and a row whose topic already shipped is
+      // still perfectly deletable.
+      aria-disabled={selection && !selectable ? true : undefined}
+    >
+      {selection ? (
+        <TableCell className="pt-4 align-top">
+          <Checkbox
+            checked={selection.checked}
+            disabled={!selectable}
+            onClick={selection.onCheckboxClick}
+            onCheckedChange={() => selection.onCheckboxChange(row.index)}
+            aria-label={`Select ${row.topic}`}
+          />
+        </TableCell>
+      ) : null}
+
+      {/*
+        The slug is gone from this cell. It was the topic a second time, hyphenated: the same
+        words, saying nothing the title above it had not already said, and costing a line in
+        every row. The slug is a machine key, useful when matching a row to an output folder on
+        disk, and it is still on the blogs library and in the run status where that matching
+        actually happens.
+      */}
+      {/*
+        whitespace-normal on every cell, and it is load bearing. shadcn's TableCell ships
+        `whitespace-nowrap`, which is a sane default for a data grid of short values and exactly
+        wrong for prose: text physically cannot wrap, so each cell grows to its longest line and
+        the table overflows its container no matter what table-fixed or the column widths say.
+        That was the sideways scroll, not the min-widths alone.
+
+        No min-w either. A min-width is a floor the browser must honour, so three of them added
+        up past the container. Widths are set once on the header and every cell wraps into its
+        share.
+      */}
+      <TableCell className="py-3 align-top whitespace-normal">
+        <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
+          <p className="text-sm leading-snug text-pretty text-foreground">{row.topic}</p>
+          <StateChip state={state} className="mt-0.5" />
+        </div>
+        <RowNote row={row} state={state} missing={missing} />
+      </TableCell>
+
+      {/* No clamp and no expander: the scope is a sentence or two, it wraps, and the row is as
+          tall as its tallest cell needs. */}
+      <TableCell className="py-3 align-top text-sm leading-relaxed whitespace-normal text-pretty text-muted-foreground">
+        {row.covers || <span className="text-xs">Not given</span>}
+      </TableCell>
+
+      <TableCell className="py-3 align-top whitespace-normal">
+        <Prompts prompts={row.prompts} />
+      </TableCell>
+
+      {remove ? (
+        <TableCell className="pt-3 align-top">
+          {/* Ghost, never destructive. This button opens a confirm; it does not delete, and a
+              red button on all 25 rows would paint the sheet as a hazard. The colour belongs on
+              the confirm's action, where something is actually about to be destroyed. */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-8 text-muted-foreground hover:text-fail"
+            disabled={remove.locked}
+            onClick={() => remove.onDelete(row)}
+          >
+            <Trash2 aria-hidden />
+            {/* Named, not "delete": 25 buttons all called "Delete record" are 25 identical
+                announcements, and the topic is the only thing that tells them apart. */}
+            <span className="sr-only">Delete the record {row.topic}</span>
+          </Button>
+        </TableCell>
+      ) : null}
+    </TableRow>
+  );
+}
+
+/**
+ * Every prompt, bulleted, one per line, and none of them hidden.
+ *
+ * These were chips, which was wrong twice. A chip is a short label, and these are whole
+ * questions a person typed at an AI, so a chip wrapped mid sentence and drew a border through
+ * the middle of it. And chips cost so much width that only three fitted, which forced a "+2
+ * more" button: the prompts are the binding part of a row, the FAQ has to answer every one,
+ * so hiding some of them hid the thing the operator is judging.
+ *
+ * The bullet is what a chip's border was doing honestly: it marks where one prompt ends and
+ * the next starts, which plain wrapped lines could not, and it costs one character instead of
+ * a box.
+ */
+function Prompts({ prompts }: { prompts: string[] }) {
+  if (prompts.length === 0) {
+    return <span className="text-xs text-muted-foreground">None given</span>;
+  }
+
+  return (
+    <ul className="flex flex-col gap-1">
+      {prompts.map((prompt, i) => (
+        <li
+          key={`${i}-${prompt}`}
+          className="flex gap-1.5 text-sm leading-relaxed text-pretty text-muted-foreground"
+        >
+          {/* aria-hidden and a real list underneath: a screen reader announces "list, 3 items"
+              and would otherwise read the glyph aloud before every one of them. */}
+          <span className="select-none text-muted-foreground/50" aria-hidden>
+            &bull;
+          </span>
+          <span className="min-w-0">{prompt}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}

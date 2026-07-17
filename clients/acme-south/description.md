@@ -1,0 +1,1 @@
+Not generated from the live site: GEO_MOCK=1 is set, so no live fetch ran. No description was drafted for Acme South, and nothing here was read from https://example.com. Write the description by hand, or configure Firecrawl and try again.

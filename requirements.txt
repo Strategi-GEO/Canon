@@ -1,0 +1,8 @@
+claude-agent-sdk>=0.2.120
+fastapi>=0.139.0
+uvicorn[standard]>=0.51.0
+# server/cms/client.py imports httpx directly. It was already installed, but only as a
+# transitive dependency of mcp (via claude-agent-sdk), which is not a promise: the day that
+# chain changes, the CMS push breaks on an ImportError with nothing in this file to explain
+# why. A direct import gets a direct pin.
+httpx>=0.28.1
