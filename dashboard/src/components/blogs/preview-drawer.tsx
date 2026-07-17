@@ -476,9 +476,13 @@ function EvalScore({ text }: { text: string }) {
       >
         {score}
       </span>
+      {/* The band, and NOT a claim that the blog went out. A passing score is final only when
+          nothing is left to ask: a 96 with open questions is held until they are answered, and the
+          strip above this is where that is said. Repeating "this draft shipped" here would tell an
+          operator the thing they are being asked to answer is already settled. */}
       <span className="text-xs text-muted-foreground">
         {shipped
-          ? "At or above 95, so this draft shipped. The first passing score is final."
+          ? "At or above 95, so the evaluator passed this draft. A blog holding open questions waits for your answers whatever it scored."
           : "Below 95, so this draft went back for a surgical revise."}
       </span>
     </div>

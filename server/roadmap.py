@@ -4,15 +4,27 @@ Lives in its own module so server.runner and server.app can both import it
 without a circular import. csv module only: cells contain commas and newlines
 inside quotes, so ad-hoc splitting corrupts rows.
 
-COLUMN MAPPING IS POSITIONAL AND FIXED: column 1 -> topic, column 2 -> covers,
-column 5 -> prompts. Every other column is parsed past and dropped.
+THE BINDING THREE ARE POSITIONAL AND FIXED: column 1 -> topic, column 2 ->
+covers, column 5 -> prompts. Those three are the brief, and position is how they
+are found.
 
-Why position and not header detection: the operator's sheets are positionally
-stable and they upload a fresh one every run, so header text is noise. Regex
-header detection and the operator override existed to guess at varying headers;
-both are deleted. Only these three fields reach an agent's context, so Volume
-(column 3), Intent (column 4) and Status (column 6) are never stored, never
-passed on, and never shown as data. Do not reintroduce them "just in case".
+Why position and not header detection for those three: the operator's sheets are
+positionally stable and they upload a fresh one every run, so header text is
+noise. Regex header detection and the operator override existed to guess at
+varying headers; both are deleted.
+
+EVERY OTHER COLUMN IS KEPT, PAIRED WITH ITS HEADER, and reaches the writer as
+guidance: see _extras. This paragraph used to say the opposite, that Volume,
+Intent and Status were "never stored, never passed on", and it was left standing
+after the behaviour changed. A stale docstring on the module that OWNS the rule
+is not a cosmetic problem: it is the first thing anyone reads before touching
+this file, and it told them to delete the feature.
+
+The extras are read BY HEADER, never by position, and the two rules coexist for
+a reason. Position 3 is "Format" on a generated sheet and "Approx. Volume
+(IN/mo)" on one of the operator's own, so a hardcoded "column 3 is the format"
+once handed a writer ~1200 as its format. The brief is positional because the
+operator's sheets guarantee it. Everything else is labelled because they do not.
 """
 import csv
 import io
@@ -183,13 +195,51 @@ def parse_csv(raw_text):
 
 
 def _decode(raw_bytes):
-    """Operator CSVs come out of Excel and Google Sheets, so BOMs are common."""
-    for encoding in ("utf-8-sig", "utf-8", "latin-1"):
+    """Operator CSVs come out of Excel and Google Sheets, so BOMs are common.
+
+    Order matters and every step earns its place. utf-8 first, so a normal file is never
+    mojibake'd by a fallback that cannot fail. Then cp1252, because that is what Excel on Windows
+    actually exports and it is the difference between reading "Bengaluru's best cafes" and
+    reading "Bengaluru\\x92s best cafes": latin-1 maps 0x92 to a control character, cp1252 maps it
+    to the curly apostrophe the operator typed. cp1252 leaves five bytes undefined, so latin-1
+    stays last as the decoder that cannot fail, and its job is to keep a sheet readable rather
+    than to be right about it.
+    """
+    for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
         try:
             return raw_bytes.decode(encoding)
         except UnicodeDecodeError:
             continue
-    raise BadUpload("the file is not readable as text (tried utf-8 and latin-1)")
+    raise BadUpload("the file is not readable as text (tried utf-8, cp1252 and latin-1)")
+
+
+def _read_csv(path, what):
+    """The saved roadmap as raw CSV rows, decoded the SAME way the upload that wrote it was.
+
+    EVERY read of roadmap.csv comes through here, and that is the whole point. The upload path
+    decodes with _decode, which falls back to latin-1 and therefore accepts any byte sequence
+    alive, and then save_upload writes the operator's ORIGINAL BYTES verbatim. Both reads used to
+    open the result with a strict encoding="utf-8-sig" instead, so the app accepted a file it
+    could never read again.
+
+    That is not a theoretical mismatch. Excel on Windows exports cp1252, so one curly apostrophe
+    in "Bengaluru's best cafes" is byte 0x92 and nothing else has to go wrong. The upload reported
+    success. Then the sheet preview raised UnicodeDecodeError, the blogs library raised it while
+    looking up roadmap numbers and answered 500, and the fact base refused to build, which failed
+    every topic in the run over a file none of those sessions reads, writes or can repair. The
+    operator's only clue was that a CSV they had just been told was fine broke three unrelated
+    screens.
+
+    Decoding on read rather than validating on upload is deliberate. Rejecting the upload would be
+    the other way to make the two halves agree, and it would be worse: the file is fine, csv parses
+    it fine, and the operator's apostrophe is not an error worth refusing their whole sheet over.
+    """
+    raw_bytes = path.read_bytes()
+    try:
+        text = _decode(raw_bytes)
+    except BadUpload as exc:
+        raise BadUpload(f"{what}: {exc}") from exc
+    return list(csv.reader(io.StringIO(text, newline="")))
 
 
 def load_roadmap(client_slug):
@@ -203,9 +253,8 @@ def load_roadmap(client_slug):
     if not path.is_file():
         raise RoadmapNotFound(f"no roadmap.csv for client {client_slug!r} at {path}")
 
-    with open(path, newline="", encoding="utf-8-sig") as handle:
-        raw_rows = list(csv.reader(handle))
-    return _parse_rows(raw_rows, f"roadmap.csv for client {client_slug!r}")
+    what = f"roadmap.csv for client {client_slug!r}"
+    return _parse_rows(_read_csv(path, what), what)
 
 
 def index_by_slug(client_slug):
@@ -270,8 +319,7 @@ def _read_raw(client_slug):
     path = roadmap_path(client_slug)
     if not path.is_file():
         raise RoadmapNotFound(f"no roadmap.csv for client {client_slug!r} at {path}")
-    with open(path, newline="", encoding="utf-8-sig") as handle:
-        return list(csv.reader(handle))
+    return _read_csv(path, f"roadmap.csv for client {client_slug!r}")
 
 
 def read_sheet(client_slug):

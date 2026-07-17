@@ -355,6 +355,13 @@ def _seed_shipped_blog(root, slug="topic-0"):
     out = runner.output_dir("brand", slug)
     out.mkdir(parents=True, exist_ok=True)
     (out / "blog.md").write_text("the draft that scored 96", encoding="utf-8")
+    # eval.md is seeded beside the draft because the restore owes back the ARTIFACT SET, not just
+    # the draft. The score describes a pair: the bytes that were graded and the verdict that
+    # graded them. Snapshotting one and not the other leaves the restored original sitting next
+    # to a DISCARDED draft's eval.md and its SCORE: NN, which is a blog whose verdict describes
+    # bytes that no longer exist anywhere.
+    (out / "eval.md").write_text("SCORE: 96\nthe verdict on the draft that scored 96\n",
+                                 encoding="utf-8")
     _append(out, slug, status="done", score=96, note="shipped at 96")
     return out
 
@@ -363,12 +370,24 @@ def test_a_stopped_revise_does_not_unship_a_done_blog():
     """The contract, twice over: a stop after SCORE >= 95 does not un-ship the blog, and a
     topic that already wrote its terminal line keeps that line, its score and its ledger
     entry. This arm used to write `stopped` over a 96 and the CMS gate then refused it
-    forever."""
+    forever.
+
+    THE CANCELLATION PATH IS WHERE THE BYTE-FOR-BYTE RESTORE STILL LIVES. An answer-driven
+    revise now ships its clarified draft whatever it scores, because truth beats score, but a
+    stop mid-revise is not a clarified draft: it is a half-applied one, and half-applied is
+    what the restore exists to make impossible. So this arm holds, and it holds over the whole
+    artifact set."""
     async def scenario():
         with _Roots() as root:
             out = _seed_shipped_blog(root)
 
             async def hang(*a, **k):
+                # The session gets as far as a real one does before the stop lands: it clobbers
+                # BOTH artifacts and then dies mid-flight. A hang that touched nothing would let
+                # this test pass on a restore that never ran.
+                (out / "blog.md").write_text("half revised, scored by nobody", encoding="utf-8")
+                (out / "eval.md").write_text("SCORE: 91\nthe verdict on a draft that dies here\n",
+                                             encoding="utf-8")
                 await asyncio.sleep(10)
 
             runner._mock_revise_session = hang
@@ -386,14 +405,23 @@ def test_a_stopped_revise_does_not_unship_a_done_blog():
             check("a stopped revise leaves the shipped score intact",
                   summary["score"] == 96, f"got {summary}")
             check("a stopped revise restores the original draft byte for byte",
-                  (out / "blog.md").read_text(encoding="utf-8") == "the draft that scored 96")
+                  (out / "blog.md").read_text(encoding="utf-8") == "the draft that scored 96",
+                  f"got {(out / 'blog.md').read_text(encoding='utf-8')!r}")
+            # The other half of the artifact set. The restore returns what the score DESCRIBED,
+            # and the 96 describes a draft and the eval that graded it. Give back the draft alone
+            # and the blog ships a 96 next to an eval.md reading SCORE: 91 about bytes that were
+            # thrown away, so the trail says one thing and the artifact says another.
+            check("a stopped revise restores the eval that graded the original",
+                  (out / "eval.md").read_text(encoding="utf-8")
+                  == "SCORE: 96\nthe verdict on the draft that scored 96\n",
+                  f"got {(out / 'eval.md').read_text(encoding='utf-8')!r}")
 
     asyncio.run(scenario())
 
 
 def test_a_crashed_revise_does_not_fail_a_done_blog():
-    """Same shape, the sibling arm: a bookkeeping crash on an OPTIONAL rerun must never turn
-    a shipped blog into a failure."""
+    """Same shape, the sibling arm: a bookkeeping crash on a revise must never turn a shipped
+    blog into a failure."""
     async def scenario():
         with _Roots() as root:
             out = _seed_shipped_blog(root)
@@ -412,6 +440,70 @@ def test_a_crashed_revise_does_not_fail_a_done_blog():
                   summary["status"] == "done", f"got {summary}")
             check("a crashed revise leaves the shipped score intact",
                   summary["score"] == 96, f"got {summary}")
+
+    asyncio.run(scenario())
+
+
+def _seed_answered_form(out, slug, iteration=1):
+    """A questions.json the operator has ALREADY answered, at the blog's current iteration.
+
+    Iteration-matched on purpose: that is what makes the form pass the staleness gate, and a form
+    that passes the staleness gate is a form that can hold the blog.
+    """
+    (out / "questions.json").write_text(json.dumps({
+        "slug": slug, "iter": iteration, "score": 96,
+        "questions": [{"id": "q1", "question": "Does Deccan Herald carry the 33 percent claim?",
+                       "why": "C21 rests on it", "area": "Sourcing"}],
+    }), encoding="utf-8")
+    (out / "answers.json").write_text(json.dumps({
+        "slug": slug, "iter": iteration, "score_when_asked": 96,
+        "answers": [{"id": "q1", "question": "Does Deccan Herald carry the 33 percent claim?",
+                     "answer": "No, it does not. Cut the claim."}],
+    }), encoding="utf-8")
+
+
+def test_a_crashed_revise_does_not_leave_a_spent_form_holding_the_blog():
+    """A BLOG WITH NO EXIT is what this arm forbids, and it is the dead end the needs_review
+    definition exists to outlaw.
+
+    Questions now hold a blog at ANY score, so a spent form is no longer harmless paperwork.
+    The operator answers a 96, the surgical revise crashes before clear_questions runs, and the
+    form stays on disk: iteration-matched, so not stale, so 'current', so the resolver holds the
+    blog AGAIN. Meanwhile the app refuses a second submit, because the form is already answered.
+    Nobody can answer it and nothing can ship it.
+
+    Both halves of the fix are pinned here. An ANSWERED form summons nobody, so it groups with
+    none and stale rather than reading as 'current'. And clearing the spent form happens in a
+    finally-arm, so a revise that dies on its way out cannot leave one behind at all.
+    """
+    async def scenario():
+        with _Roots() as root:
+            out = _seed_shipped_blog(root)
+            _seed_answered_form(out, "topic-0")
+
+            check("an answered form does not read as current",
+                  runner._questions_state("brand", "topic-0") == "answered",
+                  f"got {runner._questions_state('brand', 'topic-0')!r}")
+
+            status, _ = runner._resolve_needs_review("brand", "topic-0", 96)
+            check("an answered form never holds a blog that passed",
+                  status == "done", f"got {status}")
+
+            async def boom(*a, **k):
+                raise RuntimeError("the revise session died after the operator answered")
+
+            runner._mock_revise_session = boom
+            try:
+                await runner.revise_topic("brand", "topic-0", mock=True)
+            except RuntimeError:
+                pass
+
+            check("a crashed revise clears the form it spent",
+                  not (out / "questions.json").is_file())
+            # answers.json is the durable record of what the operator said and is NOT cleared:
+            # losing it would leave a cut claim with nothing on disk explaining who cut it.
+            check("a crashed revise keeps the answers as the record",
+                  (out / "answers.json").is_file())
 
     asyncio.run(scenario())
 
@@ -499,6 +591,7 @@ def main():
                  test_a_stopped_blog_never_reaches_the_ledger,
                  test_a_stopped_revise_does_not_unship_a_done_blog,
                  test_a_crashed_revise_does_not_fail_a_done_blog,
+                 test_a_crashed_revise_does_not_leave_a_spent_form_holding_the_blog,
                  test_a_stopped_revise_on_an_unfinished_topic_is_stopped,
                  test_a_stopped_facts_build_leaves_no_hollow_fact_base):
         print(f"\n{test.__name__}")

@@ -73,31 +73,112 @@ number**, because a fresh Agent W on iteration 3 has no memory of iterations 1 a
   or remove links. It may NOT add new claims or sources: a claim with no supporting source is
   a Sourcing failure, so flag needs_review rather than patching it.
 - **Agent E (evaluator).** Input: **`blog.md` + `geo-content-eval/references/rubric.md` +
-  `clients/<slug>/canonical-facts.md` ONLY.** Runs geo-content-eval as a hostile auditor.
-  Never sees the dossier, Agent W's reasoning, or any prior eval. Emits `SCORE: NN` on its
+  `clients/<slug>/canonical-facts.md` + `answers.json` WHEN ONE EXISTS, and nothing else.**
+  Runs geo-content-eval as a hostile auditor. Never sees the dossier, Agent W's reasoning, or
+  any prior eval, so the hostile isolation is intact: operator answers rank with
+  `canonical-facts.md` and above any internal doc, and Agent E already reads
+  `canonical-facts.md`, so an answer is an EXTENSION OF THE FACT BASE, not the writer's
+  reasoning leaking across the wall. Withholding them punishes honesty: a negative answer
+  forces the writer to CUT a claim, and an evaluator that cannot see the answer reads that cut
+  as lost factual density and scores the draft DOWN for telling the truth. An answer is still
+  NOT a source: it can never become a citation, and a claim needing a citation still needs a
+  fetched source. Emits `SCORE: NN` on its
   own line plus the fix list with each item's Area, using HOUSE bands: 95-100 SHIP, below 95
   REJECT, any hard-gate failure a REJECT regardless of score. Output: `.../eval.md`.
-- **Revise (surgical).** If SCORE < 95, spawn a FRESH Agent W with ONLY: the frozen dossier,
-  the current `blog.md`, the fix list, and its iteration number. It applies **only the listed
-  fixes** to the existing draft. It does not rewrite the article. Then re-run gates, the link
-  pass on changed links only, and a FRESH Agent E. Cap at 4 iterations, keep the best-scoring
-  draft, stop early if two consecutive iterations show no gain.
+- **Revise (surgical, ELECTIVE and score-driven).** If SCORE < 95, spawn a FRESH Agent W with
+  ONLY: the frozen dossier, the current `blog.md`, the fix list, and its iteration number. It
+  applies **only the listed fixes** to the existing draft. It does not rewrite the article. Then
+  re-run gates, the link pass on changed links only, and a FRESH Agent E. Keep the best-scoring
+  draft. THREE conditions stop this loop, not two: the 4-iteration cap, two consecutive
+  iterations showing no gain, and **a Sourcing QUESTION on the form, which ends the loop at the
+  iteration it is filed.** The third one ends the loop BEFORE the revise is dispatched, because
+  Sourcing is the one area no rewrite can close: this contract already says the writer has no
+  authority to invent a citation or URL, so iterating past a Sourcing question spends research
+  and revise budget rediscovering what the evaluator already knew was terminal. The date-night
+  blog filed Sourcing questions at iteration 1, ran a bounded research top-up and two full
+  revises, and landed at iteration 3 on FOUR Sourcing questions about claims no rewrite could
+  ever have fixed. Three iterations bought nothing.
+  **Best-scoring selection is scoped to THIS elective loop and to nothing else.** It is a guard
+  on an optional improvement rerun, answering what makes such a rerun safe to accept. The
+  answer-driven revise under Asking the operator is a MANDATORY correctness rerun and is EXEMPT:
+  there the clarified draft always ships even if it scores lower, because keeping the
+  higher-scoring draft there restores the original with its violation still in it.
 
-The session lead branches on the numeric SCORE only, never on the verdict word. SCORE < 95
-always triggers a revise iteration. SCORE >= 95 always ships.
+The session lead branches on the numeric SCORE and never on the verdict word. **The lead's
+IN-LOOP branch reads the SCORE and exactly ONE property of the form: whether it carries a
+Sourcing question.** SCORE >= 95 ENDS THE LOOP and nothing about that changes. At SCORE < 95,
+BEFORE dispatching a revise, the lead asks the form whether a Sourcing question is live:
 
-**THE FIRST SCORE >= 95 IS FINAL AND TERMINAL.** Record it in `eval.md` and STOP. Never run
-the evaluator again on a draft that has already passed, for ANY reason, including "the draft
-changed since", "eval.md and blog.md are inconsistent", "the run was stopped and restarted, so
-let me confirm", or "let me confirm". A confirmatory
-re-eval adds no rigor: it re-rolls a stateless auditor whose score varies by several points
-on an identical draft, and it can strand a shipping blog below the bar. Because gates and the
-link pass both run BEFORE the evaluator, the scored artifact IS the shipped artifact. There
-is no step after the eval that touches the draft.
+```
+python3 .claude/questions.py --out <output_dir> --slug <slug> --iter <current iteration> --check-area Sourcing
+```
+
+**`--iter` is REQUIRED and it is the whole staleness guard**, so pass the iteration the draft is
+actually on. A form from an earlier iteration describes a draft the blog has moved past, and it
+must not end anything. Omit the flag and the command is a usage error (exit 2), which is
+deliberate: exit 1 already means "nothing live of that area, revise on", and a caller who forgot
+the guard must never land on a meaningful answer by accident. Exit 2 also covers an unusable
+form, so a failure can never be read as an absence.
+
+Exit 0 means a live Sourcing question exists and **THE LOOP ENDS NOW**: write the terminal
+`needs_review` line and stop. Do not revise, do not dispatch another evaluator, and do not
+delete the form, because that form is the summons the operator answers. Exit 1 means no live
+Sourcing question, so SCORE < 95 triggers a revise iteration while iterations remain, exactly as
+before. The query never writes: a read that rewrote the form would destroy what it reports on.
+
+**Questions of area Structure, Draft or Mechanics do NOT end the loop**, and the lead still
+deletes `questions.json` before the next evaluator, so those are superseded by the next
+iteration's form exactly as they always were. Reading them in-loop would hold a 93 that still had
+three iterations of budget left, and a rewrite is precisely what closes them. Sourcing is
+different because no rewrite closes it: this contract already says the writer has no authority to
+invent a citation or URL, and a Sourcing QUESTION names a fact only a person has, so another
+iteration cannot reach it. The date-night blog proved the cost: it filed Sourcing questions at
+iteration 1, ran a bounded research top-up and two full revises, and landed at iteration 3 on
+FOUR Sourcing questions about claims no rewrite could ever have fixed.
+
+**THIS IS A LEAD INSTRUCTION AND THE ENGINE CANNOT ENFORCE IT.** The loop runs inside the SDK
+session and the backend cannot reach into it to stop a revise, which is a real departure from this
+file's principle that the check belongs in Python where nothing can argue with it, so it is named
+here rather than papered over. **IT FAILS IN BOTH DIRECTIONS AND THEY ARE NOT SYMMETRIC.**
+IGNORING the rule costs money and not correctness: the lead burns iterations, then hits terminal
+resolution, where the final form still holds the blog in Python, so it cannot ship a blog it
+should have held. OVER-APPLYING it costs a good blog: ending the loop on a form that is stale or
+another topic's writes `needs_review` with iterations unspent, and terminal resolution then reads
+that same form as non-holding and corrects the topic to `failed` by its score, so a draft that had
+budget left to reach 95 dies instead. The required `--iter` above is the whole of what closes that
+second direction, which is why it is required rather than advisory: an optional guard that every
+caller omitted is how this rule shipped broken the first time.
+
+**THE QUESTION STATE IS CHECKED FIRST AT TERMINAL RESOLUTION**, after the loop ends, which is
+where the three-case table applies and where a >= 95 ships only if no current questions are on
+disk. With current questions the blog is HELD for the operator's answer at any score (see Asking
+the operator). The score runs the loop and the full four-valued question state decides the
+terminal status; the in-loop branch borrows exactly ONE bit of the form, the Sourcing bit, and
+borrows nothing else.
+
+**THE FIRST SCORE >= 95 IS FINAL AND TERMINAL WHEN NO CURRENT QUESTIONS ARE ON DISK.** Record
+it in `eval.md` and STOP. The single answer-driven revise is the ONE licensed re-eval, and it
+is licensed because the operator's answer changed the fact base the score was computed
+against. Every other confirmatory re-eval stays FORBIDDEN, including "the draft changed
+since", "eval.md and blog.md are inconsistent", "the run was stopped and restarted, so let me
+confirm", or "let me confirm". A confirmatory re-eval adds no rigor: it re-rolls a stateless
+auditor whose score varies by several points on an identical draft, and it can strand a
+shipping blog below the bar. Because gates and the link pass both run BEFORE the evaluator,
+the scored artifact IS the shipped artifact, and the ONLY thing that touches the draft after
+the eval is an operator answer arriving.
 
 Route fixes by the Area the eval assigns: **Sourcing** goes back to Agent R as a bounded
 top-up for that one claim; **Structure, Draft, Mechanics** go to Agent W. "Add a source"
 NEVER routes to the writer alone; the writer has no authority to invent a citation or URL.
+
+**A Sourcing FIX-LIST ITEM and a Sourcing QUESTION carry the same area word and opposite
+implications for the loop, and this is the thing a reader gets wrong.** A Sourcing fix-list item
+still routes to a bounded Agent R top-up and still does NOT end the loop; that routing is
+unchanged and it works, because date-night's iteration 2 top-up sourced three Sourcing fix-list
+items successfully. A Sourcing question ENDS THE LOOP at the iteration it is filed. The
+difference is what each artifact asserts: a fix-list item says "a machine can find this source",
+so another iteration is exactly the right spend, while a question says "only a person holds this
+fact", so another iteration buys nothing. Read the artifact, never the word alone.
 
 ## Status protocol
 `outputs/<slug>/<topic-slug>/status.jsonl` is the ONLY progress feed. Each agent
@@ -287,7 +368,10 @@ script is the authority on these rules:
 - Honor the forbidden link targets in `canonical-facts.md`. Never cite the client's own blog
   as evidence for a fact: it is marketing copy, and it can contain claims `canonical-facts.md`
   forbids.
-- Link verification runs inside Agent W, before the eval. There is no post-eval link step.
+- Link verification runs inside Agent W, before the eval, so every scored draft is already
+  link-clean. The ONE exception is the answer-driven revise, which is itself an Agent W pass:
+  it re-runs the link pass on changed links only, before its evaluator. There is no link step
+  that runs after an eval on a draft nobody touched.
 
 ## Sourcing discipline
 - Prefer sources local to the client's market (named in `client.md`) over generic or foreign
@@ -319,7 +403,8 @@ house rules always hold:
 - `links-verified.txt` (working file: URLs already Firecrawl-verified, so later iterations
   skip them)
 - `status.jsonl` (the append-only progress feed)
-- `questions.json` (OPTIONAL: the evaluator's questions for the human operator)
+- `questions.json` (WRITTEN ONLY WHEN the evaluator asks: its questions for the human operator.
+  Asking is optional; once the file exists, answering it is not, so this file holds the blog)
 - `answers.json` (OPTIONAL: what the operator answered, written by the app, never by an agent)
 
 Slug = topic lowercased, spaces to hyphens.
@@ -331,42 +416,100 @@ among the amenities. Agent E may therefore ASK, by running the helper, never by 
 file:
 
 ```
-python3 .claude/questions.py --out <output_dir> --slug <slug> --iter 2 --score 93 \
+python3 .claude/questions.py --out <output_dir> --slug <slug> --iter 2 --score 96 \
     --ask "Can you confirm a dated source for Kodagu's 4,106 sq km area?" \
     --why "B1 cites it undated, which caps Sourcing at 2. A dated source lifts it to 3." \
     --area Sourcing
 ```
 
+The score in that example is 96 deliberately, because a question is asked and held at ANY score
+and a passing score is NEVER a reason to withhold one.
+
+**An evaluator asking a Sourcing question is ENDING THE LOOP, not annotating it.** Below 95 the
+lead checks the form for a live Sourcing question before every revise and stops the loop where it
+finds one, spending no further iteration (see the in-loop branch). That is correct, because
+Sourcing is the one area no rewrite can close and the writer has no authority to invent a
+citation or URL, so the remaining budget would rediscover what the question already established.
+It also raises the bar on asking one: a Sourcing question surrenders every iteration the blog had
+left, so ask it only where a person genuinely holds the missing fact, and file it as a fix-list
+item instead wherever a bounded Agent R top-up can find the source. The at-most-5 and
+answerable-in-ten-seconds standards below apply with FULL force here, because this question is
+now the blog's only remaining path forward and not one signal among several.
+
 Ask ONLY where a human answer changes the outcome: a fact only the client holds, a source that
 needs confirming, an ambiguity `canonical-facts.md` does not resolve, or a suspected inaccuracy.
 Never ask what the rubric already answers, and never ask for something the writer should simply
-fix: "rephrase this H2" is a fix list item, not a question. At most 5, each carrying what
-answering it unblocks. A form of fifteen questions does not get answered, it gets closed, and
-the blog sits in review forever.
+fix: "rephrase this H2" is a fix list item, not a question. **At most 5 questions, each
+answerable in ten seconds, each carrying what answering it unblocks.** Those two standards are
+LOAD-BEARING, not advice, because a question now HOLDS THE BLOG AT ANY SCORE and operator
+silence strands it forever. A form of fifteen questions does not get answered, it gets closed,
+and the blog it holds never ships. Every question you ask spends a person's attention against a
+blog's only exit, so ask the fewest that clear the gap and make each one answerable without
+opening the draft.
 
-**`needs_review` MEANS "this blog scored below 95 AND has questions waiting for the operator", and
-it means nothing else.** The status is a summons, so it must name the act it summons someone for.
-A blog held with no `questions.json` is a dead end: the app renders "A human has to confirm
-something before this ships" and offers no door, and the operator can do nothing with it. Four of
-the five blogs that sat on `needs_review` in live data were exactly that, one of them held at 96
-for a Sourcing top-up that had already resolved itself.
+**`needs_review` MEANS "this blog has questions waiting for the operator that are current, on
+disk, and answerable", at ANY score, and it means nothing else.** The score does NOT enter this
+definition. The status is a summons, so it must name the act it summons someone for. A blog held
+with no `questions.json` is a dead end: the app renders "A human has to confirm something before
+this ships" and offers no door, and the operator can do nothing with it. Four of the five blogs
+that sat on `needs_review` in live data were exactly that.
 
-**Four cases, THREE terminal states, and no fourth verdict.** This table governs a loop that
-RAN TO A VERDICT and nothing else. `stopped` is not a fourth row of it: a stopped run reached
-no verdict, so it never enters the table. Never add a row here for a run that did not finish.
+**Three cases, THREE terminal states, and no fourth verdict.** This table governs a loop that
+RAN TO A VERDICT and nothing else. `stopped` is not a fourth row of it: the loop never ran, so
+no score describes it and the table has nothing to say about it. Never add a row here for a run
+that did not finish.
 
-| Score | Questions | Status | What it means |
+The QUESTIONS axis is checked FIRST and is the four-valued engine state
+(`current` | `none` | `stale` | `unreadable`), never a binary, plus `answered`. The score is
+DEMOTED: it decides the nothing-to-answer branch, and its ABSENCE is the one thing that outranks
+the questions axis, for the reason stated under the table.
+
+| Questions | Score | Status | What it means |
 |---|---|---|---|
-| >= 95 | none | `done` | It ships. |
-| >= 95 | one or more | `done` | It ships ANYWAY, tagged with its open questions. Answering is an OFFER, never a demand. |
-| < 95 | one or more | `needs_review` | Blocked. The operator must answer, and there is no dismiss. |
-| < 95 | none | `failed` | The loop exhausted itself and cannot say what it needs, so there is no human task. |
+| `current` | any score, 96 included, and none at all | `needs_review` | HELD. A human owes an answer, and there is no dismiss and no proceed. |
+| `none` / `stale` / `unreadable` / `answered` | >= 95 | `done` | It ships. |
+| `none` / `stale` / `unreadable` / `answered` | < 95, or none at all | `failed` | The loop exhausted itself and cannot say what it needs, so there is no human task. |
 
-**THE BOUNDARY IS 95 AND 95 SHIPS**, questions or not. 94 does not. This is the same rule Ship
-criteria states, and an earlier draft of this feature broke it by holding a 95 open until someone
-answered. A passing draft is never held: at or above the band the blog has already shipped, so an
-outstanding question is the operator's option and their answer changes nothing about whether it
-goes out.
+`stale` and `unreadable` group with `none` because THE APP ALREADY REFUSES THEM: a form nobody can
+submit summons nobody, so holding a blog on one is holding it for a person who will never be
+asked. `answered` groups with them on a DIFFERENT ground, and the difference is worth stating
+because the app does NOT refuse an answered form: its answers are already recorded and a revise
+was already dispatched for them, so it summons nobody NEW. Grounding it on a refusal the app does
+not perform would be a rule defended by a claim about the system that the system does not make
+true, which is the exact defect this section removed elsewhere.
+
+**A missing score falls to `failed` on the nothing-to-answer rows, and NEVER on the `current`
+row.** With no form there is nothing to answer, so a run that never reached a verdict is a
+machine's answer and not a human's task. On the `current` row THE QUESTIONS AXIS HOLDS WITHOUT
+EXCEPTION, including where no score was ever written. An evaluator that asked and then died still
+asked, and the answer is not wasted: it drives the surgical revise, whose fresh evaluator writes
+the score the crashed one never did. That is a door, so the hold is not permanent, and the
+questions axis stays absolute with no exception for a reader to reason around. An earlier draft of
+this rule failed a scoreless hold on the ground that it stranded a human whose answer bought
+nothing back; that ground was false, because answering is exactly what produces the missing score.
+A gates FAIL is still `failed`.
+
+**OPEN QUESTIONS HOLD THE BLOG AT ANY SCORE, AND ANSWERING IS A DEMAND, NEVER AN OFFER.** A 96
+with current questions is HELD, not shipped. There is no dismiss and no proceed-anyway at any
+score. The reason is what the old score-gated rule actually shipped: it put two
+`canonical-facts` violations into published blogs at 96, one publishing a claim
+`canonical-facts` records as NOT citable, the other citing a publication date from a source
+recorded as never fetched in full. A question is the evaluator saying it cannot tell whether the
+draft is true, and a draft that might be false does not ship because it scored well.
+
+**`needs_review` IS A WORKFLOW STATE, NOT THE LOOP'S VERDICT.** A blog held at 96 HAS a verdict
+and the verdict is SHIP: the loop finished, the score stands, and `eval.md` records it. What the
+status says is that the blog is not out the door yet because a person owes it an answer. Read
+this way, a hold and a passing score are not in tension and nothing needs reconciling: one
+describes what the loop concluded, the other describes where the blog sits.
+
+**OPERATOR SILENCE STRANDS THE BLOG, and this project CHOSE that cost with its eyes open.**
+There is no timeout, no expiry, and no escalation. An unanswered hold never ships and never
+enters `generated.csv`, for as long as it goes unanswered. The alternative is worse: any auto
+release turns "we could not verify this" into "publish it anyway" on a schedule, which is the
+exact failure the hold exists to prevent. The only mitigations are the two standards above, at
+most 5 questions and answerable in ten seconds, which is why they are load-bearing rules here
+and not style advice.
 
 - **"A human confirms the citation" IS a question, so ask it as one**, naming the SOURCE and the
   CLAIM: "Iteration 2 cited <source> for <claim>. Does that source support it?" is answerable in
@@ -383,9 +526,15 @@ goes out.
 the session ends, in `run_topic` and `revise_topic` both, from the table above and from
 `_resolve_needs_review` alone. A run that was STOPPED never reaches that resolver: it has no
 verdict to correct, and passing it through would launder it into `done` or `failed` by a score
-that describes a loop which never ran. A `needs_review` claimed at 95 or above is corrected to `done`,
-because a passing blog is never held. A `needs_review` with no question on disk, or with one the
-app already refuses as stale, is corrected to `done` or `failed` by its score. Either way the
+that describes a loop which never ran. A `needs_review` with no question on disk, or with one the
+app already refuses as stale, unreadable, or already answered, is corrected to `done` or `failed`
+by its score, because such a form summons nobody. A `needs_review` WITH A CURRENT QUESTION is NOT
+corrected, at ANY score including 96 and including no score at all: `needs_review` is no longer the
+loop's verdict, so a score cannot overrule it, and the absence of one cannot either. The score
+corrects ONLY the nothing-to-answer branch. The two sentences
+partition on the QUESTIONS axis and never on the score axis, because a hold with no current form
+is the dead end with no door the `needs_review` definition forbids, and a hold with one is a
+person owing an answer that no score discharges. Either way the
 override is appended to `status.jsonl` naming what the claim was missing, so the trail shows the
 engine disagreeing with the lead rather than the lead's claim quietly vanishing. The session lead
 may ASK for `needs_review`; whether it earned it is not the lead's call. A rule that lives only in
@@ -399,27 +548,42 @@ draft, survived the revise, and iteration 2's evaluator did not re-ask, so the o
 answering questions about an article that no longer existed. The app refuses such a file as stale,
 but a rule enforced only at the boundary is a rule that has already failed once by then.
 
-**What the answers do depends on the score, and the split is the house rule, not a preference.**
-- **Score >= 95:** answering is OPTIONAL and the blog IS ALREADY SHIPPED at that score. The
-  operator is offered an answer-and-rerun and may decline it forever. This is the 95-ships rule:
-  the blog went out the moment it scored, so nothing about it waits on a human.
-- **Score < 95:** answering is BLOCKING. There is no proceed option, because the questions are
-  the evaluator saying the draft cannot be fixed by rewriting it.
-- **`server/questions.py` computes `blocking` from the blog's CURRENT score, never from the score
-  stored in `questions.json`.** That file records the score AT ASKING TIME and the blog moves
-  after: one live blog was asked at 85 and now scores 96, and reading the 85 demanded an answer
-  for a blog that had already shipped. The current score comes from `runner._summarize`, the same
-  way everything else in the app reads one.
-- Either way, answering triggers ONE surgical revise: the answers plus the outstanding fix list
-  applied to the EXISTING draft, dossier frozen, then gates, then the link pass on changed links
-  only, then a fresh evaluator. No re-research, and no new iteration budget.
-- **THE HIGHER SCORE SHIPS.** If the clarified draft scores lower than the draft it replaced, the
-  ORIGINAL is restored byte for byte and ships. This is what makes an optional rerun safe to
-  accept and what keeps it inside the first-score-is-final rule: a rerun cannot lose the score the
-  blog already had, so the contract's real prohibition, regenerating a passing draft into a worse
-  one, is enforced by the engine rather than by an agent's restraint. The engine owns that
-  comparison (`revise_topic`); the session lead does not make it and does not write the terminal
-  line for a revise.
+**What the answers do does NOT depend on the score, and there is no split.** Answering is
+BLOCKING at every score, because the questions are the evaluator saying it cannot tell whether
+the draft is true, and truth does not become optional at 96.
+- Answering triggers ONE surgical revise, the ANSWER-DRIVEN one, which is a different path from
+  the elective score-driven Revise in the Execution model despite the shared word "surgical":
+  that one keeps the best-scoring draft, this one never does. Here it is the answers plus the outstanding fix list applied to
+  the EXISTING draft, dossier frozen, then gates, then the link pass on changed links only, then
+  a fresh evaluator. No re-research, and no new iteration budget. That evaluator is the ONE
+  licensed re-eval named in the first-score-is-final rule, licensed because the answer changed
+  the fact base the earlier score was computed against.
+- **THE CLARIFIED DRAFT ALWAYS SHIPS, EVEN IF IT SCORES LOWER. TRUTH BEATS SCORE.** The old
+  higher-score-ships rule is GONE from this path. It was written as a guard on an ELECTIVE
+  improvement rerun, answering "what makes an optional rerun safe to ACCEPT". Carried onto a
+  MANDATORY correctness rerun it INVERTS into a correctness-suppression mechanism: a negative
+  answer forces the writer to cut a claim, the score falls because the draft now carries less,
+  the engine restores the original WITH THE VIOLATION STILL IN IT, and the machine structurally
+  prefers the non-compliant draft over the true one. A lower score on a clarified draft is the
+  truth costing points, not the draft getting worse.
+- **The byte-for-byte restore SURVIVES ONLY ON THE CANCELLATION PATH.** A stop mid-revise still
+  restores the original, because a half-applied revise is not a clarified draft: it is a draft
+  that never finished being corrected, and it carries neither the old truth nor the new one.
+- **The restore returns the ARTIFACT SET the score described, `blog.md` AND `eval.md` together,
+  never the draft alone.** `eval.md` is part of what shipped: it carries the `SCORE: NN` that
+  the terminal line and the ledger both rest on. Snapshotting only `blog.md` left the restored
+  original sitting beside the DISCARDED draft's `eval.md` and its score, so the artifact on disk
+  and the score describing it were about two different articles.
+- **A SPENT FORM MUST NEVER HOLD A BLOG FOREVER.** An answered `questions.json` whose revise then
+  crashed or was stopped before the form was cleared stays on disk, stays iteration-matched, and
+  reads as `current`, so the resolver holds the blog AGAIN while the app refuses a second submit
+  because the form is already answered. That is a blog with no exit, the exact dead end with no
+  door the `needs_review` definition forbids. Two things prevent it, and BOTH are required: the
+  question state carries an `answered` value that groups with `none` and `stale` for hold
+  purposes, because an answered form summons nobody; and clearing the questions happens on a
+  finally-arm, so a crashed or stopped revise cannot leave a spent form holding the blog.
+- The engine owns all of this (`revise_topic`); the session lead does not make the call and does
+  not write the terminal line for a revise.
 
 Operator answers are client-provided guidance, ranking with `canonical-facts.md` and above any
 internal doc. They are NOT a source: an answer can tell a writer that a claim is wrong or that a
@@ -433,8 +597,8 @@ The operator can stop a brand from the session view, behind a confirm. `DELETE
 /api/clients/<slug>/runs` stops EVERY live run for that brand at once, because a run-scoped
 stop would make the operator press it five times while the queue raced them.
 
-**`stopped` MEANS the operator ended the run before the loop reached a verdict, and it means
-nothing else.** It is not a failure: `failed` says the engine could not produce the blog, and
+**`stopped` MEANS the operator ended the run before the loop finished, so no score describes the
+blog, and it means nothing else.** It is not a failure: `failed` says the engine could not produce the blog, and
 conflating the two lies in the status tiles about work the engine did fine. It is not a
 summons either: no question was asked, and the operator is the one who acted.
 
@@ -456,13 +620,20 @@ What a stop does, per topic:
   A blog that shipped before the stop is already in it and stays in it.
 - **Queued topics NEVER START.** The whole brand halts. Generate again to resume.
 
-A stop after SCORE >= 95 does not un-ship the blog. First-score-is-final wins, and there is no
-step after the eval that touches the draft, so a late stop has nothing left to interrupt.
+A stop after SCORE >= 95 does not un-ship the blog, and the reason is the TERMINAL LINE, not the
+score. The backend writes `stopped` ONLY where no terminal line exists yet, so a topic whose lead
+already wrote `done` keeps `done`, its score, and its ledger entry. A blog HELD at 96 has no
+terminal `done` line to protect, so it is not shipped by a stop either: it keeps whatever line it
+has and the hold stands or the `stopped` line lands, exactly as the guard above dictates.
 
-A stop mid-revise restores the ORIGINAL draft byte for byte before writing anything, because
-THE HIGHER SCORE SHIPS holds on every exit path. A cancel that skipped the restore left a half
+A stop mid-revise restores the ORIGINAL artifact set, `blog.md` and `eval.md` both, byte for
+byte, before writing anything. The reason is NOT higher-score-ships, which no longer governs a
+clarified draft: it is that a half-applied revise is not a clarified draft at all. It carries
+neither the claim the answer confirmed nor the claim the answer cut, so shipping it ships
+something no one wrote and no evaluator scored. A cancel that skipped the restore left a half
 revised draft where a 96 stood: no file was deleted and the blog was ruined anyway, which is
-the outcome that rule exists to make impossible.
+the outcome this rule exists to make impossible. Restoring only `blog.md` reproduces the same
+ruin one level down, leaving the restored draft next to the discarded revise's `eval.md`.
 
 The stop line is also what releases liveness, so the 409 on roadmap edits lifts the moment it
 is written. A killed session with no stop line leaves the SSE stream open forever and the
@@ -476,17 +647,28 @@ exactly as it never decides `needs_review`. `server/runner.py` writes it through
 
 ## Ship criteria
 DONE when the FIRST evaluator score is >= 95 on a draft that is already gate-clean and
-link-clean. That score is final. Write the terminal `done` status and stop. 95 ships. 96
-ships. No score at or above 95 is borderline, and a better one is never worth seeking.
+link-clean AND has no current questions on disk. That score is final. Write the terminal `done`
+status and stop. 95 ships. 96 ships. No score at or above 95 is borderline, and a better one is
+never worth seeking.
+
+**A score is not a licence to ship past an open question.** Where the evaluator asked something
+current, the blog is HELD at ANY score, including 96, until the operator answers. Answering is a
+demand, never an offer, and there is no dismiss. If the operator never answers, THE BLOG NEVER
+SHIPS and never enters `generated.csv`. That is a chosen cost, not an accident: releasing an
+unverified draft on a timer would publish "we could not confirm this" as though it were
+confirmed, which is what the old score-gated rule did twice at 96. The at-most-5 and
+answerable-in-ten-seconds standards are what keep the cost payable, so honor them.
 
 Write `outputs/<slug>/<topic-slug>/NEEDS_REVIEW` and the `needs_review` terminal status
-ONLY where the draft scored BELOW 95 and the evaluator has asked the operator a question that is
-on disk, current, and answerable. Both halves are required. Nothing else earns the status, and the
-engine checks it. The four old causes resolve like this:
+ONLY where the evaluator has asked the operator a question that is on disk, current, and
+answerable. The score is not part of the test, with the single exception that a run carrying NO
+score never reached a verdict and is `failed`, because a form asking about a draft nobody scored
+summons a person whose answer unblocks nothing. Nothing else earns the status, and the engine
+checks it. The four old causes resolve like this:
 - **A Sourcing top-up** (a new source pulled mid-loop) is a QUESTION, asked through
   `.claude/questions.py`, naming the source and the claim so the operator can answer it without
-  opening the draft. Asked below 95, it is `needs_review`. Asked at 95 or above, the blog ships
-  and the question is an offer. Unasked, it is nothing: the score decides.
+  opening the draft. Asked at ANY score, it is `needs_review` and it holds the blog. Unasked, it
+  is nothing: the score decides.
 - **The link pass finding a claim its cited source does not support** is the same, and it is the
   same question: name the source, name the claim, ask whether the source carries it.
 - **`gates.py` still FAILing** is `failed`, never `needs_review`. It is a machine failure with no
@@ -497,7 +679,9 @@ engine checks it. The four old causes resolve like this:
   question in it and no failure in it. No `NEEDS_REVIEW` file is written and no agent writes
   `questions.json` on a stop's behalf.
 
-Never mark a blog done to clear the queue, and never mark a passing blog needs_review.
+Never mark a blog done to clear the queue, and never mark a blog done to clear a question. A
+passing blog WITH a current question is `needs_review`, and that is not a contradiction: the
+verdict is ship, the workflow state is held.
 
 ## Reporting
 Per blog, one line: slug, SCORE, iterations, status, links corrected. A stopped blog reports

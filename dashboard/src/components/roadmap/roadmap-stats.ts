@@ -24,11 +24,13 @@ export type RoadmapStats = {
    *  It can exceed `topics`: a brand accumulates blogs across every sheet it has ever had. */
   blogs: number;
   /** Status "done". In this house a blog reaches "done" only on a first eval score of 95 or
-   *  above, so this is the shipped count exactly and not a count of what was attempted. */
+   *  above with no question left waiting, so this is the shipped count exactly and not a count of
+   *  what was attempted. */
   shipped: number;
-  /** Status "needs_review". NOT a failure, and exactly one thing: the blog scored below 95 and the
-   *  evaluator asked the operator something research cannot settle. A blog at 95 or above ships
-   *  whatever it asked, so it is counted in `shipped` and never here. */
+  /** Status "needs_review". NOT a failure and NOT a verdict, and exactly one thing: the evaluator
+   *  asked the operator something research cannot settle, and the answer is still owed. The score
+   *  does not enter it. A blog held at 96 is counted here rather than in `shipped`, because what
+   *  the tile counts is work a person owes, and that blog owes an answer whatever its verdict. */
   review: number;
   failed: number;
   /** Status "stopped". The operator halted this brand's session before the blog finished, so the

@@ -102,7 +102,7 @@ async def api_publish_blog(slug: str, topic_slug: str):
     except cms_client.CmsError as cause:
         # The upstream status is MAPPED, not flattened. Every CmsError used to become a 502,
         # which told an operator with a revoked key that the CMS was down: they would go and
-        # ask why cms.strategi.is was broken when the answer was their own credential. A 502
+        # ask why the CMS was broken when the answer was their own credential. A 502
         # is only honest when the CMS genuinely failed or was unreachable.
         log.warning(
             "CMS push failed for %s/%s (upstream %s): %s",

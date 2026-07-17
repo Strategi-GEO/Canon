@@ -2,7 +2,7 @@
 """Static checks for server/cms/. Sends NOTHING over the network.
 
 The CMS is stubbed at the httpx seam, so this suite can assert the retry policy and the
-refusals without a key, a server, or a single real draft reaching cms.strategi.is.
+refusals without a key, a server, or a single real draft reaching client.strategi.is.
 
 The assertion that matters most is the first block: a blog that is not `done` must never
 produce a payload, let alone a request. A CMS draft is directly approvable by an editor, so

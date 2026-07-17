@@ -138,9 +138,13 @@ The house band is binary. There is no middle band.
 
 | Band | Normalised score | Action |
 |------|------------------|--------|
-| Ship | 95 to 100 | Ship. The first score at or above 95 is final and terminal |
+| Ship | 95 to 100 | Ship. The first score at or above 95 is final and terminal WHEN no current question is on disk |
 | Reject | Below 95 | Revise the flagged areas, then re-eval on a fresh context |
 | Reject | Any hard gate fail | Reject regardless of graded score |
+
+First-score-is-final is narrowed by the questions, not deleted by them. A current, answerable question on disk holds the blog at ANY score, and the ONE licensed re-eval is the single answer-driven revise the operator's answers trigger. Every other confirmatory re-eval stays forbidden: "the draft changed", "eval.md and blog.md are inconsistent", "the run was stopped and restarted", "let me confirm". Those re-roll a stateless auditor whose score moves several points on an identical draft, and they can strand a blog that had already passed.
+
+A held blog's score is still its verdict. A 96 with questions has ALREADY earned SHIP; it is waiting on a human, not on a better number. So never mark a draft down because it is held, and never sweeten one to get it out.
 
 ---
 

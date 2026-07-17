@@ -5,9 +5,21 @@ type Style = { className: string; label: string; title?: string };
 
 const STYLES: Record<BlogStatus, Style> = {
   done: { className: "bg-ship-bg text-ship border-ship/25", label: "shipped" },
+  /**
+   * A HUMAN OWES AN ANSWER, and that is the whole of what this word means. It is a workflow state
+   * rather than a verdict: a blog held at 96 has a verdict and the verdict is ship, so the label
+   * must not read as a judgement on the draft. It says which act is owed instead, because the
+   * score is not what is missing here and telling an operator their 96 "needs review" invites them
+   * to go looking for the flaw rather than to answer the question.
+   *
+   * The review tone, never the fail one. A question is not damage: the evaluator reached the end
+   * of what research settles and asked the one source that can settle it.
+   */
   needs_review: {
     className: "bg-review-bg text-review border-review/25",
-    label: "needs review",
+    label: "waiting on you",
+    title:
+      "This blog has questions waiting for you, and it is held until you answer them whatever it scored. Open it to read them: answering starts one surgical revise of the existing draft.",
   },
   failed: { className: "bg-fail-bg text-fail border-fail/25", label: "failed" },
   running: {

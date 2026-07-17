@@ -40,6 +40,35 @@ Search snippets are leads, not sources. A search result that looks perfect is no
 
 This single rule eliminates hallucinated citations and broken links at the same time. The URL written into the dossier is, by construction, a URL that resolved and a page that was read this session.
 
+## The claim quota
+
+The dossier is sized by the piece it feeds, not by what turned up. The writer spends one sourced claim every 150 to 200 words and may not invent one, so a dossier holding six claims cannot produce a piece that meets density. The writer then gets marked down for a gap the researcher left. Density is this skill's problem, and the quota is how it owns it.
+
+Gather at least 12 verified claims, and never fewer than one per 150 words of the client's target length (`word_band.soft_max` in `clients/<slug>/gates.json`). At the house target of 2,000 words that is 14. Gather past the quota where the evidence is there. The quota is a floor, not a target: the writer selects from the dossier, and a writer that must spend every card it is handed has no way to leave the weak one out.
+
+A claim counts only if its source card is complete: exact figure, named primary source, live URL fetched this session, publication date, data period, caveats from the full read. A half-filled card is not a claim. Nothing sitting in Do Not Claim, Rejected sources, or Coverage gaps counts toward the number.
+
+Claims have two origins and there is no third:
+
+1. The client knowledge base: `clients/<slug>/canonical-facts.md` and `clients/<slug>/Resources/`.
+2. A claim carried by a real page fetched in full with `firecrawl_scrape` this session, or market data returned by DataForSEO for the market named in `client.md`.
+
+Anything else is not a source. Search snippets are leads. Model memory is not a source and never becomes one. A thin knowledge base is never a reason to invent the twelfth claim.
+
+### When the client's own facts run out, fill the quota from third parties
+
+The client will not carry 12 claims. It is one firm, and most of what it holds is firm fact: counts, dates, specifications, the things only it can state. The remainder comes from third-party data specific to the client's market, never from padding and never by stretching the client's own material into a market claim.
+
+This is a feature, not a consolation. Rubric B2, third-party citation strength, carries weight 3, the heaviest dimension in the Evidence bucket. It scores the ratio of external citations to self-referential ones and permits self-citation only for firm-specific facts. A dossier that fills its quota from independent market data scores B2 higher, not lower. The thin fact base and the density gap cure each other, and the cure is research, not prose.
+
+### When the quota cannot be met, say so up front
+
+Declare the shortfall in the dossier before the writer starts: the count in the header block, what is missing in the Summary, each unsupported claim in Coverage gaps. Carry it in the research end note as well, because the lead never reads the dossier and that note is the only line that reaches it.
+
+Name the gap in specifics. "Evidence is thin" is not actionable. "No independent source for X in this market after fetching A, B and C, a Y report would settle it" is a task the lead can pick up.
+
+A shortfall declared in the dossier costs one line. The same shortfall found by the evaluator four iterations later has cost the whole blog.
+
 ## Tooling
 
 All fetching and grounding use Firecrawl. Fetch every candidate with `firecrawl_scrape` using `formats: ['markdown']`, `onlyMainContent: true`, `waitFor: 6000`, and read the entire returned text. Avoid multi-URL extract and JSON-schema extraction; they fail silently. Fetched full text, or it is not a source.
@@ -52,7 +81,7 @@ Append your progress to `status.jsonl` with the helper, never hand-written JSON.
 
 ```
 python3 .claude/status.py --out <output_dir> --slug <slug> --stage research --event start --iter <n> --status running
-python3 .claude/status.py --out <output_dir> --slug <slug> --stage research --event end --iter <n> --status running --note "N passed / N rejected"
+python3 .claude/status.py --out <output_dir> --slug <slug> --stage research --event end --iter <n> --status running --note "N passed / N rejected / N claims against quota N, shortfall: none"
 ```
 
 The `<output_dir>` is `outputs/<slug>/<topic-slug>/`, the same directory the dossier is written to. The lead cannot see inside your context; this file is how it tracks the chain.
@@ -65,7 +94,9 @@ Follow these steps in order. Do not skip.
 
 Read the client context above, then read the topic, target keyword or target prompts, and the industry from the brief and `client.md`. Break the piece into the specific factual claims it will need to support. Each becomes a research question.
 
-A research question is a single checkable fact, not a theme. "AI search adoption in a market" is a theme. "What share of that market's search queries returned an AI Overview in 2025" is a research question. Aim for one research question per claim the brief will lean on, usually 8 to 15 for a 1,500 to 2,500 word piece.
+A research question is a single checkable fact, not a theme. "AI search adoption in a market" is a theme. "What share of that market's search queries returned an AI Overview in 2025" is a research question. Aim for one research question per claim the brief will lean on, then set the count from the claim quota above plus headroom, because questions die during vetting. At the house target of 2,000 words the quota is 14 verified claims, so 18 to 20 questions is the honest starting number.
+
+Plan the split between origins here, not at the end. Mark which questions the client's own knowledge base answers, and which need third-party market data. A plan where the client answers everything is a plan that misses the quota and scores B2 at 1.
 
 Mark each research question as either a hard-fact question (statistics, dates, named studies, specifications, prices, regulations) or a context question (definitions, established principles, background). Hard-fact questions get the strictest vetting. Context questions can rest on lower tiers.
 
@@ -110,6 +141,8 @@ If a claim the brief wants cannot be supported by any Tier A or B source, it doe
 
 Assemble the output using the format below. Every vetted claim becomes a source card. Everything that failed becomes a Do Not Claim entry, a rejected-source entry, or a coverage gap.
 
+Count the cards before writing the header block. Below quota, go back to Step 2 for third-party market data on the questions the client cannot answer. Do not close the gap by promoting a card that failed vetting or by splitting one claim into two. If the second pass comes back empty, declare the shortfall.
+
 ### Step 8: Run the final verification pass
 
 Before handing off, confirm every item on this checklist. If any item fails, fix it before delivering.
@@ -122,6 +155,8 @@ Before handing off, confirm every item on this checklist. If any item fails, fix
 - Every source's scope matches the client's market and audience, or the mismatch is stated.
 - Anything wanted but unverifiable is in Do Not Claim, not in the cards.
 - Nothing gathered contradicts `clients/<slug>/canonical-facts.md`.
+- The verified claims meet the quota, or the shortfall is declared in the header block, the Summary, the coverage gaps, and the end note.
+- Every market, industry, or category claim rests on a third-party source, not on the client's own material.
 
 ### Step 9: Hand off
 
@@ -137,9 +172,11 @@ ALWAYS use this exact structure. Save it as `outputs/<slug>/<topic-slug>/dossier
 **Brief:** [topic, target keyword, industry, client]
 **Prepared for:** geo-content-writer
 **Sources vetted:** [N fetched] / [N passed] / [N rejected]
+**Claims verified:** [N] against a quota of [N] | Third-party: [N] | Client knowledge base: [N]
+**Shortfall:** [none / the specific claims the quota is missing and what would settle them]
 
 ## Summary
-[3 to 5 sentences: what the evidence supports, where it is thin, the single biggest sourcing risk for this piece.]
+[3 to 5 sentences: what the evidence supports, where it is thin, any quota shortfall and what is missing, the single biggest sourcing risk for this piece.]
 
 ## Verified claims
 
@@ -177,7 +214,9 @@ Aggregators and "X statistics 2026" listicles. These are leads only. Never cite 
 
 Vendor and competitor research. A vendor's own report can be Tier B for an industry benchmark if the methodology is disclosed, but flag the commercial interest in the caveats line so the writer frames it honestly.
 
-Thin evidence. If a topic genuinely lacks good sources, say so in the summary and the coverage gaps. A short, honest dossier beats a padded one. Do not manufacture support to fill the template.
+Thin evidence. If a topic genuinely lacks good sources, say so in the summary, the coverage gaps, and the end note. A short, honest dossier beats a padded one. Do not manufacture support to fill the template.
+
+The quota does not override that, and the order matters. A count short of quota means search third-party market data for the questions the client cannot answer, because that is where the missing claims usually are. Only when that comes back empty is the dossier honestly short, and then it is declared, never filled. The quota exists to make research harder, not to make sourcing looser.
 
 Copyright. The dossier paraphrases. Keep any verbatim anchor quote short. The dossier is an internal working document, not a place to reproduce source text at length.
 

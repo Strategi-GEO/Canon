@@ -8,20 +8,23 @@ they said. Nothing here decides what a revise does with an answer; that is runne
 Three computed fields carry the whole contract, and each one exists because of a specific way
 this loop goes wrong:
 
-- blocking: the blog's CURRENT score has not reached the ship band, so there is no proceed
-  option. A 95 or a 96 held for a citation confirmation is the operator's choice to answer,
-  because the blog already ships. Short of the band, including with no score recorded at all, it
-  is not shipping either way, so answering is the only path forward and the UI must not offer a
-  way past it. See is_blocking.
+- blocking: these questions are CURRENT, so answering is the only way this blog moves. AT ANY
+  SCORE, including a 96. There is no proceed option and no dismiss, because a question is the
+  evaluator saying the draft may be WRONG, and a wrong 96 is not better than a wrong 89. See
+  is_blocking.
 - stale: the questions belong to an iteration the blog has already moved past. See is_stale.
-- answered: an answers.json exists for the SAME iteration, so a second submit does not silently
-  overwrite the first with a form the operator filled in from a different draft.
+- answered: an answers.json exists for the SAME iteration, so the operator has already said their
+  piece and a revise has already been dispatched for those answers. It is what stops a spent form
+  HOLDING the blog a second time (see runner._questions_state), and it is NOT a refusal: api_answers
+  does not consult it, so a second submit goes through, which is deliberate because it is the one
+  door out of a revise that died holding an answered form.
 
 The blog's current iteration AND its current score both come from runner._summarize and from
 nowhere else. A second way to read either out of status.jsonl is how two parts of one app come to
 disagree about which draft exists and what it scored, and this module's entire job is catching
 exactly that disagreement.
 """
+import importlib.util
 import json
 import os
 from datetime import datetime, timezone
@@ -30,6 +33,26 @@ from . import runner
 
 QUESTIONS_NAME = "questions.json"
 ANSWERS_NAME = "answers.json"
+
+_WRITER_MODULE = None
+
+
+def _writer_module():
+    """Load .claude/questions.py by file path: .claude is not a package.
+
+    Exactly how runner._status_module loads .claude/status.py, and for the same reason. The write
+    half owns the shape, so the read half borrows its code rather than restating it: two functions
+    that agree today about what a Sourcing question looks like are two functions that can stop
+    agreeing tomorrow, silently.
+    """
+    global _WRITER_MODULE
+    if _WRITER_MODULE is None:
+        path = runner.REPO_ROOT / ".claude" / "questions.py"
+        spec = importlib.util.spec_from_file_location("geo_questions", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _WRITER_MODULE = module
+    return _WRITER_MODULE
 
 
 class NoQuestions(Exception):
@@ -109,6 +132,12 @@ def current_score(client_slug, topic_slug, root=None):
     evaluator scores the new draft, and the number in that file is a fact about a moment that has
     passed. It is kept as a record of that moment (see write_answers), never read as the blog's
     current standing.
+
+    THIS IS THE ONLY READER OF THE CURRENT SCORE IN THIS MODULE, and it stays that way. is_blocking
+    no longer consults a score at all, because a current question holds a blog at every score, but
+    anything here that ever does consult one reads it through this function and never out of
+    questions.json. The stored number and the live one disagree in live data: one blog was asked
+    about at 85 and now scores 96.
     """
     return _current(client_slug, topic_slug, root=root)["score"]
 
@@ -132,31 +161,75 @@ def is_stale(raw, client_slug, topic_slug, root=None):
 
 
 def is_blocking(client_slug, topic_slug, root=None):
-    """Is answering the only way this blog moves?
+    """Is answering the only way this blog moves? Whenever the questions are CURRENT, YES.
 
-    Computed from the blog's CURRENT score, and NEVER from the score recorded in questions.json.
-    That distinction is a real bug in live data, not a hypothetical: a blog asked about while it
-    stood at 85 now scores 96, and reading the stored 85 showed the operator "you must answer this
-    before it ships" about a blog that had already shipped. The question survived the revise; the
-    85 did not.
+    THE SCORE NO LONGER ENTERS THIS, and its removal is the rule rather than a simplification.
+    This used to return False at or above runner.SHIP_SCORE, on the ground that the blog had
+    already shipped, so the answer was an offer the operator could decline forever. A question is
+    the evaluator saying the DRAFT MAY BE WRONG, and a wrong 96 is not better than a wrong 89.
+    The offer branch shipped exactly that: two blogs went out at 96 over their own open
+    questions, one publishing a claim its canonical-facts file lists as not citable, the other
+    citing a date from a source recorded as never fetched in full. ANSWERING IS A DEMAND AT EVERY
+    SCORE. There is no dismiss and no proceed-anyway, so the UI must never offer a way past this.
 
-    AT OR ABOVE runner.SHIP_SCORE the blog has already shipped and the answer is an offer the
-    operator may decline forever, which is the house rule that 95 ships. ONLY that case is an
-    offer. Anything else is blocking: the blog is not shipping either way, so answering is the
-    only path forward and the UI must not offer a way past it.
+    ONE COMPUTATION, runner._questions_state, and never a second opinion. It is the same function
+    runner._resolve_needs_review holds the blog on, so what the app demands and what the engine
+    holds for cannot drift apart, which is the entire disagreement this module exists to catch.
+    Its non-current values are the ways a form summons nobody NEW: a stale form the app refuses, an
+    unreadable one it cannot render, no form at all, and an answered one whose answers are already
+    on disk with a revise already dispatched for them. None of those leaves an act outstanding, so
+    none of them blocks.
 
-    NO SCORE AT ALL IS BLOCKING, and this is the case the rule is stated around rather than an
-    edge of it. An evaluator that asked and then died before writing its scored eval-end line
-    leaves exactly this: current questions, no number. runner._resolve_needs_review reads that
-    None as "nothing reached the ship band" and the hold STANDS, ledger.record_success never
-    fires, and the blog's own row reads needs_review. Reading it here as "not below the band, so
-    not blocking" made this module the disagreement it exists to catch: the UI took the offer
-    branch and told the operator a held, unshipped blog had shipped and that answering was
-    optional, when answering was the only way out. The test is therefore the ship band and never
-    the absence of a number, which is the same test _resolve_needs_review applies first.
+    NO SCORE AT ALL STILL BLOCKS, and it is now the ordinary case rather than an edge. An
+    evaluator that asked and then died before writing its scored eval-end line leaves current
+    questions and no number, _resolve_needs_review holds it, ledger.record_success never fires,
+    and the blog's own row reads needs_review. Reading that as "not below the band, so not
+    blocking" told the operator a held, unshipped blog had shipped and that answering was
+    optional, when answering was the only way out.
     """
-    score = current_score(client_slug, topic_slug, root=root)
-    return not (score is not None and score >= runner.SHIP_SCORE)
+    return runner._questions_state(client_slug, topic_slug, root=root) == "current"
+
+
+def has_area_question(client_slug, topic_slug, area, root=None):
+    """Is a LIVE question of this area on disk right now? The predicate behind --check-area.
+
+    THE RULE IT SERVES: A SOURCING QUESTION ENDS THE REVISE LOOP IMMEDIATELY, at the iteration it is
+    filed. At SCORE < 95 the lead checks this before dispatching a revise, and where it holds, the
+    loop ends now: the terminal needs_review line, no revise, no further evaluator, and the form
+    stays on disk. Structure, Draft and Mechanics questions do NOT end the loop, so they are
+    superseded by the next iteration's form and the lead deletes questions.json before the next
+    evaluator as before. At SCORE >= 95 nothing changes: the loop ends anyway and terminal
+    resolution holds the blog on ANY current question, of any area.
+
+    THE REASON: Sourcing is the ONE area no rewrite can close, which the contract says in its own
+    words, "the writer has no authority to invent a citation or URL". A Sourcing QUESTION names a
+    fact only a person has, so iterating past one spends research and revise budget rediscovering
+    what the evaluator already knew was terminal. Live proof: the date-night blog filed Sourcing
+    questions at iteration 1, ran a bounded research top-up and two full revises, and landed at
+    iteration 3 on FOUR Sourcing questions about claims no rewrite could have fixed.
+
+    THE DISTINCTION a reader will get wrong: a Sourcing FIX-LIST ITEM still routes to a bounded
+    Agent R top-up and still does NOT end the loop, unchanged, and it works. A fix-list item says "a
+    machine can find this source"; a question says "only a person holds this fact". Same area word,
+    opposite implications for the loop.
+
+    THE ENFORCEMENT LIMIT: the rule is a LEAD INSTRUCTION and this function cannot enforce it. The
+    loop runs inside the SDK session and the backend cannot reach into it to stop a revise, which is
+    a real departure from this project's "the check is in Python where nothing can argue with it"
+    principle and is named rather than papered over. What makes it acceptable: THE FAILURE MODE IS
+    COST, NOT CORRECTNESS. A lead that ignores it burns iterations and then hits terminal
+    resolution, where the final form still holds the blog in Python, through _resolve_needs_review.
+    It cannot ship a blog it should have held.
+
+    LIVENESS FIRST, through runner._questions_state and never a second reading of it: a stale,
+    unreadable, answered, or absent form summons nobody, so it carries no live question of any area
+    and ends no loop. The area filter is .claude/questions.py's questions_in_area, the same function
+    the CLI runs, so what the lead is told and what the engine computes are ONE answer.
+    """
+    if runner._questions_state(client_slug, topic_slug, root=root) != "current":
+        return False
+    raw = read_questions(client_slug, topic_slug, root=root)
+    return bool(_writer_module().questions_in_area(raw, area))
 
 
 def is_answered(raw, client_slug, topic_slug, root=None):
@@ -170,10 +243,10 @@ def describe_questions(client_slug, topic_slug, root=None):
     """The GET payload: the file plus the three computed fields. Raises NoQuestions for the 404.
 
     `score` here is the file's own score, the one the draft carried when the evaluator asked, and
-    it is reported as the record it is. `blocking` is deliberately NOT derived from it: the blog
-    moves after the question is asked, so the two can disagree, and when they disagree the current
-    score is the true one. Anyone tempted to compute blocking from this field should read
-    is_blocking first.
+    it is reported as the record it is. `blocking` is NOT derived from it, and is not derived from
+    any score: a current question blocks at every score, so this field is a record of a past moment
+    and never a condition. Anyone tempted to compute blocking from it should read is_blocking
+    first.
     """
     raw = read_questions(client_slug, topic_slug, root=root)
     if raw is None:
@@ -263,5 +336,11 @@ def clear_questions(client_slug, topic_slug, root=None):
 
     They are answered, so the form is spent, and a spent form left on disk is exactly the stale
     file this feature already tripped over once. answers.json stays: that is the durable record.
+
+    runner.revise_topic calls this from a FINALLY arm, so a crashed or stopped revise cannot leave
+    a spent form holding the blog. Called on the success path only, it left this: the operator
+    answers, the session dies before the clear, and the answered form holds the blog while the app
+    refuses a second submit on it. Idempotent by way of missing_ok, so an exit path that clears a
+    form another already cleared is a no-op rather than an error.
     """
     questions_path(client_slug, topic_slug, root=root).unlink(missing_ok=True)

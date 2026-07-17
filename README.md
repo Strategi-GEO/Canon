@@ -229,13 +229,23 @@ dispatches three subagents in sequence and never writes a word itself:
 3. **Agent E (evaluator)** is a hostile auditor seeing only `blog.md`, the rubric, and
    `canonical-facts.md`. It writes `eval.md` with `SCORE: NN` on its own line.
 
-The lead branches on the numeric SCORE only. Below 95 it dispatches a fresh writer with
-only the dossier, the current draft, and the fix list, capped at 4 iterations, keeping the
-best-scoring draft, stopping early after two no-gain iterations. **The first score at or
-above 95 is final and terminal.** The evaluator is stateless and its score varies by
-several points on an identical draft, so a confirmatory re-eval adds no rigor and can
-strand a passing blog. Because gates and the link pass run before the eval, the scored
-artifact IS the shipped artifact; no step after the eval touches the draft.
+The lead branches on the numeric SCORE plus exactly one property of the operator's question
+form. Below 95 it dispatches a fresh writer with only the dossier, the current draft, and the
+fix list. **THREE conditions stop the loop, not two:** the 4-iteration cap, two consecutive
+no-gain iterations, and a live Sourcing question on the form, which ends it at the iteration
+it is filed. Sourcing is the one area no rewrite can close, since the writer has no authority
+to invent a citation, so iterating past a Sourcing question spends budget rediscovering what
+the evaluator already knew was terminal. A Sourcing FIX-LIST ITEM is a different artifact and
+does NOT stop the loop: it routes to a bounded researcher top-up, because a machine can find a
+source where only a person holds a fact.
+
+**The first score at or above 95 is final and terminal WHEN NO CURRENT QUESTIONS ARE ON DISK.**
+The evaluator is stateless and its score varies by several points on an identical draft, so a
+confirmatory re-eval adds no rigor and can strand a passing blog. **Open questions hold a blog
+at ANY score, and answering is a demand, never an offer:** a 96 with a live question is held,
+not shipped, and the single answer-driven revise is the one licensed re-eval. Because gates and
+the link pass run before the eval, the scored artifact IS the shipped artifact; the only thing
+that touches the draft after the eval is an operator answer arriving.
 
 Progress travels exclusively through `status.jsonl` in each topic's output dir. Each agent
 appends its own lines via `.claude/status.py`; the lead appends only the terminal line
@@ -295,7 +305,7 @@ Exit codes are three-valued so the runner can tell a bad draft from a bad setup:
 ## Posting a blog to the Strategi CMS
 
 An operator opens a finished blog in the Blogs library and presses **Post to CMS** in the
-preview drawer. The blog is sent to `cms.strategi.is` as a **draft** for a human to review.
+preview drawer. The blog is sent to `client.strategi.is` as a **draft** for a human to review.
 It is never published and it never reaches the client: an editor approves it in the CMS.
 
 Everything for this lives in `server/cms/` and hangs off that one button. No part of the
@@ -321,6 +331,14 @@ the repo.
 export STRATEGI_CMS_WRITE_KEY_BLR_BREWING=...        # one var per org, org slug uppercased
 export STRATEGI_CMS_WRITE_KEY_VACATION_VILLAGE=...
 export STRATEGI_CMS_URL=...                          # optional, to point at a staging CMS
+```
+
+The endpoint defaults to `https://client.strategi.is/api/v1/ingest` and needs no config. If
+you override it, give the **full endpoint including `/api/v1/ingest`**, never a bare host:
+the value is POSTed to verbatim, and `https://client.strategi.is` on its own 307s to
+`/login`, so a host-only value would push a blog at the login page and never tell you.
+
+```
 ```
 
 **There is no shared fallback key, deliberately.** The CMS decides which org a draft belongs

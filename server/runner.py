@@ -74,14 +74,23 @@ TOPIC_SEMAPHORE = asyncio.Semaphore(5)
 # app.py closes only when every topic's status.jsonl has grown a line whose status is in this set,
 # and it never consults the run record. Leave "stopped" out and the operator presses Stop, watches
 # /api/runs report the run finished, and watches their own watch view heartbeat at "running"
-# forever on a session that is already dead. It is terminal, but it is not a VERDICT: the three
-# states below it are outcomes of a loop that ran to an answer, and a stopped topic never got one.
-# That is why _resolve_needs_review never sees it and no score is ever inferred for it.
+# forever on a session that is already dead.
+#
+# "stopped" is NOT a row of the three-state table below, and the ground for that is narrow and
+# exact: THE LOOP NEVER RAN, so no score describes the topic. It is emphatically NOT that a
+# stopped topic "reached no verdict" while the other three did. needs_review is no longer a
+# verdict at all (see below), so that ground would prove nothing. A stopped topic is one whose
+# loop was killed mid flight, and every state in the table is resolved from a score the loop
+# produced. Feeding a killed run through _resolve_needs_review would launder it into done or
+# failed by a number that belongs to a loop which never finished, which is why the resolver never
+# sees it and why no score is ever inferred for it.
 TERMINAL_STATUSES = {"done", "needs_review", "failed", "stopped"}
 
-# The house ship band, in ONE place. At or above this a draft ships; below it, it does not.
-# revise_topic and the needs_review enforcement below both branch on it, and a second copy of
-# the number is how an engine comes to ship at one threshold and report at another.
+# The house ship band, in ONE place. It is the score half of the ship test and NOT the whole of
+# it: a blog at or above this ships only when nothing on disk is holding it, because a current
+# question holds a blog at ANY score (see _resolve_needs_review). Below it, no draft ships under
+# any circumstances. revise_topic and the needs_review enforcement below both branch on it, and a
+# second copy of the number is how an engine comes to ship at one threshold and report at another.
 SHIP_SCORE = 95
 
 
@@ -481,31 +490,67 @@ def _summarize(topic_slug, lines):
 # ---------------------------------------------------------------------------
 # The three review states, enforced here and nowhere else.
 #
-# needs_review MEANS "this blog scored below the ship band AND has questions waiting for the
-# operator". It means nothing else. Four cases, three states, and no fourth state:
+# needs_review MEANS "this blog has questions waiting for the operator that are current, on disk,
+# and answerable". AT ANY SCORE, and it means NOTHING ELSE. The score does not appear in that
+# definition. needs_review is also NOT the loop's verdict any more: a blog held at 96 has a
+# verdict and the verdict is SHIP. It is a WORKFLOW STATE, and what it says is that a human owes
+# an answer before the shipping draft is the final one.
 #
-#   score >= SHIP_SCORE, no questions  -> done. It ships.
-#   score >= SHIP_SCORE, has questions -> done. It ships ANYWAY, and the questions stay on disk
-#                                        as an offer the operator may take or decline forever.
-#   score <  SHIP_SCORE, has questions -> needs_review. The operator must answer, and the file
-#                                        names what to answer.
-#   score <  SHIP_SCORE, no questions  -> failed. The loop exhausted itself and cannot say what
-#                                        it needs, so there is no human task in it.
+# THREE CASES, three states, and the QUESTION STATE IS CHECKED FIRST. The score is demoted to
+# deciding only the branch where there is nothing to answer:
 #
-# A status that demands a human act while naming no act is a dead end: the app renders "A human
-# has to confirm something before this ships" and offers no door, so the operator can do nothing
-# but look at it. Four of the five blogs sitting on needs_review in live data were exactly that,
-# including one held at 96 for a Sourcing top-up that had already resolved itself by cutting the
-# claim, and two more holding questions the app itself refuses as stale.
+#   questions current                      -> needs_review, at ANY score, including no score.
+#                                             HELD. A human owes an answer and the file names it.
+#   none|stale|unreadable|answered, >= band -> done. It ships.
+#   none|stale|unreadable|answered, below   -> failed. The loop exhausted itself with nothing to
+#                                             ask, so there is no human task in it.
 #
-# THE BOUNDARY IS SHIP_SCORE AND IT SHIPS. Exactly 95 ships, questions or not, which is the house
-# rule in CLAUDE.md ("95 ships. 96 ships. No score at or above 95 is borderline") that an earlier
-# draft of this feature broke by holding a 95 open until someone answered.
+# THE FOUR NON-HOLDING STATES GROUP FOR ONE REASON: each summons NOBODY NEW. A stale form cannot
+# be submitted, an unreadable one cannot be rendered, an absent one asked nothing, and an answered
+# one has already been answered, so a revise has already been dispatched for exactly those answers
+# and there is no second act for a human to perform. A status that demands a human act while
+# naming no act the human can perform is a dead end: the app renders "A human has to confirm
+# something before this ships" and offers no door. Four of the five blogs sitting on needs_review
+# in live data were exactly that.
+#
+# THE GROUND FOR "answered" IS NOT "the app refuses it", and stating it that way would be a rule
+# defended by a claim about the system that the system does not make true: api_answers refuses on
+# stale and on a live run, and never consults the answered flag at all. A second submit is in fact
+# ACCEPTED, and it is deliberately left accepted, because it is the one door out of a revise that
+# died holding an answered form. The reason the form does not HOLD is about the form, not about
+# the boundary: the operator has already said their piece, so nothing is waiting on them.
+#
+# NO SCORE FALLS TO failed, never to a hold. An evaluator that died before writing its scored end
+# line asked nobody anything, and a topic with no score and no question is a loop that broke, not
+# a person's task. Turning that into a permanent hold summons somebody to a form that does not
+# exist. A gates FAIL is failed for the same reason: a machine failure with no question in it.
+#
+# WHY THE SCORE NO LONGER OVERRIDES A HOLD. The old rule shipped a passing blog over its own open
+# questions, and it demonstrably shipped canonical-facts violations doing it: liquid-journey went
+# out at 96 publishing a claim its canonical-facts section 9 lists as NOT citable, and ramen went
+# out citing a publication date from a source its own record says was never fetched in full. Both
+# had a question on disk naming the source and the claim. A question is the evaluator saying the
+# draft may be WRONG, and being wrong at 96 is not better than being wrong at 89.
+#
+# The anecdote that used to defend the old rule here, a blog "held at 96 for a Sourcing top-up
+# that had already resolved itself", was FALSE and is deleted rather than softened. That blog is
+# the-best-beer-gardens: its questions.json says iteration 1 while the blog finished at iteration
+# 2, so the form was STALE and _questions_state resolves it to done under this rule exactly as it
+# did under the old one. THE STALENESS GATE KILLED THAT BUG, NOT THE SCORE GATE. Holding a 95
+# open until someone answers is now the REQUIRED behaviour, so nothing here is a caution against
+# it.
 #
 # So the ENGINE decides, after the session, by checking the claim against what is on disk. The
 # session lead may ask for needs_review; whether it earned it is not the lead's call. A rule
 # that lives only in an agent's instructions is a rule that gets talked out of, and this project
 # learned that lesson twice in one day.
+#
+# THE COST, CHOSEN AND NOT DISCOVERED: OPERATOR SILENCE STRANDS THE BLOG. There is no timeout, no
+# expiry, and no escalation. An unanswered hold never ships and never enters generated.csv, and it
+# waits forever. That is deliberate: every automatic exit from a hold is an exit that ships a
+# draft the evaluator flagged as possibly wrong, which is the exact outcome above. The mitigations
+# are the ones the contract already carries, the cap of at most 5 questions and the "answerable in
+# ten seconds" standard, and they now carry real weight rather than being advice.
 # ---------------------------------------------------------------------------
 
 # Why a needs_review claim did not stand, in the plain words the status trail records. Each of
@@ -513,6 +558,10 @@ def _summarize(topic_slug, lines):
 # is for.
 _NO_QUESTIONS_REASONS = {
     "none": "no questions.json was written, so the status names no act for the human it summons",
+    "answered": (
+        "questions.json has already been answered and a revise was dispatched for those very "
+        "answers, so the operator has already said their piece and the form summons nobody new"
+    ),
     "stale": (
         "questions.json asks about an earlier iteration than the draft on disk, so the app "
         "refuses it as stale and the operator cannot submit it"
@@ -527,11 +576,27 @@ _NO_QUESTIONS_REASONS = {
 def _questions_state(client_slug, topic_slug, root=None):
     """Are there questions on disk that the operator can actually answer right now?
 
-    One of "current" (a real form, about the draft that exists), "none", "stale", or
-    "unreadable". Staleness is server.questions.is_stale and is never recomputed here: that
-    module owns the comparison and the API boundary refuses a submit on the same call, so a
-    second staleness rule here would be a way for the engine to hold a blog open on a form the
-    app will not accept.
+    FOUR VALUES, never a boolean: "current" (a real form, about the draft that exists), "none",
+    "stale", "answered", or "unreadable". Only "current" holds a blog. The other four are the
+    ways a form on disk summons nobody, and the whole engine reads this one function rather than
+    asking its own version of the question.
+
+    Staleness and answeredness are server.questions.is_stale and is_answered and are never
+    recomputed here: that module owns both comparisons and the API boundary refuses a submit on
+    the same calls, so a second rule here would be a way for the engine to hold a blog open on a
+    form the app will not accept.
+
+    "answered" EXISTS BECAUSE A SPENT FORM COULD HOLD A BLOG FOREVER. This function read only
+    raw["questions"] and is_stale, so it never consulted is_answered: the operator answered a 96,
+    the surgical revise then crashed or was stopped before the form was cleared, and the file
+    stayed on disk, stayed iteration matched, and read as "current". The resolver held the blog
+    again on a form whose answers had already been given, so the hold was waiting on a person who
+    had already acted. An answered form groups with none and stale because its answers are on disk
+    and a revise has already been dispatched for them, so it summons nobody NEW. It is emphatically
+    NOT because the app refuses it: api_answers refuses a stale form and a live run and never
+    consults answeredness, so a second submit goes through, and that is the door out of a revise
+    that died holding the form. revise_topic's finally arm is the other half of the fix and neither
+    half is sufficient alone.
 
     Imported inside the function, not at module scope: server.questions imports this module, so
     a top-level import would close the cycle at startup, the same way revise_topic dodges it.
@@ -548,6 +613,8 @@ def _questions_state(client_slug, topic_slug, root=None):
         return "none"
     if questions_mod.is_stale(raw, client_slug, topic_slug, root=root):
         return "stale"
+    if questions_mod.is_answered(raw, client_slug, topic_slug, root=root):
+        return "answered"
     return "current"
 
 
@@ -560,31 +627,29 @@ def _resolve_needs_review(client_slug, topic_slug, score, root=None):
     reasoning instead of silently substituting its own answer for the session's. Every reason
     reads as a whole sentence and starts capitalised, because both callers append it after one.
 
-    THE SCORE IS CHECKED FIRST, BEFORE THE QUESTIONS, and that order is the rule rather than an
-    implementation detail. At or above SHIP_SCORE the blog ships whatever the evaluator asked: an
-    outstanding question is then the operator's option and not the blog's blocker, and holding a
-    passing draft for one is exactly what stranded a real blog at 96 for a task that did not
-    exist. Below the band a human is summoned only when the file can tell them what to do. With
-    nothing answerable the loop exhausted itself without being able to say what it needed, and
-    that is failed rather than a review nobody can perform. A gates FAIL lands here too, and lands
-    on failed: it is a machine failure with no human question in it.
+    THE QUESTION STATE IS CHECKED FIRST, BEFORE THE SCORE, and that order IS the rule rather than
+    an implementation detail. A current question HOLDS THE BLOG AT ANY SCORE, including a 96 and
+    including no score at all: the score is not grounds to override a hold, because a question is
+    the evaluator saying the draft may be WRONG, and a wrong 96 is not better than a wrong 89.
+    The old order shipped exactly that, twice, both at 96 and both against canonical-facts.
+
+    THE SCORE THEN DECIDES THE NOTHING-TO-ANSWER BRANCH AND ONLY THAT BRANCH. With no form the
+    app will accept, no human is summoned, so at or above SHIP_SCORE the blog ships and below it
+    the loop exhausted itself without being able to say what it needed, which is failed rather
+    than a review nobody can perform. No score falls here too, and falls to failed: an evaluator
+    that died before writing its scored end line must never become a permanent hold. A gates FAIL
+    lands here as well, and lands on failed: it is a machine failure with no human question in it.
     """
     state = _questions_state(client_slug, topic_slug, root=root)
 
-    if score is not None and score >= SHIP_SCORE:
-        if state == "current":
-            return "done", (
-                f"The score of {score} is at or above {SHIP_SCORE}, so the blog ships and nobody "
-                f"is holding it. The questions stay on disk as an OFFER: answering them is the "
-                f"operator's choice, and declining forever costs this blog nothing"
-            )
-        return "done", (
-            f"The score of {score} is at or above {SHIP_SCORE}, so the blog ships, and "
-            f"{_NO_QUESTIONS_REASONS[state]}"
-        )
-
     if state == "current":
         return "needs_review", None
+
+    if score is not None and score >= SHIP_SCORE:
+        return "done", (
+            f"The score of {score} is at or above {SHIP_SCORE} and nothing is holding the blog, "
+            f"so it ships: {_NO_QUESTIONS_REASONS[state]}"
+        )
 
     if score is None:
         standing = f"No score was recorded, so nothing reached the {SHIP_SCORE} ship band"
@@ -600,12 +665,31 @@ def _resolve_needs_review(client_slug, topic_slug, score, root=None):
 def _enforce_terminal_status(client_slug, topic_slug, out_dir, root=None):
     """Check the session's terminal claim against the three states and correct it where it fails.
 
-    Returns the summary of the status the topic actually ends on. Only a needs_review claim is
-    ever touched: done and failed name no human act, so there is nothing for them to be missing,
-    and an engine that could invent a needs_review would be a second author of the status rather
-    than a check on the first. A lead's needs_review is corrected two ways, and both were live
-    bugs: at or above SHIP_SCORE it becomes done, because a passing blog is never held, and below
-    it with nothing answerable it becomes failed.
+    Returns the summary of the status the topic actually ends on.
+
+    THE CHECK IS SYMMETRIC ON THE QUESTION AXIS, AND ONLY ON THAT AXIS. Both corrections run off
+    _questions_state, in both directions:
+
+      claimed needs_review, nothing current to answer -> corrected to done or failed BY ITS
+        SCORE. The lead summoned a human to a form nobody can answer, which is the dead end with
+        no door the needs_review definition forbids.
+      claimed done or failed, a CURRENT question on disk -> corrected to needs_review. A current
+        question holds the blog at ANY score, so a lead that wrote done at 96 over a live form
+        shipped a draft its own evaluator said it could not vouch for.
+
+    THE SECOND CORRECTION IS THE WHOLE OF WHAT MAKES THE HOLD REAL. Under the old score-gated
+    rule it was inert, because a passing score shipped the blog regardless and there was nothing
+    for a question to hold. Now that questions hold at any score, a done claim over a current
+    form is the entire exposure: the done line stands, _summarize reports done, and the blog is
+    ledgered. Without this arm the new rule would live only in an agent's instructions, and a
+    rule that lives only there is a rule that gets talked out of, which this project learned
+    twice in one day.
+
+    THE SCORE CORRECTS NOTHING BY ITSELF, in either direction. A needs_review claimed at 96 with
+    a current question STANDS, because a passing score is not grounds to override a hold. A done
+    claimed at 88 with nothing to answer also stands: the score decides only the branch a
+    needs_review claim falls into, and an engine that re-scored every claim would be a second
+    author of the status rather than a check on the first.
 
     The correction is APPENDED, never a rewrite. _terminal_line reads the LAST terminal line, so
     the new line wins, while the lead's original claim stays visible above it with the engine's
@@ -613,22 +697,48 @@ def _enforce_terminal_status(client_slug, topic_slug, out_dir, root=None):
     and the disagreement is the entire reason for checking.
     """
     summary = _summarize(topic_slug, _read_status(out_dir))
-    if summary["status"] != "needs_review":
+    claimed = summary["status"]
+
+    if claimed == "needs_review":
+        status, reason = _resolve_needs_review(client_slug, topic_slug, summary["score"],
+                                               root=root)
+        if reason is None:
+            return summary
+    elif claimed in ("done", "failed"):
+        if _questions_state(client_slug, topic_slug, root=root) != "current":
+            return summary
+        status = "needs_review"
+        reason = (
+            f"questions.json is on disk, asks about the draft that exists, and the operator has "
+            f"not answered it, so a human owes this blog an answer. A current question holds a "
+            f"blog at any score, including one at or above {SHIP_SCORE}: a question is the "
+            f"evaluator saying the draft may be wrong, and a wrong 96 is not better than a wrong "
+            f"89"
+        )
+    else:
+        # running, or the stopped line the backend writes. Neither is a claim about a loop that
+        # reached a verdict, so the three-state table has nothing to say about it. See
+        # TERMINAL_STATUSES on why a stopped topic never reaches the resolver.
         return summary
 
-    status, reason = _resolve_needs_review(client_slug, topic_slug, summary["score"], root=root)
-    if reason is None:
-        return summary
-
-    # The marker file goes with the status it marks. Nothing serves it (see README), but a
-    # NEEDS_REVIEW file sitting beside a blog the engine just shipped is the app disagreeing with
-    # itself on disk, which is what every rule in this section exists to stop.
-    (Path(out_dir) / "NEEDS_REVIEW").unlink(missing_ok=True)
+    # The marker file goes with the status it marks, in both directions. Nothing serves it (see
+    # README), but a NEEDS_REVIEW file sitting beside a blog the engine just shipped is the app
+    # disagreeing with itself on disk, and so is a held blog with no marker beside it, which is
+    # what every rule in this section exists to stop.
+    marker = Path(out_dir) / "NEEDS_REVIEW"
+    if status == "needs_review":
+        marker.write_text(
+            f"The session ended this topic {claimed} and the engine changed it to needs_review. "
+            f"{reason}. See questions.json.\n",
+            encoding="utf-8",
+        )
+    else:
+        marker.unlink(missing_ok=True)
 
     _status_module().append_status(
         str(out_dir), topic_slug, stage="eval", event="end",
         iter=summary["iterations"], score=summary["score"], status=status,
-        note=f"engine correction: the session ended this topic needs_review and the engine "
+        note=f"engine correction: the session ended this topic {claimed} and the engine "
              f"changed it to {status}. {reason}",
     )
     return _summarize(topic_slug, _read_status(out_dir))
@@ -785,8 +895,16 @@ def _agent_definitions():
             "You are Agent E, a hostile auditor for one GEO blog draft. The dispatching lead "
             "gives you the client slug, topic slug, output dir, and current iteration number.\n"
             "Your inputs are <out_dir>/blog.md, .claude/skills/geo-content-eval/references/"
-            "rubric.md, and clients/<slug>/canonical-facts.md ONLY. Never read the dossier, the "
-            "writer's reasoning, or any prior eval.\n"
+            "rubric.md, clients/<slug>/canonical-facts.md, and <out_dir>/answers.json WHEN ONE "
+            "EXISTS, and nothing else. Never read the dossier, the writer's reasoning, or any "
+            "prior eval: your isolation is intact, because an operator answer ranks with "
+            "canonical-facts.md and above any internal doc, so it is an EXTENSION OF THE FACT "
+            "BASE you already read and not the writer's reasoning.\n"
+            "READ THE ANSWERS BEFORE YOU SCORE. A negative answer forces the writer to CUT a "
+            "claim, and an evaluator that cannot see the answer reads that cut as lost factual "
+            "density and scores the draft DOWN for telling the truth. An answer is still NOT a "
+            "source: it can never become a citation, and a claim needing one still needs a "
+            "fetched source.\n"
             "Run the geo-content-eval skill with HOUSE bands: 95-100 SHIP, below 95 REJECT, no "
             "middle band, and any hard-gate failure is a REJECT regardless of score.\n"
             "Write <out_dir>/eval.md with SCORE: NN on its own line near the top, plus a fix "
@@ -867,35 +985,91 @@ context is not the same as reaching the writer's, and the writer is the agent th
 acts on it. Pass the guidance under the same labels the sheet gave it; never rename a
 label and never reorder it into a meaning of your own.
 
-Branch ONLY on the numeric SCORE from the evaluator (its eval end status line and
-eval.md), never on a verdict word.
-- SCORE >= 95 is FINAL AND TERMINAL. Write the terminal status line (status done)
-  and STOP. Never re-evaluate a passing draft for any reason, including "the draft
-  changed since" or "let me confirm".
-- SCORE < 95: dispatch a FRESH writer with only the frozen dossier, the current
-  blog.md, and the fix list, at iteration n+1, then a FRESH evaluator. Route fixes
-  by Area: Sourcing goes to a bounded researcher top-up for that one claim, never
-  to the writer alone; Structure, Draft, and Mechanics go to the writer.
+Branch on the numeric SCORE from the evaluator (its eval end status line and
+eval.md), never on a verdict word. The in-loop branch reads the SCORE plus exactly
+ONE property of the form, whether it carries a Sourcing question, and nothing else.
+- SCORE >= 95 ENDS THE LOOP. Never re-evaluate a passing draft for any reason,
+  including "the draft changed since" or "let me confirm". The terminal STATE is then
+  decided by the question check below, not by the score alone: done only when no
+  current questions are on disk, needs_review when any are, at any score including 95
+  and 96.
+- SCORE < 95, and BEFORE you dispatch anything: check the form on disk for a Sourcing
+  QUESTION.
+    python3 .claude/questions.py --out {out_dir} --slug {topic_slug} --iter <your current iteration> --check-area Sourcing
+  --iter is REQUIRED and is the whole staleness guard: pass the iteration the draft
+  is actually on, because a form from an earlier iteration describes a draft the blog
+  has moved past and must not end anything. Omitting it is a usage error (exit 2), not
+  a "no", and exit 2 also means an unusable form, so a failure never reads as absence.
+  Exit 0 means a live Sourcing question exists, so THE LOOP ENDS NOW: write the
+  terminal status line with status needs_review and STOP. Do not revise, do not
+  dispatch another evaluator, and do NOT delete questions.json, because that form is
+  the operator's only door and deleting it strands the blog. Exit 1 means no live
+  Sourcing question, so continue to the revise below.
+  The reason: Sourcing is the ONE area no rewrite can close, which this contract
+  already says in its own words, "the writer has no authority to invent a citation or
+  URL". A Sourcing QUESTION names a fact only a person has, so iterating past one
+  spends research and revise budget rediscovering something the evaluator already knew
+  was terminal. The live proof: the date-night blog filed Sourcing questions at
+  iteration 1, ran a bounded research top-up and two full revises, and landed at
+  iteration 3 on FOUR Sourcing questions about claims no rewrite could ever have
+  fixed. Three iterations bought nothing.
+  A question of area Structure, Draft or Mechanics does NOT end the loop. It is
+  superseded by the next iteration's form exactly as before, and you delete
+  questions.json before the next evaluator exactly as before.
+- SCORE < 95 with no live Sourcing question: dispatch a FRESH writer with only the
+  frozen dossier, the current blog.md, and the fix list, at iteration n+1, then a
+  FRESH evaluator. Route fixes by Area: Sourcing goes to a bounded researcher top-up
+  for that one claim, never to the writer alone; Structure, Draft, and Mechanics go to
+  the writer.
+  A Sourcing FIX-LIST ITEM is NOT a Sourcing QUESTION, and conflating them is the one
+  mistake to avoid here. A fix-list item still routes to a bounded researcher top-up
+  and still does NOT end the loop; that routing is unchanged and it works, because
+  date-night's iteration 2 top-up sourced three Sourcing fix-list items successfully.
+  A fix-list item says "a machine can find this source". A question says "only a
+  person holds this fact". Same area word, opposite implications for the loop.
 - Cap at 4 iterations, keep the best-scoring draft, stop early after two
-  consecutive no-gain iterations.
+  consecutive no-gain iterations, and stop immediately on a live Sourcing question per
+  the branch above.
 
-needs_review MEANS "this blog scored below 95 AND has questions waiting for the
-operator". It means nothing else, and there are exactly three terminal states:
-- Score >= 95, questions or not: done. It SHIPS. A question at or above the band is
-  the operator's option, not the blog's blocker, so it never holds the blog.
-- Score < 95 with at least one live question the evaluator asked through
-  .claude/questions.py at the CURRENT iteration: needs_review.
-- Score < 95 with nothing asked: failed. The loop exhausted itself and cannot say
-  what it needs, so there is no human task in it. A gates FAIL is failed for the
-  same reason: there is no question in it.
+needs_review MEANS "this blog has questions waiting for the operator that are current,
+on disk, and answerable". AT ANY SCORE, and it means nothing else. The score is not
+part of that definition. There are exactly three terminal states, and THE QUESTIONS
+ARE CHECKED FIRST:
+- At least one live question the evaluator asked through .claude/questions.py at the
+  CURRENT iteration: needs_review, at ANY score, INCLUDING 95 and 96. A question is
+  you saying the draft may be WRONG, and a wrong 96 is not better than a wrong 89, so
+  a passing score never overrides a hold. Answering is a DEMAND, never an offer, and
+  there is no dismiss and no proceed-anyway at any score.
+- Nothing current to answer, score >= 95: done. It SHIPS.
+- Nothing current to answer, score < 95 or no score at all: failed. The loop
+  exhausted itself and cannot say what it needs, so there is no human task in it. A
+  gates FAIL is failed for the same reason: there is no question in it.
+
+Your SCORE >= 95 branch above is FINAL AND TERMINAL ONLY WHEN NO CURRENT QUESTIONS ARE
+ON DISK. That is the one narrowing of the rule, and everything else about it stands:
+you never re-evaluate a passing draft because "the draft changed", "eval.md and
+blog.md are inconsistent", "the run was stopped and restarted", or "let me confirm".
 
 A Sourcing top-up, or a claim whose source may not support it, is a QUESTION, and the
 evaluator asks it naming the source and the claim; unasked, it is not a status.
 
+The Sourcing-question stop above is a LEAD INSTRUCTION, and the engine CANNOT enforce
+it, because the loop runs inside this session and the backend cannot reach into it to
+stop a revise. That is a real departure from this contract's "the check is in Python
+where nothing can argue with it" principle, so it is named here rather than papered
+over. IT FAILS IN BOTH DIRECTIONS AND THEY ARE NOT SYMMETRIC. IGNORING it costs money,
+not correctness: you burn iterations, then terminal resolution still holds the blog in
+Python, so you cannot ship one you should have held. OVER-APPLYING it costs a good
+blog: end the loop on a stale or another topic's form and you write needs_review with
+iterations unspent, then terminal resolution reads that same form as non-holding and
+corrects the topic to failed by its score, so a draft that could have reached 95 dies
+instead. Pass --iter, every time. It is the whole of what closes that direction.
+
 The engine checks all of this after your session ends and corrects a needs_review that
 was not earned, recording the override against your terminal line. Claiming
-needs_review on a passing draft, or with nothing on disk to answer, does not hold the
-blog: it just puts your claim and the engine's correction in the same trail.
+needs_review with nothing on disk to answer does not hold the blog: it just puts your
+claim and the engine's correction in the same trail. Claiming done over a current
+question does not ship it either.
 
 Absolute rules:
 - Never write or edit the blog yourself.
@@ -1253,8 +1427,9 @@ async def _mock_session(client_slug, row, topic_slug, out_dir):
             ask=(f"Demo question, asked without auditing a draft. Iteration {final_iter} of "
                  f"{topic} cites {_DEMO_QUESTION_SOURCE} for its answer to \"{heads[0]}\". Does "
                  f"that source support the claim as written?"),
-            why=(f"Demo. The draft stalled at {final_score}, below the {SHIP_SCORE} ship band, so "
-                 f"the hold is blocking and the answer decides what the revise fixes. A real "
+            why=(f"Demo. The draft stalled at {final_score}, below the {SHIP_SCORE} ship band, and "
+                 f"the answer decides what the revise fixes. The hold is blocking because the "
+                 f"question is current, which is what blocks at every score. A real "
                  f"evaluator asks exactly this when a Sourcing top-up pulls a new source mid "
                  f"loop, naming the source and the claim so the operator answers without opening "
                  f"the draft."),
@@ -1441,11 +1616,26 @@ async def run_topic(client_slug, row, *, mock=None, run_dir_root=None, precheck_
 # asked is that they knew something research could not settle, so re-researching
 # would spend their quota rediscovering what they just typed in.
 #
-# The property everything else rests on: THE HIGHER SCORE SHIPS. A revise can
-# only ever improve the artifact, because a clarified draft that scores lower is
-# discarded and the original is restored. That is what makes it safe to FORCE a
-# rerun at 95: the 95 cannot be lost, so blocking the operator costs them time
-# and nothing else.
+# The property everything else rests on: THE CLARIFIED DRAFT SHIPS, AND TRUTH
+# BEATS SCORE. A revise driven by the operator's answers ships its result even
+# when that result scores LOWER than the draft it replaced.
+#
+# "The higher score ships" used to live here, and inverting it is deliberate. It
+# was written as a guard on an ELECTIVE improvement rerun, answering "what makes
+# an optional rerun safe to ACCEPT". Answers are no longer elective: a current
+# question holds the blog at every score, so this rerun is MANDATORY and a
+# correctness pass, and as a guard on one that rule inverts into a
+# correctness-suppression mechanism. Follow it through: a negative answer tells
+# the writer a claim is wrong, the writer CUTS the claim, the draft loses the
+# factual density that claim carried, the score falls, the original is restored
+# WITH THE VIOLATION STILL IN IT, and the engine structurally prefers the
+# non-compliant draft over the corrected one. The score drop is the truth costing
+# points, not the draft getting worse.
+#
+# THE BYTE-FOR-BYTE RESTORE SURVIVES, ON THE CANCELLATION AND CRASH PATHS ONLY. A
+# stop or a crash mid revise leaves a HALF APPLIED revise, which is not a
+# clarified draft: nothing scored those bytes and no answer was fully applied to
+# them, so they have earned nothing and the original goes back.
 # ---------------------------------------------------------------------------
 
 # The draft as it stood before the revise touched it. Not a temp file: it is
@@ -1453,6 +1643,25 @@ async def run_topic(client_slug, row, *, mock=None, run_dir_root=None, precheck_
 # operator can diff what the revise did to their blog. It is deliberately absent
 # from app.OUTPUT_WHITELIST, so it is never served as if it were the article.
 PREV_BLOG_NAME = "blog.prev.md"
+
+
+def _restore_artifact_set(blog, eval_md, blog_bytes, eval_bytes):
+    """Put back the ARTIFACT SET the snapshotted score described: blog.md AND eval.md.
+
+    THE RESTORE RETURNS WHAT SHIPPED, NOT JUST THE DRAFT. Restoring blog.md alone was a live bug:
+    a discarded revise left the restored original sitting beside the DISCARDED draft's eval.md,
+    carrying that draft's SCORE: NN and its fix list. The status trail then said one number and
+    the file an operator opens said another, about an article the second file never audited.
+    eval.md is half of what a score means, so it is half of what a restore owes back.
+
+    An eval.md that did NOT exist at snapshot time is REMOVED rather than left: it describes only
+    the draft that was just thrown away, and leaving it is the same lie in the other direction.
+    """
+    blog.write_bytes(blog_bytes)
+    if eval_bytes is None:
+        eval_md.unlink(missing_ok=True)
+    else:
+        eval_md.write_bytes(eval_bytes)
 
 
 def _last_eval_score(lines):
@@ -1535,17 +1744,25 @@ Then, in this order:
   or changed gets fetched.
 - Delete any stale questions file before the evaluator runs:
   python3 -c "import pathlib; pathlib.Path('{out_dir}/questions.json').unlink(missing_ok=True)"
-- Dispatch a FRESH evaluator at iteration {iteration}. It sees blog.md, the rubric, and
-  canonical-facts.md ONLY: never the answers, never the dossier, never the previous eval. It
-  scores the draft blind and writes eval.md plus its eval end status line carrying the score.
+- Dispatch a FRESH evaluator at iteration {iteration}. It sees blog.md, the rubric,
+  canonical-facts.md, and {out_dir}/answers.json: never the dossier, never the writer's
+  reasoning, never the previous eval. It scores the draft blind of everything except the fact
+  base, and writes eval.md plus its eval end status line carrying the score.
+- THE EVALUATOR READS THE ANSWERS BECAUSE THEY ARE PART OF THE FACT BASE, ranking with
+  canonical-facts.md, which it already reads. Its hostile isolation is intact: an answer is not
+  the writer's reasoning. Withholding them punishes honesty, because a negative answer forces a
+  claim to be CUT and an evaluator that cannot see the answer reads that cut as lost factual
+  density and marks the draft DOWN for telling the truth. An answer is still NOT a source and can
+  never become a citation.
 
 STOP after that one evaluator. There is no loop here and no second revise: this session is one
 pass, and the engine decides what happens to the result.
 
-You do NOT write the terminal status line. The engine that started this session compares your
-evaluator's score against the score the draft already had and ships the HIGHER of the two, so a
-clarified draft that came out worse is discarded and the operator's original stands. That
-comparison is not yours to make and not yours to record.
+You do NOT write the terminal status line. THE CLARIFIED DRAFT SHIPS, even if your evaluator
+scores it LOWER than the draft it replaced, because a lower score on a corrected draft is the
+truth costing points and the engine will not restore a draft the operator's own answer says is
+wrong. That decision is not yours to make and not yours to record, and it is NOT a licence to
+chase a number: apply the answers and the fix list, nothing else.
 
 Absolute rules:
 - Never write or edit the blog yourself.
@@ -1664,7 +1881,12 @@ def register_revise_run(run_id, client_slug, topic_slug, root=None):
 
 
 async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_dir_root=None):
-    """Re-open ONE finished topic with the operator's answers. Ships the higher-scoring draft.
+    """Re-open ONE finished topic with the operator's answers. THE CLARIFIED DRAFT SHIPS.
+
+    Ships the clarified draft at whatever it scores, higher or lower, because the operator's
+    answer is the reason it changed and TRUTH BEATS SCORE. The original comes back only where
+    this session produced no clarified draft at all: a stop, a crash, or a session that died
+    before scoring, each of which leaves a half applied revise rather than a corrected article.
 
     Returns the summary shape run_topic returns, describing the draft that SHIPPED, plus the
     roadmap row under "row". The row rides along because a revise can be the moment a topic
@@ -1674,6 +1896,7 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
     """
     out_dir = output_dir(client_slug, topic_slug, root=run_dir_root)
     blog = out_dir / "blog.md"
+    eval_md = out_dir / "eval.md"
     prev_blog = out_dir / PREV_BLOG_NAME
     clients_root = REPO_ROOT / "clients"
     append_status = _status_module().append_status
@@ -1685,12 +1908,26 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
     if get_run(run_id) is None:
         register_revise_run(run_id, client_slug, topic_slug, root=run_dir_root)
 
-    # All three are read by the failure handlers below, which can fire before any of them is set:
-    # a refusal raises before the snapshot exists, and iteration is only knowable once
-    # status.jsonl is read.
+    # All of these are read by the failure handlers and the finally arm below, which can fire
+    # before any of them is set: a refusal raises before the snapshot exists, and iteration is
+    # only knowable once status.jsonl is read.
     prev_bytes = None
+    prev_eval_bytes = None
     prev_terminal = None
+    prev_score = None
     iteration = 1
+    # The iteration the RESTORED draft is on, which is the one the topic was on before this
+    # session opened. Every restore path stamps its terminal line with this rather than with
+    # `iteration`, and the difference is load bearing rather than cosmetic. The line describes the
+    # ORIGINAL bytes, so claiming the new iteration for them says the topic advanced to a draft
+    # that was just thrown away. It also decides whether the operator has a door: staleness is
+    # questions.json's iter against the highest iter in status.jsonl, so a restore that stamped
+    # `iteration` pushed the topic past the very form it was keeping and the app refused the
+    # re-submit as stale. Restoring the draft and stranding its form is not a restore.
+    restored_iter = 1
+    # Did a clarified draft actually ship? Read by the finally arm, which cannot see which branch
+    # ran. False through every failure path, because none of them ships one.
+    clarified_shipped = False
 
     try:
         async with CLIENT_LOCK:
@@ -1720,14 +1957,21 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
 
             # THE SNAPSHOT, FIRST, BEFORE ANYTHING CAN TOUCH THE DRAFT.
             #
-            # This is what "the higher score ships" is built out of, so it happens before the
+            # This is what the stop and crash restores are built out of, so it happens before the
             # session opens rather than after it starts: a session that began writing before the
-            # copy was taken could have already overwritten the draft this feature promises to
-            # give back. Everything below is recoverable; a lost original is not.
+            # copy was taken could have already overwritten the draft those paths promise to give
+            # back. Everything below is recoverable; a lost original is not.
+            #
+            # THE ARTIFACT SET, NOT THE DRAFT ALONE. eval.md is snapshotted beside blog.md because
+            # a score describes both of them together, and a restore that returned only the draft
+            # left the original sitting beside the discarded draft's eval.md and its SCORE: NN.
+            # None is a real value here and means eval.md did not exist yet, which the restore
+            # honors by removing it rather than leaving a stranger's audit behind.
             lines_before = _read_status(out_dir)
             prev_score = _last_eval_score(lines_before)
             shutil.copy2(blog, prev_blog)
             prev_bytes = blog.read_bytes()
+            prev_eval_bytes = eval_md.read_bytes() if eval_md.is_file() else None
 
             # THE VERDICT THIS TOPIC ALREADY EARNED, snapshotted beside the bytes that earned it.
             #
@@ -1741,6 +1985,7 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
             prev_terminal = _terminal_line(lines_before)
 
             iteration = _summarize(topic_slug, lines_before)["iterations"] + 1
+            restored_iter = max(1, iteration - 1)
             row = _row_for_topic(client_slug, topic_slug)
 
             if mock:
@@ -1755,61 +2000,68 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
             new_lines = _read_status(out_dir)[len(lines_before):]
             new_score = _last_eval_score(new_lines)
 
-            # THE HIGHER SCORE SHIPS, and ties go to the original.
+            # THE CLARIFIED DRAFT SHIPS. NO COMPARISON, AT ALL.
             #
-            # Strictly greater, not greater-or-equal: an equal score is not an improvement, and
-            # the draft the operator has already seen is the one they know. A None new_score means
-            # the session produced no verdict, so there is nothing to prefer it on. A None
-            # prev_score means the original was never scored and any real verdict beats it.
+            # There is deliberately no `new_score > prev_score` here any more, and its absence is
+            # the whole point of this block. This rerun is MANDATORY, because a current question
+            # holds the blog at every score, and a score comparison guarding a mandatory
+            # correctness pass suppresses corrections: the operator answers that a claim is wrong,
+            # the writer cuts it, the density the claim carried goes with it, the score falls, and
+            # the comparison hands back the ORIGINAL WITH THE VIOLATION STILL IN IT. The engine
+            # would then structurally prefer the non-compliant draft, forever, and no operator
+            # could ever fix that blog. A lower score on a clarified draft is the truth costing
+            # points, so the clarified draft ships at 91 as readily as at 97.
+            #
+            # A None new_score is NOT that case and never was. It means this session produced no
+            # verdict: the CLI died, or the evaluator never scored. Nothing read the answers
+            # through to an audited article, so what is on disk is a HALF APPLIED REVISE, not a
+            # clarified draft, and it has earned nothing. The original goes back, exactly as it
+            # does on the stop and crash paths, and for exactly that reason.
             if new_score is None:
-                keep_new = False
-            elif prev_score is None:
-                keep_new = True
-            else:
-                keep_new = new_score > prev_score
-
-            if keep_new:
-                shipped_score = new_score
-                note = (f"clarified draft scored {new_score} against the original's "
-                        f"{prev_score}, so it ships")
-            else:
-                # RESTORE. This is the line that makes forcing a rerun at 95 safe.
-                blog.write_bytes(prev_bytes)
-                shipped_score = prev_score
-                if new_score is None:
-                    note = ("the revise session produced no score, so the original draft was "
-                            "restored byte for byte and ships unchanged")
-                else:
-                    note = (f"clarified draft scored {new_score}, not above the original's "
-                            f"{prev_score}, so it was DISCARDED and the original draft was "
-                            f"restored byte for byte and ships")
+                # NO CLARIFIED DRAFT, SO THE RESTORED ORIGINAL KEEPS THE VERDICT IT ALREADY
+                # CARRIED. This is the crash arm's answer to the identical event, written the
+                # same way on purpose: the two paths describe one thing, a session that died
+                # holding the draft, and an engine whose two arms disagree about that ships one
+                # article under two verdicts depending on where the CLI happened to die.
+                #
+                # THE RESOLVER MAY ONLY EVER RUN ON A DRAFT THIS SESSION ACTUALLY SCORED. That is
+                # the rule, and the reason is that the resolver answers "what does this score,
+                # against what is on disk, add up to", which is a question about a draft that was
+                # graded. These bytes were not: they are the original, restored, and the only
+                # honest thing to say about them is what was already said. Running the resolver
+                # here read the spent form as "answered", called that a non-holding state, and
+                # returned done, so a blog HELD for an operator's answer shipped at its old 96
+                # with the answer never applied and the violation still in it. The engine would
+                # have laundered a dead session into a ship.
+                #
+                # STAGE "eval" AND prev_score, exactly as the failure arms below carry them:
+                # _last_eval_score and _summarize read only stage="eval" end lines, and prev_score
+                # is the number the restored bytes genuinely have.
+                _restore_artifact_set(blog, eval_md, prev_bytes, prev_eval_bytes)
                 append_status(
-                    str(out_dir), topic_slug, stage="revise", event="end", iter=iteration,
-                    score=shipped_score, status="running", note=note,
+                    str(out_dir), topic_slug, stage="eval", event="end", iter=restored_iter,
+                    score=prev_score,
+                    status=prev_terminal["status"] if prev_terminal else "failed",
+                    note=("surgical revise from operator answers: the revise session produced no "
+                          "score, so no clarified draft exists. The original blog.md and eval.md "
+                          "were restored byte for byte, and this topic keeps the verdict it "
+                          "already earned"
+                          if prev_terminal else
+                          "surgical revise from operator answers: the revise session produced no "
+                          "score, so no clarified draft exists. The original blog.md and eval.md "
+                          "were restored byte for byte, and this topic never reached a verdict"),
                 )
+                return dict(_summarize(topic_slug, _read_status(out_dir)), row=row)
 
-            # The answers are spent, so the form the operator filled in goes. A questions.json
-            # left here is the stale file this feature already tripped over once. answers.json
-            # stays as the durable record.
-            #
-            # A form THIS session's own evaluator wrote is not that spent form. It asks about the
-            # draft that is shipping right now, so deleting it would throw away a live question
-            # and leave the topic held with nothing to answer, which is the dead end this engine
-            # now refuses to create. It is kept only when the clarified draft is the one that
-            # ships: when the original is restored, those questions describe a draft that was
-            # discarded a few lines ago, and _questions_state calls the leftover answered form
-            # stale anyway, because its iteration is behind the draft's.
-            #
-            # Imported here, not at module scope: server.questions imports this module, so a
-            # top-level import would close the cycle at startup, the same way facts_gen dodges it.
-            from . import questions as questions_mod
-            if not keep_new or _questions_state(client_slug, topic_slug,
-                                                root=run_dir_root) != "current":
-                questions_mod.clear_questions(client_slug, topic_slug, root=run_dir_root)
+            clarified_shipped = True
+            shipped_score = new_score
+            note = (f"the clarified draft scored {new_score} against the original's "
+                    f"{prev_score} and ships: the operator's answers drove it, so it ships "
+                    f"whether the score rose or fell")
 
-            # The terminal line describes the SHIPPED draft, never the session. A revise that was
-            # discarded still leaves a topic whose blog scores whatever the original scored, and
-            # that number is the one an operator reads off the status table.
+            # The terminal line describes the SHIPPED draft, never the session, and this branch is
+            # the ONE place a revise reaches the resolver, because it is the one place this
+            # session scored a draft.
             #
             # The SAME three states run_topic ends on, resolved by the same function, because a
             # revise ends a topic exactly as a first run does and two copies of this rule is how
@@ -1837,8 +2089,13 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
         # here. Nothing scored the bytes now on disk, so nothing earns them the right to replace
         # the draft that did score. Skipped only when the snapshot was never taken, which means
         # the session never touched the draft.
+        #
+        # THIS IS THE PATH THE BYTE-FOR-BYTE RESTORE SURVIVES ON. The success path no longer
+        # restores a lower scoring clarified draft, because an answer earned that draft. A stop
+        # earns nothing: a half applied revise is not a clarified draft. The ARTIFACT SET goes
+        # back, blog.md and eval.md together, because the verdict re-stated below describes both.
         if prev_bytes is not None:
-            blog.write_bytes(prev_bytes)
+            _restore_artifact_set(blog, eval_md, prev_bytes, prev_eval_bytes)
         # The terminal line is NOT optional here, and the guard used in run_topic would be wrong.
         # This topic already carried a terminal line from the run that produced it, and after the
         # restore that old line is accurate again. But register_revise_run recorded a tail_offset
@@ -1868,7 +2125,8 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
         # draft with a worse one. Carrying prev_score names the score the restored bytes actually
         # have.
         append_status(
-            str(out_dir), topic_slug, stage="eval", event="end", iter=iteration,
+            str(out_dir), topic_slug, stage="eval", event="end",
+            iter=restored_iter if prev_bytes is not None else iteration,
             score=prev_score if prev_bytes is not None else None,
             status=prev_terminal["status"] if prev_terminal else "stopped",
             note=("the operator stopped this revise and the original draft was restored "
@@ -1892,9 +2150,12 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
         # the first is the one this feature is built on.
         #
         # RESTORE FIRST. A crash can leave a half revised draft on disk, and a half revised draft
-        # is precisely what "the higher score ships" promises can never happen: a new draft is
-        # kept only when a fresh evaluator scored it higher, and nothing here scored anything at
-        # all. Only skipped when the snapshot was never taken, which means nothing was touched.
+        # is the one thing a revise must never ship: a clarified draft ships because the
+        # operator's answers were applied to it in full and a fresh evaluator then scored it, and
+        # nothing here applied anything in full or scored anything at all. The ARTIFACT SET goes
+        # back, blog.md and eval.md together, so the restored draft is not left beside an eval.md
+        # auditing the draft that was just thrown away. Only skipped when the snapshot was never
+        # taken, which means nothing was touched.
         #
         # Then the terminal line, for the reason above. Broad on purpose, and it re-raises, so
         # the caller still records the failure.
@@ -1908,7 +2169,7 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
         # disk carries, and the next revise would take it as the baseline it must beat and
         # overwrite a better draft with a worse one.
         if prev_bytes is not None:
-            blog.write_bytes(prev_bytes)
+            _restore_artifact_set(blog, eval_md, prev_bytes, prev_eval_bytes)
         traceback.print_exc(file=sys.stderr)
         print(f"[runner] revise_topic failed for {client_slug}/{topic_slug}: {exc}",
               file=sys.stderr)
@@ -1921,7 +2182,8 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
         # which the note names and the traceback records. A topic with no verdict to keep has
         # genuinely failed, and only then does this say so.
         append_status(
-            str(out_dir), topic_slug, stage="eval", event="end", iter=iteration,
+            str(out_dir), topic_slug, stage="eval", event="end",
+            iter=restored_iter if prev_bytes is not None else iteration,
             score=prev_score if prev_bytes is not None else None,
             status=prev_terminal["status"] if prev_terminal else "failed",
             note=f"revise failed and the original draft was restored unchanged, so this topic "
@@ -1932,6 +2194,68 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
         )
         raise
     finally:
+        # THE SPENT FORM GOES, ON EVERY EXIT PATH. IN A FINALLY, AND THAT IS THE POINT.
+        #
+        # The answers are spent, so the form the operator filled in is spent with them, and a
+        # spent form left on disk is the stale file this feature already tripped over once.
+        # answers.json stays: that is the durable record.
+        #
+        # This used to sit on the success path, where a crash or a stop skipped it, and skipping
+        # it was a BLOG WITH NO EXIT. The operator answers a 96, this session crashes before the
+        # clear, and the form stays on disk, iteration matched and answered. The resolver holds
+        # the blog again while the app refuses a second submit because the form is already
+        # answered, so nobody can answer it and nothing can ship it. _questions_state's new
+        # "answered" value is the other half of that fix: it stops such a form reading as
+        # current. Both halves are needed, because either alone leaves the other's window open.
+        #
+        # A "current" form is the ONE thing kept, and only when a clarified draft shipped: THIS
+        # session's evaluator wrote it, it asks about the draft that is shipping right now, and
+        # deleting it would throw away a live question and leave the topic held with nothing to
+        # answer, which is the dead end this engine refuses to create. On every other path there
+        # is no shipped clarified draft for such a form to describe, so it goes with the rest.
+        #
+        # A FORM IS SPENT BY A SCORED CLARIFIED DRAFT, NEVER BY A SESSION THAT DIED HOLDING IT.
+        # That is the rule, and the restore paths are where it bites. A stop or a crash gives the
+        # ORIGINAL bytes back and re-states the verdict they already carried, so nothing consumed
+        # the answers: nothing read them through to an audited article. Where that re-stated
+        # verdict is a HOLD, the form is the blog's ONLY door, and clearing it left a terminal
+        # needs_review line with no form beside it. api_answers 404s on NoQuestions, so
+        # revise_topic became unreachable and nothing could ever correct it: the operator was
+        # summoned to a blog and handed no act to perform, which is the exact dead end with no
+        # door the needs_review definition forbids, created by the fix for it. So a held topic
+        # keeps its form and the operator can submit it again.
+        #
+        # KEEPING THE FORM IS THE WHOLE OF THE DOOR, and answers.json is deliberately NOT deleted
+        # to open it. A second submit is not refused for being answered: api_answers refuses a
+        # stale form and a live run and never consults answeredness at all, so the form only has
+        # to survive and be iteration-matched, which is what restored_iter above guarantees.
+        # answers.json stays because it is the durable record of what the operator said, and
+        # write_answers overwrites it on the re-submit anyway.
+        #
+        # Where the re-stated verdict names no hold, the form goes, and the two rules agree rather
+        # than compete. Nothing is waiting on an answer there, so there is no door to preserve,
+        # and an answerable form left beside a done blog is a live question against an article
+        # that already shipped: _enforce_terminal_status reads exactly that and corrects a done to
+        # needs_review, so leaving it would hold a blog nobody asked to hold.
+        #
+        # Imported here, not at module scope: server.questions imports this module, so a
+        # top-level import would close the cycle at startup, the same way facts_gen dodges it.
+        from . import questions as questions_mod
+        try:
+            held = prev_terminal is not None and prev_terminal.get("status") == "needs_review"
+            if clarified_shipped:
+                if _questions_state(client_slug, topic_slug, root=run_dir_root) != "current":
+                    questions_mod.clear_questions(client_slug, topic_slug, root=run_dir_root)
+            elif not held:
+                questions_mod.clear_questions(client_slug, topic_slug, root=run_dir_root)
+        except Exception as exc:
+            # A finally that raises REPLACES the exception on its way out, so a failure to tidy a
+            # form would swallow the CancelledError a stop depends on and mask the traceback a
+            # crash owes the operator. The form outliving this session is the lesser harm, and the
+            # engine still refuses it as answered.
+            print(f"[runner] could not clear questions for {client_slug}/{topic_slug}: {exc}",
+                  file=sys.stderr)
+
         # Unlike run_batch, which hands this to app._batch_task, a revise owns its own lifecycle:
         # it is one topic and one session, and it is callable outside the API.
         finish_run(run_id)

@@ -17,13 +17,20 @@ Do not trigger for: writing or revising a draft (use geo-content-writer), or gat
 
 The lead gives you four things: the client slug, the topic slug, the output directory, and the current iteration number. Use them for every path and every status line. Do not guess them.
 
-You may read ONLY these three inputs, and nothing else:
+You may read ONLY these inputs, and nothing else:
 
 1. The draft: `outputs/<slug>/<topic-slug>/blog.md`.
 2. The rubric: `references/rubric.md`.
 3. The client's binding facts: `clients/<slug>/canonical-facts.md`.
+4. The operator's answers: `outputs/<slug>/<topic-slug>/answers.json`, WHEN ONE EXISTS. Most runs have none, and its absence is normal, never a reason to wait for it.
 
-You do NOT read the research dossier, the writer's reasoning or notes, or any prior eval. This is deliberate. A hostile auditor that has seen the writer's justification is no longer hostile: it starts grading the intent instead of the artifact. You judge only what is on the page, against the rubric and the canonical facts.
+You do NOT read the research dossier, the writer's reasoning or notes, or any prior eval. This is deliberate. A hostile auditor that has seen the writer's justification is no longer hostile: it starts grading the intent instead of the artifact. You judge only what is on the page, against the rubric, the canonical facts, and any answers the operator gave.
+
+**`answers.json` DOES NOT BREAK THE ISOLATION, and the reason is what it is.** Operator answers are client-provided guidance: they rank WITH `canonical-facts.md` and above any internal doc, and you already read `canonical-facts.md`. An answer is therefore an EXTENSION OF THE FACT BASE, not the writer's reasoning leaking across the wall. You still never see the dossier, the writer's notes, or a prior eval, so you are still hostile to the artifact.
+
+**Withholding the answers would punish honesty, which is why they reach you.** A negative answer forces the writer to CUT a claim. An evaluator that cannot see the answer reads that cut as lost factual density and scores the draft DOWN for telling the truth, so the engine would structurally prefer the draft that kept the false claim. **A claim the operator's answer withdrew is NOT scored as a shortfall**: score the draft that remains, and where the cut leaves a real hole, say so in the fix list as work, never as the writer's fault.
+
+**An answer is still NOT a source, and this is absolute.** An answer can tell you a figure is confirmed or that a claim is wrong. It can never become a citation. A claim needing a citation still needs a fetched source, exactly as before, so an answered question does not lift a Sourcing gate that no fetched source supports.
 
 ## What you must never do
 
@@ -40,6 +47,8 @@ Append a start line to `status.jsonl` (see Status logging). Then read `reference
 ### Step 2: Read the draft and the canonical facts
 
 Read `blog.md` end to end. Read `clients/<slug>/canonical-facts.md` end to end. The canonical facts are binding: any claim in the draft that contradicts them is a hard-gate failure regardless of how well the piece reads.
+
+If `outputs/<slug>/<topic-slug>/answers.json` exists, read it end to end as well, before you score anything. It is the operator's guidance on this exact draft and it binds alongside the canonical facts. Read it first and the cuts it caused read as compliance; read it after, or not at all, and they read as missing content.
 
 ### Step 3: Run the hard gates
 
@@ -71,7 +80,11 @@ That question is answerable in ten seconds without opening the draft. "A human c
 
 If you cannot name a source and a claim, there is nothing to confirm and the draft is not held. Score it and let the number speak. A hold you cannot put into a question is not a hold, and the engine will not keep it: a draft held with no question on disk is corrected to done at 95 or above and to failed below it, and the correction is recorded against your verdict. Ask, or do not hold.
 
-Asking does not decide the outcome, and it never overrides your score. The engine reads your number first: at 95 or above the blog SHIPS whether or not you asked, and your questions ride along as an offer the operator may decline forever. Below 95 they are what the operator must answer before anything moves. So ask whenever a human confirmation genuinely changes what the piece should say, and do not reach for a question as a way to hold a draft you scored at 95. You cannot hold a passing draft, and trying is how a real blog sat at 96 waiting on a task nobody could perform.
+**ASKING HOLDS THE BLOG, AT ANY SCORE, INCLUDING 96.** The engine checks the questions FIRST and the score second. A current, answerable question on disk means `needs_review` whatever you scored, and the operator's answer is a DEMAND, never an offer: there is no dismiss and no proceed-anyway at any score. Your score is still your verdict, and a held 96's verdict is SHIP, but the blog does not go out until a human answers. The old rule shipped the question and let the answer be declined forever, and it demonstrably shipped two canonical-facts violations at 96, because an unconfirmed source is not less wrong for scoring well.
+
+**SO THIS RAISES THE BAR ON ASKING, IT DOES NOT LOWER IT.** A question is now the most expensive thing you can write. Ask ONLY where a human answer changes the outcome: a fact only the client holds, a source that needs confirming, an ambiguity `canonical-facts.md` does not resolve, or a suspected inaccuracy. Never ask what the rubric already answers, and never ask for something the writer should simply fix, because "rephrase this H2" is a fix list item and a fix list item costs nobody a summons.
+
+**THE AT-MOST-5 CAP AND THE TEN-SECOND STANDARD NOW CARRY REAL WEIGHT, AND HERE IS THE COST THEY GUARD.** Operator silence STRANDS the blog. There is no timeout, no expiry, and no escalation: an unanswered hold never ships and never reaches the ledger, for as long as it goes unanswered. That is a cost the house chose deliberately, preferring a blog that waits to a blog that ships an unconfirmed claim. The two things standing between a hold and a permanently stranded blog are the cap of 5 questions and the rule that each is answerable in ten seconds without opening the draft. A form of fifteen questions does not get answered, it gets closed. Write questions a busy human answers on sight, or do not write them.
 
 ### Step 6: Write the fix list
 

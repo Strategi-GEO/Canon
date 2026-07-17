@@ -184,7 +184,10 @@ function blockedReason(status: BlogStatus, demoMode: boolean): string | null {
     return "This brand is in demo mode. Demo blogs are placeholder text generated without research, so they never reach a CMS.";
   }
   if (status === "needs_review") {
-    return "This blog needs review. A CMS draft is directly approvable by an editor, so only a blog the engine shipped can be posted.";
+    // Named as the act that is owed, not as a defect in the draft. This blog may well be a 96: the
+    // score is not what is missing, an answer is, and "needs review" sent an operator hunting the
+    // draft for a flaw that was never there.
+    return "This blog is held until you answer the evaluator's questions, whatever it scored. A CMS draft is directly approvable by an editor, so only a blog the engine shipped can be posted. Answer the questions and the revise settles it.";
   }
   if (status === "failed") {
     return "This run failed, so there is no finished blog to post.";

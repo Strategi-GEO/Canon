@@ -807,8 +807,14 @@ async def api_blogs(slug: str):
 #
 # An evaluator can ask the operator a question no rewrite answers, because the missing thing is a
 # fact only a person holds. These two routes are the whole of the operator's side: read the form,
-# submit the form. Submitting starts a SURGICAL REVISE, and runner.revise_topic ships the higher
-# scoring of the two drafts, so answering can improve a blog and can never damage one.
+# submit the form. Submitting starts a SURGICAL REVISE, and runner.revise_topic SHIPS THE CLARIFIED
+# DRAFT AT WHATEVER IT SCORES, higher or lower. Truth beats score: the operator's answer changed
+# the fact base the earlier score was computed against, so a fall is the truth costing points, not
+# the draft getting worse. A negative answer forces a claim to be CUT, and the old
+# higher-score-ships rule read that cut as damage and handed back the original with the violation
+# still in it. The original returns only where no clarified draft was produced AT ALL: a stop, a
+# crash, or a session that died before scoring, each of which leaves a half applied revise rather
+# than a corrected article.
 # ---------------------------------------------------------------------------
 
 class AnswerItem(BaseModel):

@@ -19,6 +19,8 @@ OUTPUT_PATH:    {{OUTPUT_PATH}}
 
 {{RESOURCE_NOTE}}
 
+{{ROADMAP_DIGEST}}
+
 ---
 
 ## ROLE
@@ -71,8 +73,28 @@ live site wins**, and the conflict itself goes in §7 with the resolution.
 2. **`firecrawl_scrape`** every page that carries facts: homepage, about, product or project pages,
    pricing, FAQs, contact, news or press. Use `formats: ['markdown']`, `onlyMainContent: true`,
    `waitFor: 6000`. Read the whole page, not the paragraph you were looking for.
-3. Record the exact page each fact came from. The Source column is not optional and it is not
-   decorative: it is what makes this file auditable a year from now.
+3. **Then go back over the map with the ROADMAP in your hand, and fetch what those blogs will
+   need.** This is a SECOND pass, and step 2 is not optional cover for skipping it: the general
+   sweep is what keeps this file useful when a row is added next week, and this pass is what makes
+   it sufficient for the rows that already exist. Read the ROADMAP block above, take each planned
+   blog and the prompts it must be cited for, and ask which page on this site answers it. A menu
+   topic needs the menu page. A location topic needs that outlet's page. An events topic needs the
+   events page. A pricing question needs whatever page publishes the numbers. Fetch those pages
+   with the same parameters and read them the same way, then record what they carry.
+
+   **Why this pass exists, and it is not a nicety.** Every fact a planned blog needs and this file
+   lacks becomes a hard-gate failure later, in a session that has no way to fix it: the writer may
+   not invent a fact and the evaluator may not accept one this file does not hold, so the blog
+   fails on a page that exists, is published, and was one scrape away. That has already happened
+   here. A brand's fact base swept the site generally, recorded the outlet list, and shipped; a
+   planned blog about non-drinkers then needed the zero-alcohol menu, and nobody had fetched it,
+   because nothing told this session the page would matter. Now something does.
+
+   A planned blog is a reason to LOOK at a page. It is never a reason to record a fact the page
+   does not carry, and never a reason to promote a claim past STAGE 6 because a blog wants it. If
+   the page is not there, or does not say it, that is a finding for §9 and §8's caveat.
+4. Record the exact page each fact came from, from both passes. The Source column is not optional
+   and it is not decorative: it is what makes this file auditable a year from now.
 
 **Never use `firecrawl_agent`.** It hides source attribution, and attribution is the entire point of
 this document.
@@ -151,8 +173,13 @@ no text and were therefore unused. Then the caveat: this file was reconstructed 
 and not authored by the client, and these specific entries are the ones most worth a human
 double-check before the first batch run.>
 
-## §9 UNVERIFIED: claims found but not confirmed (NOT citable)
-<see STAGE 6. This section is REQUIRED even when empty.>
+## §9 UNVERIFIED: claims found but not confirmed (NOT citable as fact)
+<see STAGE 6. This section is REQUIRED even when empty. Every row carries five things: the
+claim exactly as found, where you found it, the date you fetched it, what would settle it,
+and its ATTRIBUTION WORDING. The attribution wording is either the EXACT sentence a writer
+may use to report the claim as the client's own, or the word NONE, which means this claim is
+not sayable in any form and §6.1 forbids it outright. NONE is the default. A row earns a
+wording only by passing STAGE 6's carve-out.>
 ```
 
 ---
@@ -177,7 +204,11 @@ or an angry customer would object to, and write those rules. Examples of the sha
 - Anything the client cannot deliver on: availability, timelines, delivery dates, capacity, "always",
   "never", "guaranteed".
 - Claims that depend on a number the site asserts about itself with no evidence. Those go to §9 and
-  are forbidden here until a human confirms them.
+  are forbidden here AS FACT until a human confirms them. Where STAGE 6's carve-out lets such a
+  number be reported as the client's own claim, the §9 attribution wording is the ONLY permitted
+  form of it, and this rule is what makes any other form forbidden. Where a rule in this section
+  forbids the claim on legal, regulatory or consumer-protection grounds, it stays forbidden in
+  EVERY form, attributed or not: §6.1 outranks §9 and a §9 wording never reopens it.
 
 For each rule, write what is forbidden and, where useful, the permitted alternative in §6.2. A rule
 a writer cannot comply with is a rule that gets ignored.
@@ -200,6 +231,72 @@ to stop trusting all of it.
 If a fact is central to the client's story and you cannot verify it, say so in §8's caveat. That is
 the most useful sentence you will write.
 
+### The attribution wording: how a §9 row becomes sayable without becoming a fact
+
+Most of §9 is metrics only the client can state: guest counts, brew volumes, seat numbers, staff
+numbers, founding dates, what is on the menu. No third party will ever publish them. More research
+cannot verify them, so a §9 row is not a to-do that later gets done, it is usually permanent. Left
+as a bare prohibition it is also dead weight: the writer needs specifics, the file holds specifics
+it forbids, and the writer ends up with nothing to say about the client at all.
+
+The way out is the distinction this stage already draws. The claim "the client has 3,200 guests
+daily" is unverified. The claim "the client SAYS it has 3,200 guests daily" is VERIFIED, by the
+page you fetched saying it. The second claim is true even if the number is wrong, because what is
+being asserted is what the client says. It is also exactly the kind of specific, sourced, dated
+sentence AI engines cite.
+
+So each qualifying §9 row records the EXACT sentence a writer may use, verbatim, in this shape:
+
+> {{CLIENT_NAME}} reports brewing 30,000 to 35,000 litres monthly (company figure,
+> https://example.com/our-brewery, fetched 2026-07-16).
+
+Named subject, a reporting verb that makes the client the source, the figure as published, then the
+page and the fetch date. This wording is BINDING and load-bearing, exactly as §6.2's wordings are:
+dropping "reports" or dropping "(company figure ...)" converts a permitted claim into a forbidden
+one, because the sentence left behind asserts as fact the very thing §9 says nobody confirmed.
+
+**THE CARVE-OUT, WHICH IS THE POINT OF THIS RULE AND NOT AN EXCEPTION TO IT**
+
+Attribution rescues NEUTRAL self-asserted metrics and NOTHING ELSE. Counts, volumes, seat and staff
+numbers, founding dates, menu contents, opening hours, what a place has in it.
+
+**Attribution NEVER unlocks a claim §6.1 forbids. §6.1 wins, always, and there is no §9 row that
+overrides it.** Where §6.1 forbids a claim, the attribution wording is NONE. Attribution is a
+DEMOTION applied to a claim that was already allowed to be said, never a promotion that makes a
+forbidden claim sayable. It changes who is asserting a thing. It changes nothing about whether the
+thing may be put in front of a reader.
+
+Write NONE, with no wording, for every one of these:
+- **Anything §6.1 forbids for legal, regulatory or consumer-protection reasons.** Returns,
+  yields, ROI, appreciation, guarantees. Approvals, registrations, licences, title, possession.
+  Medical, health, safety, allergen, dietary or financial outcomes. "The client says it guarantees
+  12% returns" is still a prohibited returns claim. The attribution does not soften it, it
+  documents the client promising it, which is worse than silence: it is the evidence, and the named
+  client is the one who answers for it.
+- **Superlatives.** "The client says it is India's largest" is still an unsubstantiated superlative
+  claim. §6.1's first house rule binds here even though the client is the one saying it.
+- **Any claim about a third party.** Competitors, awards, partners, other people's credentials. The
+  client has no standing to be a source about someone else, and attribution here manufactures a
+  chain of custody that does not exist: "the client says it won that award" is not evidence it won.
+- **Any claim §7 resolved against, or recorded as unresolved.** Both sides of a conflict are things
+  the client said, so attribution would make both sayable and defeat §7 entirely. The resolution
+  wins; the loser gets NONE.
+- **Any claim whose only source is a page §3.1 forbids.** A claim does not walk around the
+  forbidden-link list by being attributed to the client who published it there.
+- **Market, industry or category claims,** even about the client's own sector. Those need an
+  independent source. A client's own growth figure stays forbidden no matter who it is pinned on.
+
+**The test, when a row is genuinely unclear:** strip the attribution off the sentence and read what
+is left. Blogs from this factory are built to be lifted by AI engines, and the attribution is the
+first thing a lift drops. "The client brews 30,000 litres monthly" is harmless if wrong. "The client
+guarantees 12% returns" is not. If the stripped sentence would harm a reader or the client, the row
+gets NONE, whatever category it looked like it belonged to.
+
+**Every attributed row still carries its source URL and fetch date**, because "the client says X" is
+only true if a page you actually fetched shows the client saying X. There are two origins for
+anything in this file and there is no third: the client's own materials and site, or a source you
+fetched in full. A §9 row you did not fetch is not attributable. It is just unsourced.
+
 ---
 
 ## HARD RULES
@@ -215,6 +312,9 @@ the most useful sentence you will write.
    knowledge is never a source.** You have never heard of this company before this session.
 7. **§9 and §8's caveat are required.** A file with no unverified section and no caveat is claiming a
    completeness no session earns in one pass, and that claim is the most dangerous thing in it.
+8. **§6.1 outranks §9.** A §9 attribution wording never makes a §6.1 claim sayable. Where the two
+   appear to disagree, §6.1 is right and the wording is NONE. Attribution changes who is asserting
+   a thing, never whether it may be said.
 
 Your FINAL message is your report, and it is the only thing the operator reads besides the file. Keep
 it short: what you read, which resources were unreadable, what went in §9 and why, the conflicts in

@@ -433,6 +433,13 @@ export type RunEvent = {
  * run leaves one, and so does a file dropped into outputs/ by hand, which is supported here
  * because disk is the truth. Omitting it from this union does not stop the value arriving; it
  * only stops the compiler helping anyone handle it.
+ *
+ * `needs_review` is NOT A VERDICT, it is a WORKFLOW STATE, and it means exactly one thing: THIS
+ * BLOG HAS QUESTIONS WAITING FOR THE OPERATOR THAT ARE CURRENT, ON DISK, AND ANSWERABLE. The
+ * score is not part of that definition. A blog held at 96 has a verdict and the verdict is SHIP;
+ * what it lacks is an answer, so it waits for a human rather than for a better draft. There is
+ * deliberately NO second word for the held-and-passing case: one status, one meaning, and the
+ * badge says which human act is owed rather than implying the draft is deficient.
  */
 export type BlogStatus = "done" | "needs_review" | "failed" | "running" | "unknown" | "stopped";
 
@@ -487,21 +494,24 @@ export type BlogQuestion = {
  * One blog's questions.json, decorated by the engine with the three facts a file on disk cannot
  * know about itself.
  *
- * `blocking` is the house rule and not a preference: the engine sets it when the score is BELOW
- * 95, which is a draft that has not shipped and cannot ship until a human answers. At 95 and above
- * it is false, the blog has already shipped, and the form is an offer the operator may decline
- * forever. Exactly 95 is the case this spells out, because an earlier draft of the feature blocked
- * there and contradicted the rule the rest of the app is built on: 95 ships, questions or not.
+ * OPEN QUESTIONS HOLD A BLOG AT ANY SCORE, and the score does not enter that decision. A 96 with
+ * current questions is HELD, not shipped: answering is a DEMAND at every score, there is no
+ * dismiss and no proceed-anyway. The old rule, which held a blog only below 95 and treated a
+ * question on a passing draft as an offer, demonstrably shipped two canonical-facts violations at
+ * 96, so a question the operator never answered went out as fact. That is what the hold exists to
+ * stop.
  *
- * It is computed from the score the blog reports NOW, which is why it can go false under a blog
- * whose questions were asked at 92: a revise carried it to 96, and the questions that survive are
- * an offer against a shipped draft. Nothing in the browser recomputes this. The engine owns it,
- * the engine's 409 enforces it, and a second copy of the rule here would be free to disagree.
+ * `blocking` is the ENGINE's own copy of that decision and it stays on the wire, but NOTHING in
+ * this app branches on it any more. The hold is derived from the QUESTION STATE alone (see
+ * questions-state.ts), which is the axis the rule now turns on and which `stale` and `answered`
+ * already carry. Reading a score-shaped flag to decide a hold the score no longer governs is how
+ * the old rule would grow back.
  *
  * `stale` means the questions describe an iteration this blog has already moved past. The file
  * is rewritten only when an evaluator asks, so an iteration-1 ask that a revise fixed leaves a
  * file describing a draft that no longer exists. The engine 409s a submission against one, and
- * a real blog under outputs/ is in exactly this state today.
+ * a real blog under outputs/ is in exactly this state today. A stale ask summons nobody, so it
+ * does not hold the blog.
  */
 export type BlogQuestions = {
   slug: string;
@@ -512,7 +522,14 @@ export type BlogQuestions = {
   questions: BlogQuestion[];
   stale: boolean;
   blocking: boolean;
-  /** True when an answers.json exists for this same iteration. */
+  /**
+   * True when an answers.json exists for this same iteration.
+   *
+   * An ANSWERED form summons nobody, so it releases the hold: the operator has already done the
+   * one thing the hold demands. Without that, a form answered at 96 whose revise then crashed
+   * would keep holding the blog while the app refused a second submit against an already answered
+   * form, which is a blog with no exit.
+   */
   answered: boolean;
 };
 

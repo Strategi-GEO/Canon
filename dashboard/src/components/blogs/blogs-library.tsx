@@ -36,7 +36,9 @@ import type { BlogSummary } from "@/types";
 const FILTERS: { value: StatusFilter; label: string }[] = [
   { value: "all", label: "All statuses" },
   { value: "done", label: "Shipped" },
-  { value: "needs_review", label: "Needs review" },
+  // Named for the act it summons someone for, matching the badge. The filter an operator reaches
+  // for is "what do I owe", and that is what this word now means at every score.
+  { value: "needs_review", label: "Waiting on you" },
   { value: "failed", label: "Failed" },
   { value: "running", label: "Running" },
   { value: "stopped", label: "Stopped" },
@@ -344,16 +346,16 @@ function Library({
               // cap and a sourcing top-up as causes in their own right, which is exactly how a
               // blog ended up held for an act nobody could name.
               //
-              // It no longer says a 96 can land here either. That was true of the old boundary and
-              // it is now precisely the thing the rule forbids: at 95 and above a blog ships, and
-              // its questions ride along as an offer on a shipped blog.
+              // The score is deliberately absent from the definition now. A 96 DOES land here, and
+              // saying otherwise is what let the old rule ship two canonical-facts violations at
+              // 96: questions on a passing draft were an offer, so they were declined.
               <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                Needs review is not a failure. It means one thing: the blog scored below{" "}
-                <span className="machine">95</span> and the evaluator has a question only you can
-                answer, because research cannot settle what it asked. Open one to read the question
-                and answer it. A blog at <span className="machine">95</span> or above ships
-                whatever it asked, and reads as shipped with its questions offered rather than
-                demanded.
+                Needs review is not a failure and not a verdict. It means one thing: the evaluator
+                has a question only you can answer, because research cannot settle what it asked.
+                Open one to read the question and answer it. The score does not release a blog from
+                this: a <span className="machine">96</span> waits here exactly as an{" "}
+                <span className="machine">88</span> does, because a high score says the draft reads
+                well, not that the claim it asks about is true.
               </p>
             ) : null}
           </>
@@ -381,55 +383,30 @@ function Library({
  * a blog with questions is not broken. The evaluator reached something no amount of research
  * settles and asked the one source that can settle it, which is the operator.
  *
- * Blocking and optional are counted separately because they are different obligations. Four blogs
- * that cannot ship is a queue; a blog that already shipped and might get better is an invitation,
- * and rolling them into one number would either nag about the second or bury the first.
+ * ONE COUNT, because there is one obligation. This split the number in two, blocking against
+ * optional, and told the operator the optional ones "cannot cost you the score you have". They
+ * declined them, and two canonical-facts violations shipped at 96. A held blog is a held blog at
+ * every score, so the banner names one queue and no invitation.
  */
 function WaitingOnYou({ signals }: { signals: ReadonlyMap<string, WaitingSignal> }) {
-  const { total, blocking } = countWaiting(signals);
+  const { total } = countWaiting(signals);
   if (total === 0) {
     return null;
   }
-  const optional = total - blocking;
   return (
     <Card className="mb-4 border-review/25 bg-review-bg">
       <CardContent className="flex gap-2 py-3">
         <MessageCircleQuestion className="mt-0.5 size-3.5 shrink-0 text-review" aria-hidden />
         <div className="min-w-0">
           <p className="text-xs font-medium text-review">
-            {blocking > 0 ? (
-              <>
-                <span className="machine">{blocking}</span>{" "}
-                {blocking === 1 ? "blog cannot ship" : "blogs cannot ship"} until you answer the
-                evaluator
-              </>
-            ) : (
-              <>
-                <span className="machine">{optional}</span> shipped{" "}
-                {optional === 1 ? "blog has" : "blogs have"} an optional question for you
-              </>
-            )}
+            <span className="machine">{total}</span> {total === 1 ? "blog is" : "blogs are"} held
+            until you answer the evaluator
           </p>
           <p className="mt-1 text-xs leading-relaxed text-review/90">
-            {blocking > 0 ? (
-              <>
-                The evaluator asks only where a human answer changes the outcome: a fact the
-                client holds, a citation to confirm, a suspected inaccuracy. Research cannot close
-                those, so the draft waits. Open the blog to read the questions and answer them.
-              </>
-            ) : null}
-            {blocking > 0 && optional > 0 ? " " : null}
-            {optional > 0 ? (
-              <>
-                <span className="machine">{optional}</span> more{" "}
-                {optional === 1 ? "blog has" : "blogs have"} already shipped and{" "}
-                {optional === 1 ? "carries" : "carry"} questions you can answer if you want the
-                engine to try to improve {optional === 1 ? "it" : "them"}. The rerun keeps
-                whichever draft scores higher, so answering cannot cost{" "}
-                {optional === 1 ? "it" : "them"} the score{" "}
-                {optional === 1 ? "it has" : "they have"}.
-              </>
-            ) : null}
+            The evaluator asks only where a human answer changes the outcome: a fact the client
+            holds, a citation to confirm, a suspected inaccuracy. Research cannot close those and a
+            passing score does not close them either, so the blog waits whatever it scored. Open it
+            to read the questions and answer them.
           </p>
         </div>
       </CardContent>

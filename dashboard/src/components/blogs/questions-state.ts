@@ -1,32 +1,39 @@
 /**
- * What one blog's questions MEAN: which of four situations the operator is actually in, and
+ * What one blog's questions MEAN: which of three situations the operator is actually in, and
  * which blogs in a library are waiting on a person.
  *
  * Pure, and separate from the panel that renders it, because these are the rules the form is
- * right or wrong about. Reading `blocking` as "show a warning" rather than as "there is no way
+ * right or wrong about. Reading a hold as "show a warning" rather than as "there is no way
  * forward but the form", or offering a submit the engine will 409, are both defects that live
  * in this decision rather than in any markup, so the decision is one function that can be read
  * on its own.
  *
- * Nothing here is derived from a score. The ENGINE decides blocking, from the same rule
- * geo-factory/CLAUDE.md states: BELOW 95 is a draft that has not shipped and cannot ship until a
- * human answers, and 95 or above is a blog that already shipped. Recomputing that from `score` in
- * the browser would be a second copy of the house rule, free to drift from the one that actually
- * governs the engine's 409.
+ * OPEN QUESTIONS HOLD A BLOG AT ANY SCORE. The question state is checked FIRST and the score is
+ * not checked at all: a 96 with current questions is HELD, and answering it is a DEMAND rather
+ * than an offer. The rule this replaces held a blog only below 95 and let a question on a passing
+ * draft be declined forever, and it shipped two canonical-facts violations at 96 doing so. A
+ * question nobody had to answer is a question nobody answered.
  *
- * THE BOUNDARY IS 95 SHIPS, and exactly 95 is the case worth naming, because an earlier draft of
- * this feature blocked there and broke the house rule the rest of the app is built on: "95 ships.
- * 96 ships. No score at or above 95 is borderline." A blog at 95 with four open questions is a
- * shipped blog carrying an offer, never a blog held hostage to it.
+ * NOTHING HERE IS DERIVED FROM A SCORE, and that is now true in the strong sense: the score
+ * cannot hold a blog and cannot release one. The engine's `blocking` flag is not read either.
+ * It is the engine's own copy of a decision the score used to govern, and branching on it here
+ * would let the old rule back in through the wire.
+ *
+ * THE AXIS IS THE QUESTION STATE, four-valued and not a binary: current holds, and none, stale,
+ * and answered all release. The last two group with none for one reason: THE APP ALREADY REFUSES
+ * THEM. A stale ask is about a draft that no longer exists and the engine 409s it; an answered
+ * form has already had the one act it demands. Neither summons anybody, so neither may hold a
+ * blog hostage to an act that cannot be performed.
  */
 
 import type { BlogQuestions } from "@/types";
 
 export type QuestionsMode =
-  /** Below 95, with questions. The form is the only way forward: no proceed, no dismiss. */
-  | "blocking"
-  /** 95 or above. The blog has shipped and stays shipped; answering is an offer it can decline. */
-  | "offer"
+  /**
+   * Current questions, at ANY score. The blog is HELD and the form is the only way out: no
+   * proceed, no dismiss, and no score high enough to excuse the answer.
+   */
+  | "held"
   /** The questions describe a draft that has since been revised. The engine 409s a submit. */
   | "stale"
   /** An answers.json exists for this iteration: the revise is either running or has landed. */
@@ -41,8 +48,14 @@ export type QuestionsMode =
  * Reading that as "stale, you cannot answer these" would tell an operator their submission
  * failed at the exact moment it succeeded.
  *
- * `stale` outranks `blocking` because a stale question cannot be answered at all: the engine
- * refuses it. A blocking panel there would demand the one act the engine will not accept.
+ * `answered` also outranks `held`, which is what keeps a spent form from holding a blog forever:
+ * the operator answered, the revise then crashed or was stopped before the form was cleared, and
+ * the file is still on disk and still iteration-matched. Holding on it would summon a human to an
+ * act the app itself refuses, because the form is already answered. That is a dead end with no
+ * door, which is the exact thing the needs_review definition forbids.
+ *
+ * `stale` outranks `held` because a stale question cannot be answered at all: the engine refuses
+ * it. A held panel there would demand the one act the engine will not accept.
  */
 export function modeOf(questions: BlogQuestions): QuestionsMode {
   if (questions.answered) {
@@ -51,19 +64,19 @@ export function modeOf(questions: BlogQuestions): QuestionsMode {
   if (questions.stale) {
     return "stale";
   }
-  return questions.blocking ? "blocking" : "offer";
+  return "held";
 }
 
 /**
- * What the library shows on a row: how many questions are open, and whether they block a ship.
+ * What the library shows on a row: how many questions this blog is holding for the operator.
  *
- * `blocking` is the whole of the difference an operator scanning twelve rows needs: a blocking row
- * is a blog below 95 that cannot ship until they answer, and a non blocking row is a blog that has
- * already shipped and is offering. Same fact, opposite obligations, so the row states which.
+ * A COUNT AND NOTHING ELSE. This carried a `blocking` flag too, so a row could say "shipped, 2
+ * open questions" beside one saying "2 questions to answer", and the operator learned that the
+ * first kind was theirs to ignore. There is now one obligation, so there is one shape: every row
+ * with a signal is a blog held for an answer, whatever it scored.
  */
 export type WaitingSignal = {
   count: number;
-  blocking: boolean;
 };
 
 /**
@@ -81,23 +94,20 @@ export function waitingSignal(questions: BlogQuestions | null | undefined): Wait
   if (!questions || questions.questions.length === 0) {
     return null;
   }
-  const mode = modeOf(questions);
-  if (mode !== "blocking" && mode !== "offer") {
+  if (modeOf(questions) !== "held") {
     return null;
   }
-  return { count: questions.questions.length, blocking: mode === "blocking" };
+  return { count: questions.questions.length };
 }
 
-/** The library's headline: how many blogs are waiting, and how many of those cannot ship. */
-export function countWaiting(signals: ReadonlyMap<string, WaitingSignal>): {
-  total: number;
-  blocking: number;
-} {
-  let blocking = 0;
-  for (const signal of signals.values()) {
-    if (signal.blocking) {
-      blocking += 1;
-    }
-  }
-  return { total: signals.size, blocking };
+/**
+ * The library's headline: how many blogs are held for an answer.
+ *
+ * ONE NUMBER, because there is one obligation. This used to return a blocking count beside a
+ * total so the banner could separate a queue from an invitation, and the invitation half was the
+ * old rule's whole mistake: it taught an operator that some of the evaluator's questions were
+ * decoration. None of them are.
+ */
+export function countWaiting(signals: ReadonlyMap<string, WaitingSignal>): { total: number } {
+  return { total: signals.size };
 }

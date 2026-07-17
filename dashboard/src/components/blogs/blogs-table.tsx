@@ -190,43 +190,25 @@ function Row({
 /**
  * This blog is waiting on the operator, said in the row rather than only once they open it.
  *
- * AMBER IN BOTH CASES, because a question is a question: the evaluator reached the end of what
- * research can settle and asked the one source that can. Neither is a failure and neither borrows
- * the fail token.
+ * AMBER, because a question is a question: the evaluator reached the end of what research can
+ * settle and asked the one source that can. That is not a failure, so this never borrows the fail
+ * token.
  *
- * WHAT SEPARATES THEM IS THE OBLIGATION, and an operator with twelve blogs has to see it without
- * opening four of them to find out. Three things carry it at once. The label says which: one blog
- * cannot ship until it is answered, the other has shipped already. The FILL says which: solid on
- * the blog that is stopped, outline on the blog that is merely offering. And the Status column
- * beside it already reads "needs review" against "shipped", because below 95 with questions IS
- * needs_review and 95 or above IS done.
+ * ONE CHIP AND ONE OBLIGATION, AT EVERY SCORE. This had two forms, a solid "2 questions to answer"
+ * on a blog below 95 and an outline "shipped, 2 open questions" on one above it, and the second
+ * form taught an operator that some of these chips were theirs to scroll past. They scrolled past
+ * them, and two canonical-facts violations shipped at 96 that way. A row with this chip is a row
+ * held for an answer, and the Status column beside it reads "waiting on you" for the same reason.
  */
 function WaitingChip({ signal }: { signal: WaitingSignal }) {
   const noun = signal.count === 1 ? "question" : "questions";
   return (
     <span
-      title={
-        signal.blocking
-          ? "This blog scored below 95 and the evaluator asked something research cannot settle, so it cannot ship until you answer. Open it to read the questions."
-          : "This blog scored 95 or above and has shipped, so its score is final. Answering is optional, and the rerun keeps whichever draft scores higher."
-      }
-      className={cn(
-        "mt-1.5 inline-flex h-5 shrink-0 items-center gap-1 rounded border px-1.5 text-[0.6875rem] leading-none",
-        signal.blocking
-          ? "border-review/25 bg-review-bg font-medium text-review"
-          : "border-review/25 text-review",
-      )}
+      title="The evaluator asked something research cannot settle, so this blog is held until you answer, whatever it scored. Open it to read the questions."
+      className="mt-1.5 inline-flex h-5 shrink-0 items-center gap-1 rounded border border-review/25 bg-review-bg px-1.5 text-[0.6875rem] leading-none font-medium text-review"
     >
       <MessageCircleQuestion className="size-3 shrink-0" aria-hidden />
-      {signal.blocking ? (
-        <>
-          <span className="machine">{signal.count}</span> {noun} to answer
-        </>
-      ) : (
-        <>
-          shipped, <span className="machine">{signal.count}</span> open {noun}
-        </>
-      )}
+      <span className="machine">{signal.count}</span> {noun} to answer
     </span>
   );
 }

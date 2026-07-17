@@ -17,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { FieldError } from "@/components/clients/engine-error";
-import { modeOf, type QuestionsMode } from "@/components/blogs/questions-state";
+import { modeOf } from "@/components/blogs/questions-state";
 import { useNow } from "@/components/create/use-now";
 import { ApiError, api } from "@/lib/api";
 import { formatAbsolute, formatElapsed } from "@/lib/format";
@@ -56,18 +56,24 @@ export type ReviewHold = {
  * IT LIVES ON THE BLOG VIEW because the questions are about one blog, and the operator cannot
  * decide whether they can answer without the draft in front of them.
  *
- * THE THREE STATES IT RENDERS, and there is no fourth, because the engine settles the terminal
- * status on exactly this rule and corrects anything else:
+ * THE STATES IT RENDERS, decided by the QUESTION STATE and never by the score:
  *
- *   >= 95, no questions     Nothing here. The shipped badge is the whole story, so this renders
- *                           null rather than a box confirming that all is well.
- *   >= 95, with questions   `Open` in the ship tone with an amber tag. It shipped, it says so, and
- *                           the questions are an offer.
- *   <  95, with questions   `Open` in the review tone. Blocked, no dismiss, the form is the way
- *                           out.
+ *   no questions            Nothing here. The score is the whole story, so this renders null
+ *                           rather than a box confirming that all is well.
+ *   current questions       `Held` in the review tone, at ANY score. The form is the only way out.
+ *   stale questions         Historical. Nothing is asked of the operator and the engine 409s a
+ *                           submit, so there is no form.
+ *   answered               The revise is running, or it has landed.
  *
- * Below 95 with NOTHING to ask never reaches this component at all: that is `failed`, and a failed
- * blog has no human task in it to render.
+ * OPEN QUESTIONS HOLD A BLOG AT ANY SCORE, so a 96 with current questions renders exactly as a 92
+ * does: held, no dismiss, no proceed. This panel used to paint a passing blog green with an amber
+ * tag and call its questions an offer the operator could decline forever, and they declined them:
+ * the old rule shipped two canonical-facts violations at 96, one publishing a claim the fact base
+ * lists as not citable, one citing a date from a source never fetched in full. A question that
+ * costs nothing to ignore is a question that gets ignored.
+ *
+ * Nothing to ask never reaches this component at all when the loop exhausted itself: that is
+ * `failed`, and a failed blog has no human task in it to render.
  *
  * The strip is what the drawer shows; the form is a dialog behind it, following the same pattern
  * as the roadmap generation dialog. The drawer's tabs own a fixed height calculated from the
@@ -189,7 +195,7 @@ export function AnswerQuestions({
       // The ordinary case: the evaluator settled everything by itself and asked nobody anything.
       return null;
     }
-    return <Held review={review} blogScore={blogScore} />;
+    return <NothingToAnswer review={review} blogScore={blogScore} />;
   }
 
   const mode = modeOf(questions);
@@ -212,12 +218,11 @@ export function AnswerQuestions({
   }
 
   return (
-    <Open
+    <Held
       brandSlug={brandSlug}
       topicSlug={topicSlug}
       questions={questions}
       blogScore={blogScore}
-      mode={mode}
       review={review}
       lockedReason={
         session === null
@@ -237,24 +242,24 @@ export function AnswerQuestions({
 /**
  * The strip in the drawer, in the tone the situation has earned.
  *
- * `ship` and `review` are what separate the two states an operator can act on, and the separation
- * is the point: a shipped blog carrying questions is green with an amber tag on it, and a blog
- * held below 95 is amber throughout. One reads as finished with a caveat, the other as stopped.
- * Both are the app's existing status tokens, so a strip never introduces a colour the status
- * badges do not already use for the same meaning.
+ * THERE IS NO `ship` TONE HERE, and its absence is load-bearing. A held blog is amber whatever it
+ * scored, because the tone answers "is anything owed" and the answer is yes at 96 exactly as it is
+ * at 92. The green strip that used to sit under a passing blog's open questions read as finished
+ * with a caveat, which is precisely the message that got the caveat ignored. `muted` carries the
+ * states where nothing is owed and nothing can be done, and every tone here is one the status
+ * badges already use for the same meaning.
  */
 function Strip({
   tone,
   children,
 }: {
-  tone: "ship" | "review" | "fail" | "muted";
+  tone: "review" | "fail" | "muted";
   children: React.ReactNode;
 }) {
   return (
     <div
       className={cn(
         "border-b px-4 py-3",
-        tone === "ship" && "border-ship/25 bg-ship-bg",
         tone === "review" && "border-review/25 bg-review-bg",
         tone === "fail" && "border-fail/25 bg-fail-bg",
         tone === "muted" && "border-border bg-muted/40",
@@ -279,7 +284,7 @@ function ReviewNote({
   tone,
 }: {
   review: ReviewHold | null;
-  tone: "ship" | "review" | "fail" | "muted";
+  tone: "review" | "fail" | "muted";
 }) {
   if (review === null) {
     return null;
@@ -289,7 +294,6 @@ function ReviewNote({
   }
   const className = cn(
     "mt-1.5 text-xs leading-relaxed",
-    tone === "ship" && "text-muted-foreground",
     tone === "review" && "text-review/90",
     tone === "fail" && "text-fail/90",
     tone === "muted" && "text-muted-foreground",
@@ -300,17 +304,7 @@ function ReviewNote({
   }
   return (
     <p className={className}>
-      <span className="font-medium">
-        {tone === "ship"
-          ? // A SHIPPED blog whose status still reads needs review is a real row on disk right
-            // now: ramen scored 96 and was held anyway, under the old rule, for a Sourcing top-up
-            // that had already resolved itself. The engine settles this on the next run and the
-            // status is being corrected by hand, but until then the badge above says one thing and
-            // this block says another, and an operator deserves to be told which is right rather
-            // than left to guess. The score is right. The status is the artifact.
-            "Its status on disk still reads needs review, which is the old rule and not this one. The run's own words for it: "
-          : "The run's own reason for holding it: "}
-      </span>
+      <span className="font-medium">The run&apos;s own reason for holding it: </span>
       {review.note}
     </p>
   );
@@ -347,7 +341,13 @@ function standingLine(blogScore: number | null): string {
  * carry the old status, and the operator has several of them on disk right now, so this is a real
  * state to render rather than a defensive branch.
  */
-function Held({ review, blogScore }: { review: ReviewHold; blogScore: number | null }) {
+function NothingToAnswer({
+  review,
+  blogScore,
+}: {
+  review: ReviewHold;
+  blogScore: number | null;
+}) {
   return (
     <Strip tone="muted">
       <p className="flex items-center gap-2 text-xs font-medium text-foreground">
@@ -370,7 +370,7 @@ function Held({ review, blogScore }: { review: ReviewHold; blogScore: number | n
 }
 
 /**
- * The two states an operator can act on, as ONE block each, read top to bottom.
+ * A blog HELD for an answer, as ONE block read top to bottom.
  *
  * THE ORDER IS THE FEATURE: reason, then the engine's evidence, then the questions themselves,
  * then the action. This drawer used to stack two amber boxes, one saying "this blog cannot ship
@@ -380,25 +380,18 @@ function Held({ review, blogScore }: { review: ReviewHold; blogScore: number | n
  * genuinely useful sentence, the engine's note about how the loop exhausted itself, sat in the box
  * WITHOUT the button where it got skimmed past. One block, one read, nothing to compare.
  *
- * THE TWO STATES ARE THE SAME SHAPE AND OPPOSITE OBLIGATIONS, which is why they are one component
- * with the difference stated rather than two components free to drift:
- *
- *   below 95, with questions  BLOCKED. Amber throughout. The form is the only way out, and there
- *                             is no dismiss, because the evaluator is saying no rewrite closes
- *                             this.
- *   95 or above, questions    SHIPPED, and it says so, in the ship tone with an amber tag naming
- *                             the open questions. This blog is finished and its score is final.
- *                             The offer is an offer.
- *
- * Exactly 95 ships. That is the house rule the rest of the app already runs on, and an earlier
- * draft of this feature broke it by blocking there.
+ * ONE STATE, ONE OBLIGATION, AT EVERY SCORE. This was two states with opposite obligations: amber
+ * and blocked below 95, green with a tag and declinable at 95 and above. The declinable half is
+ * gone. A question is the evaluator saying no rewrite closes this gap, and that is equally true of
+ * a draft scoring 96: the score measures the draft the evaluator could see, and the question is
+ * about what it could not. So the form is the only way out here whatever the number, and the
+ * score's only job in this block is to tell the operator what the draft stands at while it waits.
  */
-function Open({
+function Held({
   brandSlug,
   topicSlug,
   questions,
   blogScore,
-  mode,
   review,
   lockedReason,
   onStarted,
@@ -408,92 +401,53 @@ function Open({
   questions: BlogQuestions;
   /** What the blog scores NOW. The score the questions carry is what it scored when asked. */
   blogScore: number | null;
-  mode: Extract<QuestionsMode, "blocking" | "offer">;
   /** The engine's hold, rendered in this block because this block is where it gets discharged. */
   review: ReviewHold | null;
   /** Why the engine would refuse this submit right now, or null when it would take it. */
   lockedReason: string | null;
   onStarted: (run: RunSummary) => void;
 }) {
-  const blocking = mode === "blocking";
   const count = questions.questions.length;
-  const noun = count === 1 ? "question" : "questions";
-  // The disk's number first: a blog whose revise carried it from 92 to 96 is a shipped blog, and
-  // the 92 the questions remember is not what it scores now.
+  // The disk's number first: the score the questions remember is what the draft scored when they
+  // were asked, and a revise may have moved it since.
   const score = blogScore ?? questions.score;
-  const tone = blocking ? "review" : "ship";
 
   return (
-    <Strip tone={tone}>
-      {/* 1. THE REASON. The headline states the state, and the tag beside it is the caveat rather
-             than a second headline: a shipped blog reads as shipped first. */}
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-        <p
-          className={cn(
-            "flex items-center gap-2 text-xs font-medium",
-            blocking ? "text-review" : "text-ship",
-          )}
-        >
-          {blocking ? (
-            <MessageCircleQuestion className="size-3.5 shrink-0" aria-hidden />
-          ) : (
-            <Check className="size-3.5 shrink-0" aria-hidden />
-          )}
-          {blocking
-            ? `This blog cannot ship until you answer ${count === 1 ? "a question" : `${count} questions`}`
-            : score === null
-              ? "This blog has shipped and stays shipped"
-              : `This blog shipped at ${score} and stays shipped`}
-        </p>
-        {blocking ? null : <OpenQuestionsTag count={count} />}
-      </div>
+    <Strip tone="review">
+      {/* 1. THE REASON. One headline, no tag beside it: there is no caveat to add, because there
+             is no reading of this state under which the operator is finished with it. */}
+      <p className="flex items-center gap-2 text-xs font-medium text-review">
+        <MessageCircleQuestion className="size-3.5 shrink-0" aria-hidden />
+        This blog is held until you answer{" "}
+        {count === 1 ? "a question" : `${count} questions`}
+      </p>
 
-      <p
-        className={cn(
-          "mt-1.5 text-xs leading-relaxed",
-          blocking ? "text-review/90" : "text-muted-foreground",
-        )}
-      >
-        {blocking ? (
-          <>
-            {/* No score is a state the engine holds on, not one it ships: an evaluator that asked
-                and died before writing its scored line leaves the questions and no number, and
-                the blog stays held. Naming a score that was never recorded would put an empty gap
-                where the operator looks for the reason. */}
-            {questions.score === null ? (
-              <>
-                No eval recorded a score for it, so it never reached the{" "}
-                <span className="machine">95</span> bar,
-              </>
-            ) : (
-              <>
-                It scored <span className="machine">{questions.score}</span>, below the{" "}
-                <span className="machine">95</span> bar,
-              </>
-            )}{" "}
-            and the evaluator found something no amount of research settles: the answer is a fact
-            only you hold. Answering starts a surgical revise of this draft. There is nothing to
-            dismiss here and no proceed.
-          </>
+      <p className="mt-1.5 text-xs leading-relaxed text-review/90">
+        {/* The score is stated and then set aside, deliberately. It is the first thing an operator
+            looks for and the last thing that decides this, so leaving it out would read as the app
+            hiding a 96 rather than as the 96 not being the point. */}
+        {score === null ? (
+          <>No eval recorded a score for it, and the score would not release it anyway: </>
         ) : (
           <>
-            <span className="machine">95</span> and above ships, questions or not, so this score is
-            final and the {noun} below {count === 1 ? "is" : "are"} an offer you can decline
-            forever. Answering lets the engine try to improve the draft, and the rerun keeps
-            whichever draft scores higher, so it cannot cost you the score you already have.
+            It scores <span className="machine">{score}</span>, and that does not release it:{" "}
           </>
         )}
+        the evaluator found something no amount of research settles, because the answer is a fact
+        only you hold. A high score does not make the question go away: it says the draft reads
+        well, not that the claim is true. Answering starts one surgical revise of this draft. There
+        is nothing to dismiss here, no proceed, and no score high enough to skip it.
       </p>
 
       {/* 2. THE EVIDENCE, above the questions and never below the button. It is the engine saying
              how the loop exhausted itself, which is what tells an operator their answer really is
              the only way forward rather than one option among several. */}
-      <ReviewNote review={review} tone={tone} />
+      <ReviewNote review={review} tone="review" />
 
       {/* 3. THE QUESTIONS. What is actually being asked, before the button that answers it: an
              operator decides whether they are the person who can answer by reading the questions,
              not by reading a count of them. */}
-      <QuestionList questions={questions.questions} tone={tone} />
+      <QuestionList questions={questions.questions} />
 
       {/* 4. THE ACTION, last, because everything above it is what the press is based on. */}
       <div className="mt-3">
@@ -501,29 +455,11 @@ function Open({
           brandSlug={brandSlug}
           topicSlug={topicSlug}
           questions={questions}
-          blocking={blocking}
           lockedReason={lockedReason}
           onStarted={onStarted}
         />
       </div>
     </Strip>
-  );
-}
-
-/**
- * The amber tag on a shipped blog: how many questions are open on something already finished.
- *
- * The operator asked for exactly this and named the colour: the blog "still ships with the Amber
- * tag". The tag is amber because a question is a question in either state, and it sits on a green
- * headline in a green block because this blog is done. That pairing is the whole message, and it
- * is the difference a blocked blog, amber throughout, reads as at a glance.
- */
-function OpenQuestionsTag({ count }: { count: number }) {
-  return (
-    <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded border border-review/25 bg-review-bg px-1.5 text-[0.6875rem] leading-none font-medium text-review">
-      <MessageCircleQuestion className="size-3 shrink-0" aria-hidden />
-      <span className="machine">{count}</span> open {count === 1 ? "question" : "questions"}
-    </span>
   );
 }
 
@@ -537,13 +473,7 @@ function OpenQuestionsTag({ count }: { count: number }) {
  *
  * questions.py caps an ask at five, so this list has a real bound and cannot swallow the drawer.
  */
-function QuestionList({
-  questions,
-  tone,
-}: {
-  questions: BlogQuestion[];
-  tone: "ship" | "review";
-}) {
+function QuestionList({ questions }: { questions: BlogQuestion[] }) {
   return (
     <ul className="mt-2 flex flex-col gap-1.5">
       {questions.map((item) => (
@@ -551,12 +481,7 @@ function QuestionList({
           <span className="machine inline-flex h-5 shrink-0 items-center rounded border border-border bg-background/60 px-1.5 text-[0.6875rem] leading-none text-muted-foreground">
             {item.area}
           </span>
-          <span
-            className={cn(
-              "min-w-0 text-xs leading-relaxed text-pretty",
-              tone === "review" ? "text-review/90" : "text-muted-foreground",
-            )}
-          >
+          <span className="min-w-0 text-xs leading-relaxed text-pretty text-review/90">
             {item.question}
           </span>
         </li>
@@ -576,14 +501,12 @@ function AnswerDialog({
   brandSlug,
   topicSlug,
   questions,
-  blocking,
   lockedReason,
   onStarted,
 }: {
   brandSlug: string;
   topicSlug: string;
   questions: BlogQuestions;
-  blocking: boolean;
   lockedReason: string | null;
   onStarted: (run: RunSummary) => void;
 }) {
@@ -615,7 +538,7 @@ function AnswerDialog({
       onStarted(run);
       toast.success("Answers filed, revise started", {
         description:
-          "The engine is revising the existing draft with them. It keeps whichever draft scores higher.",
+          "The engine is revising the existing draft with them. The clarified draft is the one that ships.",
       });
     } catch (cause) {
       setError(cause instanceof ApiError ? cause : new ApiError(0, String(cause), null));
@@ -637,34 +560,28 @@ function AnswerDialog({
         }
       }}
     >
+      {/* One button, always the primary one. An outline variant was how the old rule said "you can
+          ignore this", and a demand does not get a quieter button than a request. */}
       <DialogTrigger asChild>
-        <Button size="sm" variant={blocking ? "default" : "outline"} className="shrink-0">
+        <Button size="sm" className="shrink-0">
           Answer
         </Button>
       </DialogTrigger>
 
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>
-            {blocking
-              ? "Answer to unblock this blog"
-              : "Answer to let the engine try to improve this blog"}
-          </DialogTitle>
+          <DialogTitle>Answer to release this blog</DialogTitle>
           <DialogDescription>
-            {blocking ? (
-              <>
-                The evaluator scored this draft {questions.score} at iteration {questions.iter}{" "}
-                and stopped on {questions.questions.length === 1 ? "this" : "these"}. There is no
-                proceed here and nothing to dismiss: research cannot settle{" "}
-                {questions.questions.length === 1 ? "it" : "them"}, so the draft waits on you.
-              </>
+            The evaluator
+            {questions.score === null ? (
+              <> scored no draft</>
             ) : (
-              <>
-                This blog scored {questions.score} and has already shipped. Answering is entirely
-                optional, and the rerun keeps whichever draft scores higher, so pressing this
-                cannot cost you the {questions.score} you already have.
-              </>
-            )}
+              <> scored this draft {questions.score}</>
+            )}{" "}
+            at iteration {questions.iter} and stopped on{" "}
+            {questions.questions.length === 1 ? "this" : "these"}. There is no proceed here and
+            nothing to dismiss, at any score: research cannot settle{" "}
+            {questions.questions.length === 1 ? "it" : "them"}, so the blog waits on you.
           </DialogDescription>
         </DialogHeader>
 
@@ -690,10 +607,16 @@ function AnswerDialog({
               researched again, and the article is not rewritten from scratch.
             </p>
             <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-              Gates and the link pass run, then a fresh evaluator scores the result.{" "}
+              Gates and the link pass run, then a fresh evaluator scores the result, and it reads
+              your answers alongside the brand&apos;s canonical facts.{" "}
               <span className="text-foreground">
-                The higher scoring draft ships, so a worse revise cannot replace what you have.
+                The clarified draft ships even if it scores lower than the one it replaces.
               </span>{" "}
+              A negative answer makes the writer CUT a claim, and a draft can lose points for
+              losing it: that is the truth costing points, not the draft getting worse. Keeping the
+              higher score here would restore the original with the wrong claim still in it.
+            </p>
+            <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
               An answer is guidance, ranking with the brand&apos;s canonical facts and above any
               internal doc. It is never a citation: a claim needing a source still needs a fetched
               one.
@@ -910,7 +833,7 @@ function Answered({
         <p className="mt-1.5 text-xs leading-relaxed text-review/90">
           {queued
             ? "The engine works one session at a time across every brand, so this waits its turn. Nothing has run yet."
-            : "It applies your answers and the outstanding fix list to the existing draft, then gates, the link pass, and a fresh evaluator. The higher scoring draft is the one that ships."}
+            : "It applies your answers and the outstanding fix list to the existing draft, then gates, the link pass, and a fresh evaluator. The clarified draft is the one that ships, whatever it scores."}
           {elapsed !== null ? (
             <>
               {" "}
@@ -946,10 +869,12 @@ function Answered({
  * for this blog NOW. Both are the engine's, neither is remembered in this browser, so the
  * sentence reads the same after a refresh as it did the moment the run landed.
  *
- * The equal case is the honest one and it is stated rather than dressed up: the engine keeps
- * whichever draft scores higher, so a rerun that came back worse leaves the original shipping
- * and the number unmoved. That is the outcome an operator has to be able to trust, because it is
- * the entire reason pressing the button at 96 is safe.
+ * THE LOWER CASE IS THE ONE THAT MATTERS, and it is stated plainly rather than apologised for.
+ * The clarified draft ships even when it scores below the draft it replaced, because a negative
+ * answer forces a claim OUT and the rubric reads that cut as lost factual density. Restoring the
+ * higher scoring original would restore the claim the operator just said was wrong, which is the
+ * engine structurally preferring a draft it knows to be untrue. A drop here is the answer being
+ * applied, so the sentence says so instead of reading as a regression the operator caused.
  */
 function outcomeLine(questions: BlogQuestions, blogScore: number | null): string {
   const asked = questions.score;
@@ -961,7 +886,7 @@ function outcomeLine(questions: BlogQuestions, blogScore: number | null): string
     return `The clarified draft scored ${blogScore} and is the one that ships, up from the ${asked} this blog scored when the questions were asked.`;
   }
   if (blogScore === asked) {
-    return `The clarified draft did not beat ${asked}, so the original draft still ships and this blog still scores ${asked}. The engine keeps whichever draft scores higher, which is why the rerun could not cost you anything.`;
+    return `The clarified draft scored ${asked} again and is the one that ships. Your answers changed the text without moving the number.`;
   }
-  return `This blog now reports ${blogScore}, below the ${asked} it scored when the questions were asked. The engine ships whichever draft scored higher, so read eval.md for what the evaluator did with it.`;
+  return `The clarified draft scored ${blogScore} and is the one that ships, down from the ${asked} this blog scored when the questions were asked. A lower score here is usually the answer being applied: an answer that rules a claim out makes the writer cut it, and the rubric counts the cut as lost density. The draft that reflects what you told it ships regardless. Read eval.md for what the evaluator made of it.`;
 }

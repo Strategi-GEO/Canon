@@ -294,7 +294,7 @@ export function SessionCard({
                   // Generate cheap, and nothing else on this card can tell them.
                   "You stopped this brand. Every blog that had already finished is kept, exactly as it was. Blogs that were in flight are marked stopped and never shipped, and nothing was deleted: their research and drafts are still on disk. Topics that had not started never started and cost nothing. Generate picks the brand back up."
                 : ended
-                  ? "Every topic here reached a terminal state. A blog shipped means its first eval scored 95 or above, which it does whether or not the evaluator asked you anything. A blog in review scored below 95 and left a question only you can answer. A blog that failed scored below 95 with nothing to ask."
+                  ? "Every topic here reached a terminal state. A blog in review left a question only you can answer, and it is held until you answer it whatever it scored. A blog shipped means its first eval scored 95 or above with nothing left to ask. A blog that failed scored below 95 with nothing to ask."
                   : "Queued topics are waiting on a free engine slot, shared across every brand, and each one starts the moment a slot frees rather than waiting for the rest of this session. Research is the long stage, so a topic sitting there with nothing to say is normal: the stage clock on each row is the number that says otherwise."}
             </p>
             {reconnecting ? (

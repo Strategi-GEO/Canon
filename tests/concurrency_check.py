@@ -10,8 +10,22 @@ timestamps, and checks the runner's three concurrency claims:
   2. Dispatch is gather-all-at-once: the topic that starts sixth begins before
      all of the first five have finished, so a freed slot is reused instantly
      rather than after a batch barrier.
-  3. Every topic terminates exactly once, with the terminal line last in its
-     file.
+  3. Every topic reaches a terminal state, and its file ENDS on that state, so
+     the SSE stream closes and the verdict is unambiguous.
+
+Claim 3 used to read "terminates exactly once", and against real output that was
+simply false: it failed 7 of 10 real BLR topics while the engine was behaving
+correctly. status.jsonl is APPEND ONLY and it OUTLIVES the run that created it,
+so a second terminal line is normal and expected in at least three cases. A topic
+re-generated after a stop or a failure replays into the same file. A revise
+re-opens a finished topic and scores it again. And _enforce_terminal_status
+appends an engine correction on top of the lead's claim, which is the audit trail
+of an override and the whole reason that mechanism is trustworthy.
+
+So the honest invariant is about the LAST line, not the count. A check that
+demands one terminal line is asking the file to forget its own history, and a
+suite that cries wolf on correct output is worse than no suite: the next real
+failure it catches gets waved through with the rest.
 
 Stdlib only, so it runs anywhere the repo runs. Reusable:
 
@@ -26,7 +40,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-TERMINAL_STATUSES = {"done", "needs_review", "failed"}
+# Deliberately a literal and not an import of runner.TERMINAL_STATUSES: this file is stdlib only
+# on purpose, so it can be pointed at an output root on a machine with no venv and no server
+# package. The cost of that choice is drift, and drift already happened: "stopped" became a
+# terminal status when the stop button shipped, and until it was added here every stopped topic
+# read as one that never terminated. If a status is ever added to the engine, it belongs here the
+# same day.
+TERMINAL_STATUSES = {"done", "needs_review", "failed", "stopped"}
 
 
 def parse_ts(value):
@@ -51,11 +71,23 @@ def load_topic(status_path):
         and line.get("event") == "end"
         and line.get("score") is not None
     ]
+    # The largest quiet stretch between consecutive lines. A topic being worked on emits stages
+    # continuously, so a long silence in the middle of one file means the engine came back to this
+    # topic later: a second run appended to a file the first run had already finished with. It is
+    # the only evidence of a run boundary this file offers, because a status line carries no
+    # run_id. Heuristic, and used only to downgrade the single-run claims, never to fail one.
+    stamps = [parse_ts(line["ts"]) for line in lines if line.get("ts")]
+    max_gap_minutes = max(
+        ((stamps[i] - stamps[i - 1]).total_seconds() / 60 for i in range(1, len(stamps))),
+        default=0,
+    )
+
     return {
         "slug": status_path.parent.name,
         "start": parse_ts(lines[0]["ts"]),
         "end": parse_ts(lines[-1]["ts"]),
         "lines": len(lines),
+        "max_gap_minutes": max_gap_minutes,
         "terminal_count": len(terminal_indexes),
         "terminal_is_last": bool(terminal_indexes) and terminal_indexes[-1] == len(lines) - 1,
         "terminal_status": lines[terminal_indexes[-1]]["status"] if terminal_indexes else None,
@@ -117,8 +149,47 @@ def main(argv=None):
         if not passed:
             failures += 1
 
+    # CLAIMS 1 AND 2 ARE ABOUT ONE RUN, AND THIS FILE CANNOT ALWAYS TELL WHICH RUN A LINE CAME FROM.
+    #
+    # A status line carries ts, slug, stage, event, iter, score, status and note. It does NOT carry a
+    # run_id, so when a topic is generated, then generated again later, both runs land in one file
+    # and this analyzer reads the topic's lifetime as first-line to last-terminal: a span covering
+    # BOTH runs and the dead hours between them. Every reopened topic then looks like it overlapped
+    # every other, and the peak reads far above the cap.
+    #
+    # That is not academic. Pointed at real accumulated output this printed "measured max concurrent
+    # topics = 7" against a cap of 5, whose own message reads "above cap means the semaphore leaked".
+    # There was no leak. Seven of ten topics had simply been re-generated hours apart. A tool that
+    # cries semaphore leak at correct output does not merely waste an afternoon: it teaches its
+    # reader to disbelieve it, and the day it is right nobody listens.
+    #
+    # The gap test below is a HEURISTIC and it is labelled as one, because no exact answer exists in
+    # the data. It is used only to DOWNGRADE, never to fail: where the root plainly holds more than
+    # one run, the two single-run claims are reported as unanswerable rather than answered wrongly.
+    # Claim 3 needs no session boundary and is always checked. For a clean proof, point this at a
+    # fresh output root holding exactly one run.
+    REOPEN_GAP_MINUTES = 20
+    reopened = [t["slug"] for t in topics if t.get("max_gap_minutes", 0) > REOPEN_GAP_MINUTES]
+    multi_run = bool(reopened)
+    if multi_run:
+        print(
+            f"NOTE: {len(reopened)} topic(s) have a gap over {REOPEN_GAP_MINUTES} minutes in their "
+            f"timeline, so this output root holds more than one run: "
+            + ", ".join(s[:40] for s in reopened)
+        )
+        print(
+            "      Claims 1 and 2 describe a SINGLE run and a status line carries no run_id, so "
+            "they cannot be answered here and are reported below rather than asserted."
+        )
+        print()
+
     peak = max_concurrent(topics)
-    if len(topics) > args.cap:
+    if multi_run:
+        print(
+            f"INFO: max concurrent topics measured = {peak} (cap {args.cap}). Not asserted: this "
+            f"root holds multiple runs, so the number counts topics that never overlapped."
+        )
+    elif len(topics) > args.cap:
         check(
             "max concurrency == cap",
             peak == args.cap,
@@ -130,7 +201,7 @@ def main(argv=None):
         check("max concurrency <= cap", peak <= args.cap,
               f"measured {peak}; selection of {len(topics)} cannot saturate cap {args.cap}")
 
-    if len(topics) > args.cap:
+    if not multi_run and len(topics) > args.cap:
         first_wave = by_start[: args.cap]
         overflow = by_start[args.cap :]
         min_first_start = min(t["start"] for t in first_wave)
@@ -149,15 +220,37 @@ def main(argv=None):
             f"max first-wave end {max_first_end.isoformat()}",
         )
 
+    # Two separate claims, because they fail for different reasons and a reader deserves to know
+    # which one broke. A topic with NO terminal line is the SSE stream that never closes and the
+    # watch view that heartbeats forever. A topic whose terminal line is not last is worse: the
+    # engine reported a verdict and then kept writing, so the status the app shows depends on
+    # which line it happened to read.
     check(
-        "every topic has exactly one terminal line, last in its file",
-        all(t["terminal_count"] == 1 and t["terminal_is_last"] for t in topics),
+        "every topic reaches a terminal state",
+        all(t["terminal_count"] >= 1 for t in topics),
+        "; ".join(f"{t['slug']}: no terminal line" for t in topics if not t["terminal_count"])
+        or "all terminate",
+    )
+    check(
+        "every topic's file ENDS on its terminal line",
+        all(t["terminal_is_last"] for t in topics if t["terminal_count"]),
         "; ".join(
-            f"{t['slug']}: {t['terminal_count']} terminal, last={t['terminal_is_last']}"
+            f"{t['slug']}: terminal line is not last"
             for t in topics
-            if not (t["terminal_count"] == 1 and t["terminal_is_last"])
+            if t["terminal_count"] and not t["terminal_is_last"]
         ) or "all clean",
     )
+    # Reported, never asserted. More than one terminal line is legitimate history (a regenerate, a
+    # revise, an engine correction), so this is a number worth seeing and not a number worth
+    # failing on. If it climbs on a FRESH output root, where a topic has no history to replay,
+    # that is worth a look.
+    replayed = [t for t in topics if t["terminal_count"] > 1]
+    if replayed:
+        print(
+            f"INFO: {len(replayed)} topic(s) carry more than one terminal line, which is history "
+            f"rather than a fault: "
+            + ", ".join(f"{t['slug']}={t['terminal_count']}" for t in replayed)
+        )
 
     done_95 = [t for t in topics if t["terminal_status"] == "done" and (t["final_score"] or 0) >= 95]
     check(

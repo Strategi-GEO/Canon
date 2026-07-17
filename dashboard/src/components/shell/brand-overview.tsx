@@ -229,7 +229,9 @@ function BrandStats({ client, topics }: { client: Client; topics: number | null 
         <p className="text-sm font-medium text-foreground">Where this brand stands</p>
         <dl className="mt-3 flex flex-col gap-2">
           <StatRow label="Blogs shipped" value={counts.shipped} accent />
-          <StatRow label="Needs review" value={counts.review} />
+          {/* The act, not a judgement on the draft: these blogs are held for an answer, and some
+              of them are passing drafts whose question is still owed. */}
+          <StatRow label="Waiting on you" value={counts.review} />
           <StatRow label="Failed" value={counts.failed} />
           <StatRow label="Resources" value={client.resource_count} />
           <StatRow label="Roadmap topics" value={topics} />

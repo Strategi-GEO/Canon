@@ -16,7 +16,14 @@ import httpx
 
 log = logging.getLogger("geo-factory")
 
-CMS_URL = os.environ.get("STRATEGI_CMS_URL", "https://cms.strategi.is/api/v1/ingest")
+# The CMS lives at client.strategi.is. This default is VERIFIED against the live endpoint,
+# not copied from a document: it answers POST /api/v1/ingest with {"error":"Missing API key"}
+# unauthenticated, and 422s a bad payload naming the field.
+#
+# STRATEGI_CMS_URL must be the FULL endpoint including /api/v1/ingest, not a bare host: this
+# value is POSTed to verbatim. The bare host 307s to /login, the operator UI, so a host-only
+# value would silently push a blog at a login page and never say so.
+CMS_URL = os.environ.get("STRATEGI_CMS_URL", "https://client.strategi.is/api/v1/ingest")
 
 # One key = one org, so there is ONE variable per org and NO shared fallback.
 #

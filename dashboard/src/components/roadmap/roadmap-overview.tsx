@@ -260,13 +260,13 @@ export function RoadmapOverview({
               label="Shipped"
               value={stats.shipped}
               tone="ship"
-              note="Scored 95 or above on the first eval, which is the only way a blog ships here."
+              note="Scored 95 or above on the first eval with nothing left to ask, which is the only way a blog ships here."
             />
             <StatTile
-              label="Needs human review"
+              label="Waiting on you"
               value={stats.review}
               tone="review"
-              note="Written and waiting on a person, not broken. A blog lands here when it scored below 95 and the evaluator asked something only you can answer."
+              note="Written and waiting on a person, not broken. A blog lands here when the evaluator asked something only you can answer, and it waits whatever it scored: a 96 with an open question is held too."
             />
             <StatTile
               label="Failed"

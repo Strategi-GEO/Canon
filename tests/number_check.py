@@ -28,7 +28,9 @@ Reads two real sheets if they are present and mutates nothing.
 
   .venv/bin/python tests/number_check.py
 """
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -111,7 +113,79 @@ check(
 
 
 print()
-print("[2] index_by_slug: the join every blog's number is read through")
+print("[2] A sheet Excel exported is a sheet every read path can read")
+
+# The upload path decodes with _decode (latin-1 fallback, so it accepts any bytes) and then writes
+# the operator's ORIGINAL BYTES verbatim. Both read paths used to open that file with a strict
+# utf-8-sig, so the app accepted a file it could never read again: one curly apostrophe out of
+# Excel on Windows is byte 0x92, and it 500'd the sheet preview, 500'd the blogs library through
+# this module's own index_by_slug, and failed every topic in a run when the fact base could not
+# build. Nothing about it was the operator's fault and no message pointed at the cause.
+_TMP = tempfile.mkdtemp()
+_ORIG_ROOT = roadmap.REPO_ROOT
+try:
+    roadmap.REPO_ROOT = Path(_TMP)
+    _dir = Path(_TMP) / "clients" / "winexcel"
+    _dir.mkdir(parents=True)
+    # 0x92 curly apostrophe, 0xe9 e-acute: an ordinary Excel-on-Windows export.
+    (_dir / "roadmap.csv").write_bytes(
+        b"Content Topic,What the Piece Covers,Format,Search Intent,Target Prompts\r\n"
+        b"Bengaluru\x92s best caf\xe9s,covers cafes,Hub listicle,Commercial,where to get coffee\r\n"
+    )
+
+    for name, call in (
+        ("read_sheet (the preview)", lambda: roadmap.read_sheet("winexcel")),
+        ("load_roadmap (the brief)", lambda: roadmap.load_roadmap("winexcel")),
+        ("index_by_slug (the numbers)", lambda: roadmap.index_by_slug("winexcel")),
+    ):
+        try:
+            call()
+            check(f"a cp1252 sheet does not break {name}", True)
+        except UnicodeDecodeError as exc:
+            check(f"a cp1252 sheet does not break {name}", False, f"UnicodeDecodeError: {exc}")
+
+    # The row is numbered and its text survives. NOT asserting the exact slug: slugify maps
+    # non-ascii to a hyphen, so "cafés" becomes "caf-s", and pinning that here would couple this
+    # check to a rule it is not about and fail the day slugify improves.
+    _mapped = roadmap.index_by_slug("winexcel")
+    check(
+        "the row still gets its number",
+        list(_mapped.values()) == [0],
+        f"{_mapped}",
+    )
+    check(
+        "and Excel's apostrophe reads as an apostrophe, not as a control character",
+        roadmap.load_roadmap("winexcel")["rows"][0]["topic"] == "Bengaluru’s best cafés",
+        repr(roadmap.load_roadmap("winexcel")["rows"][0]["topic"]),
+    )
+finally:
+    roadmap.REPO_ROOT = _ORIG_ROOT
+    shutil.rmtree(_TMP, ignore_errors=True)
+
+# Order, not just tolerance. utf-8 must win so a normal file is never mojibake'd by a fallback that
+# cannot fail, and cp1252 must beat latin-1 so Excel's 0x92 reads as the apostrophe the operator
+# typed rather than as a control character.
+check(
+    "utf-8 is preferred over every fallback",
+    roadmap._decode("Bengaluru’s cafés".encode("utf-8")) == "Bengaluru’s cafés",
+)
+check(
+    "cp1252 beats latin-1, so Excel's apostrophe survives",
+    roadmap._decode("Bengaluru’s cafés".encode("cp1252")) == "Bengaluru’s cafés",
+    repr(roadmap._decode("Bengaluru’s cafés".encode("cp1252"))),
+)
+check(
+    "latin-1 still catches the bytes cp1252 leaves undefined",
+    roadmap._decode(b"a\x81b") == "a\x81b",
+)
+check(
+    "a utf-8 BOM is stripped rather than read as a character",
+    roadmap._decode(b"\xef\xbb\xbfContent Topic") == "Content Topic",
+)
+
+
+print()
+print("[3] index_by_slug: the join every blog's number is read through")
 
 check(
     "a client with no roadmap maps nothing rather than raising",
@@ -140,7 +214,7 @@ else:
 
 
 print()
-print("[3] Every blog carries its row, and a blog on no row carries None")
+print("[4] Every blog carries its row, and a blog on no row carries None")
 
 try:
     from server.app import _blog_history

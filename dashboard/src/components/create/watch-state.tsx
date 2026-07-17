@@ -245,12 +245,13 @@ export function WatchState({
             </>
           ) : finished ? (
             <p>
-              Every topic in this run has reached a terminal state. A blog that shipped scored{" "}
-              <span className="machine">95</span> or above on its first eval, and it ships at that
-              score whether or not the evaluator asked you anything. A blog in review scored below{" "}
-              <span className="machine">95</span> and left a question only you can answer. A blog
-              that failed scored below <span className="machine">95</span> with nothing to ask, so
-              there is no task here for a person.
+              Every topic in this run has reached a terminal state. A blog in review left a
+              question only you can answer, and it waits for that answer at any score: the question
+              is about something the evaluator could not see, so a passing number does not settle
+              it. A blog that shipped scored <span className="machine">95</span> or above on its
+              first eval with nothing left to ask. A blog that failed scored below{" "}
+              <span className="machine">95</span> with nothing to ask, so there is no task here for
+              a person.
             </p>
           ) : (
             <>

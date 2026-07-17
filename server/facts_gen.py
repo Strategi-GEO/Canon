@@ -20,6 +20,7 @@ cannot vouch for, because a brand with no fact base fails loudly and a brand wit
 does not fail at all.
 """
 import asyncio
+import csv
 import os
 import re
 from contextlib import aclosing
@@ -27,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import clients as clients_mod
+from . import roadmap
 from . import runner
 
 PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "canonical-facts-generation.md"
@@ -154,6 +156,99 @@ def resource_note(client_slug):
     )
 
 
+def roadmap_digest(client_slug):
+    """What this brand's roadmap plans to write, for the prompt's Stage 2 targeted pass.
+
+    The fact base exists to serve the roadmap, and until this function existed it was built
+    blind to it. That is not a theoretical gap. One live brand's fact base ran a general site
+    sweep, recorded its outlet list, and shipped. Blog 7 on its roadmap was about family
+    friendly venues and non-drinkers, so it needed the zero-alcohol menu, and that page was
+    never fetched because nothing told the fact base the page would matter. The writer may not
+    invent a fact and the evaluator may not accept one the fact base does not hold, so the
+    session had no way to recover: it just failed the proper-noun gate on a menu that exists,
+    is published, and was one scrape away.
+
+    This is the DEMAND SIGNAL, not the brief. Each row's number, its topic, and the prompts it
+    must be cited for is enough to tell the session which pages to go and fetch. The row's scope
+    and its extras are deliberately left out: the fact base is not being written from the
+    roadmap, it is being pointed at the pages the roadmap will need, and a full brief here would
+    invite a session to record facts because a blog wants them rather than because a page
+    carries them.
+
+    A missing sheet is NOT an error. Onboarding writes a client before it writes a roadmap, and
+    a brand may generate its fact base first, so this is an ordinary state and it gets a sentence
+    saying so. The same reasoning as resource_note's empty branch: never send a blank, send a
+    sentence saying why it is blank, because an agent handed an empty value reads it as something
+    the server failed to send and goes hunting for it.
+    """
+    try:
+        payload = roadmap.load_roadmap(client_slug)
+    except roadmap.RoadmapNotFound:
+        return (
+            "ROADMAP: none. This brand has no roadmap.csv yet, so there is no list of planned "
+            "blogs to aim at. This is normal and it is not a setup mistake: a brand can be "
+            "onboarded and its fact base built before its roadmap is uploaded or generated. "
+            "(no roadmap yet: sweep broadly.) Run STAGE 2's general sweep and skip the targeted "
+            "pass, because there is nothing to target. Cover the site widely rather than deeply, "
+            "since any page you skip is a page some future blog may need."
+        )
+    except (roadmap.BadUpload, UnicodeDecodeError, csv.Error) as exc:
+        # A roadmap that exists but will not parse must not take the fact base down with it. The
+        # sheet is context here, not the brief, and a brand whose fact base refused to build over
+        # an unreadable CSV would be a brand that cannot generate anything at all until the
+        # operator fixes a file this session does not read, does not write and cannot repair.
+        #
+        # ALL THREE ARMS ARE LOAD-BEARING, and BadUpload alone was the bug. The upload path and
+        # the read path disagree about encodings: save_upload decodes through roadmap._decode,
+        # whose latin-1 fallback accepts ANY byte sequence, then writes the operator's bytes to
+        # roadmap.csv verbatim; load_roadmap re-opens that same file strictly, as utf-8-sig. So a
+        # sheet exported from Excel on Windows carrying one cp1252 byte, a curly apostrophe in
+        # "Bengaluru's best cafes" is enough, uploads clean and is reported as accepted, then
+        # raises UnicodeDecodeError here. That is not a BadUpload and it is not caught by name:
+        # it escaped to ensure_facts's generic handler, came back as FactsGenerationError, and
+        # failed EVERY topic in the run with "canonical-facts.md could not be built". A brand
+        # taken down by the one file this branch exists to survive. csv.Error is the same shape,
+        # a file that opens and will not parse, and it is caught here for the same reason rather
+        # than left to be discovered the same way.
+        #
+        # Caught here rather than fixed in load_roadmap deliberately. Loosening that read to
+        # latin-1 would make it accept mojibake and hand a run topics with a garbled title, and
+        # the encoding mismatch is a real defect the operator should see reported against their
+        # upload, not silently absorbed. This branch only declines to die of it.
+        return (
+            f"ROADMAP: unreadable. clients/{client_slug}/roadmap.csv exists but does not parse "
+            f"({exc}). Treat this exactly as no roadmap: run STAGE 2's general sweep, skip the "
+            f"targeted pass, and sweep broadly. Do not guess at what the sheet meant to say, and "
+            f"do not report this as a fact about the brand: it is a file the operator will fix."
+        )
+
+    rows = [row for row in (payload.get("rows") or []) if row.get("topic")]
+    if not rows:
+        return (
+            f"ROADMAP: empty. clients/{client_slug}/roadmap.csv parses but plans no topics. "
+            f"(no roadmap yet: sweep broadly.) Run STAGE 2's general sweep and skip the targeted "
+            f"pass, because there is nothing to target."
+        )
+
+    lines = [
+        f"ROADMAP: {len(rows)} blog(s) are planned for this brand. This is what the fact base has "
+        f"to be able to support. Every fact one of these blogs needs and this file lacks is a hard "
+        f"gate failure in a session that cannot fix it. Read STAGE 2's targeted pass.",
+        "",
+    ]
+    for row in rows:
+        # index + 1 is the house numbering convention: RoadmapRow.index is 0 based and every
+        # caller that DISPLAYS it adds one, so the operator, the preview's "#" column and this
+        # digest all say "blog 7" about the same row.
+        lines.append(f"{row['index'] + 1}. {row['topic']}")
+        prompts = row.get("prompts") or []
+        if prompts:
+            lines.append("   cited for: " + " | ".join(prompts))
+        else:
+            lines.append("   cited for: (no target prompts recorded on this row)")
+    return "\n".join(lines)
+
+
 def _human_size(size):
     if size >= 1024 * 1024:
         return f"{size / (1024 * 1024):.1f} MB"
@@ -192,6 +287,9 @@ def build_prompt(client_slug):
         "CLIENT_DIR": str(client_dir),
         "OUTPUT_PATH": str(facts_path(client_slug)),
         "RESOURCE_NOTE": resource_note(client_slug),
+        # The roadmap the fact base has to serve. See roadmap_digest: this is what turns STAGE 2's
+        # second pass from "fetch whatever looks important" into "fetch the page blog 7 needs".
+        "ROADMAP_DIGEST": roadmap_digest(client_slug),
     }
 
     unknown = sorted(set(_PLACEHOLDER.findall(template)) - set(values))
