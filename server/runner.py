@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import importlib.util
 import json
+import logging
 import os
 import shutil
 import sys
@@ -24,6 +25,9 @@ from pathlib import Path
 
 from . import roadmap
 from . import db
+from . import sync
+
+log = logging.getLogger("geo.runner")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -145,7 +149,12 @@ def canonical_facts_path(client_slug, clients_root=None):
 
 
 def has_canonical_facts(client_slug, clients_root=None):
-    """Does the file exist at all. Deliberately not "is it any good": see facts_gen.has_facts."""
+    """Does the file exist at all. Deliberately not "is it any good": see facts_gen.has_facts.
+
+    A DISK read on purpose, even with Supabase as the record: run_batch runs
+    sync.materialize_client before this is consulted, and materialization is what makes the
+    disk agree with the record, so by the time this answers, the disk answer IS the record's.
+    """
     return canonical_facts_path(client_slug, clients_root).is_file()
 
 
@@ -1448,6 +1457,98 @@ async def _mock_session(client_slug, row, topic_slug, out_dir):
 
 
 # ---------------------------------------------------------------------------
+# Supabase sync hooks: materialize scratch from the record before a session,
+# commit scratch to the record after the terminal line.
+#
+# THE GUARD, IN ONE RULE: if db.client_id(slug) returns None, the record does
+# not know this client, so there is nothing to lay down and nothing to push,
+# and every hook here skips with a debug log. The guard lives HERE, not in
+# sync.py, because it is a runner concern: the tests drive run_batch, run_topic
+# and revise_topic with OUTPUTS_ROOT pointed at temp dirs and brands the record
+# has never heard of, and those runs must stay inert against the live database
+# while a real client's hooks stay loud.
+# ---------------------------------------------------------------------------
+
+# Strong references to in-flight commit tasks, mirroring _PENDING_NOTIFIES
+# below and for the same reason: asyncio keeps only a WEAK set of tasks, so a
+# fire-and-forget commit with no other owner can be garbage collected
+# mid-write, losing exactly the record push it exists to make.
+_PENDING_COMMITS = set()
+
+
+def _materialize_client_scratch(client_slug):
+    """Lay clients/<slug>/ down from the record, before the facts phase.
+
+    Sync body on purpose: run_batch runs it via asyncio.to_thread. A failure for a KNOWN
+    client raises to the caller, never swallowed, because a session spawned over scratch the
+    record could not lay down would read facts the record no longer holds.
+    """
+    if db.client_id(client_slug) is None:
+        log.debug("materialize skipped for %s: the record does not know this client, "
+                  "so there is nothing to lay down", client_slug)
+        return
+    sync.materialize_client(client_slug)
+
+
+def _materialize_topic_scratch(client_slug, topic_slug, answers=False):
+    """Re-lay one topic's committed artifacts (dossier, blog, links) before its session.
+
+    Existing scratch is left alone and status.jsonl is never touched, so every baseline taken
+    before this call still counts only what the coming session appends. answers=True
+    additionally rebuilds questions.json and answers.json from the record, which the
+    answer-driven revise needs on disk before its snapshot.
+    """
+    if db.client_id(client_slug) is None:
+        log.debug("materialize skipped for %s/%s: the record does not know this client, "
+                  "so there is nothing to lay down", client_slug, topic_slug)
+        return
+    sync.materialize_topic(client_slug, topic_slug)
+    if answers:
+        sync.materialize_answers(client_slug, topic_slug)
+
+
+def _commit_topic_record(client_slug, topic_slug):
+    """Push one topic's scratch to the record. NEVER raises into the run.
+
+    A commit failure strands scratch on disk, and the startup reconciler
+    (sync.reconcile_all, owned by app.py) is the DESIGNED recovery for exactly that window,
+    so the failure is logged loudly and the run moves on: raising here would fail a blog the
+    engine already finished over bookkeeping the next startup repairs anyway.
+    """
+    try:
+        if db.client_id(client_slug) is None:
+            log.debug("commit skipped for %s/%s: the record does not know this client, "
+                      "so there is nothing to push", client_slug, topic_slug)
+            return
+        sync.commit_topic(client_slug, topic_slug)
+    except Exception:
+        log.exception(
+            "commit_topic failed for %s/%s: scratch is stranded on disk until the startup "
+            "reconciler (sync.reconcile_all) re-commits it", client_slug, topic_slug)
+
+
+def _schedule_commit(client_slug, topic_slug):
+    """Schedule the post-terminal commit as a fire-and-forget background task.
+
+    The exact _PENDING_NOTIFIES pattern: create the task, hold a strong reference, discard on
+    completion. NEVER awaited by any caller: the cancel arms schedule this between their
+    terminal append and their re-raise, and an await there would break stop_client's
+    synchronous mark-then-cancel guarantee and hand CancelledError a second place to land.
+    The task body swallows every failure (see _commit_topic_record), so an unawaited task can
+    never surface an unretrieved exception at GC.
+
+    Ordering: callers schedule this strictly AFTER the terminal resolver or terminal append
+    has read DISK, and the task first runs only when the scheduling coroutine next yields to
+    the loop, so a finally arm that tidies questions.json still runs before the commit reads
+    the file.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(_commit_topic_record, client_slug, topic_slug))
+    _PENDING_COMMITS.add(task)
+    task.add_done_callback(_PENDING_COMMITS.discard)
+    return task
+
+
+# ---------------------------------------------------------------------------
 # Per-topic and per-batch dispatch
 # ---------------------------------------------------------------------------
 
@@ -1475,6 +1576,16 @@ async def run_topic(client_slug, row, *, mock=None, run_dir_root=None, precheck_
 
     append_status = _status_module().append_status
     try:
+        # LAY THIS TOPIC'S SCRATCH DOWN FROM THE RECORD before the session spawns. A resumed
+        # topic finds its frozen dossier, blog.md and links-verified.txt exactly as the record
+        # holds them; existing scratch is left alone, and status.jsonl is never touched, so the
+        # baseline above still counts only what this session appends. Mock and demo topics come
+        # through here too: they are the affordable proof of exactly this plumbing. Skipped when
+        # the record does not know the client (see _materialize_topic_scratch). A failure for a
+        # known client falls to the generic handler below and writes the terminal failed line:
+        # a session spawned over scratch the record could not lay down reads the wrong facts.
+        await asyncio.to_thread(_materialize_topic_scratch, client_slug, topic_slug)
+
         # GEO_MOCK, an explicit mock=True, or a demo_mode client. A demo client
         # resolves to mock even here in a production process holding real
         # credentials, so demoing can never spend an API call or a token.
@@ -1565,6 +1676,12 @@ async def run_topic(client_slug, row, *, mock=None, run_dir_root=None, precheck_
             out_dir, topic_slug, baseline,
             "stopped by the operator before this topic reached a verdict",
         )
+        # A STOPPED TOPIC COMMITS TOO: the frozen dossier is the expensive half of a blog and
+        # the stop contract promises it is kept, so whatever this session left on disk goes to
+        # the record. Fire-and-forget, never awaited (see _schedule_commit): stop_client's
+        # mark-then-cancel guarantee must not gain an await, and the re-raise below propagates
+        # CancelledError exactly as before.
+        _schedule_commit(client_slug, topic_slug)
         # NEVER swallow a cancellation. Returning normally here would report this topic to gather
         # as a success, hand the caller a summary of work that did not happen, and leave a task
         # that was asked to cancel claiming it did not, which asyncio is entitled to complain about
@@ -1583,6 +1700,10 @@ async def run_topic(client_slug, row, *, mock=None, run_dir_root=None, precheck_
             stage="research", event="end",
             iter=1, status="failed", note=str(exc),
         )
+        # A refused topic commits too: the terminal failed line is a record the
+        # dashboard reads, and waiting for the startup reconciler would leave the
+        # record lying about this topic until the next restart. Fire-and-forget.
+        _schedule_commit(client_slug, topic_slug)
         raise
     except Exception as exc:
         # Anything else: a bug in this module, a bad row, a disk error. Same
@@ -1599,13 +1720,24 @@ async def run_topic(client_slug, row, *, mock=None, run_dir_root=None, precheck_
             iter=1, status="failed",
             note=f"{type(exc).__name__}: {exc}",
         )
+        # A crashed topic commits too, same reasoning as the refusal arm above:
+        # the failed line is a record, and partial artifacts (a dossier the crash
+        # left behind) are the expensive half the record should keep.
+        _schedule_commit(client_slug, topic_slug)
         raise
 
     # The lead's terminal claim is checked here, before the result is reported, because this is
     # where a topic's terminal line stops changing. A needs_review with no answerable question is
     # corrected to done or failed by its score and the override is recorded. See
     # _enforce_terminal_status.
-    return _enforce_terminal_status(client_slug, topic_slug, out_dir, root=run_dir_root)
+    summary = _enforce_terminal_status(client_slug, topic_slug, out_dir, root=run_dir_root)
+    # COMMIT STRICTLY AFTER THE RESOLVER. _enforce_terminal_status reads questions and status
+    # from DISK, the same surface the agents wrote seconds earlier; committing first would let
+    # the resolver race a store the last write never reached. The terminal line is now final,
+    # so the record takes everything this topic accumulated. Fire-and-forget (see
+    # _schedule_commit); the startup reconciler covers any window it loses.
+    _schedule_commit(client_slug, topic_slug)
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -1958,23 +2090,13 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
                         f"the token PLACEHOLDER and has not been reviewed"
                     )
 
-            # THE SNAPSHOT, FIRST, BEFORE ANYTHING CAN TOUCH THE DRAFT.
-            #
-            # This is what the stop and crash restores are built out of, so it happens before the
-            # session opens rather than after it starts: a session that began writing before the
-            # copy was taken could have already overwritten the draft those paths promise to give
-            # back. Everything below is recoverable; a lost original is not.
-            #
-            # THE ARTIFACT SET, NOT THE DRAFT ALONE. eval.md is snapshotted beside blog.md because
-            # a score describes both of them together, and a restore that returned only the draft
-            # left the original sitting beside the discarded draft's eval.md and its SCORE: NN.
-            # None is a real value here and means eval.md did not exist yet, which the restore
-            # honors by removing it rather than leaving a stranger's audit behind.
+            # THE VERDICT SNAPSHOT, BEFORE THE MATERIALIZE ROUND TRIP BELOW. materialize_topic
+            # and materialize_answers never touch status.jsonl, so these reads are identical on
+            # either side of the hook, and taking them FIRST closes the window the hook would
+            # otherwise open: a stop landing inside the materialize await must re-state the
+            # verdict this topic already earned, never write "stopped" over a done blog.
             lines_before = _read_status(out_dir)
             prev_score = _last_eval_score(lines_before)
-            shutil.copy2(blog, prev_blog)
-            prev_bytes = blog.read_bytes()
-            prev_eval_bytes = eval_md.read_bytes() if eval_md.is_file() else None
 
             # THE VERDICT THIS TOPIC ALREADY EARNED, snapshotted beside the bytes that earned it.
             #
@@ -1989,6 +2111,33 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
 
             iteration = _summarize(topic_slug, lines_before)["iterations"] + 1
             restored_iter = max(1, iteration - 1)
+
+            # LAY THE TOPIC SCRATCH DOWN FROM THE RECORD, BEFORE THE BYTE SNAPSHOT. The
+            # answer-driven revise needs the frozen dossier, links-verified.txt, blog.md,
+            # eval.md and the rebuilt questions.json and answers.json on disk exactly as the
+            # record holds them. The byte snapshot below is taken from the MATERIALIZED bytes on
+            # purpose: taken first, it could miss an eval.md the record holds but the disk lost,
+            # and the restore would then unlink an artifact the record says exists. Skipped when
+            # the record does not know the client (see _materialize_topic_scratch).
+            await asyncio.to_thread(_materialize_topic_scratch, client_slug, topic_slug,
+                                    answers=True)
+
+            # THE BYTE SNAPSHOT, BEFORE ANYTHING CAN TOUCH THE DRAFT.
+            #
+            # This is what the stop and crash restores are built out of, so it happens before the
+            # session opens rather than after it starts: a session that began writing before the
+            # copy was taken could have already overwritten the draft those paths promise to give
+            # back. Everything below is recoverable; a lost original is not.
+            #
+            # THE ARTIFACT SET, NOT THE DRAFT ALONE. eval.md is snapshotted beside blog.md because
+            # a score describes both of them together, and a restore that returned only the draft
+            # left the original sitting beside the discarded draft's eval.md and its SCORE: NN.
+            # None is a real value here and means eval.md did not exist yet, which the restore
+            # honors by removing it rather than leaving a stranger's audit behind.
+            shutil.copy2(blog, prev_blog)
+            prev_bytes = blog.read_bytes()
+            prev_eval_bytes = eval_md.read_bytes() if eval_md.is_file() else None
+
             row = _row_for_topic(client_slug, topic_slug)
 
             if mock:
@@ -2054,6 +2203,11 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
                           "score, so no clarified draft exists. The original blog.md and eval.md "
                           "were restored byte for byte, and this topic never reached a verdict"),
                 )
+                # COMMIT AFTER THE RESTORE AND AFTER THE TERMINAL APPEND. The restore already put
+                # the ORIGINAL bytes back on disk, so commit_topic sees restored bytes and
+                # correctly re-commits nothing new: only the status lines this session appended
+                # move. Fire-and-forget (see _schedule_commit).
+                _schedule_commit(client_slug, topic_slug)
                 return dict(_summarize(topic_slug, _read_status(out_dir)), row=row)
 
             clarified_shipped = True
@@ -2079,6 +2233,11 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
                 note=f"surgical revise from operator answers: {note}"
                      + (f". {why}" if why else ""),
             )
+            # COMMIT AFTER THE TERMINAL APPEND. The resolver above read DISK and the terminal
+            # line is now final, so the record takes the clarified draft, its eval and every
+            # status line this session appended. Fire-and-forget (see _schedule_commit); the
+            # startup reconciler covers any window it loses.
+            _schedule_commit(client_slug, topic_slug)
             return dict(_summarize(topic_slug, _read_status(out_dir)), row=row)
     except asyncio.CancelledError:
         # The operator stopped the brand mid-revise. This arm exists because a revise is the ONE
@@ -2127,16 +2286,29 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
         # a number no draft on disk carries as the baseline it must beat, and overwrite a better
         # draft with a worse one. Carrying prev_score names the score the restored bytes actually
         # have.
+        #
+        # restored_iter AND prev_score UNCONDITIONALLY, no longer gated on prev_bytes. The
+        # materialize hook sits between the verdict snapshot and the byte snapshot, so a stop
+        # landing inside its round trip has prev_terminal set while prev_bytes is still None:
+        # nothing touched the draft, the bytes on disk ARE the original at restored_iter carrying
+        # prev_score, and stamping `iteration` for them would push the topic past its own form
+        # and close the operator's door. Where nothing was snapshotted at all, the defaults (1
+        # and None) say exactly what the old else-branch said.
         append_status(
             str(out_dir), topic_slug, stage="eval", event="end",
-            iter=restored_iter if prev_bytes is not None else iteration,
-            score=prev_score if prev_bytes is not None else None,
+            iter=restored_iter,
+            score=prev_score,
             status=prev_terminal["status"] if prev_terminal else "stopped",
             note=("the operator stopped this revise and the original draft was restored "
                   "unchanged, so this topic keeps the verdict it already earned"
                   if prev_terminal else
                   "the operator stopped this revise before this topic reached a verdict"),
         )
+        # A STOPPED REVISE COMMITS TOO, after the restore and after the terminal append: the
+        # restore already put the ORIGINAL bytes back on disk, so commit_topic sees restored
+        # bytes and correctly re-commits nothing new, only the terminal line above.
+        # Fire-and-forget, never awaited: CancelledError propagates below exactly as before.
+        _schedule_commit(client_slug, topic_slug)
         raise
     except (PreflightError, RunnerConfigError) as exc:
         # Same obligation run_topic carries: a refusal raised before dispatch would otherwise
@@ -2147,6 +2319,9 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
             str(out_dir), topic_slug, stage="revise", event="end", iter=iteration,
             status="failed", note=str(exc),
         )
+        # Commit the terminal failed line after the append. Nothing touched the draft, so the
+        # only thing that moves is the line itself. Fire-and-forget; the re-raise is unchanged.
+        _schedule_commit(client_slug, topic_slug)
         raise
     except Exception as exc:
         # Anything else: a dead session, a disk error, a bug in this module. Two obligations, and
@@ -2184,10 +2359,14 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
         # it red, and had the CMS gate refuse it with no way back. What failed is this session,
         # which the note names and the traceback records. A topic with no verdict to keep has
         # genuinely failed, and only then does this say so.
+        # restored_iter AND prev_score UNCONDITIONALLY, for the reason the cancel arm above
+        # states: a crash inside the materialize round trip has the verdict snapshot without the
+        # byte snapshot, the disk bytes are the untouched original, and the defaults cover the
+        # nothing-snapshotted case exactly as the old else-branch did.
         append_status(
             str(out_dir), topic_slug, stage="eval", event="end",
-            iter=restored_iter if prev_bytes is not None else iteration,
-            score=prev_score if prev_bytes is not None else None,
+            iter=restored_iter,
+            score=prev_score,
             status=prev_terminal["status"] if prev_terminal else "failed",
             note=f"revise failed and the original draft was restored unchanged, so this topic "
                  f"keeps the verdict it already earned: {type(exc).__name__}: {exc}"
@@ -2195,6 +2374,11 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
                  f"revise failed and the original draft was restored unchanged: "
                  f"{type(exc).__name__}: {exc}",
         )
+        # A CRASHED REVISE COMMITS TOO, after the restore and after the terminal append: the
+        # restore already put the ORIGINAL bytes back on disk, so commit_topic sees restored
+        # bytes and correctly re-commits nothing new, only the terminal line above.
+        # Fire-and-forget; the re-raise below still hands the caller the failure.
+        _schedule_commit(client_slug, topic_slug)
         raise
     finally:
         # THE SPENT FORM GOES, ON EVERY EXIT PATH. IN A FINALLY, AND THAT IS THE POINT.
@@ -2390,6 +2574,28 @@ async def run_batch(client_slug, rows, *, mock=None, on_topic_done=None, run_id=
             # cannot masquerade as a working one.
             mark_running(run_id)
 
+            # LAY THE CLIENT SCRATCH DOWN FROM THE RECORD, before the facts phase and before any
+            # topic can spawn a session. Agents read clients/<slug>/ as real files (gates.json,
+            # canonical-facts.md, Resources/), and materialize_client is what makes the disk
+            # agree with the record: the has_canonical_facts read below is honest as a disk read
+            # only because this ran first. Skipped when the record does not know the client (see
+            # _materialize_client_scratch), which is what keeps test brands inert.
+            #
+            # A failure for a KNOWN client means the run cannot start correctly, and it takes the
+            # SAME mark_run_error path a failed facts build takes, never a swallow: every topic
+            # still gets its terminal failed line naming the real reason, and nothing is
+            # dispatched against scratch the record could not lay down.
+            facts_error = None
+            try:
+                await asyncio.to_thread(_materialize_client_scratch, client_slug)
+            except Exception as exc:
+                facts_error = (
+                    f"clients/{client_slug} could not be materialized from the record, so no "
+                    f"blog was written: {exc}"
+                )
+                mark_run_error(run_id, facts_error)
+                print(f"[runner] {facts_error}", file=sys.stderr)
+
             # THE FACT BASE, BEFORE ANY TOPIC IS DISPATCHED, AND THE RUN WAITS FOR IT.
             #
             # canonical-facts.md is client scoped and every blog in this batch inherits it, so it is
@@ -2411,8 +2617,10 @@ async def run_batch(client_slug, rows, *, mock=None, on_topic_done=None, run_id=
             # would close the cycle at startup. The old canonical-facts hook dodged it the same way.
             from . import facts_gen
 
-            facts_error = None
-            if not has_canonical_facts(client_slug):
+            # ensure_facts commits the fact base to the record ITSELF (sync.commit_client_facts
+            # runs inside it), so there is deliberately no facts commit anywhere in this module:
+            # a second one here would be a double-commit of the same file.
+            if facts_error is None and not has_canonical_facts(client_slug):
                 mark_phase(run_id, "facts")
                 try:
                     await facts_gen.ensure_facts(client_slug, run_id=run_id)
@@ -2472,6 +2680,13 @@ async def run_batch(client_slug, rows, *, mock=None, on_topic_done=None, run_id=
                 out_dir, topic_slug, baseline,
                 "the operator stopped this brand before this topic reached a verdict",
             )
+            # ONE COMMIT PER BASELINED TOPIC, after its stopped line lands: a stopped topic
+            # commits too, because the frozen dossier is the expensive half of a blog and the
+            # stop contract keeps it. Idempotent against the commit run_topic's own cancel arm
+            # already scheduled for the dispatched topics. Fire-and-forget, never awaited: no
+            # await lands between this sweep and the re-raise, so CancelledError propagates
+            # exactly as before.
+            _schedule_commit(client_slug, topic_slug)
         # NEVER swallow a cancellation, exactly as run_topic does not. CLIENT_LOCK releases on the
         # way out because `async with` unwinds on the exception path like any other, which is the
         # single highest-consequence line in this feature: a leaked lock bricks every brand in the

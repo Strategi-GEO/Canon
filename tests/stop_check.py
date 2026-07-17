@@ -133,7 +133,15 @@ def test_stop_keeps_a_blog_that_finished_microseconds_earlier():
 
             runner._mock_session = ships_then_hangs
             task = asyncio.create_task(runner.run_topic("brand", _rows(1)[0], mock=True))
-            await asyncio.sleep(0.05)
+            # Cancel only once the done line is ON DISK. run_topic now runs a materialize hook
+            # (a real round trip, skipped for this unknown brand but still a query) before the
+            # session, so a fixed sleep races it and stops a session that has not shipped yet,
+            # which is a different scenario from the one this test names: a stop landing AFTER
+            # the blog finished.
+            for _ in range(400):
+                if _terminals(out):
+                    break
+                await asyncio.sleep(0.01)
             task.cancel()
             try:
                 await task
@@ -302,7 +310,14 @@ def test_a_blog_that_shipped_still_reaches_the_ledger():
             runner._mock_session = ships_then_hangs
             task = asyncio.create_task(
                 runner.run_batch("brand", _rows(1), mock=True, on_topic_done=on_topic_done))
-            await asyncio.sleep(0.05)
+            # Cancel only once the done line is ON DISK, for the reason
+            # test_stop_keeps_a_blog_that_finished_microseconds_earlier states: the materialize
+            # hooks in front of the session make a fixed sleep a race, and the window this test
+            # pins opens AFTER the lead writes done.
+            for _ in range(400):
+                if _terminals(runner.output_dir("brand", "topic-0")):
+                    break
+                await asyncio.sleep(0.01)
             task.cancel()
             try:
                 await task

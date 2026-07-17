@@ -52,8 +52,7 @@ def _topic_dir(client_slug, topic_slug):
 
 def _read(path):
     """None for absent, '' for present-but-empty. The difference is the record:
-    a zero-byte NEEDS_REVIEW marker is a real hold, and blr-brewing's zero-byte
-    never-claim.md is a real file."""
+    a zero-byte NEEDS_REVIEW marker is a real hold, distinct from an absent one."""
     p = pathlib.Path(path)
     if not p.is_file():
         return None
@@ -78,9 +77,9 @@ def materialize_client(slug):
     if not cid:
         raise LookupError(f"unknown client {slug!r}")
     row = db.q(
-        """select gates, client_md, canonical_facts, never_claim, description
+        """select gates, client_md, canonical_facts, description
            from clients where id = %s""", (cid,), fetch="one")
-    gates, client_md, facts, never_claim, description = row
+    gates, client_md, facts, description = row
 
     cdir = _client_dir(slug)
     cdir.mkdir(parents=True, exist_ok=True)
@@ -99,8 +98,6 @@ def materialize_client(slug):
         # An absent record means absent scratch. Leaving a stale disk copy here
         # would let preflight pass on facts the record no longer holds.
         (cdir / "canonical-facts.md").unlink(missing_ok=True)
-    if never_claim is not None:
-        (cdir / "never-claim.md").write_text(never_claim, encoding="utf-8")
 
     rdir = cdir / "Resources"
     rdir.mkdir(exist_ok=True)

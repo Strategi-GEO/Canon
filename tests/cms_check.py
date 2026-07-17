@@ -60,6 +60,10 @@ class FakeRunner:
     Deliberately not the real runner: this suite is about the gate's decision, and importing
     the SDK-spawning module to test a status check would be testing the wrong thing.
 
+    fetch_status_lines and fetch_blog are the gate's Supabase-era injection seams: a runner
+    that carries them answers instead of the record, which is what keeps this suite off the
+    live database while the fixtures stay plain files in a temp root.
+
     DEMO_MARKER is taken from the REAL runner, never re-typed here. A copy would let the
     engine change its marker while this suite kept passing against the old string, which is
     the exact drift that would silently reopen the mock-content hole.
@@ -75,11 +79,14 @@ class FakeRunner:
     def is_demo_client(self, client_slug):
         return self.demo
 
-    def output_dir(self, client_slug, topic_slug):
-        return self.root / client_slug / topic_slug
-
-    def _read_status(self, out_dir):
+    def fetch_status_lines(self, client_slug, topic_slug):
         return list(self.status_lines)
+
+    def fetch_blog(self, client_slug, topic_slug):
+        path = self.root / client_slug / topic_slug / "blog.md"
+        if not path.is_file():
+            return None
+        return path.read_text(encoding="utf-8")
 
     def _summarize(self, topic_slug, lines):
         terminal = None

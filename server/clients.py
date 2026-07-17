@@ -3,8 +3,6 @@
 WHAT A CLIENT IS, in the record (supabase/schema.sql):
   clients.slug / name / domain / industry / description   the onboarding form fields
   clients.client_md        the brand brief the engine loads (generated here at create)
-  clients.never_claim      operator-owned do-not-claim rules; '' is a real empty file,
-                           NULL means the file never existed (blr-brewing is the '' case)
   clients.canonical_facts  BINDING facts. NOT written here. See create_client.
   clients.gates            gates.json as jsonb, MINUS the "organisation" key: the org is
                            modelled as clients.org_id -> orgs, never duplicated into gates
@@ -109,7 +107,7 @@ def exists(slug):
 # disagree on a count or a flag. blog_count counts topics that actually carry a committed
 # blog version, which is the record's answer to what _blog_count used to glob off disk.
 _CLIENT_SELECT = """
-    select c.slug, c.name, c.domain, c.industry, c.description, c.never_claim,
+    select c.slug, c.name, c.domain, c.industry, c.description,
            c.demo_mode, c.created_at,
            exists (select 1 from roadmap_sheets r where r.client_id = c.id)
              as has_roadmap,
@@ -128,7 +126,7 @@ _CLIENT_SELECT = """
 
 
 def _client_from_row(row):
-    (slug, name, domain, industry, description, never_claim, demo_mode,
+    (slug, name, domain, industry, description, demo_mode,
      created_at, has_roadmap, has_facts, resource_count, blog_count,
      org_slug, org_name) = row
     return {
@@ -144,10 +142,6 @@ def _client_from_row(row):
         "domain": domain or "",
         "industry": industry or "",
         "description": description or "",
-        # NULL (file never existed) and '' (a real zero-byte never-claim.md) both read as
-        # "" on the wire, matching the old _read_text behaviour. The record keeps the
-        # distinction; the wire never carried it.
-        "never_claim": never_claim or "",
         "demo_mode": bool(demo_mode),
         "has_roadmap": bool(has_roadmap),
         "has_canonical_facts": bool(has_facts),
@@ -179,8 +173,7 @@ def list_orgs():
 
     Explicit orgs come from the orgs rows through the client join; every other brand is
     its own single-brand org, derived on read. The brand stays the engine's unit of work
-    because one brand owns exactly one canonical_facts, never_claim list, entity-name set
-    and roadmap.
+    because one brand owns exactly one canonical_facts, entity-name set and roadmap.
     """
     grouped = {}
     for client in list_clients():
@@ -254,8 +247,8 @@ Every mention of this client's primary project or entity links to the canonical 
 evidence for a fact: it is marketing copy.
 
 ## Do not claim
-The binding list is `canonical-facts.md`. The operator's own rules are in
-`clients/{slug}/never-claim.md`, one per line, and they seed that file at review time.
+The binding list is `canonical-facts.md`. Its do-not-claim section is authoritative for this
+client, and no blog may make a claim it forbids.
 
 ## Resources
 `clients/{slug}/Resources/` is this client's knowledge base. Read it before any external
@@ -293,7 +286,7 @@ def _upsert_org(org_config):
         (org_config["slug"], org_config["name"]), fetch="val")
 
 
-def create_client(name, domain, industry, description="", never_claim="", demo_mode=False,
+def create_client(name, domain, industry, description="", demo_mode=False,
                   organisation_name=None):
     name = str(name or "").strip()
     slug = slugify_client(name)
@@ -346,16 +339,15 @@ def create_client(name, domain, industry, description="", never_claim="", demo_m
     # BINDING: every blog for this client inherits it, and the runner refuses a real run
     # when it is missing or still unreviewed. A value this module invented would either be
     # a fabrication or a placeholder that merely looks approved, and both defeat the
-    # preflight. It is drafted at generate time, seeded by never_claim, and approved by a
-    # human before it exists.
+    # preflight. It is drafted at generate time and approved by a human before it exists.
     try:
         db.q(
             """insert into clients
                  (org_id, slug, name, domain, industry, description, client_md,
-                  never_claim, demo_mode, gates)
-               values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)""",
+                  demo_mode, gates)
+               values (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)""",
             (org_id, slug, name, domain, industry, str(description or ""),
-             _client_md(name, domain, industry, slug), str(never_claim or ""),
+             _client_md(name, domain, industry, slug),
              bool(demo_mode), json.dumps(config, ensure_ascii=False)),
             fetch="none")
     except Exception as exc:
@@ -369,15 +361,15 @@ def create_client(name, domain, industry, description="", never_claim="", demo_m
 
     # The two onboarding side effects the app still relies on. The output folder is
     # scratch an operator can find in Finder before the first blog runs. Materialization
-    # lays clients/<slug>/ down from the record (gates.json, client.md, never-claim.md,
-    # Resources/) so the first run finds its files without a separate sync step. The old
-    # generated.csv create is gone: the ledger is a table now.
+    # lays clients/<slug>/ down from the record (gates.json, client.md, Resources/) so the
+    # first run finds its files without a separate sync step. The old generated.csv create
+    # is gone: the ledger is a table now.
     runner.ensure_client_output_dir(slug)
     sync.materialize_client(slug)
     return read_client(slug)
 
 
-def update_client(slug, description=None, never_claim=None, name=None, organisation_name=None):
+def update_client(slug, description=None, name=None, organisation_name=None):
     """Update only what was passed. A None field is untouched, so a PATCH carrying one key
     cannot blank the others, and gates keys this function was not given survive."""
     cid = db.client_id(slug)
@@ -388,9 +380,6 @@ def update_client(slug, description=None, never_claim=None, name=None, organisat
     if description is not None:
         sets.append("description = %s")
         params.append(str(description))
-    if never_claim is not None:
-        sets.append("never_claim = %s")
-        params.append(str(never_claim))
     if name is not None:
         new_name = str(name).strip()
         if not new_name:
@@ -416,8 +405,8 @@ def update_client(slug, description=None, never_claim=None, name=None, organisat
     if sets:
         db.q(f"update clients set {', '.join(sets)} where id = %s",
              (*params, cid), fetch="none")
-        # Scratch tracks the record: the next agent run reads gates.json and
-        # never-claim.md from disk, and they must say what was just recorded.
+        # Scratch tracks the record: the next agent run reads gates.json from disk, and it
+        # must say what was just recorded.
         sync.materialize_client(slug)
 
     return read_client(slug)

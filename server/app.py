@@ -5,6 +5,12 @@ runner.py. This module owns HTTP validation at the boundary (a bad row must
 fail at submit time, never twenty minutes into a run), the SSE tailer over
 status.jsonl files, and the whitelisted output-file reader.
 
+WHERE READS GO since the Supabase rewire: the record (Postgres, through db.py
+and the rewired modules) answers every route for a SETTLED topic or client,
+and the SCRATCH tree under outputs/ answers only while a LIVE run holds the
+topic, because agents write scratch and the runner commits it to the record at
+the terminal line. Each site that makes that choice says so in one sentence.
+
 Run with ONE uvicorn worker. The client lock and topic semaphore in runner.py
 are in-process primitives, so --workers N silently multiplies the cap to 5N.
 """
@@ -12,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -23,7 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
-from . import describe, facts_gen, ledger, roadmap, roadmap_gen, runner
+from . import db, describe, facts_gen, ledger, roadmap, roadmap_gen, runner, sync
 # Aliased for the same reason clients is: "questions" is the natural name for the list of
 # questions inside a handler, and the shadowing bug that causes is silent.
 from . import questions as questions_mod
@@ -36,7 +43,6 @@ from . import clients as clients_mod
 from .cms import router as cms_router
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CLIENTS_DIR = REPO_ROOT / "clients"
 INDEX_HTML = REPO_ROOT / "web" / "index.html"
 
 # The only files the output endpoint will ever serve. Anything else is a 404,
@@ -90,43 +96,82 @@ async def _warn_single_worker():
     )
 
 
+# Strong references to fire-and-forget startup tasks, so the reconciler cannot
+# be garbage collected mid-sweep. Discarded by done-callback.
+_STARTUP_TASKS = set()
+
+
+@app.on_event("startup")
+async def _reconcile_on_startup():
+    """Commit whatever a crash stranded on scratch, without holding the port.
+
+    The runner commits a topic's scratch to the record at its terminal line, so a
+    process that died between the two leaves disk ahead of the record, and this
+    sweep is what makes commit-at-terminal safe. It runs as a background task in
+    a worker thread and NEVER blocks serving: the server must come up even when
+    the database is briefly unreachable, and requests then fail loudly on their
+    own rather than the whole app refusing to start.
+    """
+    async def sweep():
+        try:
+            committed = await asyncio.to_thread(sync.reconcile_all)
+        except Exception:
+            log.exception("startup reconcile failed; serving anyway")
+            return
+        # WARNING, not INFO, for the same reason _warn_single_worker is: under
+        # default logging INFO never reaches stderr, and a crash-recovery sweep
+        # that ran invisibly is one nobody can confirm ran. One line per boot.
+        if committed:
+            log.warning(
+                "startup reconcile committed %d stranded topic(s): %s",
+                len(committed),
+                ", ".join(f"{client}/{topic}" for client, topic in committed),
+            )
+        else:
+            log.warning("startup reconcile: record and scratch agree (0 topics committed)")
+
+    task = asyncio.create_task(sweep())
+    _STARTUP_TASKS.add(task)
+    task.add_done_callback(_STARTUP_TASKS.discard)
+
+
 # ---------------------------------------------------------------------------
 # Clients and preflight
 # ---------------------------------------------------------------------------
 
-def _client_dirs():
-    """A client is any directory under clients/ that carries gates.json."""
-    if not CLIENTS_DIR.is_dir():
-        return []
-    return sorted(
-        d for d in CLIENTS_DIR.iterdir() if d.is_dir() and (d / "gates.json").is_file()
-    )
+# Mirrors the client_slug domain in supabase/schema.sql, underscore fixtures
+# included. Kept as a guard in front of every record lookup: the old directory
+# stat rejected traversal for free, and this is that guard's record-era twin.
+_CLIENT_SLUG_RE = re.compile(r"^_?[a-z0-9]+(-[a-z0-9]+)*$")
 
 
-def _client_dir_or_404(slug):
-    path = CLIENTS_DIR / slug
-    if not path.is_dir() or not (path / "gates.json").is_file():
+def _client_or_404(slug):
+    """The client must be a live clients row: record-backed, the disk is never asked."""
+    if not _CLIENT_SLUG_RE.fullmatch(slug) or not clients_mod.exists(slug):
         raise HTTPException(status_code=404, detail=f"unknown client {slug!r}")
-    return path
 
 
-def _preflight(client_dir):
+def _preflight(slug):
     """Mirror runner.run_topic's real-mode refusal so the operator hears the
-    same 'no' at submit time instead of after a dispatch.
+    same 'no' at submit time instead of after a dispatch. Reads the record's
+    canonical_facts column: scratch is only trusted mid-run, and preflight runs
+    before a run exists.
 
-    A MISSING canonical-facts.md is no longer a refusal, and that is the whole of this
-    feature: the run builds the file first and waits, so refusing here would make a newly
-    onboarded brand permanently ungenerable. The UI reads has_canonical_facts to tell the
-    operator their first run starts with a long fact-gathering session.
+    MISSING canonical facts are no longer a refusal, and that is the whole of this
+    feature: the run builds the fact base first and waits, so refusing here would make a
+    newly onboarded brand permanently ungenerable. The UI reads has_canonical_facts to tell
+    the operator their first run starts with a long fact-gathering session.
 
-    PLACEHOLDER still refuses, and must. That token means a human started the file and has
-    not finished reviewing it. Generating over their work and running against their
+    PLACEHOLDER still refuses, and must. That token means a human started the fact base and
+    has not finished reviewing it. Generating over their work and running against their
     half-finished rules are both wrong, so the engine does neither and says so.
     """
-    facts = client_dir / "canonical-facts.md"
-    if not facts.is_file():
+    facts = db.q(
+        "select canonical_facts from clients where slug = %s and deleted_at is null",
+        (slug,), fetch="val")
+    if facts is None:
         return True, None
-    if "PLACEHOLDER" in facts.read_text(encoding="utf-8"):
+    if "PLACEHOLDER" in facts:
         return False, (
             "canonical-facts.md still contains the token PLACEHOLDER "
             "and has not been reviewed"
@@ -143,25 +188,16 @@ async def index():
 
 @app.get("/api/clients")
 async def api_clients():
+    # Record-backed, and a pure read at last: the old onboarding side effects
+    # (mkdir outputs/<slug>/, seed generated.csv) are gone because create_client
+    # and run start own onboarding now, and a GET that writes is a GET that
+    # surprises. demo_mode and every other field ride in on the record entry.
     client_list = []
-    for client_dir in _client_dirs():
-        try:
-            gates = json.loads((client_dir / "gates.json").read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            gates = {}
-        ok, reason = _preflight(client_dir)
-        # Onboarding side effects, both idempotent: the ledger and the client's
-        # output folder. The folder is created eagerly so an operator can find it
-        # in Finder before the first blog ever runs.
-        runner.ensure_client_output_dir(client_dir.name)
-        # Every client gets a ledger here, so a client onboarded before this
-        # feature existed needs no migration step.
-        ledger.ensure_ledger(client_dir.name)
-        entry = clients_mod.read_client(client_dir.name)
+    for entry in clients_mod.list_clients():
         # The original keys stay exactly as they were, so the legacy UI keeps working while
         # the dashboard reads the onboarding fields alongside them.
+        ok, reason = _preflight(entry["slug"])
         entry["preflight"] = {"ok": ok, "reason": reason}
-        entry["demo_mode"] = bool(gates.get("demo_mode", False))
         client_list.append(entry)
     # geo_mock is reported so the UI can shout about it. Only the demo org is
     # meant to produce fake output; GEO_MOCK=1 fakes EVERY client while still
@@ -205,7 +241,6 @@ class CreateClientRequest(BaseModel):
     domain: str = ""
     industry: str = ""
     description: str = ""
-    never_claim: str = ""
     demo_mode: bool = False
     # Optional: omitted means the brand is its own single-brand org, the common case.
     organisation_name: str = ""
@@ -215,7 +250,6 @@ class UpdateClientRequest(BaseModel):
     # All optional and all default None, so a PATCH carrying one field cannot blank the
     # others. None means "not sent", which clients.update_client reads as "do not write".
     description: Optional[str] = None
-    never_claim: Optional[str] = None
     name: Optional[str] = None
     organisation_name: Optional[str] = None
 
@@ -242,7 +276,6 @@ async def api_create_client(body: CreateClientRequest):
             body.domain,
             body.industry,
             description=body.description,
-            never_claim=body.never_claim,
             demo_mode=body.demo_mode,
             organisation_name=body.organisation_name,
         )
@@ -263,7 +296,6 @@ async def api_update_client(slug: str, body: UpdateClientRequest):
         return clients_mod.update_client(
             slug,
             description=body.description,
-            never_claim=body.never_claim,
             name=body.name,
             organisation_name=body.organisation_name,
         )
@@ -358,13 +390,13 @@ async def api_clear_describe_job(slug: str):
 
 @app.get("/api/clients/{slug}/resources")
 async def api_resources(slug: str):
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
     return {"resources": clients_mod.list_resources(slug)}
 
 
 @app.post("/api/clients/{slug}/resources", status_code=201)
 async def api_resource_upload(slug: str, file: UploadFile = File(...)):
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
     raw = await file.read()
     if len(raw) > clients_mod.MAX_RESOURCE_BYTES:
         raise HTTPException(
@@ -382,7 +414,7 @@ async def api_resource_upload(slug: str, file: UploadFile = File(...)):
 
 @app.delete("/api/clients/{slug}/resources/{name}", status_code=204)
 async def api_resource_delete(slug: str, name: str):
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
     try:
         deleted = clients_mod.delete_resource(slug, name)
     except clients_mod.UnknownClient as exc:
@@ -398,7 +430,7 @@ async def api_resource_delete(slug: str, name: str):
 # ---------------------------------------------------------------------------
 
 def _load_roadmap_or_404(slug):
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
     try:
         return roadmap.load_roadmap(slug)
     except roadmap.RoadmapNotFound as exc:
@@ -439,12 +471,12 @@ async def api_roadmap(slug: str):
 async def api_roadmap_report(slug: str):
     """The saved account of how this brand's roadmap was generated.
 
-    Read from disk, not from the generation job, so it outlives the process that produced it.
+    Read from the record, not from the generation job, so it outlives the process that made it.
     The job answers "what is happening now" and is gone on restart; this answers "why does my
     roadmap look like this", which an operator asks weeks later. A 404 here is ordinary: an
     uploaded roadmap has no report, because nothing generated it.
     """
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
     report = roadmap_gen.read_report(slug)
     if report is None:
         raise HTTPException(
@@ -461,7 +493,7 @@ async def api_roadmap_sheet(slug: str):
     read, three columns and their parse state, and this one answers what the file contains. A
     single route serving both would have to pick which meaning "rows" has.
     """
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
     try:
         return roadmap.read_sheet(slug)
     except roadmap.RoadmapNotFound as exc:
@@ -481,7 +513,7 @@ async def api_delete_roadmap(slug: str):
     It removes roadmap.csv and NOTHING else. Blogs already written stay on disk, and the
     ledger still records them. A roadmap is the input, not the work.
     """
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
     if _client_has_live_run(slug):
         # A live run's rows came from this sheet. Deleting it underneath would leave the
         # status table describing topics whose source no longer exists.
@@ -496,7 +528,7 @@ async def api_delete_roadmap(slug: str):
 
 @app.post("/api/clients/{slug}/roadmap/upload")
 async def api_roadmap_upload(slug: str, file: UploadFile = File(...)):
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
     if _client_has_live_run(slug):
         # Swapping the roadmap under a running queue would make the status table
         # describe rows that are no longer the ones running.
@@ -556,7 +588,7 @@ async def api_generate_roadmap(slug: str, body: GenerateRoadmapRequest):
     abort the request while the session ran on regardless. The engine holds the job; the
     browser only watches.
     """
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
 
     url = body.brand_url.strip()
     if not url.lower().startswith(("http://", "https://")):
@@ -617,7 +649,7 @@ async def api_roadmap_generation_job(slug: str):
     the same truth as the tab that did, which matters because several operators share one
     deployment.
     """
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
     job = roadmap_gen.get_job(slug)
     if job is None:
         raise HTTPException(status_code=404, detail=f"no roadmap generation job for {slug!r}")
@@ -632,7 +664,7 @@ async def api_clear_roadmap_generation(slug: str):
     job is refused rather than cleared: the session is already spending quota, and dropping
     the record would leave it writing a roadmap.csv that no job explains.
     """
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
     if roadmap_gen.job_running(slug):
         raise HTTPException(
             status_code=409,
@@ -667,16 +699,16 @@ async def api_facts_file(slug: str):
     the brand the client list already reports as has_canonical_facts false, and the first blog
     run drafts the file before it writes anything.
     """
-    _client_dir_or_404(slug)
-    # facts_gen delegates to runner.canonical_facts_path, which owns the one definition of this
-    # path. Rebuilding it here would be a fourth reader free to disagree with preflight about
-    # which file it is talking about.
-    path = facts_gen.facts_path(slug)
-    if not path.is_file():
+    _client_or_404(slug)
+    # Record-backed: the same canonical_facts column preflight refuses on, so this view and
+    # the refusal can never be reading two different fact bases. The scratch copy under
+    # clients/ is materialized for agents at run start and is never consulted here.
+    facts = db.q(
+        "select canonical_facts from clients where slug = %s and deleted_at is null",
+        (slug,), fetch="val")
+    if facts is None:
         raise HTTPException(status_code=404, detail=f"no canonical-facts.md for {slug!r}")
-    return PlainTextResponse(
-        path.read_text(encoding="utf-8"), media_type="text/plain; charset=utf-8"
-    )
+    return PlainTextResponse(facts, media_type="text/plain; charset=utf-8")
 
 @app.get("/api/clients/{slug}/facts/generate")
 async def api_facts_generation_job(slug: str):
@@ -688,7 +720,7 @@ async def api_facts_generation_job(slug: str):
     pressed Generate. A 404 means no fact base has ever been built here, which for a brand
     that already has one is the normal answer: the file is on disk and no job was needed.
     """
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
     job = facts_gen.get_job(slug)
     if job is None:
         raise HTTPException(status_code=404, detail=f"no facts generation job for {slug!r}")
@@ -704,7 +736,7 @@ async def api_clear_facts_generation(slug: str):
     is waiting on it, so dropping the record would leave that run blocked on a job nobody can
     see. Clearing the job never touches canonical-facts.md itself.
     """
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
     if facts_gen.job_running(slug):
         raise HTTPException(
             status_code=409,
@@ -717,7 +749,7 @@ async def api_clear_facts_generation(slug: str):
 
 @app.get("/api/clients/{slug}/ledger")
 async def api_ledger(slug: str):
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
     return {"rows": ledger.read_ledger(slug)}
 
 
@@ -732,47 +764,111 @@ def _title_from_blog(path):
     return None
 
 
-def _blog_history(slug):
-    """Every blog on disk for a client, newest first.
+def _status_summaries(client_id):
+    """topic_slug -> runner._summarize fold over the recorded status feed.
 
-    This scans the output folder rather than reading the ledger, because the
-    ledger records only blogs that shipped, and because the filesystem is the
-    source of truth: a blog an operator deleted in Finder must vanish from the
-    app. A needs_review blog is still a real file they want to open and read.
+    The lines are rebuilt in line_no order with the keys _summarize reads, so
+    history and the status table cannot drift apart: the record's fold and the
+    scratch fold go through the one summariser.
     """
-    output_root = runner.client_output_dir(slug)
-    if not output_root.is_dir():
+    rows = db.q(
+        """select t.slug, e.stage, e.event, e.iter, e.score, e.status
+           from status_events e
+           join topics t on t.id = e.topic_id
+           where e.client_id = %s and t.deleted_at is null
+           order by t.slug, e.line_no""",
+        (client_id,))
+    lines_by_slug = {}
+    for topic_slug, stage, event, iteration, score, status in rows:
+        lines_by_slug.setdefault(topic_slug, []).append({
+            "stage": stage, "event": event, "iter": iteration,
+            "score": score, "status": status,
+        })
+    return {
+        topic_slug: runner._summarize(topic_slug, lines)
+        for topic_slug, lines in lines_by_slug.items()
+    }
+
+
+def _scratch_entry(slug, topic_slug, led, row_index):
+    """One history entry off the scratch tree, the way the old disk scan built it.
+
+    Used ONLY for topics a live run holds right now: mid-run, blog.md exists from
+    the writer onward while nothing has been committed, and the record would hide
+    or understate the topic. None when the scratch has no blog.md yet.
+    """
+    topic_dir = runner.output_dir(slug, topic_slug)
+    blog_path = topic_dir / "blog.md"
+    if not blog_path.is_file():
+        return None
+    lines = runner._read_status(topic_dir)
+    summary = runner._summarize(topic_slug, lines) if lines else {}
+    entry = led.get(topic_slug) or {}
+    title = entry.get("topic") or _title_from_blog(blog_path) or topic_slug
+    created = entry.get("generated_at")
+    if not created:
+        created = datetime.fromtimestamp(
+            blog_path.stat().st_mtime, tz=timezone.utc
+        ).isoformat()
+    return {
+        "topic": title,
+        "topic_slug": topic_slug,
+        "created": created,
+        "score": summary.get("score"),
+        "status": summary.get("status") or "unknown",
+        "iterations": summary.get("iterations"),
+        "shipped": topic_slug in led,
+        "roadmap_index": row_index.get(topic_slug),
+    }
+
+
+def _blog_history(slug):
+    """Every blog for a client, newest first.
+
+    THE SPLIT, in one sentence per side: SETTLED topics come from the record
+    (topics joined to their latest blog_versions plus the status_events fold),
+    because the runner commits scratch at the terminal line and scratch can be
+    reclaimed after that; topics a LIVE run holds right now come from scratch,
+    because agents write there mid-run and nothing is committed yet. Deleting a
+    topic in the record (topics.deleted_at) is what removes a blog from the app
+    and unblocks its roadmap row, the job a Finder delete used to do.
+    """
+    client_id = db.client_id(slug)
+    if client_id is None:
         return []
 
     led = ledger.ledger_slugs(slug)
-    # Read ONCE for the whole scan, not once per blog: this is a CSV parse, and doing it inside the
-    # loop would re-read the same sheet twenty times to answer twenty copies of one question.
+    # Read ONCE for the whole listing, not once per blog: this is a sheet parse, and doing it
+    # inside the loop would re-read the same sheet twenty times for twenty copies of one question.
     row_index = roadmap.index_by_slug(slug)
-    blogs = []
-    for topic_dir in output_root.iterdir():
-        blog_path = topic_dir / "blog.md"
-        if not blog_path.is_file():
-            continue
-        topic_slug = topic_dir.name
+    summaries = _status_summaries(client_id)
 
-        lines = runner._read_status(topic_dir)
-        # _summarize is what the runner itself reports a topic with, so history
-        # and the status table cannot drift apart. This scan is the caller that
-        # sees topics mid run, since blog.md exists from the writer onward and
-        # the terminal line is written last, and _summarize calls those running.
-        summary = runner._summarize(topic_slug, lines) if lines else {}
+    # The record: every live topic that carries at least one committed version,
+    # with the latest version's title and commit time standing in for the old
+    # H1 scan and mtime fallback.
+    rows = db.q(
+        """select t.slug, t.title, v.h1_title, v.committed_at
+           from topics t
+           join lateral (
+             select h1_title, committed_at from blog_versions v
+             where v.topic_id = t.id
+             order by v.version_no desc limit 1
+           ) v on true
+           where t.client_id = %s and t.deleted_at is null""",
+        (client_id,))
 
+    entries = {}
+    for topic_slug, topic_title, h1_title, committed_at in rows:
+        summary = summaries.get(topic_slug) or {}
         entry = led.get(topic_slug) or {}
         # The ledger holds the operator's own topic text, which beats a slug or a
-        # writer-invented H1. Fall back only when the blog never shipped.
-        title = entry.get("topic") or _title_from_blog(blog_path) or topic_slug
+        # writer-invented H1. Fall back only when the blog never shipped, in the
+        # old scan's order: the ledger, then the H1, then the topic row, then the slug.
+        title = entry.get("topic") or h1_title or topic_title or topic_slug
         created = entry.get("generated_at")
         if not created:
-            created = datetime.fromtimestamp(
-                blog_path.stat().st_mtime, tz=timezone.utc
-            ).isoformat()
-
-        blogs.append({
+            created = committed_at.isoformat()
+        entries[topic_slug] = {
             "topic": title,
             "topic_slug": topic_slug,
             "created": created,
@@ -786,19 +882,30 @@ def _blog_history(slug):
             # this field existed the app could not answer it. Zero based, exactly like
             # RoadmapRow.index; every DISPLAY adds one. See roadmap.index_by_slug.
             "roadmap_index": row_index.get(topic_slug),
-        })
+        }
+
+    # The live overlay: scratch is authoritative for topics in a live run, so a
+    # mid-run topic appears (and a mid-revise one reports) exactly as the disk
+    # scan surfaced it, terminal line still unwritten.
+    for topic_slug in _live_run_slugs(slug):
+        if not topic_slug:
+            continue
+        live_entry = _scratch_entry(slug, topic_slug, led, row_index)
+        if live_entry is not None:
+            entries[topic_slug] = live_entry
 
     # Newest first stays the default, because the library's own question is "what happened lately".
     # Sorting by roadmap_index here would be wrong twice over: a blog on no row has none to sort by,
     # and the operator can already order by number in the browser, where it is one click and
     # reversible rather than a decision baked into every caller of this function.
+    blogs = list(entries.values())
     blogs.sort(key=lambda b: b["created"], reverse=True)
     return blogs
 
 
 @app.get("/api/clients/{slug}/blogs")
 async def api_blogs(slug: str):
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
     return {"blogs": _blog_history(slug)}
 
 
@@ -826,17 +933,15 @@ class AnswersRequest(BaseModel):
     answers: list[AnswerItem]
 
 
-def _topic_dir_or_404(slug, topic_slug):
-    """The topic's output dir, or a 404. Also the path-traversal guard for topic_slug: an
-    unknown topic and a smuggled ../ get the same answer, because both are asking for something
-    that is not this client's blog."""
-    output_root = runner.client_output_dir(slug).resolve()
-    path = (output_root / topic_slug).resolve()
-    if output_root not in path.parents or not path.is_dir():
+def _topic_or_404(slug, topic_slug):
+    """The topic must be a live topics row: record-backed, never a directory stat, because
+    scratch outlives and predates the record only inside a run. The slug-format check stays as
+    the traversal guard the old resolve() gave: an unknown topic and a smuggled ../ get the
+    same answer, because both are asking for something that is not this client's blog."""
+    if runner.slugify(topic_slug) != topic_slug or db.topic_id(slug, topic_slug) is None:
         raise HTTPException(
             status_code=404, detail=f"no blog {topic_slug!r} for client {slug!r}"
         )
-    return path
 
 
 @app.get("/api/clients/{slug}/blogs/{topic}/questions")
@@ -848,8 +953,8 @@ async def api_questions(slug: str, topic: str):
     flag would be a snapshot of what was true when the evaluator asked. The staleness bug this
     endpoint exists to expose is exactly that mismatch.
     """
-    _client_dir_or_404(slug)
-    _topic_dir_or_404(slug, topic)
+    _client_or_404(slug)
+    _topic_or_404(slug, topic)
     try:
         return questions_mod.describe_questions(slug, topic)
     except questions_mod.NoQuestions as exc:
@@ -870,8 +975,8 @@ async def api_answers(slug: str, topic: str, body: AnswersRequest):
     transient and honestly answered by "wait". Then the body, which is the only one they can fix
     by typing.
     """
-    _client_dir_or_404(slug)
-    _topic_dir_or_404(slug, topic)
+    _client_or_404(slug)
+    _topic_or_404(slug, topic)
 
     try:
         state = questions_mod.describe_questions(slug, topic)
@@ -1032,13 +1137,13 @@ async def api_stop_client_runs(slug: str):
     Idempotent: a brand with nothing live reports zero and 200s. A second press, a double click, or
     a stale tab is not an error condition, and 409ing it would summon the operator to nothing.
     """
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
     return runner.stop_client(slug)
 
 
 @app.post("/api/clients/{slug}/generate", status_code=202)
 async def api_generate(slug: str, body: GenerateRequest):
-    client_dir = _client_dir_or_404(slug)
+    _client_or_404(slug)
 
     # When an upload_id is present, re-read and re-parse THAT archived file
     # server-side. The browser sends row indices only: it never gets to tell the
@@ -1116,7 +1221,7 @@ async def api_generate(slug: str, body: GenerateRequest):
     # it, so a production deployment cannot be tricked into fake output.
     mock = runner.geo_mock()
     if not mock:
-        ok, reason = _preflight(client_dir)
+        ok, reason = _preflight(slug)
         if not ok:
             raise HTTPException(status_code=409, detail=f"preflight failed for {slug}: {reason}")
 
@@ -1128,6 +1233,8 @@ async def api_generate(slug: str, body: GenerateRequest):
         # line into the new SSE stream. Record the current byte size now,
         # before the batch task can write (create_task does not run until we
         # next await), so this run's tail starts after all prior lines.
+        # Deliberately a SCRATCH stat, not a record count: the SSE tail reads
+        # scratch during a live run, and a missing file stats to 0 below.
         status_path = runner.output_dir(slug, row["topic_slug"]) / "status.jsonl"
         try:
             tail_offset = status_path.stat().st_size
@@ -1167,7 +1274,9 @@ async def api_generate(slug: str, body: GenerateRequest):
 
 
 # ---------------------------------------------------------------------------
-# SSE: tail status.jsonl files
+# SSE: tail status.jsonl files. UNCHANGED by the Supabase rewire, by design:
+# a live run's progress feed is the scratch file the agents append to, and the
+# record only catches up at the terminal commit.
 # ---------------------------------------------------------------------------
 
 class _TopicTail:
@@ -1256,20 +1365,75 @@ async def api_run_events(run_id: str):
 # Output files
 # ---------------------------------------------------------------------------
 
+def _record_artifact(slug, topic_slug, name):
+    """One whitelisted artifact's text from the record, or None when it holds nothing.
+
+    Each name maps to the column the runner commits it to: blog.md and eval.md to the
+    latest blog_versions row, dossier.md and links-verified.txt to the topics row, and
+    status.jsonl rebuilt line for line from status_events with exactly the keys
+    .claude/status.py writes, one JSON object per line and a trailing newline.
+    """
+    tid = db.topic_id(slug, topic_slug)
+    if tid is None:
+        return None
+    if name == "dossier.md":
+        return db.q("select dossier from topics where id = %s", (tid,), fetch="val")
+    if name == "links-verified.txt":
+        return db.q("select links_verified from topics where id = %s", (tid,), fetch="val")
+    if name in ("blog.md", "eval.md"):
+        row = db.q(
+            """select body, eval_body from blog_versions
+               where topic_id = %s order by version_no desc limit 1""",
+            (tid,), fetch="one")
+        if row is None:
+            return None
+        return row[0] if name == "blog.md" else row[1]
+    if name == "status.jsonl":
+        rows = db.q(
+            """select ts, slug_reported, stage, event, iter, score, status, note
+               from status_events where topic_id = %s order by line_no""",
+            (tid,))
+        if not rows:
+            return None
+        lines = []
+        for ts, slug_reported, stage, event, iteration, score, status, note in rows:
+            lines.append(json.dumps({
+                "ts": ts.isoformat() if ts is not None else None,
+                "slug": slug_reported or topic_slug,
+                "stage": stage,
+                "event": event,
+                "iter": iteration,
+                "score": score,
+                "status": status,
+                "note": note,
+            }, ensure_ascii=False))
+        return "\n".join(lines) + "\n"
+    return None
+
+
 @app.get("/api/clients/{slug}/output/{topic_slug}/{name}")
 async def api_output_file(slug: str, topic_slug: str, name: str):
     if name not in OUTPUT_WHITELIST:
         raise HTTPException(status_code=404, detail="not found")
-    _client_dir_or_404(slug)
+    _client_or_404(slug)
 
-    output_root = runner.client_output_dir(slug).resolve()
-    path = (output_root / topic_slug / name).resolve()
-    # Path traversal guard: the resolved path must stay inside this client's
-    # output dir even if topic_slug smuggles separators or dot-dots.
-    if output_root not in path.parents:
+    # Slug-format guard: the record-era stand-in for the old resolve() check, so a
+    # topic_slug smuggling separators or dot-dots 404s before any path or query is built.
+    if runner.slugify(topic_slug) != topic_slug:
         raise HTTPException(status_code=404, detail="not found")
-    if not path.is_file():
+
+    # THE SPLIT: while a live run holds this topic the scratch file is authoritative,
+    # because agents append there mid-run and the commit only lands at the terminal line.
+    if topic_slug in _live_run_slugs(slug):
+        path = runner.output_dir(slug, topic_slug) / name
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="not found")
+        return PlainTextResponse(
+            path.read_text(encoding="utf-8"), media_type="text/plain; charset=utf-8"
+        )
+
+    # Settled topics come from the record, which outlives any scratch reclaim.
+    text = _record_artifact(slug, topic_slug, name)
+    if text is None:
         raise HTTPException(status_code=404, detail="not found")
-    return PlainTextResponse(
-        path.read_text(encoding="utf-8"), media_type="text/plain; charset=utf-8"
-    )
+    return PlainTextResponse(text, media_type="text/plain; charset=utf-8")

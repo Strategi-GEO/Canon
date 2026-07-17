@@ -9,10 +9,19 @@ operator; THIS is the guard, and it must hold against a stale tab, a replayed
 request, and a hand-rolled curl.
 
 The rule is exactly the engine's own: a blog is publishable when its terminal
-status in status.jsonl is the literal string "done". Not "not failed", not
-"has a blog.md", not "scored >= 95 somewhere in its history". needs_review is
-the amber path and it is never pushed, which is the whole point.
+status in the recorded status feed is the literal string "done". Not "not
+failed", not "has a blog", not "scored >= 95 somewhere in its history".
+needs_review is the amber path and it is never pushed, which is the whole point.
+
+WHERE THE BYTES COME FROM since the Supabase rewire: the RECORD, always. The
+gate reads the latest committed blog_versions body and the status_events feed,
+never the scratch tree, because a publish is an act on a SETTLED blog: the
+runner commits scratch at the terminal line, so a topic still mid-run has not
+committed its new lines yet and the fold answers with the last settled state,
+which is exactly the draft that shipped. Tests inject their fixtures through
+the runner parameter's fetch seams below, so they never touch the live record.
 """
+from .. import db
 from . import payload as payload_mod
 
 
@@ -29,17 +38,71 @@ class PublishRefused(Exception):
         self.status = status
 
 
+def _record_status_lines(client_slug, topic_slug):
+    """The recorded status feed as parsed lines, in line_no order.
+
+    The same dict shape runner._read_status yields off scratch, so the one
+    summariser folds record and scratch identically. Record, not scratch: the
+    commit at the terminal line is what makes a blog settled enough to publish.
+    """
+    tid = db.topic_id(client_slug, topic_slug)
+    if not tid:
+        return []
+    rows = db.q(
+        """select stage, event, iter, score, status from status_events
+           where topic_id = %s order by line_no""",
+        (tid,))
+    return [
+        {"stage": stage, "event": event, "iter": iteration,
+         "score": score, "status": status}
+        for stage, event, iteration, score, status in rows
+    ]
+
+
+def _record_blog(client_slug, topic_slug):
+    """The latest committed draft body, or None when the record holds no version.
+
+    The LATEST version and deliberately not the shipped_version_id pointer,
+    because the disk-era gate read blog.md, which is always the newest draft;
+    the status check is what guarantees that newest draft is the one that
+    shipped, and re-anchoring here would let the two disagree.
+    """
+    tid = db.topic_id(client_slug, topic_slug)
+    if not tid:
+        return None
+    return db.q(
+        """select body from blog_versions where topic_id = %s
+           order by version_no desc limit 1""",
+        (tid,), fetch="val")
+
+
+def _status_lines_for(runner, client_slug, topic_slug):
+    """The test seam: a runner carrying fetch_status_lines is a sandbox whose
+    fixtures never reached the record, so it answers instead of the database."""
+    fetch = getattr(runner, "fetch_status_lines", None)
+    if fetch is not None:
+        return fetch(client_slug, topic_slug)
+    return _record_status_lines(client_slug, topic_slug)
+
+
+def _blog_text_for(runner, client_slug, topic_slug):
+    """The test seam for the draft bytes, same rule as _status_lines_for."""
+    fetch = getattr(runner, "fetch_blog", None)
+    if fetch is not None:
+        return fetch(client_slug, topic_slug)
+    return _record_blog(client_slug, topic_slug)
+
+
 def blog_status(runner, client_slug, topic_slug):
     """The topic's terminal status, via the runner's OWN summariser.
 
-    Deliberately not a second reading of status.jsonl. _summarize is what the
+    Deliberately not a second fold over the status feed. _summarize is what the
     blogs list and the status table already report a topic with, so routing this
     check through it means the gate can never disagree with the status the
     operator is looking at when they press the button. A private reimplementation
     here would be a second definition of "done" free to drift from the first.
     """
-    out_dir = runner.output_dir(client_slug, topic_slug)
-    lines = runner._read_status(out_dir)
+    lines = _status_lines_for(runner, client_slug, topic_slug)
     if not lines:
         return None
     return runner._summarize(topic_slug, lines).get("status")
@@ -48,8 +111,9 @@ def blog_status(runner, client_slug, topic_slug):
 def assert_publishable(runner, client_slug, topic_slug):
     """Raise PublishRefused unless this blog shipped. Returns the blog text.
 
-    Reads blog.md here rather than leaving it to the caller so that the check and
-    the bytes cannot come apart: whatever this returns is what the gate approved.
+    Reads the draft bytes here rather than leaving it to the caller so that the
+    check and the bytes cannot come apart: whatever this returns is what the
+    gate approved, and both come from the same record.
     """
     # A demo blog reaches status "done" like any other, because demo mode runs the
     # same terminal-status path. It is templated placeholder text written with zero
@@ -63,9 +127,8 @@ def assert_publishable(runner, client_slug, topic_slug):
             status="demo",
         )
 
-    out_dir = runner.output_dir(client_slug, topic_slug)
-    blog_path = out_dir / "blog.md"
-    if not blog_path.is_file():
+    blog_md = _blog_text_for(runner, client_slug, topic_slug)
+    if blog_md is None:
         raise PublishRefused(f"No blog on disk for '{topic_slug}'.")
 
     status = blog_status(runner, client_slug, topic_slug)
@@ -80,11 +143,6 @@ def assert_publishable(runner, client_slug, topic_slug):
             f"may reach the CMS, because a draft there is directly approvable.",
             status=status,
         )
-
-    try:
-        blog_md = blog_path.read_text(encoding="utf-8")
-    except OSError as cause:
-        raise PublishRefused(f"Cannot read blog.md for '{topic_slug}': {cause}", status=status)
 
     # THE ARTIFACT IS ASKED WHETHER IT IS FAKE, because nothing else can be trusted to know.
     #

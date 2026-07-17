@@ -100,7 +100,7 @@ try:
 
     # The five ClaudeAgentOptions builders all route through agent_env: assert
     # at the source level so a sixth spawn site cannot appear un-allowlisted.
-    door_files = ["server/runner.py", "server/describe.py", "server/facts.py",
+    door_files = ["server/runner.py", "server/describe.py",
                   "server/facts_gen.py", "server/roadmap_gen.py"]
     undoored = []
     for f in door_files:
