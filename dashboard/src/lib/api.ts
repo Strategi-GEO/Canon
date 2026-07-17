@@ -1,4 +1,5 @@
 import { API_BASE } from "@/lib/config";
+import { clearSession, ensureFreshToken, getAccessToken } from "@/lib/session";
 import type {
   AnswersBody,
   BlogQuestions,
@@ -80,6 +81,31 @@ function url(path: string): string {
 }
 
 /**
+ * The Authorization header for one request, refreshed first when the token is near expiry.
+ * Null when signed out, and the request then goes out bare: the engine answers it 401,
+ * which lands in handleUnauthorized below and puts the operator on /login.
+ */
+async function authHeader(): Promise<Record<string, string>> {
+  const token = await ensureFreshToken();
+  return token === null ? {} : { Authorization: `Bearer ${token}` };
+}
+
+/**
+ * A 401 anywhere but /api/login means the session is dead: expired past refresh, revoked,
+ * or forged. The stored copy is a lie now, so drop it and hard-redirect to /login. On
+ * /api/login itself a 401 is just a wrong password, which is the page's own error to show.
+ */
+function handleUnauthorized(path: string, status: number): void {
+  if (status !== 401 || path === "/api/login") {
+    return;
+  }
+  clearSession();
+  if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+    window.location.assign("/login");
+  }
+}
+
+/**
  * Reads the body once, as text, then tries JSON. A 413 from a proxy can arrive as HTML and
  * a stream can only be consumed once, so text first is the only way to never lose a body.
  */
@@ -109,12 +135,17 @@ export async function request<T>(
 ): Promise<T> {
   const { method = "GET", body, signal, form } = options;
 
+  const headers: Record<string, string> = await authHeader();
+  if (!form && body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
+
   let res: Response;
   try {
     res = await fetch(url(path), {
       method,
       signal,
-      headers: form || body === undefined ? undefined : { "Content-Type": "application/json" },
+      headers,
       body: form ?? (body === undefined ? undefined : JSON.stringify(body)),
     });
   } catch (cause) {
@@ -129,6 +160,7 @@ export async function request<T>(
   const parsed = await readBody(res);
 
   if (!res.ok) {
+    handleUnauthorized(path, res.status);
     const detail =
       parsed && typeof parsed === "object" && "detail" in parsed
         ? (parsed as { detail: unknown }).detail
@@ -139,11 +171,35 @@ export async function request<T>(
   return parsed as T;
 }
 
+/**
+ * Binary bodies (resource previews and downloads), authenticated like every other request.
+ * The error path still reads text: the engine's refusals are JSON or plain prose, and a
+ * refusal wrapped in a Blob would be a reason nobody can render.
+ */
+export async function requestBlob(path: string, signal?: AbortSignal): Promise<Blob> {
+  let res: Response;
+  try {
+    res = await fetch(url(path), { signal, headers: await authHeader() });
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === "AbortError") {
+      throw cause;
+    }
+    throw new ApiError(0, "Cannot reach the engine", { cause: String(cause) });
+  }
+
+  if (!res.ok) {
+    const text = await res.text();
+    handleUnauthorized(path, res.status);
+    throw new ApiError(res.status, text, text);
+  }
+  return res.blob();
+}
+
 /** Artifacts come back as text/plain, so they bypass the JSON path entirely. */
 export async function requestText(path: string, signal?: AbortSignal): Promise<string> {
   let res: Response;
   try {
-    res = await fetch(url(path), { signal });
+    res = await fetch(url(path), { signal, headers: await authHeader() });
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === "AbortError") {
       throw cause;
@@ -153,6 +209,7 @@ export async function requestText(path: string, signal?: AbortSignal): Promise<s
 
   const text = await res.text();
   if (!res.ok) {
+    handleUnauthorized(path, res.status);
     throw new ApiError(res.status, text, text);
   }
   return text;
@@ -212,6 +269,24 @@ export const api = {
     request<ResourcesResponse>(
       `/api/clients/${slug}/resources/${encodeURIComponent(name)}`,
       { method: "DELETE" },
+    ),
+
+  /**
+   * One resource's bytes, streamed by the engine from content-addressed Storage, so what
+   * comes back is the ORIGINAL uploaded file byte for byte. `download: true` asks the
+   * engine for its attachment disposition; the browser saves either way, so the flag is
+   * honesty about intent more than behaviour. Needs the live engine, never hosted.
+   */
+  resourceFile: (
+    slug: string,
+    name: string,
+    options?: { download?: boolean; signal?: AbortSignal },
+  ) =>
+    requestBlob(
+      `/api/clients/${slug}/resources/${encodeURIComponent(name)}${
+        options?.download ? "?download=1" : ""
+      }`,
+      options?.signal,
     ),
 
   uploadRoadmap: (slug: string, form: FormData) =>
@@ -328,8 +403,18 @@ export const api = {
   stopRuns: (slug: string) =>
     request<StopRunsResult>(`/api/clients/${slug}/runs`, { method: "DELETE" }),
 
-  /** The SSE endpoint, for an EventSource. Not fetched here. */
-  eventsUrl: (runId: string) => url(`/api/runs/${runId}/events`),
+  /**
+   * The SSE endpoint, for an EventSource. Not fetched here. EventSource cannot set headers,
+   * so this is the ONE route where the token travels as a query parameter (the engine
+   * accepts both there, header winning). It is read synchronously because an EventSource is
+   * constructed synchronously; the background refresh timer keeps the stored token live, so
+   * the copy read here is never stale by more than its cadence.
+   */
+  eventsUrl: (runId: string) => {
+    const base = url(`/api/runs/${runId}/events`);
+    const token = getAccessToken();
+    return token === null ? base : `${base}?access_token=${encodeURIComponent(token)}`;
+  },
 
   blogs: (slug: string, signal?: AbortSignal) =>
     request<BlogsResponse>(`/api/clients/${slug}/blogs`, { signal }),

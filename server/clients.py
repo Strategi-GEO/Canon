@@ -426,13 +426,16 @@ def list_resources(slug):
     if not cid:
         return []
     rows = db.q(
-        """select name, size_bytes, uploaded_at from client_resources
+        """select name, size_bytes, uploaded_at, content_type from client_resources
            where client_id = %s order by lower(name) collate "C" """,
         (cid,))
     return [
+        # content_type falls back to a filename guess: rows migrated before the
+        # column existed hold NULL, and the UI renders a type badge off this.
         {"name": name, "size": size,
-         "modified": uploaded_at.isoformat() if uploaded_at else ""}
-        for name, size, uploaded_at in rows
+         "modified": uploaded_at.isoformat() if uploaded_at else "",
+         "content_type": ctype or mimetypes.guess_type(name)[0] or ""}
+        for name, size, uploaded_at, ctype in rows
     ]
 
 

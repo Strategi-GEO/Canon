@@ -6,3 +6,7 @@ uvicorn[standard]>=0.51.0
 # chain changes, the CMS push breaks on an ImportError with nothing in this file to explain
 # why. A direct import gets a direct pin.
 httpx>=0.28.1
+# server/auth.py verifies Supabase access tokens locally (ES256 against the project JWKS),
+# so a request costs one signature check instead of a GoTrue round trip. [crypto] pulls
+# cryptography, which PyJWT needs for EC keys and does not install on its own.
+PyJWT[crypto]>=2.13.0

@@ -7,12 +7,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { brandHref } from "@/lib/orgs-context";
 import type { RoadmapState } from "@/lib/use-roadmap";
-import type { RoadmapRow } from "@/types";
+import type { BlogSummary, RoadmapRow } from "@/types";
 import { FieldError } from "@/components/clients/engine-error";
-
-/** The positional contract, fixed in the engine and not obvious from any CSV header. */
-const CSV_CONTRACT =
-  "Columns 1, 2 and 5 are the brief: topic, what it covers, target prompts. Every other column reaches the writer as guidance, under its own header.";
+import { StatusBadge } from "@/components/shell/status-badge";
 
 /**
  * The overview shows a PREVIEW. The full selectable table is the create page, one click away,
@@ -23,16 +20,15 @@ const PREVIEW_ROWS = 5;
 /**
  * The one roadmap card, and it is READ ONLY.
  *
- * Uploading happens on the create page and nowhere else. A file input parked on the overview
- * put a destructive action (replacing the topic list) in front of an operator who came here to
- * read, and it split the roadmap across two tabs so neither was the place. Uploading a sheet
- * and picking rows from it are one task, so they live on one page, and this card is the
- * summary that sends you there.
+ * Uploading and generating a roadmap live on the Content Roadmap tab, and picking rows lives
+ * on Create Blogs. A file input parked on the overview put a destructive action (replacing
+ * the topic list) in front of an operator who came here to read, so this card carries none:
+ * it is the summary that sends you to each of those tabs.
  *
  * It used to be two cards stacked on this same overview: a summary that listed rows and a panel
- * that uploaded them. That gave the operator two "Pick topics" buttons to the same place, the
- * CSV column contract stated twice, and a separate GET behind each, so one view fetched the
- * same CSV twice and could render two different answers if the two disagreed.
+ * that uploaded them. That gave the operator two "Pick topics" buttons to the same place and a
+ * separate GET behind each, so one view fetched the same CSV twice and could render two
+ * different answers if the two disagreed.
  *
  * The roadmap is READ here, never owned: it is fetched once by the page and passed in, so this
  * card and the brand's stats cannot disagree about how many topics exist.
@@ -42,11 +38,14 @@ export function RoadmapPanel({
   brandSlug,
   hasRoadmap,
   roadmap,
+  blogs,
 }: {
   orgSlug: string;
   brandSlug: string;
   hasRoadmap: boolean;
   roadmap: RoadmapState;
+  /** The brand's blog scan, fetched by the page. Null while it loads. */
+  blogs: BlogSummary[] | null;
 }) {
   const rows = roadmap.data?.rows ?? [];
   const complete = rows.filter((row) => row.complete).length;
@@ -54,13 +53,17 @@ export function RoadmapPanel({
   const preview = rows.slice(0, PREVIEW_ROWS);
   const remaining = rows.length - preview.length;
 
+  // One blog dir per topic slug, so the slug is the join key. roadmap_index would also work,
+  // but the slug is what the ledger and the output folder are both keyed by.
+  const blogBySlug = new Map((blogs ?? []).map((blog) => [blog.topic_slug, blog]));
+
   return (
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-semibold text-foreground">Roadmap</CardTitle>
         <p className="mt-1 text-xs text-muted-foreground">
-          The topic list the factory writes from. It stays read only: the app never writes
-          back to the CSV you upload.
+          The topic list the factory writes from. It stays read only: the app never edits the
+          sheet you uploaded or generated.
         </p>
       </CardHeader>
       <CardContent>
@@ -76,7 +79,7 @@ export function RoadmapPanel({
             ) : hasRoadmap ? (
               "A roadmap is saved for this brand, and it parsed to zero usable topics."
             ) : (
-              "No roadmap yet. Upload a CSV on the create page to pick topics."
+              "No roadmap yet. Upload or generate one on the Content Roadmap tab."
             )}
           </p>
         )}
@@ -99,22 +102,16 @@ export function RoadmapPanel({
         {roadmap.error ? <FieldError error={roadmap.error} /> : null}
 
         {/* With no roadmap there is nothing to preview, so this card's only job is to point at
-            the page that takes one. Outline, not accent: the header's "Create blogs" is this
-            view's one accent action, and it already leads to the same place. */}
+            the tab that takes one. Outline, not accent: the header's "Create blogs" is this
+            view's one accent action. */}
         {!hasRoadmap && rows.length === 0 && !roadmap.loading ? (
           <Button size="sm" variant="outline" className="mt-3" asChild>
-            <Link href={brandHref(orgSlug, brandSlug, "/create")}>
+            <Link href={brandHref(orgSlug, brandSlug, "/roadmap")}>
               Add a roadmap
               <ArrowRight data-icon="inline-end" aria-hidden />
             </Link>
           </Button>
         ) : null}
-
-        {/* Stated ONCE, and here rather than on the create page's table, because it explains
-            what the operator is looking at rather than what they are about to do. */}
-        <p className="machine mt-3 text-xs wrap-break-word text-muted-foreground">
-          {CSV_CONTRACT}
-        </p>
 
         {preview.length > 0 ? (
           <>
@@ -150,7 +147,7 @@ export function RoadmapPanel({
                       </p>
                     ) : null}
                   </div>
-                  <RoadmapRowState row={row} />
+                  <RoadmapRowState row={row} blog={blogBySlug.get(row.topic_slug)} />
                 </li>
               ))}
             </ul>
@@ -182,8 +179,29 @@ export function RoadmapPanel({
   );
 }
 
-/** Generated wins over incomplete: the engine refuses to run a topic that already has a blog. */
-function RoadmapRowState({ row }: { row: RoadmapRow }) {
+/**
+ * A row with a blog wears that blog's REAL status, through the same StatusBadge the library
+ * uses, so "shipped", "waiting on you", "failed" and "stopped" mean here exactly what they
+ * mean there. The flat "generated" chip this used to show came from the ledger, which records
+ * ships only, so a blog held for an answer or failed mid-loop wore "ready" as though nothing
+ * had happened, and the operator's next move was to run it again.
+ *
+ * The blog wins over incomplete: the engine refuses to run a topic that already has one. The
+ * ledger chip below is the fallback for the moment the blog scan has not landed yet, and for
+ * a ledgered blog whose output dir was deleted on disk.
+ */
+function RoadmapRowState({ row, blog }: { row: RoadmapRow; blog?: BlogSummary }) {
+  if (blog) {
+    return (
+      <span className="flex shrink-0 items-center gap-1.5">
+        <StatusBadge status={blog.status} />
+        {blog.score !== null ? (
+          <span className="machine text-xs text-muted-foreground">{blog.score}</span>
+        ) : null}
+      </span>
+    );
+  }
+
   if (row.already_generated) {
     return (
       <span className="machine shrink-0 rounded border border-ship/25 bg-ship-bg px-1.5 py-px text-[0.6875rem] leading-5 text-ship">

@@ -1,16 +1,18 @@
 "use client";
 
 import * as React from "react";
-import { usePathname } from "next/navigation";
-import { Menu } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { LogOut, Menu } from "lucide-react";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { SidebarBody } from "@/components/shell/sidebar";
+import { ThemeToggle } from "@/components/shell/theme-toggle";
 import { pageTitle, parseBrandPath } from "@/components/shell/nav";
 import { NotificationsBell } from "@/components/session/notifications-bell";
 import { SessionsIndicator } from "@/components/session/sessions-indicator";
 import { ApiError } from "@/lib/api";
 import { useOrgs } from "@/lib/orgs-context";
+import { getSession, signOut, subscribeSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
 export function Topbar() {
@@ -62,8 +64,56 @@ export function Topbar() {
             <span className="max-w-40 truncate text-foreground">{brand.name}</span>
           </span>
         ) : null}
+        <ThemeToggle />
+        <UserMenu />
       </div>
     </header>
+  );
+}
+
+/**
+ * Who is signed in, and the one door out. Last in the row because it is the most global
+ * thing here: everything else describes the engine or the page, this describes the person.
+ * The email is display only and hides on narrow screens; the sign-out button never does,
+ * because a control that exists only at some widths is a control an operator cannot find.
+ */
+function UserMenu() {
+  const router = useRouter();
+  const [email, setEmail] = React.useState<string | null>(null);
+
+  // Read in an effect, never during render: the first render is also the SSR render, and
+  // there is no localStorage there to read a session from.
+  React.useEffect(() => {
+    const read = () => setEmail(getSession()?.user.email ?? null);
+    read();
+    return subscribeSession(read);
+  }, []);
+
+  return (
+    <div className="flex items-center gap-1.5">
+      {email !== null ? (
+        <span
+          className="hidden max-w-44 truncate text-xs text-muted-foreground md:inline"
+          title={email}
+        >
+          {email}
+        </span>
+      ) : null}
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label="Sign out"
+        title="Sign out"
+        onClick={() => {
+          // Revoke is fire-and-forget inside signOut; the local clear is what matters, and
+          // the redirect must not wait on a network round trip that may never answer.
+          signOut();
+          router.replace("/login");
+        }}
+      >
+        <LogOut aria-hidden />
+      </Button>
+    </div>
   );
 }
 

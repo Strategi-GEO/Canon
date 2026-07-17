@@ -56,13 +56,6 @@ def _keyed(rows):
     return entries
 
 
-def ensure_ledger(client_slug):
-    """A no-op kept so callers do not break. The CSV era created a header-only
-    file here at onboarding; ledger_entries needs no per-client setup, and an
-    unknown client simply reads as an empty ledger."""
-    return None
-
-
 def read_ledger(client_slug):
     """Every ledger row as a dict, oldest first (generated_at ascending, the
     same chronology the append-only CSV gave). An unknown client is an empty

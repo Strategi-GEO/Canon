@@ -11,7 +11,7 @@ import { DemoBadge, IndustryBadge, PreflightNote } from "@/components/clients/cl
 /**
  * One BRAND: the engine's unit of work, and the only place blogs can be created.
  *
- * A brand owns exactly one canonical-facts.md, one never-claim list, one entity-name set and
+ * A brand owns exactly one canonical-facts.md, one entity-name set and
  * one roadmap. Its org is a grouping above it, never a merge: if two brands shared a fact
  * base the writer could cite brand A's verified facts inside brand B's blog.
  *

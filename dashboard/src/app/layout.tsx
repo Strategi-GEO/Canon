@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 import { AppShell } from "@/components/shell/app-shell";
+import { THEME_INIT_SCRIPT } from "@/lib/theme";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -27,7 +28,7 @@ const geistMono = Geist_Mono({
  * makes it deterministic. DocumentTitle sets a default on the routes that have no better one.
  */
 export const metadata: Metadata = {
-  description: "Internal GEO blog factory for Strategi client work.",
+  description: "Strategi Canon, the internal GEO content engine for Strategi client work.",
 };
 
 export default function RootLayout({
@@ -36,15 +37,25 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
+    // suppressHydrationWarning because the inline script below stamps `.dark` onto <html>
+    // before React hydrates, and React must accept the DOM's class rather than flag it.
     <html
       lang="en"
+      suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        {/* Applies the stored theme preference BEFORE first paint, so a dark-preferring
+            operator never sees a light flash. The script is a constant owned by
+            src/lib/theme.ts; system mode follows prefers-color-scheme, and the live media
+            listener lives in the theme store. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body className="min-h-full">
         <AppShell>{children}</AppShell>
-        {/* Pinned to light: this product ships one theme, and sonner would otherwise
-            follow the operating system and render dark toasts on a light page. */}
-        <Toaster theme="light" position="bottom-right" />
+        {/* Follows the operator's theme toggle through the theme store inside sonner.tsx,
+            so toasts never render light chrome on a dark page or the reverse. */}
+        <Toaster position="bottom-right" />
       </body>
     </html>
   );

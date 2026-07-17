@@ -5,6 +5,11 @@
  * yellow, failed rows are red. Failed stays SELECTABLE on purpose: a failed blog is exactly
  * the one an operator wants to retry, so disabling it would hide the only useful action.
  *
+ * needs_review is amber and LOCKED. Its blog already exists on disk and is held pending an
+ * answer the operator owes it, so ticking it to generate again would refuse at the API
+ * boundary and, worse, hide the fact that a human still has to act before it ships. It is
+ * NOT selectable, exactly as the operator asked: these rows require review first.
+ *
  * Colour is never the burnt orange accent. Green, amber and red are the status tokens and
  * the accent stays reserved for interaction, so a blocked row can never read as a button.
  * Colour is also never the only signal: every coloured row carries a text label and a chip,
@@ -18,6 +23,12 @@ export type RowState =
   | "in_progress"
   /** A blog already exists on disk for this topic. Green, locked. */
   | "generated"
+  /**
+   * A blog exists on disk but is HELD: the evaluator asked the operator a question and it
+   * ships only once that is answered. Amber, locked. Answering happens on the Blogs page,
+   * never here, so this row cannot be selected to generate.
+   */
+  | "needs_review"
   /** Its last terminal status was failed. Red, and still selectable so it can be retried. */
   | "failed"
   /** Missing topic, covers or prompts, so the engine cannot write it at all. */
@@ -29,6 +40,12 @@ export type RowFacts = {
   live: ReadonlySet<string>;
   /** Topic slugs whose last terminal status was failed, from GET /api/clients/{brand}/blogs. */
   failed: ReadonlySet<string>;
+  /**
+   * Topic slugs whose blog is held for the operator's answer (status needs_review), from the
+   * same blogs call. A held blog is never in the ledger, so it is neither generated nor failed,
+   * and without this set it would fall through to a plain selectable row with no tag.
+   */
+  needsReview: ReadonlySet<string>;
   /** What the engine refused on the last submit, keyed by row index. */
   duplicates: ReadonlyMap<number, Duplicate>;
 };
@@ -39,7 +56,11 @@ export type RowFacts = {
  * Order matters. A 409 duplicate is checked first because the engine has just told us the
  * true state of that row and it outranks anything the browser inferred. Then live, because a
  * failed topic being retried right now is generating, not failed. Then generated, then
- * failed, then incomplete.
+ * needs_review, then failed, then incomplete.
+ *
+ * needs_review sits below live and generated on purpose. A live run supersedes an older held
+ * blog, so a topic generating right now reads as in progress rather than held. A held blog is
+ * never in the ledger, so it can never also be generated, and the two sets never overlap.
  */
 export function resolveRowState(row: RoadmapRow, facts: RowFacts): RowState {
   const duplicate = facts.duplicates.get(row.index);
@@ -55,6 +76,9 @@ export function resolveRowState(row: RoadmapRow, facts: RowFacts): RowState {
   if (row.already_generated) {
     return "generated";
   }
+  if (facts.needsReview.has(row.topic_slug)) {
+    return "needs_review";
+  }
   if (facts.failed.has(row.topic_slug)) {
     return "failed";
   }
@@ -68,14 +92,19 @@ export function resolveRowState(row: RoadmapRow, facts: RowFacts): RowState {
  * Whether a row can be ticked.
  *
  * Green is genuinely disabled, not merely unchecked: the blog exists, and the engine answers
- * a 409 for it. Yellow is disabled for the same reason. Red is enabled, which is the point of
- * colouring it. Incomplete is refused at the API boundary with a 422, so it is not offered.
+ * a 409 for it. Yellow, both the in-progress and the needs_review kind, is disabled for the
+ * same reason: a held blog already exists and must be reviewed before anything runs. Red is
+ * enabled, which is the point of colouring it. Incomplete is refused at the API boundary with
+ * a 422, so it is not offered.
  */
 export function isSelectable(state: RowState): boolean {
   return state === "ready" || state === "failed";
 }
 
-/** Rows that "select all" ticks. Green and yellow are excluded, as the operator asked. */
+/**
+ * Rows that "select all" ticks. Green, both yellows (in progress and needs_review) and
+ * incomplete are excluded, as the operator asked.
+ */
 export function selectableRows(rows: RoadmapRow[], facts: RowFacts): RoadmapRow[] {
   return rows.filter((row) => isSelectable(resolveRowState(row, facts)));
 }

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowRight, ExternalLink, PenLine } from "lucide-react";
+import { ArrowRight, ExternalLink, Paperclip, PenLine } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -17,8 +17,9 @@ import { RoadmapPanel } from "@/components/clients/roadmap-panel";
 import { mockReasonOf } from "@/components/roadmap/generation-copy";
 import { RoadmapGenerationStatus } from "@/components/roadmap/generation-status";
 import { SessionCard } from "@/components/session/session-card";
-import { neverClaimOf } from "@/components/clients/wire";
-import type { BlogSummary, Client } from "@/types";
+import { resourceTypeLabel } from "@/components/clients/resource-type";
+import { Badge } from "@/components/ui/badge";
+import type { BlogSummary, Client, Resource } from "@/types";
 
 /**
  * The operator's home for one brand, and the only page that renders it. An org holding
@@ -33,6 +34,21 @@ export function BrandOverview({ orgSlug, brand }: { orgSlug: string; brand: Clie
   // card each used to fetch it, so this page made two GETs for one CSV and could show two
   // different topic counts if the two landed on either side of an upload.
   const roadmap = useRoadmap(client.slug);
+
+  // The blog scan, fetched once for the same reason: the stats card counts it and the roadmap
+  // card stamps each row with its blog's real status, so two reads could disagree about
+  // whether a topic shipped. Null while loading; a failed scan reads as an empty list, which
+  // costs the cards their statuses, not the page its render.
+  const [blogs, setBlogs] = React.useState<BlogSummary[] | null>(null);
+
+  React.useEffect(() => {
+    const controller = new AbortController();
+    api.blogs(client.slug, controller.signal).then(
+      (data) => setBlogs(data.blogs),
+      () => setBlogs([]),
+    );
+    return () => controller.abort();
+  }, [client.slug]);
 
   // This page writes NOTHING about the brand, so it holds no copy of one and needs no way to
   // put one back. The brand arrives as a prop from the org list, which stays the one source of
@@ -81,30 +97,25 @@ export function BrandOverview({ orgSlug, brand }: { orgSlug: string; brand: Clie
             emptyText="No description yet. Settings can draft one from the live site."
           />
 
-          {/* Read only. Uploading lives on the create page and nowhere else, so this card no
-              longer takes a file and has nothing to report back up. */}
+          {/* Read only. Uploading lives on the Content Roadmap tab and nowhere else, so this
+              card no longer takes a file and has nothing to report back up. */}
           <RoadmapPanel
             orgSlug={orgSlug}
             brandSlug={client.slug}
             hasRoadmap={client.has_roadmap}
             roadmap={roadmap}
+            blogs={blogs}
           />
         </div>
 
         <div className="flex flex-col gap-4">
-          <BrandStats client={client} topics={roadmap.data?.rows.length ?? null} />
+          <BrandStats
+            client={client}
+            topics={roadmap.data?.rows.length ?? null}
+            blogs={blogs}
+          />
           <ResourcesSummary orgSlug={orgSlug} client={client} />
           <FactsCard client={client} />
-          {/* Read only for the same reason the description above it is: Settings configures
-              this brand, and a field editable from two screens is two screens that can
-              disagree. */}
-          <ReadOnlyText
-            title="Never claim"
-            help="Claims the writer must never make about this brand. One rule per line."
-            value={neverClaimOf(client)}
-            mono
-            emptyText="No rules yet. This is the one safety input an agent cannot infer from a website, and Settings is where it is written."
-          />
         </div>
       </div>
     </div>
@@ -126,7 +137,7 @@ function BrandHeader({ orgSlug, client }: { orgSlug: string; client: Client }) {
                 href={client.domain}
                 target="_blank"
                 rel="noreferrer noopener"
-                className="machine inline-flex min-w-0 items-center gap-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                className="machine inline-flex min-w-0 items-center gap-1 text-xs text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline"
               >
                 <span className="truncate">{displayDomain(client.domain)}</span>
                 <ExternalLink className="size-3 shrink-0" aria-hidden />
@@ -155,24 +166,77 @@ function BrandHeader({ orgSlug, client }: { orgSlug: string; client: Client }) {
   );
 }
 
+/** How many files the Overview names before it defers the rest to the Resources page. */
+const RESOURCE_PREVIEW = 5;
+
 /**
- * Summarised with a link rather than inlining the upload panel, which lives on the Resources
- * page. Two upload targets for one set of files would leave an operator guessing which one
- * the researcher actually reads.
+ * The first few files by name, then a link to the full page. It previews rather than inlining
+ * the upload panel, which lives on the Resources page: two upload targets for one set of files
+ * would leave an operator guessing which one the researcher actually reads.
+ *
+ * The count comes from the client record the org list already carries, so the empty state and
+ * the header render before the file list lands. The names are a second read, and a failed one
+ * costs this card its list, not its render.
  */
 function ResourcesSummary({ orgSlug, client }: { orgSlug: string; client: Client }) {
+  const [resources, setResources] = React.useState<Resource[] | null>(null);
+
+  React.useEffect(() => {
+    const controller = new AbortController();
+    api.resources(client.slug, controller.signal).then(
+      (data) => setResources(data.resources),
+      () => setResources([]),
+    );
+    return () => controller.abort();
+  }, [client.slug]);
+
+  const total = client.resource_count;
+  const shown = resources?.slice(0, RESOURCE_PREVIEW) ?? [];
+  const hidden = resources ? resources.length - shown.length : 0;
+
   return (
     <Card>
       <CardContent>
         <p className="text-sm font-medium text-foreground">Resources</p>
         <p className="mt-1 text-xs text-muted-foreground">
-          {client.resource_count === 0
+          {total === 0
             ? "No files yet. The researcher reads these before it searches anything external."
-            : `${client.resource_count} file${client.resource_count === 1 ? "" : "s"} the researcher reads before searching anything external.`}
+            : `${total} file${total === 1 ? "" : "s"} the researcher reads before searching anything external.`}
         </p>
+
+        {total > 0 ? (
+          resources === null ? (
+            <div className="mt-3 space-y-2">
+              <Skeleton className="h-5" />
+              <Skeleton className="h-5" />
+              <Skeleton className="h-5" />
+            </div>
+          ) : (
+            <ul className="mt-3 space-y-1.5">
+              {shown.map((resource) => (
+                <li key={resource.name} className="flex items-center gap-2">
+                  <Paperclip
+                    className="size-3.5 shrink-0 text-muted-foreground"
+                    aria-hidden
+                  />
+                  <span className="machine min-w-0 flex-1 truncate text-xs text-foreground">
+                    {resource.name}
+                  </span>
+                  <Badge variant="secondary" className="machine shrink-0">
+                    {resourceTypeLabel(resource)}
+                  </Badge>
+                </li>
+              ))}
+              {hidden > 0 ? (
+                <li className="text-xs text-muted-foreground">and {hidden} more</li>
+              ) : null}
+            </ul>
+          )
+        ) : null}
+
         <Button size="sm" variant="outline" className="mt-3" asChild>
           <Link href={brandHref(orgSlug, client.slug, "/resources")}>
-            {client.resource_count === 0 ? "Add resources" : "Manage resources"}
+            {total === 0 ? "Add resources" : "View resources"}
             <ArrowRight data-icon="inline-end" aria-hidden />
           </Link>
         </Button>
@@ -181,47 +245,32 @@ function ResourcesSummary({ orgSlug, client }: { orgSlug: string; client: Client
   );
 }
 
-type Counts = {
-  shipped: number;
-  review: number;
-  failed: number;
-};
-
 /**
  * Honest and small. A zero is stated plainly: dressing one up as an achievement would make
  * the numbers useless for the one thing they are for, which is seeing where work stands.
  *
- * The topic count arrives as a prop rather than from a fetch of its own, because the roadmap
- * card on this same page already holds it. Two reads of one CSV could disagree.
+ * The topic count and the blog list arrive as props rather than from fetches of their own,
+ * because the roadmap card on this same page already holds both. Two reads of one thing
+ * could disagree.
  */
-function BrandStats({ client, topics }: { client: Client; topics: number | null }) {
-  const [counts, setCounts] = React.useState<Counts | null>(null);
-
-  React.useEffect(() => {
-    const controller = new AbortController();
-
-    api.blogs(client.slug, controller.signal).then(
-      (data) => {
-        const list: BlogSummary[] = data.blogs;
-        setCounts({
-          shipped: list.filter((b) => b.shipped).length,
-          review: list.filter((b) => b.status === "needs_review").length,
-          failed: list.filter((b) => b.status === "failed").length,
-        });
-      },
-      () => {
-        // The blog scan failing costs this card its numbers, not the page its render. The
-        // roadmap and resource counts below still come from data already in hand.
-        setCounts({ shipped: 0, review: 0, failed: 0 });
-      },
-    );
-
-    return () => controller.abort();
-  }, [client.slug]);
-
-  if (!counts) {
+function BrandStats({
+  client,
+  topics,
+  blogs,
+}: {
+  client: Client;
+  topics: number | null;
+  blogs: BlogSummary[] | null;
+}) {
+  if (blogs === null) {
     return <Skeleton className="h-40" />;
   }
+
+  const counts = {
+    shipped: blogs.filter((b) => b.shipped).length,
+    review: blogs.filter((b) => b.status === "needs_review").length,
+    failed: blogs.filter((b) => b.status === "failed").length,
+  };
 
   return (
     <Card>

@@ -14,6 +14,7 @@ import {
   CommandSeparator,
 } from "@/components/ui/command";
 import { BRAND_NAV, parseBrandPath } from "@/components/shell/nav";
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { brandHref, orgHref, useOrgs } from "@/lib/orgs-context";
 import { useHotkey } from "@/lib/use-hotkey";
 
@@ -182,13 +183,19 @@ function CommandPalette({
             </>
           ) : null}
 
-          <CommandSeparator />
-          <CommandGroup heading="Actions">
-            <CommandItem value="/new" keywords={["add client", "new brand"]} onSelect={go}>
-              <Plus className="text-muted-foreground" aria-hidden />
-              <span>Add client</span>
-            </CommandItem>
-          </CommandGroup>
+          {/* Onboarding is an engine write, so the hosted, read-only build offers no route
+              to it. */}
+          {HOSTED_READONLY ? null : (
+            <>
+              <CommandSeparator />
+              <CommandGroup heading="Actions">
+                <CommandItem value="/new" keywords={["add client", "new brand"]} onSelect={go}>
+                  <Plus className="text-muted-foreground" aria-hidden />
+                  <span>Add client</span>
+                </CommandItem>
+              </CommandGroup>
+            </>
+          )}
         </CommandList>
       </Command>
     </CommandDialog>

@@ -6,9 +6,9 @@ import { RoadmapOverview } from "@/components/roadmap/roadmap-overview";
 /**
  * The content roadmap, brand scoped like everything else.
  *
- * One brand owns exactly one roadmap, the same way it owns one canonical-facts.md and one
- * never-claim list, so there is no global roadmap page to write: it would have to ask which
- * brand first, and that question is this route.
+ * One brand owns exactly one roadmap, the same way it owns one canonical-facts.md, so there
+ * is no global roadmap page to write: it would have to ask which brand first, and that
+ * question is this route.
  *
  * This tab is the roadmap's own place: what is planned, what is written, what is left. Create
  * Blogs picks topics FROM it and is a different job, which is why it is a different tab and

@@ -50,6 +50,7 @@ export function SelectState({
   loading,
   live,
   failed,
+  needsReview,
   runsUnavailable,
   liveRunId,
   preselectSlugs,
@@ -80,6 +81,8 @@ export function SelectState({
   live: ReadonlySet<string>;
   /** Topic slugs whose last terminal status was failed. */
   failed: ReadonlySet<string>;
+  /** Topic slugs whose blog is held for the operator's answer (status needs_review). */
+  needsReview: ReadonlySet<string>;
   /** True when /api/runs could not be reached, so whether a run is live is unknown. */
   runsUnavailable: boolean;
   /** The live run for this brand, or null. Lets the operator jump back to watching it. */
@@ -116,7 +119,10 @@ export function SelectState({
   // never itself cause a render.
   const anchor = React.useRef<number | null>(null);
 
-  const facts = React.useMemo(() => ({ live, failed, duplicates }), [live, failed, duplicates]);
+  const facts = React.useMemo(
+    () => ({ live, failed, needsReview, duplicates }),
+    [live, failed, needsReview, duplicates],
+  );
 
   const toggle = React.useCallback(
     (index: number, extend: boolean) => {
@@ -287,7 +293,9 @@ export function SelectState({
     return (
       <Card className="border-fail/25 bg-fail-bg">
         <CardContent className="py-8 text-center">
-          <TriangleAlert className="mx-auto size-5 text-fail" aria-hidden />
+          <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-fail/10">
+            <TriangleAlert className="size-5 text-fail" aria-hidden />
+          </div>
           <p className="mt-3 text-sm font-medium text-fail">
             {/* An engine that never answered and an engine that refused are different
                 problems with different fixes: one is "start the engine", the other is "read
@@ -410,7 +418,8 @@ export function SelectState({
           <div className="min-w-56 flex-1">
             <p className="machine text-xs text-muted-foreground">
               Columns 1, 2 and 5 are the brief: topic, what it covers, target prompts. Every
-              other column reaches the writer as guidance, under its own header.
+              other column reaches the writer as guidance, under its own header. The prompts
+              themselves are on the Content Roadmap tab.
             </p>
             {roadmap.archived ? (
               <p className="machine mt-1 text-xs wrap-break-word text-muted-foreground/70">
@@ -633,7 +642,9 @@ function NoRoadmap({
   return (
     <Card className="mx-auto max-w-xl">
       <CardContent className="py-12 text-center">
-        <MapIcon className="mx-auto size-5 text-muted-foreground" aria-hidden />
+        <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-muted">
+          <MapIcon className="size-5 text-muted-foreground" aria-hidden />
+        </div>
         <p className="mt-3 text-sm font-medium text-foreground">
           {brandName} has no content roadmap yet
         </p>

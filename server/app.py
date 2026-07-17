@@ -17,6 +17,7 @@ are in-process primitives, so --workers N silently multiplies the cap to 5N.
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import re
 import time
@@ -24,13 +25,14 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
-from . import db, describe, facts_gen, ledger, roadmap, roadmap_gen, runner, sync
+from . import auth, db, describe, facts_gen, ledger, roadmap, roadmap_gen, runner, sync
 # Aliased for the same reason clients is: "questions" is the natural name for the list of
 # questions inside a handler, and the shadowing bug that causes is silent.
 from . import questions as questions_mod
@@ -84,7 +86,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(cms_router)
+# The CMS push is a write, so it rides behind the admin gate like every other
+# mutation. Attached here rather than inside the router so server/cms/ keeps
+# knowing nothing about auth and stays deletable whole.
+app.include_router(cms_router, dependencies=[Depends(auth.require_admin)])
 
 
 @app.on_event("startup")
@@ -136,6 +141,94 @@ async def _reconcile_on_startup():
 
 
 # ---------------------------------------------------------------------------
+# Auth: the login proxy, the health probe, and /api/me.
+#
+# THE UNAUTHENTICATED SURFACE IS EXACTLY FIVE ROUTES: GET / (the legacy static
+# index), GET /api/health, and the three auth routes below. Everything else
+# under /api carries auth.require_user (or require_admin, which depends on it),
+# attached per route so tests/auth_check.py can introspect app.routes and fail
+# the build on any route that forgot. Token verification is local (see auth.py);
+# GoTrue is only on the wire for the three proxies here.
+# ---------------------------------------------------------------------------
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str
+
+
+@app.get("/api/health")
+async def api_health():
+    # What run.sh polls for engine-up. It replaced /api/clients as the probe
+    # target because that route now 401s an anonymous poll, and a poll that can
+    # never succeed burns its whole timeout on a healthy engine.
+    return {"ok": True}
+
+
+@app.post("/api/login")
+async def api_login(body: LoginRequest):
+    # to_thread: the proxy is a blocking urllib call, matching the sync-DAL
+    # posture db.py names. One 401 message for every failure mode, so the
+    # response never says which of email or password was wrong.
+    try:
+        return await asyncio.to_thread(auth.login, body.email, body.password)
+    except auth.AuthError:
+        raise HTTPException(status_code=401, detail="invalid email or password")
+
+
+@app.post("/api/refresh")
+async def api_refresh(body: RefreshRequest):
+    try:
+        return await asyncio.to_thread(auth.refresh, body.refresh_token)
+    except auth.AuthError:
+        raise HTTPException(status_code=401, detail="invalid refresh token")
+
+
+@app.post("/api/logout", status_code=204)
+async def api_logout(body: LogoutRequest):
+    # Best effort by contract: a logout must always succeed from the browser's
+    # side, because the client is discarding its tokens either way and an error
+    # here would leave it holding a session it already decided to end.
+    await asyncio.to_thread(auth.logout, body.refresh_token)
+    return None
+
+
+@app.get("/api/me")
+async def api_me(user: auth.Identity = Depends(auth.require_user)):
+    if user.is_admin:
+        # Everything, unfiltered, exactly as the pre-auth app answered: the org
+        # and client lists ARE the admin's scope.
+        orgs = [{"slug": org["slug"], "name": org["name"]}
+                for org in clients_mod.list_orgs()]
+        slugs = [entry["slug"] for entry in clients_mod.list_clients()]
+    else:
+        orgs = list(user.orgs)
+        slugs = sorted(user.roles)
+    return {"user_id": user.user_id, "email": user.email,
+            "is_admin": user.is_admin, "orgs": orgs, "clients": slugs}
+
+
+def _scope(user):
+    """The brand slugs this caller may read, or None for see-everything.
+
+    Accepts a non-Identity by design: tests (config_check.py) call handlers as
+    plain functions, where Depends is never resolved and its sentinel lands
+    here. Treating that as unscoped is safe because the sentinel cannot arrive
+    over HTTP: FastAPI always resolves the dependency, and an unauthenticated
+    request dies in require_user before any handler runs."""
+    if isinstance(user, auth.Identity):
+        return auth.scoped_slugs(user)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Clients and preflight
 # ---------------------------------------------------------------------------
 
@@ -145,10 +238,24 @@ async def _reconcile_on_startup():
 _CLIENT_SLUG_RE = re.compile(r"^_?[a-z0-9]+(-[a-z0-9]+)*$")
 
 
-def _client_or_404(slug):
-    """The client must be a live clients row: record-backed, the disk is never asked."""
-    if not _CLIENT_SLUG_RE.fullmatch(slug) or not clients_mod.exists(slug):
+def _client_or_404(slug, user=None):
+    """The client must be a live clients row AND inside the caller's scope:
+    record-backed, the disk is never asked. Out of scope answers the SAME 404 as
+    does-not-exist, deliberately: a non-admin must not be able to distinguish a
+    brand they cannot see from a brand that is not there."""
+    scope = _scope(user)
+    if (not _CLIENT_SLUG_RE.fullmatch(slug)
+            or (scope is not None and slug not in scope)
+            or not clients_mod.exists(slug)):
         raise HTTPException(status_code=404, detail=f"unknown client {slug!r}")
+
+
+# One string for the one preflight refusal, shared by the per-slug check and the
+# batched list read below so the two can never phrase the same "no" differently.
+_PREFLIGHT_PLACEHOLDER_REASON = (
+    "canonical-facts.md still contains the token PLACEHOLDER "
+    "and has not been reviewed"
+)
 
 
 def _preflight(slug):
@@ -172,10 +279,7 @@ def _preflight(slug):
     if facts is None:
         return True, None
     if "PLACEHOLDER" in facts:
-        return False, (
-            "canonical-facts.md still contains the token PLACEHOLDER "
-            "and has not been reviewed"
-        )
+        return False, _PREFLIGHT_PLACEHOLDER_REASON
     return True, None
 
 
@@ -187,17 +291,29 @@ async def index():
 
 
 @app.get("/api/clients")
-async def api_clients():
+async def api_clients(user: auth.Identity = Depends(auth.require_user)):
     # Record-backed, and a pure read at last: the old onboarding side effects
     # (mkdir outputs/<slug>/, seed generated.csv) are gone because create_client
     # and run start own onboarding now, and a GET that writes is a GET that
     # surprises. demo_mode and every other field ride in on the record entry.
+    # Scoped: a non-admin sees only the brands their grants name, and nothing in
+    # the response betrays how many others exist.
+    scope = _scope(user)
+    # ONE batched read for every client's preflight flag instead of _preflight's
+    # per-slug query inside the loop. The generated preflight_ok column encodes
+    # exactly _preflight's rule (facts absent passes, PLACEHOLDER refuses), so
+    # the flags cannot disagree with what submit time will say.
+    preflight_map = dict(db.q(
+        "select slug, preflight_ok from clients where deleted_at is null"))
     client_list = []
     for entry in clients_mod.list_clients():
+        if scope is not None and entry["slug"] not in scope:
+            continue
         # The original keys stay exactly as they were, so the legacy UI keeps working while
         # the dashboard reads the onboarding fields alongside them.
-        ok, reason = _preflight(entry["slug"])
-        entry["preflight"] = {"ok": ok, "reason": reason}
+        ok = bool(preflight_map.get(entry["slug"], True))
+        entry["preflight"] = {"ok": ok,
+                              "reason": None if ok else _PREFLIGHT_PLACEHOLDER_REASON}
         client_list.append(entry)
     # geo_mock is a wire-compat field the dashboard still reads, and it is now the literal
     # False: the mock execution path is removed from the engine, so no client can ever
@@ -213,20 +329,37 @@ async def api_clients():
 # file that could drift out of sync with the brands it groups.
 # ---------------------------------------------------------------------------
 
+def _scoped_orgs(user):
+    """list_orgs cut down to the caller's scope: orgs with no visible brand
+    vanish whole, and a visible org lists only the brands the caller may see."""
+    orgs = clients_mod.list_orgs()
+    scope = _scope(user)
+    if scope is None:
+        return orgs
+    filtered = []
+    for org in orgs:
+        brands = [brand for brand in org["brands"] if brand["slug"] in scope]
+        if brands:
+            filtered.append({**org, "brands": brands})
+    return filtered
+
+
 @app.get("/api/orgs")
-async def api_orgs():
+async def api_orgs(user: auth.Identity = Depends(auth.require_user)):
     # geo_mock rides at the top level for the same reason /api/clients carries it: the
     # dashboard reads the key. It is the literal False now that the mock execution path is
     # removed; the field stays so no reader's shape breaks.
-    return {"geo_mock": False, "orgs": clients_mod.list_orgs()}
+    return {"geo_mock": False, "orgs": _scoped_orgs(user)}
 
 
 @app.get("/api/orgs/{org_slug}")
-async def api_org(org_slug: str):
-    org = clients_mod.read_org(org_slug)
-    if org is None:
-        raise HTTPException(status_code=404, detail=f"unknown organisation {org_slug!r}")
-    return org
+async def api_org(org_slug: str, user: auth.Identity = Depends(auth.require_user)):
+    # Resolved against the SCOPED list, so an org outside a non-admin's grants
+    # answers the same 404 as one that does not exist.
+    for org in _scoped_orgs(user):
+        if org["slug"] == org_slug:
+            return org
+    raise HTTPException(status_code=404, detail=f"unknown organisation {org_slug!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -251,20 +384,25 @@ class UpdateClientRequest(BaseModel):
     organisation_name: Optional[str] = None
 
 
-def _read_client_or_404(slug):
+def _read_client_or_404(slug, user=None):
+    # Scope first, and out of scope IS the same 404 as unknown: see _client_or_404.
+    scope = _scope(user)
+    if scope is not None and slug not in scope:
+        raise HTTPException(status_code=404, detail=f"unknown client {slug!r}")
     try:
         return clients_mod.read_client(slug)
     except clients_mod.UnknownClient as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
-@app.get("/api/industries")
+@app.get("/api/industries", dependencies=[Depends(auth.require_user)])
 async def api_industries():
     return {"industries": clients_mod.list_industries()}
 
 
 @app.post("/api/clients", status_code=201)
-async def api_create_client(body: CreateClientRequest):
+async def api_create_client(body: CreateClientRequest,
+                            user: auth.Identity = Depends(auth.require_admin)):
     if not body.name.strip():
         raise HTTPException(status_code=422, detail="name is required")
     try:
@@ -283,12 +421,13 @@ async def api_create_client(body: CreateClientRequest):
 
 
 @app.get("/api/clients/{slug}")
-async def api_client(slug: str):
-    return _read_client_or_404(slug)
+async def api_client(slug: str, user: auth.Identity = Depends(auth.require_user)):
+    return _read_client_or_404(slug, user)
 
 
 @app.patch("/api/clients/{slug}")
-async def api_update_client(slug: str, body: UpdateClientRequest):
+async def api_update_client(slug: str, body: UpdateClientRequest,
+                            user: auth.Identity = Depends(auth.require_admin)):
     try:
         return clients_mod.update_client(
             slug,
@@ -308,7 +447,8 @@ def _public_job(job):
 
 
 @app.post("/api/clients/{slug}/describe", status_code=202)
-async def api_describe_client(slug: str):
+async def api_describe_client(slug: str,
+                              user: auth.Identity = Depends(auth.require_admin)):
     """Start a draft. Returns immediately; the engine owns the work.
 
     202 and not 200: a draft is a real Claude Code session against a live site and runs for
@@ -317,7 +457,7 @@ async def api_describe_client(slug: str):
     on regardless. Now the engine holds it and the browser only watches, which is the same
     rule blog runs already follow: this is an interface onto local work, never the work.
     """
-    client = _read_client_or_404(slug)
+    client = _read_client_or_404(slug, user)
     if _client_has_live_run(slug):
         # A describe is one SDK session. Spending one mid-batch competes with the five
         # topics already in flight for the same quota and the same MCP servers, and it buys
@@ -340,7 +480,7 @@ async def api_describe_client(slug: str):
 
 
 @app.get("/api/describe-jobs")
-async def api_describe_jobs():
+async def api_describe_jobs(user: auth.Identity = Depends(auth.require_admin)):
     """Every draft job the engine holds, live or settled. The mirror of GET /api/runs.
 
     A watcher that wants to know when ANY draft lands cannot ask the per-brand endpoint: it
@@ -358,14 +498,14 @@ async def api_describe_jobs():
 
 
 @app.get("/api/clients/{slug}/describe")
-async def api_describe_job(slug: str):
+async def api_describe_job(slug: str, user: auth.Identity = Depends(auth.require_user)):
     """The current draft job for this brand, or 404 when there is none.
 
     This is what makes a draft survive a refresh: the page asks the engine what is happening
     rather than remembering what it started. A tab that never issued the POST sees the same
     truth as the tab that did, which matters because six operators share one deployment.
     """
-    _read_client_or_404(slug)
+    _read_client_or_404(slug, user)
     job = describe.get_job(slug)
     if job is None:
         raise HTTPException(status_code=404, detail=f"no draft job for {slug!r}")
@@ -373,27 +513,29 @@ async def api_describe_job(slug: str):
 
 
 @app.delete("/api/clients/{slug}/describe", status_code=204)
-async def api_clear_describe_job(slug: str):
+async def api_clear_describe_job(slug: str,
+                                 user: auth.Identity = Depends(auth.require_admin)):
     """Drop a settled draft once the operator has used or dismissed it.
 
     Without this the same finished draft would greet them on every visit forever. A RUNNING
     job is deliberately not cancellable here: the session is already spending quota, so the
     honest thing is to let it land and let the operator discard the result.
     """
-    _read_client_or_404(slug)
+    _read_client_or_404(slug, user)
     describe.clear_job(slug)
     return None
 
 
 @app.get("/api/clients/{slug}/resources")
-async def api_resources(slug: str):
-    _client_or_404(slug)
+async def api_resources(slug: str, user: auth.Identity = Depends(auth.require_user)):
+    _client_or_404(slug, user)
     return {"resources": clients_mod.list_resources(slug)}
 
 
 @app.post("/api/clients/{slug}/resources", status_code=201)
-async def api_resource_upload(slug: str, file: UploadFile = File(...)):
-    _client_or_404(slug)
+async def api_resource_upload(slug: str, file: UploadFile = File(...),
+                              user: auth.Identity = Depends(auth.require_admin)):
+    _client_or_404(slug, user)
     raw = await file.read()
     if len(raw) > clients_mod.MAX_RESOURCE_BYTES:
         raise HTTPException(
@@ -409,9 +551,46 @@ async def api_resource_upload(slug: str, file: UploadFile = File(...)):
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@app.get("/api/clients/{slug}/resources/{name}")
+async def api_resource_file(slug: str, name: str, download: bool = False,
+                            user: auth.Identity = Depends(auth.require_user)):
+    """One uploaded resource's ORIGINAL bytes, streamed back out of Storage.
+
+    Storage is content-addressed by sha256 and the row keeps the operator's exact
+    filename, so what this answers is byte-for-byte the file that was uploaded:
+    nothing re-encodes it. inline by default so a PDF or image previews in the
+    browser; ?download=1 flips to attachment for a save-as. content_type falls
+    back to a guess from the filename because rows migrated before the column
+    existed hold NULL there.
+    """
+    _client_or_404(slug, user)
+    row = db.q(
+        """select object_path, content_type from client_resources cr
+           join clients c on c.id = cr.client_id
+           where c.slug = %s and c.deleted_at is null and cr.name = %s""",
+        (slug, name), fetch="one")
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"no resource {name!r} for client {slug!r}")
+    object_path, content_type = row
+    try:
+        # storage_get takes the path INSIDE the bucket; the stored object_path
+        # carries the bucket prefix (see sync.materialize_client, same split).
+        raw = await asyncio.to_thread(db.storage_get, object_path.split("/", 1)[1])
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=f"storage read failed: {exc}")
+    media_type = content_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
+    disposition = "attachment" if download else "inline"
+    ascii_name = name.encode("ascii", "replace").decode().replace('"', "")
+    return Response(
+        content=raw, media_type=media_type,
+        headers={"Content-Disposition":
+                 f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}"})
+
+
 @app.delete("/api/clients/{slug}/resources/{name}", status_code=204)
-async def api_resource_delete(slug: str, name: str):
-    _client_or_404(slug)
+async def api_resource_delete(slug: str, name: str,
+                              user: auth.Identity = Depends(auth.require_admin)):
+    _client_or_404(slug, user)
     try:
         deleted = clients_mod.delete_resource(slug, name)
     except clients_mod.UnknownClient as exc:
@@ -426,8 +605,8 @@ async def api_resource_delete(slug: str, name: str):
 # is no detection and no override, so there is nothing to negotiate here.
 # ---------------------------------------------------------------------------
 
-def _load_roadmap_or_404(slug):
-    _client_or_404(slug)
+def _load_roadmap_or_404(slug, user=None):
+    _client_or_404(slug, user)
     try:
         return roadmap.load_roadmap(slug)
     except roadmap.RoadmapNotFound as exc:
@@ -460,12 +639,13 @@ def _client_has_live_run(slug):
 
 
 @app.get("/api/clients/{slug}/roadmap")
-async def api_roadmap(slug: str):
-    return roadmap.annotate_generated(slug, _load_roadmap_or_404(slug))
+async def api_roadmap(slug: str, user: auth.Identity = Depends(auth.require_user)):
+    return roadmap.annotate_generated(slug, _load_roadmap_or_404(slug, user))
 
 
 @app.get("/api/clients/{slug}/roadmap/report")
-async def api_roadmap_report(slug: str):
+async def api_roadmap_report(slug: str,
+                             user: auth.Identity = Depends(auth.require_user)):
     """The saved account of how this brand's roadmap was generated.
 
     Read from the record, not from the generation job, so it outlives the process that made it.
@@ -473,7 +653,7 @@ async def api_roadmap_report(slug: str):
     roadmap look like this", which an operator asks weeks later. A 404 here is ordinary: an
     uploaded roadmap has no report, because nothing generated it.
     """
-    _client_or_404(slug)
+    _client_or_404(slug, user)
     report = roadmap_gen.read_report(slug)
     if report is None:
         raise HTTPException(
@@ -483,14 +663,15 @@ async def api_roadmap_report(slug: str):
 
 
 @app.get("/api/clients/{slug}/roadmap/sheet")
-async def api_roadmap_sheet(slug: str):
+async def api_roadmap_sheet(slug: str,
+                            user: auth.Identity = Depends(auth.require_user)):
     """The raw CSV as a rectangle, for previewing the file the operator uploaded.
 
     Separate from /roadmap rather than folded into it: that route answers what the engine will
     read, three columns and their parse state, and this one answers what the file contains. A
     single route serving both would have to pick which meaning "rows" has.
     """
-    _client_or_404(slug)
+    _client_or_404(slug, user)
     try:
         return roadmap.read_sheet(slug)
     except roadmap.RoadmapNotFound as exc:
@@ -498,7 +679,8 @@ async def api_roadmap_sheet(slug: str):
 
 
 @app.delete("/api/clients/{slug}/roadmap", status_code=204)
-async def api_delete_roadmap(slug: str):
+async def api_delete_roadmap(slug: str,
+                             user: auth.Identity = Depends(auth.require_admin)):
     """Remove the brand's roadmap so a new one can be uploaded or generated.
 
     This is the ONLY way to change a roadmap, by design: an upload is refused while one
@@ -510,7 +692,7 @@ async def api_delete_roadmap(slug: str):
     It removes roadmap.csv and NOTHING else. Blogs already written stay on disk, and the
     ledger still records them. A roadmap is the input, not the work.
     """
-    _client_or_404(slug)
+    _client_or_404(slug, user)
     if _client_has_live_run(slug):
         # A live run's rows came from this sheet. Deleting it underneath would leave the
         # status table describing topics whose source no longer exists.
@@ -524,8 +706,9 @@ async def api_delete_roadmap(slug: str):
 
 
 @app.post("/api/clients/{slug}/roadmap/upload")
-async def api_roadmap_upload(slug: str, file: UploadFile = File(...)):
-    _client_or_404(slug)
+async def api_roadmap_upload(slug: str, file: UploadFile = File(...),
+                             user: auth.Identity = Depends(auth.require_admin)):
+    _client_or_404(slug, user)
     if _client_has_live_run(slug):
         # Swapping the roadmap under a running queue would make the status table
         # describe rows that are no longer the ones running.
@@ -576,7 +759,8 @@ class GenerateRoadmapRequest(BaseModel):
 
 
 @app.post("/api/clients/{slug}/roadmap/generate", status_code=202)
-async def api_generate_roadmap(slug: str, body: GenerateRoadmapRequest):
+async def api_generate_roadmap(slug: str, body: GenerateRoadmapRequest,
+                               user: auth.Identity = Depends(auth.require_admin)):
     """Start a roadmap generation. Returns immediately; the engine owns the work.
 
     202 and not 200, for the same reason the describe route is 202: this is one long SDK
@@ -638,7 +822,8 @@ async def api_generate_roadmap(slug: str, body: GenerateRoadmapRequest):
 
 
 @app.get("/api/clients/{slug}/roadmap/generate")
-async def api_roadmap_generation_job(slug: str):
+async def api_roadmap_generation_job(slug: str,
+                                     user: auth.Identity = Depends(auth.require_user)):
     """The current generation job for this brand, or 404 when there has never been one.
 
     This is what makes a generation survive a refresh: the page asks the engine what is
@@ -646,7 +831,7 @@ async def api_roadmap_generation_job(slug: str):
     the same truth as the tab that did, which matters because several operators share one
     deployment.
     """
-    _client_or_404(slug)
+    _client_or_404(slug, user)
     job = roadmap_gen.get_job(slug)
     if job is None:
         raise HTTPException(status_code=404, detail=f"no roadmap generation job for {slug!r}")
@@ -654,14 +839,15 @@ async def api_roadmap_generation_job(slug: str):
 
 
 @app.delete("/api/clients/{slug}/roadmap/generate", status_code=204)
-async def api_clear_roadmap_generation(slug: str):
+async def api_clear_roadmap_generation(slug: str,
+                                       user: auth.Identity = Depends(auth.require_admin)):
     """Drop a settled generation job once the operator has read or dismissed it.
 
     Without this the same finished report would greet them on every visit forever. A RUNNING
     job is refused rather than cleared: the session is already spending quota, and dropping
     the record would leave it writing a roadmap.csv that no job explains.
     """
-    _client_or_404(slug)
+    _client_or_404(slug, user)
     if roadmap_gen.job_running(slug):
         raise HTTPException(
             status_code=409,
@@ -683,7 +869,7 @@ async def api_clear_roadmap_generation(slug: str):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/clients/{slug}/facts")
-async def api_facts_file(slug: str):
+async def api_facts_file(slug: str, user: auth.Identity = Depends(auth.require_user)):
     """The brand's canonical-facts.md itself, as text.
 
     Reading it is the whole of what this offers, and that is the point. The file is BINDING
@@ -696,7 +882,7 @@ async def api_facts_file(slug: str):
     the brand the client list already reports as has_canonical_facts false, and the first blog
     run drafts the file before it writes anything.
     """
-    _client_or_404(slug)
+    _client_or_404(slug, user)
     # Record-backed: the same canonical_facts column preflight refuses on, so this view and
     # the refusal can never be reading two different fact bases. The scratch copy under
     # clients/ is materialized for agents at run start and is never consulted here.
@@ -708,7 +894,8 @@ async def api_facts_file(slug: str):
     return PlainTextResponse(facts, media_type="text/plain; charset=utf-8")
 
 @app.get("/api/clients/{slug}/facts/generate")
-async def api_facts_generation_job(slug: str):
+async def api_facts_generation_job(slug: str,
+                                   user: auth.Identity = Depends(auth.require_user)):
     """The current fact generation job for this brand, or 404 when there has never been one.
 
     This is what lets the operator watch a phase they did not start. The run reports phase
@@ -717,7 +904,7 @@ async def api_facts_generation_job(slug: str):
     pressed Generate. A 404 means no fact base has ever been built here, which for a brand
     that already has one is the normal answer: the file is on disk and no job was needed.
     """
-    _client_or_404(slug)
+    _client_or_404(slug, user)
     job = facts_gen.get_job(slug)
     if job is None:
         raise HTTPException(status_code=404, detail=f"no facts generation job for {slug!r}")
@@ -725,7 +912,8 @@ async def api_facts_generation_job(slug: str):
 
 
 @app.delete("/api/clients/{slug}/facts/generate", status_code=204)
-async def api_clear_facts_generation(slug: str):
+async def api_clear_facts_generation(slug: str,
+                                     user: auth.Identity = Depends(auth.require_admin)):
     """Drop a settled fact generation job once the operator has read or dismissed it.
 
     Without this the same finished report would greet them on every visit forever. A RUNNING
@@ -733,7 +921,7 @@ async def api_clear_facts_generation(slug: str):
     is waiting on it, so dropping the record would leave that run blocked on a job nobody can
     see. Clearing the job never touches canonical-facts.md itself.
     """
-    _client_or_404(slug)
+    _client_or_404(slug, user)
     if facts_gen.job_running(slug):
         raise HTTPException(
             status_code=409,
@@ -745,8 +933,8 @@ async def api_clear_facts_generation(slug: str):
 
 
 @app.get("/api/clients/{slug}/ledger")
-async def api_ledger(slug: str):
-    _client_or_404(slug)
+async def api_ledger(slug: str, user: auth.Identity = Depends(auth.require_user)):
+    _client_or_404(slug, user)
     return {"rows": ledger.read_ledger(slug)}
 
 
@@ -901,8 +1089,8 @@ def _blog_history(slug):
 
 
 @app.get("/api/clients/{slug}/blogs")
-async def api_blogs(slug: str):
-    _client_or_404(slug)
+async def api_blogs(slug: str, user: auth.Identity = Depends(auth.require_user)):
+    _client_or_404(slug, user)
     return {"blogs": _blog_history(slug)}
 
 
@@ -942,7 +1130,8 @@ def _topic_or_404(slug, topic_slug):
 
 
 @app.get("/api/clients/{slug}/blogs/{topic}/questions")
-async def api_questions(slug: str, topic: str):
+async def api_questions(slug: str, topic: str,
+                        user: auth.Identity = Depends(auth.require_user)):
     """The evaluator's questions for one blog, plus what the operator can do about them.
 
     stale and blocking are computed here rather than stored, and that is deliberate. Both are
@@ -950,7 +1139,7 @@ async def api_questions(slug: str, topic: str):
     flag would be a snapshot of what was true when the evaluator asked. The staleness bug this
     endpoint exists to expose is exactly that mismatch.
     """
-    _client_or_404(slug)
+    _client_or_404(slug, user)
     _topic_or_404(slug, topic)
     try:
         return questions_mod.describe_questions(slug, topic)
@@ -959,7 +1148,8 @@ async def api_questions(slug: str, topic: str):
 
 
 @app.post("/api/clients/{slug}/blogs/{topic}/answers", status_code=202)
-async def api_answers(slug: str, topic: str, body: AnswersRequest):
+async def api_answers(slug: str, topic: str, body: AnswersRequest,
+                      user: auth.Identity = Depends(auth.require_user)):
     """Record the operator's answers and start a surgical revise.
 
     202 and not 200, for the reason every long job here is 202: the revise is a real session and
@@ -972,7 +1162,18 @@ async def api_answers(slug: str, topic: str, body: AnswersRequest):
     transient and honestly answered by "wait". Then the body, which is the only one they can fix
     by typing.
     """
-    _client_or_404(slug)
+    _client_or_404(slug, user)
+
+    # The one write a non-admin may perform, and only with a role that says so:
+    # an org viewer reads, an org admin or commenter answers. The evaluator's
+    # questions are the client's to answer (facts only the client holds), which
+    # is why this write alone is not admin-gated. The isinstance guard is the
+    # same sentinel rule _scope documents: config_check calls handlers as plain
+    # functions where Depends never resolves, and that sentinel cannot arrive
+    # over HTTP because require_user runs before any handler does.
+    if isinstance(user, auth.Identity) and not (
+            user.is_admin or user.roles.get(slug) in ("admin", "commenter")):
+        raise HTTPException(status_code=403, detail="answering requires a commenter or admin role")
 
     # THE DEMO REFUSAL, before the topic is even resolved. An answer dispatches a surgical
     # revise, which is a real SDK session, and a demo fixture must never spend real API
@@ -1079,8 +1280,14 @@ class GenerateRequest(BaseModel):
 
 
 @app.get("/api/runs")
-async def api_runs():
-    return {"runs": runner.list_runs()}
+async def api_runs(user: auth.Identity = Depends(auth.require_user)):
+    # Scoped like every list: a non-admin sees only runs for brands their grants
+    # name, and nothing in the response betrays how many others exist.
+    scope = _scope(user)
+    runs = runner.list_runs()
+    if scope is not None:
+        runs = [run for run in runs if run.get("client") in scope]
+    return {"runs": runs}
 
 
 async def _on_topic_done(slug, run_id, result):
@@ -1115,7 +1322,8 @@ async def _batch_task(run_id, slug, rows):
 
 
 @app.delete("/api/clients/{slug}/runs")
-async def api_stop_client_runs(slug: str):
+async def api_stop_client_runs(slug: str,
+                               user: auth.Identity = Depends(auth.require_admin)):
     """Stop every live run for one brand. Finished blogs are kept; in-flight ones are discarded.
 
     This deliberately BREAKS the idiom the other three DELETEs share, and the break is the whole
@@ -1147,8 +1355,9 @@ async def api_stop_client_runs(slug: str):
 
 
 @app.post("/api/clients/{slug}/generate", status_code=202)
-async def api_generate(slug: str, body: GenerateRequest):
-    _client_or_404(slug)
+async def api_generate(slug: str, body: GenerateRequest,
+                       user: auth.Identity = Depends(auth.require_admin)):
+    _client_or_404(slug, user)
 
     # THE DEMO REFUSAL, before anything else is even validated. A demo fixture can no longer
     # generate anything: the mock path that used to make it free is removed, so the only thing
@@ -1359,9 +1568,16 @@ async def _event_stream(run):
 
 
 @app.get("/api/runs/{run_id}/events")
-async def api_run_events(run_id: str):
+async def api_run_events(run_id: str,
+                         user: auth.Identity = Depends(auth.require_user_sse)):
     run = runner.get_run(run_id)
     if run is None:
+        raise HTTPException(status_code=404, detail=f"unknown run {run_id!r}")
+    # Same 404 as unknown, deliberately: a non-admin must not learn that a run
+    # exists for a brand they cannot see. require_user_sse accepts the token as
+    # ?access_token= because EventSource cannot set headers; header wins.
+    scope = _scope(user)
+    if scope is not None and run.get("client") not in scope:
         raise HTTPException(status_code=404, detail=f"unknown run {run_id!r}")
     return StreamingResponse(
         _event_stream(run),
@@ -1421,10 +1637,11 @@ def _record_artifact(slug, topic_slug, name):
 
 
 @app.get("/api/clients/{slug}/output/{topic_slug}/{name}")
-async def api_output_file(slug: str, topic_slug: str, name: str):
+async def api_output_file(slug: str, topic_slug: str, name: str,
+                          user: auth.Identity = Depends(auth.require_user)):
     if name not in OUTPUT_WHITELIST:
         raise HTTPException(status_code=404, detail="not found")
-    _client_or_404(slug)
+    _client_or_404(slug, user)
 
     # Slug-format guard: the record-era stand-in for the old resolve() check, so a
     # topic_slug smuggling separators or dot-dots 404s before any path or query is built.

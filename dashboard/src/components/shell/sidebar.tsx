@@ -18,7 +18,7 @@ export function Wordmark() {
       className="font-wordmark block rounded-sm text-[1.0625rem] leading-tight tracking-tight text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
     >
       <span className="font-normal">Strategi</span>{" "}
-      <span className="font-bold">GEO Factory</span>
+      <span className="font-bold">Canon</span>
     </Link>
   );
 }
@@ -66,7 +66,7 @@ function NavRow({
 }
 
 /**
- * The five sections of the brand in the URL, plus a brand switcher when there is something to
+ * The brand's sections in the URL, plus a brand switcher when there is something to
  * switch between.
  */
 function BrandNav({

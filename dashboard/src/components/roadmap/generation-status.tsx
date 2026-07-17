@@ -27,7 +27,7 @@ import { useRoadmapGen } from "@/lib/use-roadmap-gen";
  *
  * It shows RUNNING only. A settled generation's payoff is its report, the report is long, and
  * the tab it belongs to is one click away: reprinting it on a page that already carries a
- * description, a roadmap, stats and a never-claim list would bury all of them. The link is the
+ * description, a roadmap and stats would bury all of them. The link is the
  * answer, and the tab is where the operator can act on what it says.
  *
  * The clock and the poll behind it come from the same hook the Content Roadmap tab uses, so

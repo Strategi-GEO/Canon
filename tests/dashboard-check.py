@@ -112,6 +112,15 @@ def main() -> None:
     STORAGE_ALLOWED = {
         "src/lib/orgs-context.tsx",  # the last org, for the / redirect and nothing deeper
         "src/lib/use-hotkey.ts",
+        # The auth session. Tokens must survive a browser restart for the
+        # stay-signed-in requirement, and localStorage is the only place a pure
+        # client app has; the engine re-verifies the JWT on every request, so a
+        # tampered value buys an attacker nothing the token itself did not.
+        "src/lib/session.ts",
+        # The light/dark preference: exactly the browser-preference class this
+        # allowlist exists to admit. theme.ts owns the store; the login page and
+        # use-theme read through it, never localStorage directly.
+        "src/lib/theme.ts",
     }
     storage_files = [
         f for f, t in joined.items() if "localStorage" in t and f not in STORAGE_ALLOWED
@@ -130,10 +139,17 @@ def main() -> None:
     # renderer emitted. What must never happen is a SECOND caller adopting the prop without
     # that guarantee, so the allowance is pinned to the one file that earned it and the
     # invariant it depends on is asserted rather than assumed.
+    # layout.tsx earned the second allowance: the pre-hydration theme script the
+    # Next flash-prevention guide prescribes is a BUILD-TIME constant
+    # (THEME_INIT_SCRIPT in src/lib/theme.ts), never user data, and inlining it
+    # in <head> is the only way the stored theme applies before first paint.
     danger = [f for f, t in joined.items() if "dangerouslySetInnerHTML" in t]
-    stray_danger = [f for f in danger if not f.endswith("blogs/markdown-view.tsx")]
+    stray_danger = [
+        f for f in danger
+        if not f.endswith("blogs/markdown-view.tsx") and f != "src/app/layout.tsx"
+    ]
     check(
-        "dangerouslySetInnerHTML confined to the markdown renderer",
+        "dangerouslySetInnerHTML confined to the markdown renderer + theme init",
         not stray_danger,
         f"{', '.join(stray_danger)} (escape first, or do not use the prop)",
     )

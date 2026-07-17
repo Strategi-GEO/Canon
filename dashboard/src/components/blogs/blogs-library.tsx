@@ -448,7 +448,9 @@ function NoBlogs({ brandName, createHref }: { brandName: string; createHref: str
   return (
     <Card>
       <CardContent className="py-14 text-center">
-        <FileText className="mx-auto size-5 text-muted-foreground" aria-hidden />
+        <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-muted">
+          <FileText className="size-5 text-muted-foreground" aria-hidden />
+        </div>
         <p className="mt-3 text-sm font-medium text-foreground">No blogs for {brandName} yet</p>
         <p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-muted-foreground">
           This list reads the disk, so a blog appears here the moment the engine writes it.
@@ -467,7 +469,9 @@ function EngineError({ error, onRetry }: { error: ApiError; onRetry: () => void 
   return (
     <Card className="border-fail/25 bg-fail-bg">
       <CardContent className="py-8 text-center">
-        <TriangleAlert className="mx-auto size-5 text-fail" aria-hidden />
+        <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-fail/10">
+          <TriangleAlert className="size-5 text-fail" aria-hidden />
+        </div>
         <p className="mt-3 text-sm font-medium text-fail">
           {error.isOffline ? "Cannot reach the engine" : "The engine refused the request"}
         </p>

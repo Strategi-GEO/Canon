@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { FieldError } from "@/components/clients/engine-error";
 import { ApiError, api } from "@/lib/api";
 import { formatCount } from "@/lib/format";
+import { HOSTED_READONLY } from "@/lib/hosted";
 
 /**
  * Stops a brand's blog generation, behind a confirm that says what actually happens to the work.
@@ -54,6 +55,12 @@ export function StopSessionDialog({
   const [open, setOpen] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
+
+  // Hosted mode has no engine and therefore no runs to stop: /api/runs answers an empty
+  // list there, so this is unreachable in practice, and hidden outright as belt and braces.
+  if (HOSTED_READONLY) {
+    return null;
+  }
 
   async function stop() {
     setSubmitting(true);

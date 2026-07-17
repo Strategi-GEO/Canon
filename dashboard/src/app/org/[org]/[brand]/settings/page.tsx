@@ -8,13 +8,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError, api } from "@/lib/api";
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { cn } from "@/lib/utils";
 import { useOrgs } from "@/lib/orgs-context";
 import { BrandRoute } from "@/components/shell/brand-route";
 import { EditableText } from "@/components/clients/editable-text";
 import { FieldError } from "@/components/clients/engine-error";
-import { NEVER_CLAIM_EXPLAINER } from "@/components/clients/never-claim-help";
-import { neverClaimOf, updateClient } from "@/components/clients/wire";
+import { updateClient } from "@/components/clients/wire";
 import { OrgCombobox } from "@/components/shell/org-combobox";
 import type { Client } from "@/types";
 
@@ -44,7 +44,7 @@ function BrandSettings({ orgName, brand }: { orgName: string; brand: Client }) {
       <div className="mb-6">
         <h2 className="text-xl font-semibold tracking-tight text-foreground">Settings</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          What the engine knows about {client.name}, and what it must never say.
+          What the engine knows about {client.name}.
         </p>
       </div>
 
@@ -54,36 +54,66 @@ function BrandSettings({ orgName, brand }: { orgName: string; brand: Client }) {
           title="Description"
           help="What this brand is, what it sells, and who it sells to. Every writer run reads it."
           value={client.description}
-          field="description"
           emptyText="No description yet. Draft one from the live site, then edit it before saving."
           describable
           onSaved={onSaved}
         />
 
-        <EditableText
-          brandSlug={client.slug}
-          title="Never claim"
-          help={NEVER_CLAIM_EXPLAINER}
-          value={neverClaimOf(client)}
-          field="never_claim"
-          mono
-          rows={6}
-          emptyText="No rules yet. This is the one safety input an agent cannot infer from a website."
-          onSaved={onSaved}
-        />
-
-        {/* Keyed on the saved values: a save re-mounts the form so its drafts reset to what
-            the engine now holds. That is React's own answer to resetting state on a prop
-            change, and it needs no effect to chase the props. */}
-        <IdentityCard
-          key={`${client.slug}:${client.domain}:${client.industry}:${orgName}`}
-          client={client}
-          orgName={orgName}
-          onSaved={onSaved}
-        />
-        <DangerZone client={client} />
+        {/* The hosted build shows what the engine knows and changes none of it: PATCH is an
+            engine write, and the danger zone describes the engine host's own disk, which
+            does not exist behind this deployment. */}
+        {HOSTED_READONLY ? (
+          <ReadOnlyIdentity client={client} orgName={orgName} />
+        ) : (
+          <>
+            {/* Keyed on the saved values: a save re-mounts the form so its drafts reset to what
+                the engine now holds. That is React's own answer to resetting state on a prop
+                change, and it needs no effect to chase the props. */}
+            <IdentityCard
+              key={`${client.slug}:${client.domain}:${client.industry}:${orgName}`}
+              client={client}
+              orgName={orgName}
+              onSaved={onSaved}
+            />
+            <DangerZone client={client} />
+          </>
+        )}
       </div>
     </div>
+  );
+}
+
+/** The identity fields as facts to read, for the hosted build where nothing here saves. */
+function ReadOnlyIdentity({ client, orgName }: { client: Client; orgName: string }) {
+  return (
+    <Card>
+      <CardContent>
+        <p className="text-sm font-semibold text-foreground">Identity</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          The slug <span className="machine">{client.slug}</span> is derived from the name and
+          is permanent. This dashboard is read only, so these fields are edited from the
+          operator dashboard that runs against the engine.
+        </p>
+        <dl className="mt-4 space-y-3">
+          <div>
+            <dt className="text-xs font-medium text-muted-foreground">Organisation</dt>
+            <dd className="mt-0.5 text-sm text-foreground">{orgName}</dd>
+          </div>
+          <div>
+            <dt className="text-xs font-medium text-muted-foreground">Domain</dt>
+            <dd className="machine mt-0.5 text-sm text-foreground">
+              {client.domain || "(not recorded)"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs font-medium text-muted-foreground">Industry</dt>
+            <dd className="mt-0.5 text-sm text-foreground">
+              {client.industry || "(not selected)"}
+            </dd>
+          </div>
+        </dl>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -159,8 +189,8 @@ function IdentityCard({
               className="mt-1.5"
             />
             <p className="mt-1 text-xs text-muted-foreground">
-              A grouping only. Brands never share canonical facts, a roadmap, or a never-claim
-              list, whichever organisation they sit under.
+              A grouping only. Brands never share canonical facts or a roadmap, whichever
+              organisation they sit under.
             </p>
           </div>
 

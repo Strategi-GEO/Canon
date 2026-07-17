@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { api } from "@/lib/api";
+import { HOSTED_READONLY } from "@/lib/hosted";
 import type { RoadmapRow, RunStatus, StatusEvent } from "@/types";
 
 /**
@@ -270,7 +271,10 @@ export function useRunStream(runId: string | null, seeds: Seed[]): StreamState {
   }, []);
 
   React.useEffect(() => {
-    if (runId === null) {
+    // Hosted mode has no SSE endpoint to stream from (runs are engine state, and there is
+    // no engine), so the connection is never opened there. The create surface that mounts
+    // this hook is gated off in hosted mode anyway; this is the belt to that braces.
+    if (runId === null || HOSTED_READONLY) {
       return;
     }
 

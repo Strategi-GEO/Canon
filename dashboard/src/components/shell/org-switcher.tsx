@@ -15,6 +15,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { addBrandHref, brandHref, orgHref, useOrgs } from "@/lib/orgs-context";
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { parseBrandPath, parseOrgPath } from "@/components/shell/nav";
 import { useCommandPalette } from "@/components/shell/command-palette";
 import { useModLabel } from "@/lib/use-hotkey";
@@ -142,7 +143,9 @@ export function OrgSwitcher({ onNavigate }: { onNavigate?: () => void }) {
                 trap it at one brand forever. It sits in the switcher because the switcher is
                 the one control present on every route.
               */}
-              {activeOrg ? (
+              {/* Both rows lead to onboarding, an engine write, so the hosted, read-only
+                  build lists nothing to add. */}
+              {!HOSTED_READONLY && activeOrg ? (
                 <CommandItem
                   value={addBrandHref(activeOrg.name)}
                   keywords={["add brand", activeOrg.name]}
@@ -152,10 +155,12 @@ export function OrgSwitcher({ onNavigate }: { onNavigate?: () => void }) {
                   <span className="min-w-0 truncate">Add brand to {activeOrg.name}</span>
                 </CommandItem>
               ) : null}
-              <CommandItem value="/new" keywords={["add client", "new organisation"]} onSelect={go}>
-                <Plus className="text-muted-foreground" aria-hidden />
-                <span>Add client</span>
-              </CommandItem>
+              {HOSTED_READONLY ? null : (
+                <CommandItem value="/new" keywords={["add client", "new organisation"]} onSelect={go}>
+                  <Plus className="text-muted-foreground" aria-hidden />
+                  <span>Add client</span>
+                </CommandItem>
+              )}
               {/* The palette does everything this menu does and reaches sections besides, so
                   the menu is where an operator is most likely to be taught it. Named with the
                   key their own keyboard actually carries. */}

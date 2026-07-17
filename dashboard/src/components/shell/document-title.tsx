@@ -6,7 +6,7 @@ import { BRAND_NAV, isActiveSection, parseBrandPath, parseOrgPath } from "@/comp
 import { useOrgs } from "@/lib/orgs-context";
 
 /** The fallback for a route with nothing better to say. Also the app's name. */
-const APP_TITLE = "Strategi GEO Factory";
+const APP_TITLE = "Strategi Canon";
 
 /**
  * Per route tab titles, written imperatively, and the ONLY thing that sets document.title.

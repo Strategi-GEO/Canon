@@ -82,7 +82,7 @@ export function SessionsIndicator() {
   return (
     <Sheet open={open} onOpenChange={setOpen}>
       <SheetTrigger
-        className="machine flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted focus-visible:bg-muted"
+        className="machine flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted focus-visible:bg-muted"
         aria-label={`${label}. Open the engine session queue.`}
       >
         <span
@@ -258,7 +258,7 @@ function SessionRow({
       <Link
         href={href}
         onClick={onNavigate}
-        className="flex items-start gap-2 px-4 py-3 hover:bg-muted/60"
+        className="flex items-start gap-2 px-4 py-3 transition-colors hover:bg-muted/60"
       >
         <span className="min-w-0 flex-1">{body}</span>
         <ArrowRight className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />

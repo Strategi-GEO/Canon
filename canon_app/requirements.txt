@@ -1,0 +1,6 @@
+# canon_app build/runtime deps ONLY. These never go into the engine's
+# requirements.txt: the engine venv must stay free of GUI and packaging deps.
+pystray>=0.19.5                                      # the menu-bar / system-tray icon and menu
+Pillow>=10.4.0                                       # runtime dot icons + build-time .icns/.ico generation
+pyinstaller>=6.16.0                                  # packages tray.py into Strategi Canon.app / .exe
+pyobjc-framework-Cocoa>=10.3; sys_platform == "darwin"  # pystray's darwin backend imports AppKit/Foundation/objc

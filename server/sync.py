@@ -501,10 +501,12 @@ def reconcile_all():
                 # push a mid-session half-state into the record.
                 try:
                     from . import runner
-                    live = any(tdir.name in (run.get("topics") or [])
-                               or any(t.get("topic_slug") == tdir.name
-                                      for t in (run.get("topics") or [])
-                                      if isinstance(t, dict))
+                    # run["topics"] is a list of dicts everywhere it is built
+                    # (see app._live_run_slugs, which reads the same shape), so
+                    # the match is on each dict's topic_slug and nothing else.
+                    live = any(any(t.get("topic_slug") == tdir.name
+                                   for t in (run.get("topics") or [])
+                                   if isinstance(t, dict))
                                for run in runner.RUNS.values()
                                if run.get("live") and run.get("client") == slug)
                 except Exception:

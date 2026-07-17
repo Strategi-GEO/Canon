@@ -7,11 +7,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError } from "@/lib/api";
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { cn } from "@/lib/utils";
-import type { Client } from "@/types";
+import type { Client, UpdateClientBody } from "@/types";
 import { FieldError } from "@/components/clients/engine-error";
 import { DescribeAction } from "@/components/clients/describe-action";
-import { updateClient, type UpdateClientWire } from "@/components/clients/wire";
+import { updateClient } from "@/components/clients/wire";
 
 /**
  * The card both states share. One shell, so a read only block of client prose and an editable
@@ -97,7 +98,6 @@ export function EditableText({
   title,
   help,
   value,
-  field,
   placeholder,
   emptyText,
   mono = false,
@@ -109,7 +109,6 @@ export function EditableText({
   title: string;
   help: string;
   value: string;
-  field: "description" | "never_claim";
   placeholder?: string;
   emptyText: string;
   mono?: boolean;
@@ -121,6 +120,16 @@ export function EditableText({
   const [draft, setDraft] = React.useState(value);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
+
+  // The hosted build is read only: PATCH and the describe session both need the live
+  // engine, so the same block renders without its Edit button or AI draft there.
+  if (HOSTED_READONLY) {
+    return (
+      <TextCard title={title} help={help}>
+        <Prose value={value} emptyText={emptyText} mono={mono} />
+      </TextCard>
+    );
+  }
 
   function start() {
     setDraft(value);
@@ -138,8 +147,7 @@ export function EditableText({
     setSaving(true);
     setError(null);
     try {
-      const body: UpdateClientWire =
-        field === "description" ? { description: draft } : { never_claim: draft };
+      const body: UpdateClientBody = { description: draft };
       const updated = await updateClient(brandSlug, body);
       onSaved(updated);
       toast.success(`${title} saved`);

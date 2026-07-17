@@ -15,7 +15,7 @@ import type { Client, Org } from "@/types";
 /**
  * The org home, and the ONE case it earns its existence: an org holding two or more brands.
  *
- * An org owns no canonical facts, no roadmap and no never-claim list. The brand owns all
+ * An org owns no canonical facts and no roadmap. The brand owns all
  * three, so an org is a grouping and never a place work happens. That makes a single-brand
  * org home a floor with nothing on it, which is exactly what an operator photographed: the
  * org switcher, and then a blank column where the brand nav should be. So a single-brand org
@@ -115,7 +115,9 @@ function EmptyOrg({ org, onCreated }: { org: Org; onCreated: () => void }) {
     <div className="mx-auto w-full max-w-md">
       <Card>
         <CardContent className="py-10 text-center">
-          <Building2 className="mx-auto size-5 text-muted-foreground" aria-hidden />
+          <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-muted">
+            <Building2 className="size-5 text-muted-foreground" aria-hidden />
+          </div>
           <p className="mt-3 text-sm font-medium text-foreground">{org.name} has no brands</p>
           <p className="mx-auto mt-2 max-w-sm text-xs text-muted-foreground">
             An organisation is a grouping over brands and holds no facts of its own. Nothing
@@ -149,8 +151,7 @@ function OrgPortfolio({ org, onCreated }: { org: Org; onCreated: () => void }) {
           <h2 className="text-xl font-semibold tracking-tight text-foreground">{org.name}</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             <span className="machine">{org.brands.length}</span> brands. Each one keeps its
-            own canonical facts, roadmap and never-claim list, so pick the one you are
-            writing for.
+            own canonical facts and roadmap, so pick the one you are writing for.
           </p>
         </div>
         {/* Prefilled and locked: adding a brand from inside an org cannot mean another org,

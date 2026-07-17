@@ -1,12 +1,8 @@
 /**
  * Where src/types and the live engine disagree, this file bridges the two.
  *
- * Two divergences exist today, both verified against server/clients.py and server/app.py:
- *  1. never-claim is ONE newline separated string on the wire (it is written straight to
- *     clients/<slug>/never-claim.md). src/types models it as string[] on the create body
- *     and leaves it off Client entirely. Posting an array would 422 against the FastAPI
- *     model, so the string form is the one that has to reach the network.
- *  2. Resource carries `uploaded` on the wire, `modified` in src/types.
+ * One divergence exists today, verified against server/clients.py and server/app.py:
+ * Resource carries `uploaded` on the wire, `modified` in src/types.
  *
  * Organisation is deliberately NOT bridged here. src/types models it, and GET /api/orgs is
  * the authority on the grouping: a second copy of that logic in this file could disagree
@@ -18,9 +14,6 @@
 
 import { api } from "@/lib/api";
 import type { Client, CreateClientBody, Preflight, Resource, UpdateClientBody } from "@/types";
-
-/** The client object as the engine sends it, never-claim included. */
-export type ClientWire = Client & { never_claim: string };
 
 /**
  * Preflight rides on the LIST response only. server/app.py decorates each entry of
@@ -36,26 +29,12 @@ export function preflightOf(client: Client, listed?: Client | null): Preflight |
   return listed?.preflight ?? null;
 }
 
-/** Reads never-claim off a client without asserting it is there: an old record may lack it. */
-export function neverClaimOf(client: Client | null | undefined): string {
-  const value = (client as ClientWire | null | undefined)?.never_claim;
-  return typeof value === "string" ? value : "";
+export function createClient(body: CreateClientBody): Promise<Client> {
+  return api.createClient(body);
 }
 
-export type CreateClientWire = Omit<CreateClientBody, "never_claim"> & {
-  never_claim?: string;
-};
-
-export type UpdateClientWire = Omit<UpdateClientBody, "never_claim"> & {
-  never_claim?: string;
-};
-
-export function createClient(body: CreateClientWire): Promise<Client> {
-  return api.createClient(body as unknown as CreateClientBody);
-}
-
-export function updateClient(slug: string, body: UpdateClientWire): Promise<Client> {
-  return api.updateClient(slug, body as unknown as UpdateClientBody);
+export function updateClient(slug: string, body: UpdateClientBody): Promise<Client> {
+  return api.updateClient(slug, body);
 }
 
 /** The upload timestamp, from whichever key this engine build sends. */

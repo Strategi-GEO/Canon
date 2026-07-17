@@ -154,7 +154,9 @@ export function NotFoundCard({
     <div className="mx-auto w-full max-w-md">
       <Card>
         <CardContent className="py-10 text-center">
-          <SearchX className="mx-auto size-5 text-muted-foreground" aria-hidden />
+          <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-muted">
+            <SearchX className="size-5 text-muted-foreground" aria-hidden />
+          </div>
           <p className="mt-3 text-sm font-medium text-foreground">{title}</p>
           <p className="machine mt-1.5 text-xs wrap-anywhere text-muted-foreground">{slug}</p>
           <p className="mx-auto mt-3 max-w-sm text-xs text-muted-foreground">{body}</p>
@@ -170,7 +172,7 @@ export function NotFoundCard({
                   <li key={org.slug}>
                     <Link
                       href={orgHref(org.slug)}
-                      className="flex items-center gap-2 rounded-sm px-1 py-2 text-sm text-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                      className="flex items-center gap-2 rounded-sm px-1 py-2 text-sm text-foreground transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                     >
                       <span className="min-w-0 flex-1 truncate">{org.name}</span>
                       <span className="machine shrink-0 text-xs text-muted-foreground">

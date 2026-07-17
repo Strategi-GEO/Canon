@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { FieldError } from "@/components/clients/engine-error";
 import { ApiError, api } from "@/lib/api";
+import { HOSTED_READONLY } from "@/lib/hosted";
 import type { BlogStatus, PublishResult } from "@/types";
 
 /**
@@ -51,6 +52,12 @@ export function PublishAction({
   const [posting, setPosting] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
   const [result, setResult] = React.useState<PublishResult | null>(null);
+
+  // The CMS push runs through the engine, which holds the write key. The hosted build has
+  // no engine behind it, so the button does not exist there at all.
+  if (HOSTED_READONLY) {
+    return null;
+  }
 
   // Mid-run there is nothing to post and no question to answer, so the button stays away
   // rather than sitting there greyed out on every blog the engine is still writing.

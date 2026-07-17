@@ -39,7 +39,7 @@ const NO_SEEDS: Seed[] = [];
  * Everything that belongs to one BRAND: its roadmap, its selection, its run.
  *
  * Blog creation is brand scoped and never global. A blog without a brand has no facts, no
- * roadmap and no never-claim list, so there is no global create page for this to serve. The
+ * roadmap, so there is no global create page for this to serve. The
  * org and brand arrive as props and are never read from a context or the URL: the route owns
  * that, and a component that guesses its own brand is how a blog gets written against the
  * wrong fact base.
@@ -268,6 +268,13 @@ export function CreateForBrand({
     () => new Set(blogs.filter((b) => b.status === "failed").map((b) => b.topic_slug)),
     [blogs],
   );
+  // Held blogs: they own a blog.md but sit off the ledger waiting for an operator answer, so
+  // they are neither generated nor failed. Without this the row would show as a plain, tickable
+  // "ready" and the operator would never learn a human owes it something first.
+  const needsReview = React.useMemo(
+    () => new Set(blogs.filter((b) => b.status === "needs_review").map((b) => b.topic_slug)),
+    [blogs],
+  );
 
   if (run && watching) {
     return (
@@ -321,6 +328,7 @@ export function CreateForBrand({
       loading={loading || runsChecking}
       live={live}
       failed={failed}
+      needsReview={needsReview}
       // Not knowing is different from knowing there is no run, and the difference matters: a
       // live run this view missed leaves rows selectable that the engine will refuse. Say so
       // rather than imply an idle brand. The engine stays the backstop either way, since it

@@ -13,7 +13,9 @@ export default function NotFound() {
     <div className="mx-auto w-full max-w-md">
       <Card>
         <CardContent className="py-12 text-center">
-          <SearchX className="mx-auto size-5 text-muted-foreground" aria-hidden />
+          <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-muted">
+            <SearchX className="size-5 text-muted-foreground" aria-hidden />
+          </div>
           <p className="mt-3 text-sm font-medium text-foreground">This page does not exist</p>
           <p className="mx-auto mt-2 max-w-sm text-xs text-muted-foreground">
             Blogs live under a brand, and a brand lives under an organisation. Pick one to

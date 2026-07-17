@@ -83,7 +83,9 @@ export function EngineDown({ error, onRetry }: { error: ApiError; onRetry?: () =
   return (
     <Card className="border-fail/25 bg-fail-bg">
       <CardContent className="py-8 text-center">
-        <TriangleAlert className="mx-auto size-5 text-fail" aria-hidden />
+        <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-fail/10">
+          <TriangleAlert className="size-5 text-fail" aria-hidden />
+        </div>
         <p className="mt-3 text-sm font-medium text-fail">
           {error.isOffline ? "Cannot reach the engine" : "The engine refused the request"}
         </p>

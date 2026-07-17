@@ -27,11 +27,12 @@ import type { RoadmapRow } from "@/types";
 /**
  * ONE table, two modes, because there is one roadmap and it has one shape.
  *
- * Create Blogs PICKS rows and the Content Roadmap tab READS them. That is a difference of two
- * columns, not of a table: the topic, what it covers and the prompts are laid out identically
- * in both, and the column widths below were measured against real content. A second component
- * would drift from this one the first time either changed, and this codebase has already paid
- * that bill twice, with two roadmap cards fetching the same CSV and two "Create blogs" buttons.
+ * Create Blogs PICKS rows and the Content Roadmap tab READS them. Pick mode adds a checkbox
+ * column; read mode adds the target prompts and a per-row delete, because the operator asked
+ * the create page not to carry the prompts and the roadmap tab is where the sheet is judged.
+ * The column widths below were measured against real content. A second component would drift
+ * from this one the first time either changed, and this codebase has already paid that bill
+ * twice, with two roadmap cards fetching the same CSV and two "Create blogs" buttons.
  *
  * The modes are a union rather than optional props: a read mode carrying a `selected` set, or
  * a pick mode carrying an `onDelete`, are both states that cannot happen, so they are made
@@ -122,10 +123,11 @@ export function RoadmapTable(
         The percentages are the content's real shape: a topic is a title, a scope is a sentence
         or two, and the prompts are three or four full questions, so they get the most room.
 
-        Both modes spend the same fixed sliver on their own column, the checkbox on the left in
-        pick mode and the row action on the right in read mode, so the three prose columns get
-        the identical share of the container either way and neither mode can overflow the other's
-        measurements.
+        The prompts column renders in READ MODE ONLY, by the operator's instruction: the create
+        page is for ticking topics, and the prompts were the bulk of every row's height there.
+        They are still the binding part of a row, so they stay on the Content Roadmap tab, which
+        is the place to judge the sheet. Pick mode hands their share to topic and covers, so the
+        two modes size their prose columns differently on purpose.
       */}
       <table className="w-full table-fixed caption-bottom text-sm">
         <TableHeader className="sticky top-0 z-10 bg-card [&_tr]:border-b">
@@ -148,9 +150,27 @@ export function RoadmapTable(
                 every blog written from this sheet carries. This table IS the sheet, so reading a
                 row here and finding it in the CSV should not require counting. */}
             <TableHead className="machine w-10 align-middle text-xs font-medium">#</TableHead>
-            <TableHead className="machine w-[26%] align-middle text-xs font-medium">topic</TableHead>
-            <TableHead className="machine w-[30%] align-middle text-xs font-medium">what it covers</TableHead>
-            <TableHead className="machine align-middle text-xs font-medium">target prompts</TableHead>
+            <TableHead
+              className={cn(
+                "machine align-middle text-xs font-medium",
+                props.mode === "pick" ? "w-[38%]" : "w-[26%]",
+              )}
+            >
+              topic
+            </TableHead>
+            {/* In pick mode covers carries no width class, so table-fixed hands it the whole
+                remainder: it is the last prose column there. */}
+            <TableHead
+              className={cn(
+                "machine align-middle text-xs font-medium",
+                props.mode === "read" && "w-[30%]",
+              )}
+            >
+              what it covers
+            </TableHead>
+            {props.mode === "read" ? (
+              <TableHead className="machine align-middle text-xs font-medium">target prompts</TableHead>
+            ) : null}
             {props.mode === "read" ? (
               // Unlabelled on screen and named for a screen reader. A column of one icon button
               // needs no title, and "actions" over a 25 row sheet is a word that earns nothing.
@@ -293,9 +313,14 @@ function Row({
         {row.covers || <span className="text-xs">Not given</span>}
       </TableCell>
 
-      <TableCell className="py-3 align-top whitespace-normal">
-        <Prompts prompts={row.prompts} />
-      </TableCell>
+      {/* Read mode only, keyed off `remove` exactly like the delete cell below: the operator
+          asked the create page not to carry the prompts, and the Content Roadmap tab is where
+          the sheet is judged. */}
+      {remove ? (
+        <TableCell className="py-3 align-top whitespace-normal">
+          <Prompts prompts={row.prompts} />
+        </TableCell>
+      ) : null}
 
       {remove ? (
         <TableCell className="pt-3 align-top">

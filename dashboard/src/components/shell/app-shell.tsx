@@ -1,6 +1,8 @@
 "use client";
 
 import * as React from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { Loader2 } from "lucide-react";
 import { Sidebar } from "@/components/shell/sidebar";
 import { Topbar } from "@/components/shell/topbar";
 import { GeoMockBanner } from "@/components/shell/geo-mock-banner";
@@ -12,6 +14,11 @@ import { ClientsProvider } from "@/lib/clients-context";
 import { DescribeProvider } from "@/lib/describe-context";
 import { NotificationsProvider } from "@/lib/notifications-context";
 import { RunsProvider } from "@/lib/runs-context";
+import {
+  getSession,
+  startSessionRefreshTimer,
+  subscribeSession,
+} from "@/lib/session";
 
 /**
  * OrgsProvider is the single fetch of the hierarchy. ClientsProvider sits inside it and only
@@ -38,7 +45,71 @@ import { RunsProvider } from "@/lib/runs-context";
  * RunNotifier renders nothing. It is the seam between the run list and the log, mounted here
  * beside DocumentTitle because both are headless readers of state the shell already holds.
  */
+/**
+ * Whether a session exists in this browser. Null is "not checked yet": the first render
+ * happens before any effect and localStorage must never be read during SSR, so the honest
+ * first answer is "checking", which the gate renders as a spinner and never as data.
+ */
+function useAuthed(): boolean | null {
+  const [authed, setAuthed] = React.useState<boolean | null>(null);
+
+  React.useEffect(() => {
+    const read = () => setAuthed(getSession() !== null);
+    read();
+    // Session changes land from three directions: sign-in and sign-out in this tab, a 401
+    // clearing the session mid-flight, and another tab doing any of those.
+    return subscribeSession(read);
+  }, []);
+
+  return authed;
+}
+
+/** The spinner between "page requested" and "session known". Deliberately data-free. */
+function AuthGate() {
+  return (
+    <div className="flex min-h-dvh items-center justify-center">
+      <Loader2 className="size-5 animate-spin text-muted-foreground" aria-hidden />
+      <span className="sr-only" role="status">
+        Checking your session
+      </span>
+    </div>
+  );
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const authed = useAuthed();
+  const onLogin = pathname === "/login";
+
+  // The always-redirect guard: no session and not on /login means /login, every route.
+  React.useEffect(() => {
+    if (authed === false && !onLogin) {
+      router.replace("/login");
+    }
+  }, [authed, onLogin, router]);
+
+  // While signed in, keep the access token fresh in the background so a token never expires
+  // under an open tab. The timer dies with the session and restarts with the next one.
+  React.useEffect(() => {
+    if (authed === true) {
+      return startSessionRefreshTimer();
+    }
+  }, [authed]);
+
+  // /login lives OUTSIDE the shell and outside the providers, because every provider here
+  // fires authenticated fetches on mount and an unauthenticated visit would 401 them all
+  // before the operator had typed anything.
+  if (onLogin) {
+    return <>{children}</>;
+  }
+
+  // Covers both "still checking" (null) and "signed out, redirect in flight" (false): in
+  // neither state may a frame of real data render.
+  if (authed !== true) {
+    return <AuthGate />;
+  }
+
   return (
     <OrgsProvider>
       <ClientsProvider>

@@ -1,21 +1,21 @@
 {
-  "client": "demo",
   "name": "Demo",
+  "client": "demo",
   "domain": "https://example.com",
   "industry": "technology-saas",
   "demo_mode": true,
   "word_band": {
     "min": 200,
-    "soft_max": 700,
-    "hard_max": 1200
+    "hard_max": 1200,
+    "soft_max": 700
   },
-  "banned_phrases": [],
   "entity_names": [
     "Demo"
   ],
-  "generic_entity_terms": [],
-  "passive_whitelist": [],
+  "banned_phrases": [],
   "required_links": [],
+  "passive_whitelist": [],
+  "generic_entity_terms": [],
   "forbidden_link_patterns": [],
   "forbidden_claim_patterns": []
 }

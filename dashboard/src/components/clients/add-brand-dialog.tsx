@@ -17,12 +17,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError, api } from "@/lib/api";
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { cn } from "@/lib/utils";
+import { useOrgs } from "@/lib/orgs-context";
+import { useDescribe } from "@/lib/describe-context";
 import { FieldError } from "@/components/clients/engine-error";
-import {
-  NEVER_CLAIM_EXPLAINER,
-  NEVER_CLAIM_PLACEHOLDER,
-} from "@/components/clients/never-claim-help";
 import { createClient } from "@/components/clients/wire";
 import type { Client } from "@/types";
 
@@ -80,12 +79,19 @@ export function AddBrandDialog({
   const [domain, setDomain] = React.useState("");
   const [industry, setIndustry] = React.useState("");
   const [description, setDescription] = React.useState("");
-  const [neverClaim, setNeverClaim] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
 
+  const { geoMock } = useOrgs();
+  const { start: startDescribe } = useDescribe();
   const { industries, error: industriesError } = useIndustries(open);
   const listId = React.useId();
+
+  // After every hook, so the hook order stays constant. Creating a brand is an engine write
+  // (POST /api/clients plus the describe session), so the hosted build has no Add button.
+  if (HOSTED_READONLY) {
+    return null;
+  }
 
   function reset() {
     setName("");
@@ -93,7 +99,6 @@ export function AddBrandDialog({
     setDomain("");
     setIndustry("");
     setDescription("");
-    setNeverClaim("");
     setError(null);
   }
 
@@ -107,12 +112,19 @@ export function AddBrandDialog({
         domain: domain.trim(),
         industry,
         description: description.trim(),
-        never_claim: neverClaim.trim(),
         // Blank is meaningful: it tells the engine to write no organisation key, which is
         // exactly how a brand states that it is its own single-brand org.
         organisation_name: organisation.trim(),
       });
       toast.success(`Added ${brand.name}`);
+      // Start the description draft the instant the brand exists, so the operator never has to
+      // type one or press Draft with Claude. The session lives in DescribeProvider above every
+      // route, so it survives closing this dialog and the redirect that follows, and the draft
+      // lands on the brand's page for review. Skipped under mock and demo, where describe can
+      // only return a placeholder that must not be saved.
+      if (!geoMock && !brand.demo_mode) {
+        void startDescribe(brand.slug);
+      }
       setOpen(false);
       reset();
       onCreated?.(brand);
@@ -258,27 +270,15 @@ export function AddBrandDialog({
               placeholder="What this brand is, what it sells, and who it sells to."
               className="mt-1.5"
             />
-            {/* Draft with Claude reads the SAVED brand's domain, and POST describe answers
-                404 for a slug that does not exist yet. So the draft runs on the brand page
-                once this form has created it. Wiring a button here that could only 404 would
-                be a fake feature, and this engine's whole point is not faking. */}
+            {/* Leave this blank: describe reads the SAVED brand's domain and 404s for a slug
+                that does not exist yet, so the draft cannot run until the brand is created.
+                Adding the brand starts it automatically, and the draft lands on the brand's
+                page for review. Nothing a draft produces is saved without that review. */}
             <p className="mt-1 text-xs text-muted-foreground">
-              Add the brand, then use Draft with Claude on its page to draft this from the
-              live site. Nothing a draft produces is ever saved without your review.
+              Optional. Leave it blank and Claude drafts one from the live site the moment you
+              add the brand. The draft waits on the brand&apos;s page for your review, and
+              nothing is saved without it.
             </p>
-          </div>
-
-          <div>
-            <Label htmlFor="brand-never-claim">Never claim</Label>
-            <p className="mt-1 text-xs text-muted-foreground">{NEVER_CLAIM_EXPLAINER}</p>
-            <Textarea
-              id="brand-never-claim"
-              value={neverClaim}
-              onChange={(e) => setNeverClaim(e.target.value)}
-              rows={5}
-              placeholder={NEVER_CLAIM_PLACEHOLDER}
-              className="machine mt-1.5 text-xs"
-            />
           </div>
 
           {generalError ? <FieldError error={generalError} /> : null}

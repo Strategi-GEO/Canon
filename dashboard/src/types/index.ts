@@ -46,9 +46,9 @@ export type Client = {
  * There is no orgs/ directory and no second config file, so this can never drift out of
  * sync with the clients it groups.
  *
- * The brand stays the engine's unit of work: one brand owns exactly one canonical-facts.md,
- * one never-claim list and one roadmap. An org owns none of those, so nothing here is ever
- * a place to read facts from.
+ * The brand stays the engine's unit of work: one brand owns exactly one canonical-facts.md
+ * and one roadmap. An org owns none of those, so nothing here is ever a place to read facts
+ * from.
  */
 export type Org = {
   slug: string;
@@ -79,7 +79,6 @@ export type CreateClientBody = {
   domain: string;
   industry: string;
   description?: string;
-  never_claim?: string[];
   demo_mode?: boolean;
   /**
    * The org to file this brand under, by NAME rather than slug: the operator can type a new
@@ -131,6 +130,12 @@ export type Resource = {
   name: string;
   size: number;
   modified: string;
+  /**
+   * The MIME type the engine recorded at upload, e.g. "application/pdf". Optional on the
+   * wire: an engine build predating the field, or a file dropped into Resources/ by hand,
+   * sends nothing, and the UI then falls back to the filename extension.
+   */
+  content_type?: string;
 };
 
 export type ResourcesResponse = {

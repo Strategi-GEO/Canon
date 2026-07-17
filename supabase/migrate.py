@@ -135,9 +135,8 @@ def import_app(source_root):
 def read_text(path):
     """Return file text, or None if absent.
 
-    '' and None are DIFFERENT and the difference is load-bearing:
-    clients/blr-brewing/never-claim.md is zero bytes, and one NEEDS_REVIEW marker
-    is zero bytes. Collapsing empty into absent loses the fact that the file
+    '' and None are DIFFERENT and the difference is load-bearing: one NEEDS_REVIEW
+    marker is zero bytes. Collapsing empty into absent loses the fact that the file
     exists at all, which for a NEEDS_REVIEW marker is the entire signal.
     """
     p = pathlib.Path(path)
@@ -200,7 +199,6 @@ def collect(source_root, clients_mod, roadmap_mod):
             "gates": {k: v for k, v in gates.items() if k != "organisation"},
             "client_md": read_text(cdir / "client.md"),
             "canonical_facts": read_text(cdir / "canonical-facts.md"),
-            "never_claim": read_text(cdir / "never-claim.md"),
             "resources": [],
             "uploads": [],
             "sheet": None,
@@ -360,8 +358,8 @@ def report(corpus, counts):
         f"{'res':>4} {'upl':>4}  docs")
     for c in corpus["clients"]:
         ev = sum(len(t["events"]) for t in c["topics"])
-        docs = ",".join(k for k in ("client_md", "canonical_facts", "never_claim") if c[k] is not None)
-        empty = [k for k in ("client_md", "canonical_facts", "never_claim")
+        docs = ",".join(k for k in ("client_md", "canonical_facts") if c[k] is not None)
+        empty = [k for k in ("client_md", "canonical_facts")
                  if c[k] is not None and c[k] == ""]
         note = f"  (EMPTY: {','.join(empty)})" if empty else ""
         odir = c.get("output_dirname")
@@ -433,11 +431,11 @@ def load(conn, corpus, env, do_storage=True):
             cur.execute(
                 """insert into clients
                      (org_id,slug,name,domain,industry,description,
-                      client_md,canonical_facts,never_claim,demo_mode,gates)
-                   values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) returning id""",
+                      client_md,canonical_facts,demo_mode,gates)
+                   values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) returning id""",
                 (org_id.get(c["org_slug"]), c["slug"], c["name"], c["domain"],
                  c["industry"], c["description"], c["client_md"], c["canonical_facts"],
-                 c["never_claim"], c["demo_mode"], Json(c["gates"])))
+                 c["demo_mode"], Json(c["gates"])))
             client_id[c["slug"]] = cur.fetchone()[0]
         log(f"  clients            {len(client_id)}")
 

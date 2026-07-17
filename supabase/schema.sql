@@ -33,9 +33,15 @@ drop table if exists roadmap_rows      cascade;
 drop table if exists roadmap_sheets    cascade;
 drop table if exists roadmap_uploads   cascade;
 drop table if exists client_resources  cascade;
+drop table if exists org_members       cascade;
+drop table if exists app_admins        cascade;
 drop table if exists client_members    cascade;
 drop table if exists clients           cascade;
 drop table if exists orgs              cascade;
+
+drop function if exists auth_can_read_client(uuid) cascade;
+drop function if exists auth_org_slugs()           cascade;
+drop function if exists auth_is_admin()            cascade;
 
 drop type   if exists topic_status cascade;
 drop type   if exists run_stage    cascade;
@@ -132,6 +138,34 @@ create table client_members (
   created_at timestamptz not null default now(),
   primary key (client_id, user_id)
 );
+
+-- ---------------------------------------------------------------------------
+-- Identity: app_admins (Strategi staff) and org_members (client portal)
+-- ---------------------------------------------------------------------------
+-- These back the login. A row in app_admins IS the admin grant (sees all orgs
+-- and brands). org_members scopes a client login at the ORG, keyed on the
+-- DERIVED org slug (coalesce(orgs.slug, clients.slug)) that org_membership
+-- exposes, NOT on orgs.id: only explicit multi-brand orgs have an orgs row, so a
+-- uuid FK would cover acme-group alone and strand every single-brand client.
+-- Both slugs are immutable, so the key never rewrites; a brand moving between
+-- orgs re-derives its org_slug through the view at read time, so access follows
+-- the move for free. user_id is a bare uuid (auth.users(id)) with no FK, exactly
+-- like client_members: this schema must not couple to Supabase's auth schema.
+create table app_admins (
+  user_id    uuid primary key,              -- auth.users(id)
+  email      text not null,                 -- denormalised for display; auth.users is not ours to join
+  added_by   uuid,                          -- auth.users(id) who granted it; null for the seed admin
+  created_at timestamptz not null default now()
+);
+
+create table org_members (
+  org_slug   client_slug not null,          -- coalesce(orgs.slug, clients.slug); see org_membership
+  user_id    uuid not null,                 -- auth.users(id)
+  role       text not null check (role in ('admin','viewer','commenter')),
+  created_at timestamptz not null default now(),
+  primary key (org_slug, user_id)
+);
+create index org_members_user on org_members (user_id);
 
 -- ---------------------------------------------------------------------------
 -- Resources and uploads
@@ -570,16 +604,24 @@ from review_notes n
 where n.parent_id is null;
 
 -- ---------------------------------------------------------------------------
--- Row Level Security: ON now, ZERO policies
+-- Row Level Security: ON, with membership-scoped read policies
 -- ---------------------------------------------------------------------------
--- The server holds sb_secret_*, which BYPASSES RLS entirely, so none of this
--- affects the app today. That is the point: it costs nothing now, and the day a
--- publishable key is pointed at this database from a browser it fails CLOSED
--- instead of open. RLS enabled with no policy is deny-all for anon and
--- authenticated.
+-- The engine holds sb_secret_* and connects as the table owner, which BYPASSES
+-- RLS entirely, so none of this affects a background run or the local engine:
+-- adding these policies changes NOTHING about current behavior, exactly the
+-- property this schema has always relied on. What RLS governs is the OTHER path,
+-- a browser or Route Handler carrying an `authenticated` JWT straight to
+-- Postgres. There, `anon` stays fully revoked (deny-all), and `authenticated`
+-- gets SELECT-only, membership-scoped policies: an admin (a row in app_admins)
+-- sees everything, an org member sees only their org's brands and those brands'
+-- rows, and everyone else sees nothing. Writes never get a policy, so even a
+-- stolen token cannot mutate. The auth_* predicate functions and the
+-- security_invoker view flags that make this hold are defined below.
 alter table orgs             enable row level security;
 alter table clients          enable row level security;
 alter table client_members   enable row level security;
+alter table app_admins       enable row level security;
+alter table org_members      enable row level security;
 alter table client_resources enable row level security;
 alter table roadmap_uploads  enable row level security;
 alter table roadmap_sheets   enable row level security;
@@ -589,6 +631,75 @@ alter table blog_versions    enable row level security;
 alter table status_events    enable row level security;
 alter table ledger_entries   enable row level security;
 alter table review_notes     enable row level security;
+
+-- Auth predicates (SECURITY DEFINER: read membership past the caller's own RLS,
+-- using Supabase's auth.uid() = request.jwt.claims.sub).
+create or replace function auth_is_admin() returns boolean
+  language sql stable security definer set search_path = public as $$
+  select exists (select 1 from app_admins a where a.user_id = auth.uid())
+$$;
+
+create or replace function auth_org_slugs() returns setof client_slug
+  language sql stable security definer set search_path = public as $$
+  select om.org_slug from org_members om where om.user_id = auth.uid()
+$$;
+
+create or replace function auth_can_read_client(cid uuid) returns boolean
+  language sql stable security definer set search_path = public as $$
+  select auth_is_admin()
+      or exists (
+        select 1 from org_membership m
+        where m.client_id = cid
+          and m.org_slug in (select auth_org_slugs())
+      )
+$$;
+
+revoke all on function auth_is_admin(), auth_org_slugs(), auth_can_read_client(uuid) from anon;
+grant execute on function auth_can_read_client(uuid) to authenticated;
+
+-- Views must run as invoker or they leak (a view runs as its owner by default).
+alter view org_membership set (security_invoker = true);
+alter view topic_rollup   set (security_invoker = true);
+alter view topics_live    set (security_invoker = true);
+alter view v_review_notes set (security_invoker = true);
+
+-- Read policies: authenticated + SELECT only. Row scope is the client_id the row
+-- carries (or the row's own id for clients, the org slug for orgs).
+create policy read_scoped on client_resources for select to authenticated
+  using (auth_can_read_client(client_id));
+create policy read_scoped on roadmap_uploads  for select to authenticated
+  using (auth_can_read_client(client_id));
+create policy read_scoped on roadmap_sheets    for select to authenticated
+  using (auth_can_read_client(client_id));
+create policy read_scoped on roadmap_rows      for select to authenticated
+  using (auth_can_read_client(client_id));
+create policy read_scoped on topics            for select to authenticated
+  using (auth_can_read_client(client_id));
+create policy read_scoped on blog_versions     for select to authenticated
+  using (auth_can_read_client(client_id));
+create policy read_scoped on status_events     for select to authenticated
+  using (auth_can_read_client(client_id));
+create policy read_scoped on ledger_entries    for select to authenticated
+  using (auth_can_read_client(client_id));
+create policy read_scoped on review_notes      for select to authenticated
+  using (auth_can_read_client(client_id));
+create policy read_scoped on clients for select to authenticated
+  using (auth_can_read_client(id));
+create policy read_scoped on orgs for select to authenticated
+  using (auth_is_admin() or slug in (select auth_org_slugs()));
+create policy self_or_admin on app_admins  for select to authenticated
+  using (auth_is_admin() or user_id = auth.uid());
+create policy self_or_admin on org_members for select to authenticated
+  using (auth_is_admin() or user_id = auth.uid());
+
+-- Table privilege behind the row filter. SELECT only; every write stays on the
+-- service path. client_members is deliberately NOT granted: its per-brand
+-- overlay is resolved in Python, never over the browser-direct path.
+grant select on clients, orgs, client_resources, roadmap_uploads, roadmap_sheets,
+  roadmap_rows, topics, blog_versions, status_events, ledger_entries, review_notes,
+  org_membership, topic_rollup, topics_live, v_review_notes,
+  app_admins, org_members
+  to authenticated;
 
 -- A one-time REVOKE is point-in-time, and Supabase ships default privileges that
 -- GRANT every LATER-created table to anon. Without this, the next migration

@@ -21,6 +21,7 @@ import { modeOf } from "@/components/blogs/questions-state";
 import { useNow } from "@/components/create/use-now";
 import { ApiError, api } from "@/lib/api";
 import { formatAbsolute, formatElapsed } from "@/lib/format";
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { useRuns } from "@/lib/runs-context";
 import { clockOf, isLive, runStateOf } from "@/lib/sessions";
 import { cn } from "@/lib/utils";
@@ -449,16 +450,25 @@ function Held({
              not by reading a count of them. */}
       <QuestionList questions={questions.questions} />
 
-      {/* 4. THE ACTION, last, because everything above it is what the press is based on. */}
-      <div className="mt-3">
-        <AnswerDialog
-          brandSlug={brandSlug}
-          topicSlug={topicSlug}
-          questions={questions}
-          lockedReason={lockedReason}
-          onStarted={onStarted}
-        />
-      </div>
+      {/* 4. THE ACTION, last, because everything above it is what the press is based on.
+             Submitting answers starts a surgical revise, which is an engine session, so the
+             hosted build shows the hold and the questions and says where answering happens. */}
+      {HOSTED_READONLY ? (
+        <p className="mt-3 text-xs leading-relaxed text-review/90">
+          This dashboard is read only. Answering starts a revise session on the engine, so
+          these questions are answered from the operator dashboard that runs against it.
+        </p>
+      ) : (
+        <div className="mt-3">
+          <AnswerDialog
+            brandSlug={brandSlug}
+            topicSlug={topicSlug}
+            questions={questions}
+            lockedReason={lockedReason}
+            onStarted={onStarted}
+          />
+        </div>
+      )}
     </Strip>
   );
 }

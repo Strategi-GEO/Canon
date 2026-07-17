@@ -2,9 +2,10 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-/* Light theme only. The shadcn components ship `dark:` utilities we do not own, so rather
-   than delete them we bind the dark variant to a `.dark` ancestor this app never renders.
-   A half built dark theme reads worse than no dark theme at all. */
+/* Two complete themes. The dark variant binds to a `.dark` class on <html>, applied before
+   first paint by the inline script in layout.tsx and owned by the theme store in
+   src/lib/theme.ts. Every :root token below has a `.dark` counterpart: a half built dark
+   theme reads worse than no dark theme at all, so the two blocks must stay in lockstep. */
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
@@ -68,6 +69,9 @@
 }
 
 :root {
+  /* Native widgets (scrollbars, form controls, the UA color picker) follow the theme. */
+  color-scheme: light;
+
   /* Ground is a cool near white (#F7F8FA), cards are pure white on top of it. The cool
      cast keeps burnt orange reading as deliberate rather than as part of a warm palette. */
   --background: oklch(0.976 0.0035 260);
@@ -115,6 +119,62 @@
   --sidebar-accent-foreground: oklch(0.205 0.009 264);
   --sidebar-border: oklch(0.921 0.004 265);
   --sidebar-ring: oklch(0.608 0.175 42.5);
+}
+
+.dark {
+  color-scheme: dark;
+
+  /* Ground is a cool near black, cards sit one step above it. Same cool cast as the light
+     theme so the burnt orange keeps reading as the deliberate outsider. Never pure black:
+     an elevated surface needs somewhere darker to be elevated from. */
+  --background: oklch(0.155 0.01 265);
+  --foreground: oklch(0.928 0.006 264);
+  --card: oklch(0.205 0.012 265);
+  --card-foreground: oklch(0.928 0.006 264);
+  --popover: oklch(0.225 0.012 265);
+  --popover-foreground: oklch(0.928 0.006 264);
+
+  /* The same burnt orange, lightness nudged up so it holds contrast on the dark ground.
+     Its foreground flips to near black: white on the brighter orange fails contrast. */
+  --primary: oklch(0.665 0.16 43);
+  --primary-foreground: oklch(0.155 0.01 265);
+
+  --secondary: oklch(0.26 0.012 265);
+  --secondary-foreground: oklch(0.928 0.006 264);
+  --muted: oklch(0.26 0.012 265);
+  --muted-foreground: oklch(0.705 0.02 264);
+  --accent: oklch(0.26 0.012 265);
+  --accent-foreground: oklch(0.928 0.006 264);
+  --destructive: oklch(0.63 0.18 27);
+  --border: oklch(0.305 0.012 265);
+  --input: oklch(0.32 0.012 265);
+  --ring: oklch(0.665 0.16 43);
+
+  /* Status stays legible as status: lifted lightness, damped chroma, never neon. The -bg
+     pairs are deep tints of the same hue so the text token always clears them. */
+  --ship: oklch(0.7 0.12 152);
+  --ship-bg: oklch(0.245 0.04 152);
+  --review: oklch(0.72 0.1 85);
+  --review-bg: oklch(0.255 0.045 88);
+  --fail: oklch(0.68 0.15 26);
+  --fail-bg: oklch(0.25 0.045 26);
+
+  --chart-1: oklch(0.665 0.16 43);
+  --chart-2: oklch(0.7 0.12 152);
+  --chart-3: oklch(0.72 0.1 85);
+  --chart-4: oklch(0.705 0.02 264);
+  --chart-5: oklch(0.85 0.008 264);
+
+  /* Between ground and card: the rail is furniture, not content, so it sits below the
+     surfaces that carry work. */
+  --sidebar: oklch(0.19 0.011 265);
+  --sidebar-foreground: oklch(0.928 0.006 264);
+  --sidebar-primary: oklch(0.665 0.16 43);
+  --sidebar-primary-foreground: oklch(0.155 0.01 265);
+  --sidebar-accent: oklch(0.26 0.012 265);
+  --sidebar-accent-foreground: oklch(0.928 0.006 264);
+  --sidebar-border: oklch(0.305 0.012 265);
+  --sidebar-ring: oklch(0.665 0.16 43);
 }
 
 @layer base {
@@ -187,6 +247,9 @@
   ::-webkit-scrollbar-thumb:hover {
     background-color: oklch(0.83 0.008 265);
     background-clip: content-box;
+  }
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background-color: oklch(0.42 0.015 265);
   }
 
   /* Suppresses the grey flash iOS Safari paints over a tapped control. The app already shows

@@ -67,7 +67,10 @@ fi
 # yet, and it surfaces as "Cannot reach the engine", which reads like a bug
 # rather than a race. Waiting here keeps the first paint honest.
 for _ in $(seq 1 40); do
-  if curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:8000/api/clients 2>/dev/null; then
+  # /api/health, not /api/clients: every data route now 401s an anonymous poll,
+  # and a probe that can never succeed would burn this whole loop on a healthy
+  # engine before starting the dashboard anyway.
+  if curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:8000/api/health 2>/dev/null; then
     echo "[run] engine up on http://127.0.0.1:8000"
     break
   fi

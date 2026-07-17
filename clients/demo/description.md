@@ -1,1 +1,0 @@
-Demo brand for exercising the factory end to end. It is mock only: every blog it produces is precoded, unresearched, and marked as demo content, so nothing here is publishable.

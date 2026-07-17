@@ -1,0 +1,13 @@
+# Throwaway packaging venv created by build-mac.sh / build-windows.bat
+.buildvenv/
+
+# PyInstaller work and output
+build/
+dist/
+*.spec
+
+# Pillow-generated app icons (make_icons.py output; no binary assets in git)
+build_assets/
+
+# Python noise
+__pycache__/

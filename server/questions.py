@@ -5,7 +5,7 @@ no rewrite closes. This module is the read half plus the answers, and since the 
 it is split down the middle by WHO is asking:
 
 - RUNNER-FACING (terminal resolution and the revise finally arm): read_questions, read_answers,
-  is_stale, is_answered, has_area_question, current_score, and the disk half of
+  is_stale, is_answered, has_area_question, and the disk half of
   clear_questions. These read the DISK, the same surface the agents wrote seconds earlier, and
   they must keep doing so: the terminal resolver runs BEFORE sync.commit_topic pushes scratch to
   the record, so a DB read here would race the commit and re-create the exact
@@ -165,23 +165,6 @@ def current_iteration(client_slug, topic_slug, root=None):
     return db.q(
         "select coalesce(max(iter), 0) from status_events where topic_id = %s",
         (tid,), fetch="val")
-
-
-def current_score(client_slug, topic_slug, root=None):
-    """The score the blog carries RIGHT NOW, which is not the score in questions.json.
-
-    questions.json records the score AT ASKING TIME. The blog then moves: a revise runs, a fresh
-    evaluator scores the new draft, and the number in that file is a fact about a moment that has
-    passed. It is kept as a record of that moment (see write_answers), never read as the blog's
-    current standing.
-
-    THIS IS THE ONLY READER OF THE CURRENT SCORE IN THIS MODULE, and it stays that way. is_blocking
-    no longer consults a score at all, because a current question holds a blog at every score, but
-    anything here that ever does consult one reads it through this function and never out of
-    questions.json. The stored number and the live one disagree in live data: one blog was asked
-    about at 85 and now scores 96.
-    """
-    return _current(client_slug, topic_slug, root=root)["score"]
 
 
 def is_stale(raw, client_slug, topic_slug, root=None):

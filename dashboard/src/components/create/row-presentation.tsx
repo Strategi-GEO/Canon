@@ -27,23 +27,39 @@ import type { RoadmapRow } from "@/types";
  * These are the status tokens, deliberately off the accent hue. `chip` is the redundant
  * signal that makes the roadmap usable without colour vision, so no state that paints a row
  * may leave it null.
+ *
+ * Every coloured `row` repeats its fill under `hover:` on purpose. The shared TableRow paints
+ * `hover:bg-muted/50` on every row, which would wash a status colour to grey the moment the
+ * pointer crossed it, so a green, amber or red row lost its meaning exactly when the operator
+ * reached for it. Restating the fill as a hover utility lets tailwind-merge drop the muted one,
+ * so the colour holds through hover. A locked row that vanishes on hover is the worst time to
+ * lose the one signal saying why it cannot be picked.
  */
 export const ROW_STYLES: Record<
   RowState,
   { row: string; chip: string; chipLabel: string } | null
 > = {
   generated: {
-    row: "bg-ship-bg",
+    row: "bg-ship-bg hover:bg-ship-bg",
     chip: "border-ship/25 bg-ship-bg text-ship",
     chipLabel: "generated",
   },
   in_progress: {
-    row: "bg-review-bg",
+    row: "bg-review-bg hover:bg-review-bg",
     chip: "border-review/25 bg-review-bg text-review",
     chipLabel: "generating",
   },
+  // Amber, the same review token the Blogs page badge wears for this status, and the same
+  // "waiting on you" words: a held blog reads identically wherever the operator meets it. It
+  // shares in_progress's hue because both are the amber "not yours to touch yet" state and this
+  // app keeps no fourth status hue; the chip and note carry the difference that colour cannot.
+  needs_review: {
+    row: "bg-review-bg hover:bg-review-bg",
+    chip: "border-review/25 bg-review-bg text-review",
+    chipLabel: "waiting on you",
+  },
   failed: {
-    row: "bg-fail-bg",
+    row: "bg-fail-bg hover:bg-fail-bg",
     chip: "border-fail/25 bg-fail-bg text-fail",
     chipLabel: "failed",
   },
@@ -121,6 +137,15 @@ export function RowNote({
         Generated. Scored{" "}
         <span className="machine">{row.ledger?.score ?? "an unrecorded score"}</span> on{" "}
         <span className="machine">{formatDate(row.ledger?.generated_at ?? null)}</span>.
+      </p>
+    );
+  }
+
+  if (state === "needs_review") {
+    return (
+      <p className="mt-1.5 text-xs text-review">
+        Waiting on you. This blog is held until you answer its open questions on the Blogs page,
+        so it cannot be picked here.
       </p>
     );
   }

@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   Map as MapIcon,
   PenLine,
+  Recycle,
   Settings,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -22,7 +23,7 @@ export type NavItem = {
  *
  * There is no global Dashboard, no global Create and no global Blogs, because each of those
  * needs a brand to mean anything: a blog written without a brand has no canonical facts, no
- * roadmap and no never-claim list to obey. Scoping the nav to a brand makes that structural
+ * roadmap to obey. Scoping the nav to a brand makes that structural
  * rather than a rule someone has to remember.
  */
 export const BRAND_NAV: NavItem[] = [
@@ -32,6 +33,9 @@ export const BRAND_NAV: NavItem[] = [
   { section: "/roadmap", label: "Content Roadmap", icon: MapIcon },
   { section: "/create", label: "Create Blogs", icon: PenLine },
   { section: "/blogs", label: "Blogs", icon: FileText },
+  // After Blogs because it consumes them: repurposing turns shipped blogs into other
+  // formats, so it sits downstream of the library it will draw from.
+  { section: "/repurpose", label: "Repurpose", icon: Recycle },
   { section: "/resources", label: "Resources", icon: FolderOpen },
   { section: "/settings", label: "Settings", icon: Settings },
 ];
@@ -76,8 +80,8 @@ export function pageTitle(pathname: string): string {
   }
   const parts = parseBrandPath(pathname);
   if (!parts) {
-    return "GEO Factory";
+    return "Strategi Canon";
   }
   const match = BRAND_NAV.find((item) => isActiveSection(parts.section, item.section));
-  return match?.label ?? "GEO Factory";
+  return match?.label ?? "Strategi Canon";
 }

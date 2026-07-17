@@ -11,13 +11,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError, api } from "@/lib/api";
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { cn } from "@/lib/utils";
 import { brandHref, useOrgs } from "@/lib/orgs-context";
+import { useDescribe } from "@/lib/describe-context";
 import { FieldError } from "@/components/clients/engine-error";
-import {
-  NEVER_CLAIM_EXPLAINER,
-  NEVER_CLAIM_PLACEHOLDER,
-} from "@/components/clients/never-claim-help";
 import { createClient } from "@/components/clients/wire";
 import { OrgCombobox } from "@/components/shell/org-combobox";
 
@@ -36,6 +34,30 @@ import { OrgCombobox } from "@/components/shell/org-combobox";
  * and there would not be one.
  */
 export default function NewClientPage() {
+  // Onboarding is an engine write (POST /api/clients plus the describe session), so the
+  // hosted, read-only build states that instead of rendering a form that can only be refused.
+  if (HOSTED_READONLY) {
+    return (
+      <div className="mx-auto w-full max-w-lg">
+        <Card className="mt-8">
+          <CardContent className="py-14 text-center">
+            <p className="text-sm font-medium text-foreground">
+              Clients are onboarded from the operator dashboard
+            </p>
+            <p className="mx-auto mt-2 max-w-md text-xs leading-relaxed text-muted-foreground">
+              This dashboard is the read-only view of the factory&apos;s record. Adding a
+              client creates its record and starts engine sessions, so it happens where the
+              engine runs.
+            </p>
+            <Button size="sm" variant="outline" className="mt-6" asChild>
+              <Link href="/">Back to the dashboard</Link>
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto w-full max-w-lg">
       <React.Suspense fallback={null}>
@@ -48,7 +70,8 @@ export default function NewClientPage() {
 function NewClientForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { refresh, findBrand, orgs } = useOrgs();
+  const { refresh, findBrand, orgs, geoMock } = useOrgs();
+  const { start: startDescribe } = useDescribe();
 
   // Set when this came from "Add brand to <org>". Its presence IS the mode: it decides the
   // heading, the copy, and whether the org is the operator's to choose here at all.
@@ -59,7 +82,6 @@ function NewClientForm() {
   const [domain, setDomain] = React.useState("");
   const [industry, setIndustry] = React.useState("");
   const [description, setDescription] = React.useState("");
-  const [neverClaim, setNeverClaim] = React.useState("");
   // Only reachable in client mode, and only when the operator asks for it. An org that is
   // just the brand's name again is the default, so it is never a question worth asking first.
   const [customOrg, setCustomOrg] = React.useState("");
@@ -120,10 +142,17 @@ function NewClientForm() {
         domain: domain.trim(),
         industry,
         description: description.trim(),
-        never_claim: neverClaim.trim(),
         ...(ownOrg ? {} : { organisation_name: org }),
       });
       toast.success(`Added ${client.name}`);
+
+      // Start the description draft the instant the brand exists, so the operator never has to
+      // type one or press Draft with Claude. The session runs in DescribeProvider above every
+      // route, so it survives this redirect and lands on the brand's page for review. Skipped
+      // under mock and demo, where describe can only return a placeholder that must not be saved.
+      if (!geoMock && !client.demo_mode) {
+        void startDescribe(client.slug);
+      }
 
       // The org grouping is derived from the client list, so the new brand only has an org to
       // route to once the list has been re-read.
@@ -256,26 +285,15 @@ function NewClientForm() {
                 placeholder="What this brand is, what it sells, and who it sells to."
                 className="mt-1.5"
               />
-              {/* Draft with Claude reads the SAVED brand's domain, and POST describe answers
-                  404 for a slug that does not exist yet. So the draft runs on the brand's own
-                  page once this form has created it. A button here could only ever 404. */}
+              {/* Leave this blank: describe reads the SAVED brand's domain and 404s for a slug
+                  that does not exist yet, so the draft cannot run until the brand is created.
+                  Adding the brand starts it automatically, and the draft lands on the brand's
+                  page for review. Nothing a draft produces is saved without that review. */}
               <p className="mt-1 text-xs text-muted-foreground">
-                Add the brand, then use Draft with Claude on its page to draft this from the
-                live site. Nothing a draft produces is ever saved without your review.
+                Optional. Leave it blank and Claude drafts one from the live site the moment
+                you add the brand. The draft waits on the brand&apos;s page for your review, and
+                nothing is saved without it.
               </p>
-            </div>
-
-            <div>
-              <Label htmlFor="new-never-claim">Never claim</Label>
-              <p className="mt-1 text-xs text-muted-foreground">{NEVER_CLAIM_EXPLAINER}</p>
-              <Textarea
-                id="new-never-claim"
-                value={neverClaim}
-                onChange={(e) => setNeverClaim(e.target.value)}
-                rows={5}
-                placeholder={NEVER_CLAIM_PLACEHOLDER}
-                className="machine mt-1.5 text-xs"
-              />
             </div>
 
             {generalError ? <FieldError error={generalError} /> : null}
@@ -318,7 +336,7 @@ function OrgLocked({ orgName, known }: { orgName: string; known: boolean }) {
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
         {known
-          ? `This brand joins ${orgName}. It is a grouping only: brands never share canonical facts, a roadmap, or a never-claim list. `
+          ? `This brand joins ${orgName}. It is a grouping only: brands never share canonical facts or a roadmap. `
           : `No organisation named ${orgName} exists yet, so adding this brand creates it. `}
         <Link href="/new" className="underline underline-offset-4 hover:text-foreground">
           Add a client instead

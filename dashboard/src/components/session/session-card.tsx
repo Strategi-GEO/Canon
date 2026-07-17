@@ -8,7 +8,7 @@
  * vocabulary, and a stage name means the same thing on both.
  *
  * What this adds over that view is compression. The Overview is not a run page: it carries a
- * description, a roadmap, stats and a never-claim list, so a session cannot take the whole
+ * description, a roadmap and stats, so a session cannot take the whole
  * screen. Collapsed, the card answers "is my batch OK?" in one line, which is the only
  * question the Overview owes an answer to. Everything else is one click away.
  */
@@ -163,7 +163,7 @@ export function SessionCard({
           aria-expanded={expanded}
           aria-controls={panelId}
           onClick={() => setExpanded((open) => !open)}
-          className="-mx-2 flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg px-2 py-1.5 text-left hover:bg-muted/60"
+          className="-mx-2 flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-muted/60"
         >
           <span className="flex min-w-0 items-center gap-2">
             {ended ? null : (

@@ -10,6 +10,7 @@ import { useOrgs } from "@/lib/orgs-context";
 import { useRuns } from "@/lib/runs-context";
 import { useRoadmap } from "@/lib/use-roadmap";
 import { useRoadmapGen } from "@/lib/use-roadmap-gen";
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { cn } from "@/lib/utils";
 import { EngineDown } from "@/components/clients/engine-error";
 import { RoadmapUploader } from "@/components/create/roadmap-uploader";
@@ -173,14 +174,18 @@ export function RoadmapOverview({
             that the path is upload-then-argue rather than delete-then-upload. */}
         <div className="flex flex-wrap items-center gap-2">
           <RoadmapPreviewDialog brandSlug={brandSlug} brandName={brandName} />
-          <DeleteRoadmapDialog
-            brandSlug={brandSlug}
-            brandName={brandName}
-            rowCount={stats.topics}
-            generatedCount={withBlog}
-            locked={locked}
-            onDeleted={roadmap.clear}
-          />
+          {/* Deleting a roadmap is an engine write, so the hosted build reads and previews
+              the sheet and offers no way to destroy it. */}
+          {HOSTED_READONLY ? null : (
+            <DeleteRoadmapDialog
+              brandSlug={brandSlug}
+              brandName={brandName}
+              rowCount={stats.topics}
+              generatedCount={withBlog}
+              locked={locked}
+              onDeleted={roadmap.clear}
+            />
+          )}
         </div>
       </div>
 
@@ -430,7 +435,9 @@ function NoRoadmap({
   return (
     <Card className="mx-auto mt-4 max-w-xl">
       <CardContent className="py-14 text-center">
-        <FileSpreadsheet className="mx-auto size-5 text-muted-foreground" aria-hidden />
+        <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-muted">
+          <FileSpreadsheet className="size-5 text-muted-foreground" aria-hidden />
+        </div>
         <p className="mt-3 text-sm font-medium text-foreground">
           {brandName} has no content roadmap
         </p>
@@ -441,6 +448,15 @@ function NoRoadmap({
           Uploading only parses the sheet; nothing generates until you pick rows on Create Blogs.
         </p>
 
+        {/* Uploading and generating both write through the engine, so the hosted build
+            states the empty state plainly and offers neither. */}
+        {HOSTED_READONLY ? (
+          <p className="mx-auto mt-6 max-w-md text-xs leading-relaxed text-muted-foreground">
+            This dashboard is read only. Upload or generate the roadmap from the operator
+            dashboard that runs against the engine.
+          </p>
+        ) : (
+        <>
         <div className="mt-6 flex justify-center">
           <RoadmapUploader
             slug={brandSlug}
@@ -477,6 +493,8 @@ function NoRoadmap({
             </p>
           ) : null}
         </div>
+        </>
+        )}
       </CardContent>
     </Card>
   );
