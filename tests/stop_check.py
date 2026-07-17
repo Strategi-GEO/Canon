@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Cancellation checks for the stop-session feature. Spawns NOTHING and calls NO model.
 
-Every SDK seam is monkeypatched and every output root is a temp dir, so this never reads or
-writes a real brand. What it pins is the one thing the stop button promises and the one thing
+Every SDK seam (_sdk_session, _sdk_revise_session, the session entry points the engine
+actually runs) is monkeypatched and every output root is a temp dir, so this never reads or
+writes a real brand and never opens a session. What it pins is the one thing the stop button promises and the one thing
 it must never do:
 
   1. A topic that FINISHED keeps its verdict, its score and its ledger entry through a stop.
@@ -72,19 +73,39 @@ class _Roots:
     phase, so the topics are never dispatched and every batch assertion below silently tests the
     facts path instead of the one it names. The sweep answers there too, which is exactly what
     makes it silent. A stubbed fact base puts the run where these tests say it is.
+
+    canonical_facts_path is stubbed the same way and for the same reason one level down: the
+    engine has no mock path any more, so run_topic and revise_topic ALWAYS run their real-mode
+    preflight, and a fake brand with no clients/<slug>/canonical-facts.md would refuse before
+    the session seam these tests drive. The stub points preflight at a real reviewed file in
+    the sandbox, so the run reaches the seam the test names.
+
+    The session seams themselves, _sdk_session and _sdk_revise_session, are saved and restored
+    here because every test below monkeypatches one of them with its own fake: they are the
+    ONLY session entry points, and a fake left behind would leak into the next suite.
     """
 
     def __enter__(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.saved_root = runner.OUTPUTS_ROOT
         self.saved_facts = runner.has_canonical_facts
+        self.saved_facts_path = runner.canonical_facts_path
+        self.saved_sdk_session = runner._sdk_session
+        self.saved_sdk_revise = runner._sdk_revise_session
         runner.OUTPUTS_ROOT = Path(self.tmp.name)
         runner.has_canonical_facts = lambda slug, **k: True
+        facts = Path(self.tmp.name) / "canonical-facts.md"
+        facts.write_text("# canonical-facts.md for the test sandbox: reviewed, no placeholder\n",
+                         encoding="utf-8")
+        runner.canonical_facts_path = lambda slug, clients_root=None: facts
         return Path(self.tmp.name)
 
     def __exit__(self, *exc):
         runner.OUTPUTS_ROOT = self.saved_root
         runner.has_canonical_facts = self.saved_facts
+        runner.canonical_facts_path = self.saved_facts_path
+        runner._sdk_session = self.saved_sdk_session
+        runner._sdk_revise_session = self.saved_sdk_revise
         self.tmp.cleanup()
 
 
@@ -100,8 +121,8 @@ def test_stop_mid_topic_writes_one_stopped_line():
             async def hang(*a, **k):
                 await asyncio.sleep(10)
 
-            runner._mock_session = hang
-            task = asyncio.create_task(runner.run_topic("brand", _rows(1)[0], mock=True))
+            runner._sdk_session = hang
+            task = asyncio.create_task(runner.run_topic("brand", _rows(1)[0]))
             await asyncio.sleep(0.05)
             task.cancel()
             try:
@@ -131,8 +152,8 @@ def test_stop_keeps_a_blog_that_finished_microseconds_earlier():
                 _append(out_dir, topic_slug, status="done", score=96, note="shipped")
                 await asyncio.sleep(10)
 
-            runner._mock_session = ships_then_hangs
-            task = asyncio.create_task(runner.run_topic("brand", _rows(1)[0], mock=True))
+            runner._sdk_session = ships_then_hangs
+            task = asyncio.create_task(runner.run_topic("brand", _rows(1)[0]))
             # Cancel only once the done line is ON DISK. run_topic now runs a materialize hook
             # (a real round trip, skipped for this unknown brand but still a query) before the
             # session, so a fixed sleep races it and stops a session that has not shipped yet,
@@ -171,8 +192,8 @@ def test_a_resumed_topic_is_stoppable_again():
             async def hang(*a, **k):
                 await asyncio.sleep(10)
 
-            runner._mock_session = hang
-            task = asyncio.create_task(runner.run_topic("brand", _rows(1)[0], mock=True))
+            runner._sdk_session = hang
+            task = asyncio.create_task(runner.run_topic("brand", _rows(1)[0]))
             await asyncio.sleep(0.05)
             task.cancel()
             try:
@@ -200,8 +221,8 @@ def test_a_resumed_topic_retries_its_own_dead_session():
             async def dies_without_a_verdict(client_slug, row, topic_slug, out_dir):
                 attempts.append(1)
 
-            runner._mock_session = dies_without_a_verdict
-            result = await runner.run_topic("brand", _rows(1)[0], mock=True)
+            runner._sdk_session = dies_without_a_verdict
+            result = await runner.run_topic("brand", _rows(1)[0])
 
             check("a died session on a resumed topic still retries",
                   len(attempts) == 2, f"attempted {len(attempts)} times")
@@ -223,9 +244,9 @@ def test_topics_queued_behind_the_semaphore_are_stopped():
             async def hang(*a, **k):
                 await asyncio.sleep(10)
 
-            runner._mock_session = hang
+            runner._sdk_session = hang
             rows = _rows(8)
-            task = asyncio.create_task(runner.run_batch("brand", rows, mock=True))
+            task = asyncio.create_task(runner.run_batch("brand", rows))
             await asyncio.sleep(0.1)
             task.cancel()
             try:
@@ -252,7 +273,7 @@ def test_a_run_stopped_while_queued_on_the_client_lock_is_swept():
         with _Roots():
             rows = _rows(3)
             async with runner.CLIENT_LOCK:
-                task = asyncio.create_task(runner.run_batch("brand", rows, mock=True))
+                task = asyncio.create_task(runner.run_batch("brand", rows))
                 await asyncio.sleep(0.05)
                 task.cancel()
                 try:
@@ -278,8 +299,8 @@ def test_the_client_lock_is_released_on_the_cancel_path():
             async def hang(*a, **k):
                 await asyncio.sleep(10)
 
-            runner._mock_session = hang
-            task = asyncio.create_task(runner.run_batch("brand", _rows(2), mock=True))
+            runner._sdk_session = hang
+            task = asyncio.create_task(runner.run_batch("brand", _rows(2)))
             await asyncio.sleep(0.05)
             task.cancel()
             try:
@@ -307,9 +328,9 @@ def test_a_blog_that_shipped_still_reaches_the_ledger():
                 _append(out_dir, topic_slug, status="done", score=96, note="shipped")
                 await asyncio.sleep(10)
 
-            runner._mock_session = ships_then_hangs
+            runner._sdk_session = ships_then_hangs
             task = asyncio.create_task(
-                runner.run_batch("brand", _rows(1), mock=True, on_topic_done=on_topic_done))
+                runner.run_batch("brand", _rows(1), on_topic_done=on_topic_done))
             # Cancel only once the done line is ON DISK, for the reason
             # test_stop_keeps_a_blog_that_finished_microseconds_earlier states: the materialize
             # hooks in front of the session make a fixed sleep a race, and the window this test
@@ -345,9 +366,9 @@ def test_a_stopped_blog_never_reaches_the_ledger():
             async def hang(*a, **k):
                 await asyncio.sleep(10)
 
-            runner._mock_session = hang
+            runner._sdk_session = hang
             task = asyncio.create_task(
-                runner.run_batch("brand", _rows(1), mock=True, on_topic_done=on_topic_done))
+                runner.run_batch("brand", _rows(1), on_topic_done=on_topic_done))
             await asyncio.sleep(0.05)
             task.cancel()
             try:
@@ -405,8 +426,8 @@ def test_a_stopped_revise_does_not_unship_a_done_blog():
                                              encoding="utf-8")
                 await asyncio.sleep(10)
 
-            runner._mock_revise_session = hang
-            task = asyncio.create_task(runner.revise_topic("brand", "topic-0", mock=True))
+            runner._sdk_revise_session = hang
+            task = asyncio.create_task(runner.revise_topic("brand", "topic-0"))
             await asyncio.sleep(0.05)
             task.cancel()
             try:
@@ -444,9 +465,9 @@ def test_a_crashed_revise_does_not_fail_a_done_blog():
             async def boom(*a, **k):
                 raise RuntimeError("the revise session died")
 
-            runner._mock_revise_session = boom
+            runner._sdk_revise_session = boom
             try:
-                await runner.revise_topic("brand", "topic-0", mock=True)
+                await runner.revise_topic("brand", "topic-0")
             except RuntimeError:
                 pass
 
@@ -507,9 +528,9 @@ def test_a_crashed_revise_does_not_leave_a_spent_form_holding_the_blog():
             async def boom(*a, **k):
                 raise RuntimeError("the revise session died after the operator answered")
 
-            runner._mock_revise_session = boom
+            runner._sdk_revise_session = boom
             try:
-                await runner.revise_topic("brand", "topic-0", mock=True)
+                await runner.revise_topic("brand", "topic-0")
             except RuntimeError:
                 pass
 
@@ -535,8 +556,8 @@ def test_a_stopped_revise_on_an_unfinished_topic_is_stopped():
             async def hang(*a, **k):
                 await asyncio.sleep(10)
 
-            runner._mock_revise_session = hang
-            task = asyncio.create_task(runner.revise_topic("brand", "topic-0", mock=True))
+            runner._sdk_revise_session = hang
+            task = asyncio.create_task(runner.revise_topic("brand", "topic-0"))
             await asyncio.sleep(0.05)
             task.cancel()
             try:
@@ -567,7 +588,6 @@ def test_a_stopped_facts_build_leaves_no_hollow_fact_base():
             path.write_text("# Facts\n\n## 1. Entity\n\n## 5. URLs\n", encoding="utf-8")
 
             facts_gen.facts_path = lambda slug: path
-            runner.should_mock = lambda slug, **k: False
 
             async def hangs_holding_write(slug):
                 await asyncio.sleep(10)

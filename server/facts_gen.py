@@ -435,144 +435,21 @@ def _discard_unvouched(client_slug):
 
 
 # ---------------------------------------------------------------------------
-# Mock generation. Spends nothing: no Firecrawl, no DataForSEO, no model, no token.
-# ---------------------------------------------------------------------------
-
-def _mock_facts(client_slug, config):
-    """A deterministic fact base with real §6 and §9 sections, assembled locally.
-
-    It exists so the SHAPE is testable end to end: run_batch's hook, the validation above, and the
-    preflight behind it all run against a real file, on a path that can never spend an API call. It
-    is built from gates.json and a fixed template, never from a hash of anything random, so the
-    same client always produces the same file.
-
-    Every section says what it is. §1 and §2 record nothing, because a mock that invented a
-    plausible-looking fact would be the exact laundering this whole file exists to prevent: the
-    honest mock answer to "what do we know about this brand" is "nothing, we did not look".
-    """
-    name = config.get("name") or client_slug
-    domain = str(config.get("domain") or "").strip() or "(no domain recorded)"
-    industry = str(config.get("industry") or "").strip() or "(not recorded)"
-
-    return f"""# canonical-facts.md: {name} (BINDING)
-
-> {runner.DEMO_MARKER}
-> This file was assembled locally for the mock path: no Firecrawl call, no DataForSEO call, no
-> model call, no token spent. Nothing was fetched from {domain}, no resource file was opened, and
-> nothing below is a fact about a real brand. It exists to exercise the plumbing, and it must
-> never be published, handed to a client, or reviewed as though a session produced it.
->
-> This run was mock because GEO_MOCK=1 is set or because {client_slug} is a demo_mode client. A
-> demo client is always mock, in every environment, so it can never spend an API call.
-
-## §1 Verified brand and corporate facts
-
-| Fact | Value | Source |
-|---|---|---|
-| Brand name | {name} | clients/{client_slug}/gates.json, the operator's own onboarding form |
-| Industry | {industry} | clients/{client_slug}/gates.json, the operator's own onboarding form |
-
-Nothing else is recorded. A real session establishes the legal entity, the founding, the
-leadership, and the scale, each with the page it was fetched from. This one fetched nothing, so
-there is nothing to record and no source to cite.
-
-## §2 Verified product, project or service facts
-
-None. This is the section a real fact base fills with what the brand sells and its published
-specifications, every row carrying the page it came from. A mock that invented a product here
-would be indistinguishable from a researched one at a glance, which is the one thing a mock must
-never be.
-
-## §3 Verified URLs (link targets)
-
-None. A real fact base lists only URLs it fetched and that resolved, because this is where every
-blog links. The mock path fetched nothing, so it has no URL to offer and writers have none to use.
-
-### §3.1 Forbidden link targets (never cite, never link as evidence)
-
-Every page under {domain} is forbidden here, because none of them was fetched and this file cannot
-vouch for a single one. A brand's own blog and marketing pages are copy rather than evidence in a
-real fact base too.
-
-## §6 Do-not-claim list (BINDING)
-
-### §6.1 Absolutely prohibited (body, FAQ, tables, headings, alt text, anywhere)
-
-- Any statistic, price, date or specification about {name}. Nothing was verified in this run, so
-  every number is unsourced by construction.
-- Any URL for {name}. None was fetched, so every link would be a guess.
-- Unsubstantiated superlatives: best, first, only, number one, leading, largest, unmatched.
-- Any claim about a competitor that is not sourced to that competitor's own material.
-- Framing {name}'s own projections, targets or marketing claims as independent fact.
-- Publishing anything generated behind this file. It is mock content and it is not for publication.
-
-### §6.2 Verbatim-permitted claims (the complete safe list)
-
-Empty. A real fact base records the exact wording a writer may use for a sensitive claim the
-client does state. This run read nothing the client says, so it permits nothing.
-
-## §7 Known conflicts and their resolution
-
-None recorded. A real session reports every place two sources disagree. This one consulted one
-source, the operator's own onboarding form, so there was nothing to conflict with.
-
-## §8 Provenance
-
-Assembled locally by server/facts_gen.py on the mock path. Fetched: nothing. Resource files read:
-none. DataForSEO lookups: none. Tokens spent: none.
-
-The caveat, which is the honest part: this file was not reconstructed by a session and it is not a
-fact base. Every entry in it is worth a human's suspicion, because no entry in it came from
-research. Delete it and run a real generation before a single blog is published for {name}.
-
-## §9 UNVERIFIED: claims found but not confirmed (NOT citable)
-
-Everything about {name} is unverified, because nothing was checked. A real session lists here each
-claim it found but could not confirm, with where it found it and what would settle it. The mock
-path found no claims, so the honest entry is the whole brand: nothing below §1 was established,
-and §6.1 forbids asserting any of it.
-"""
-
-
-def _mock_report(client_slug, path):
-    """The honest non-answer. It leads with what it is, so an operator who skims cannot read this
-    as a researched fact base, and it names the mock switch so they know why they got it."""
-    return (
-        f"{runner.DEMO_MARKER}\n\n"
-        f"This is MOCK output and there is NO RESEARCH BEHIND IT. No Firecrawl call, no "
-        f"DataForSEO call, no model call, no session, and no token spent. No page was fetched, no "
-        f"uploaded resource was opened, and nothing in the file is a fact about a real brand.\n\n"
-        f"The file at {path} was assembled locally from clients/{client_slug}/gates.json and a "
-        f"fixed template, so the same client always produces the same file. It carries a real §6 "
-        f"do-not-claim section and a real §9 unverified section because the shape has to be "
-        f"testable, and §6.1 forbids asserting anything at all about this brand, which is the "
-        f"only honest rule a run that checked nothing can write.\n\n"
-        f"This run was mock because GEO_MOCK=1 is set or because {client_slug} is a demo_mode "
-        f"client. A demo client is always mock, in every environment, so it can never spend an "
-        f"API call. Delete this file and run a real generation with GEO_MOCK unset before any "
-        f"blog behind it is published."
-    )
-
-
-# ---------------------------------------------------------------------------
 # The session
 # ---------------------------------------------------------------------------
 
 async def generate_facts(client_slug):
-    """One session, or the local mock. Returns {"report": str, "mock": bool}.
+    """One real session, always. Returns {"report": str, "mock": bool}, mock always False.
 
     It does not decide whether the run succeeded: the caller re-reads the file on disk. What an
     agent says it wrote and what it wrote are two different claims, and only one of them is
     checkable.
     """
-    if runner.should_mock(client_slug):
-        # GEO_MOCK=1 or a demo_mode client. Both spend nothing, so no session opens here at all:
-        # the file and the report are assembled locally, in process.
-        path = facts_path(client_slug)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_mock_facts(client_slug, runner.load_client_config(client_slug)),
-                        encoding="utf-8")
-        return {"report": _mock_report(client_slug, path), "mock": True}
+    # A demo fixture never opens this session. run_batch already refuses the whole run for a
+    # demo client, and this raise is the belt under it for the direct caller: a fact base for
+    # a fake brand is real API spend buying nothing.
+    if runner.is_demo_client(client_slug):
+        raise FactsGenerationError(runner.demo_refusal_detail(client_slug))
 
     try:
         from claude_agent_sdk import ClaudeAgentOptions, query
@@ -681,7 +558,9 @@ async def ensure_facts(client_slug, run_id=None):
         "finished": None,
         "report": None,
         "error": None,
-        "mock": runner.should_mock(client_slug),
+        # Wire compatibility: readers of this job record still expect the key. The mock
+        # execution path is removed, so the honest value is the literal False, always.
+        "mock": False,
         # The blog run that triggered this, so the UI can tie the two together. A fact base is
         # never built on its own account: something was trying to write a blog.
         "run_id": run_id,

@@ -4,9 +4,10 @@
 Everything real mode depends on that can be checked without a live run is
 checked here: MCP transport resolution in all three states, the exact
 ClaudeAgentOptions the runner would pass, the SDK field names those options use,
-that .mcp.json carries no secret, and that the demo client resolves to mock.
-A live run is the wrong place to discover any of this, and for the demo client
-a live run is forbidden outright.
+that .mcp.json carries no secret, and that a demo client REFUSES to run. The
+mock execution path is removed from the engine, so a demo fixture no longer
+resolves to anything: it 409s at the API and raises PreflightError in the
+runner, before the facts phase can spend a single real API call on it.
 
   .venv/bin/python tests/config_check.py
 """
@@ -245,66 +246,104 @@ def test_mcp_json_file():
           f"{len(leaked)} secret(s) leaked")
 
 
-def test_demo_client():
-    print("\n[7] The demo client is always mock, in every environment")
-    with env(GEO_MOCK=None):
+def test_demo_refusal():
+    print("\n[7] A demo fixture refuses to run, everywhere, before any spend")
+    import asyncio
+    import tempfile
+
+    from fastapi import HTTPException
+
+    from server import app as app_mod
+    from server import facts_gen
+
+    try:
+        demo = runner.is_demo_client("demo")
+    except runner.RunnerConfigError as exc:
+        demo = False
+        check("clients/demo/gates.json is readable", False, str(exc))
+    check('is_demo_client("demo") is True', demo is True, repr(demo))
+    check("a real client is not a demo fixture",
+          runner.is_demo_client("vacation-village") is False)
+
+    detail = runner.demo_refusal_detail("demo")
+    check("the refusal detail states the reason: mock mode is removed",
+          "mock mode is removed" in detail, detail)
+    check("the refusal detail states the stake: no real API credits on a fixture",
+          "must never spend real API credits" in detail, detail)
+    check("the refusal detail names the alternative: real clients run the full pipeline",
+          "Real clients run the full pipeline" in detail, detail)
+
+    # run_batch raises BEFORE the facts phase. A demo client with no canonical-facts.md must
+    # never reach ensure_facts, which would open a real session to build a fact base for a
+    # fake brand, so the recorder below must stay empty.
+    reached = []
+
+    async def recording_ensure(slug, run_id=None):
+        reached.append(("ensure_facts", slug))
+
+    saved_ensure = facts_gen.ensure_facts
+    saved_materialize = runner._materialize_client_scratch
+    facts_gen.ensure_facts = recording_ensure
+    runner._materialize_client_scratch = lambda slug: reached.append(("materialize", slug))
+    try:
         try:
-            demo = runner.is_demo_client("demo")
-        except runner.RunnerConfigError as exc:
-            demo = False
-            check("clients/demo/gates.json is readable", False, str(exc))
-        check('is_demo_client("demo") is True', demo is True, repr(demo))
-        # The decision run_topic makes, inspected without running the topic.
-        check("run_topic would choose mock for demo with GEO_MOCK unset",
-              runner.should_mock("demo") is True, repr(runner.should_mock("demo")))
-        check("mock=False cannot force a demo client real",
-              runner.should_mock("demo", mock=False) is True)
-        check("a real client with GEO_MOCK unset stays real",
-              runner.should_mock("vacation-village") is False)
-    with env(GEO_MOCK="1"):
-        check("GEO_MOCK=1 still mocks a real client",
-              runner.should_mock("vacation-village") is True)
+            asyncio.run(runner.run_batch(
+                "demo", [{"topic": "Demo Topic", "topic_slug": "demo-topic", "index": 0}]))
+            check("run_batch refuses a demo client outright", False, "it ran the batch")
+        except runner.PreflightError as exc:
+            check("run_batch refuses a demo client outright", True)
+            check("run_batch's refusal carries the shared detail sentence",
+                  str(exc) == runner.demo_refusal_detail("demo"), str(exc))
+        check("the refusal fires before the facts phase: nothing materialized, nothing built",
+              not reached, str(reached))
+    finally:
+        facts_gen.ensure_facts = saved_ensure
+        runner._materialize_client_scratch = saved_materialize
 
+    # revise_topic carries the same belt, so nothing that bypasses the route can spend money
+    # on a fixture through the answer path either. A fake brand and a stubbed is_demo_client
+    # keep this inert: the record does not know the brand, so every sync hook skips.
+    saved_is_demo = runner.is_demo_client
+    saved_root = runner.OUTPUTS_ROOT
+    with tempfile.TemporaryDirectory() as tmp:
+        runner.is_demo_client = lambda slug, clients_root=None: True
+        runner.OUTPUTS_ROOT = Path(tmp)
+        try:
+            try:
+                asyncio.run(runner.revise_topic("fixture-brand", "some-topic"))
+                check("revise_topic refuses a demo client outright", False, "it ran the revise")
+            except runner.PreflightError as exc:
+                check("revise_topic refuses a demo client outright", True)
+                check("revise_topic's refusal carries the shared detail sentence",
+                      str(exc) == runner.demo_refusal_detail("fixture-brand"), str(exc))
+        finally:
+            runner.is_demo_client = saved_is_demo
+            runner.OUTPUTS_ROOT = saved_root
 
-def test_demo_blog_shape():
-    print("\n[8] The precoded demo blog: deterministic, templated, marked")
-    row = {"topic": "Anything an Operator Uploads",
-           "covers": "An arbitrary covers cell from an arbitrary CSV.",
-           "prompts": ["What is the thing?", "How do I pick one?"],
-           "topic_slug": "anything-an-operator-uploads"}
-    slug = row["topic_slug"]
-    first = runner._demo_blog("demo", row, slug, 1)
-    again = runner._demo_blog("demo", row, slug, 1)
-    check("deterministic from the topic slug", first == again)
-    check("the marker leads the file", first.startswith(runner.DEMO_MARKER), first[:80])
-    check("the marker names no research and no API calls",
-          "without research or API calls" in runner.DEMO_MARKER)
-    check("H1 is the uploaded topic", f"# {row['topic']}" in first)
-    check("carries a TL;DR", "**TL;DR:**" in first)
-    check("the covers text shapes the piece", row["covers"] in first)
-    heads = [line for line in first.splitlines() if line.startswith("## ")]
-    check("2 or 3 H2s plus FAQ and Sources", 4 <= len(heads) <= 5, str(heads))
-    check("every target prompt reaches an H2", all(f"## {p}" in first for p in row["prompts"]))
-    check("carries a markdown table", "| Criterion | What it decides |" in first)
-    check("carries an FAQ", "## FAQ" in first)
-    check("carries a Sources line", "## Sources and References" in first)
-    # Escaped, so this file obeys the same no-dash house rule it enforces.
-    check("no em or en dash in generated demo content",
-          "\u2014" not in first and "\u2013" not in first)
+    # The API boundary: both generate and answers 409 a demo client with the same sentence,
+    # called directly so no server boots and nothing is written.
+    try:
+        asyncio.run(app_mod.api_generate("demo", app_mod.GenerateRequest(rows=[0])))
+        check("POST /api/clients/demo/generate 409s", False, "it accepted the run")
+    except HTTPException as exc:
+        check("POST /api/clients/demo/generate 409s", exc.status_code == 409,
+              f"status {exc.status_code}")
+        check("the generate 409 detail is the refusal sentence",
+              exc.detail == runner.demo_refusal_detail("demo"), str(exc.detail))
 
-    # An arbitrary upload means a one-prompt row and an empty covers cell too.
-    thin = runner._demo_blog("demo", {"topic": "One Prompt Only", "prompts": ["What is it?"]},
-                             "one-prompt-only", 1)
-    thin_heads = [line for line in thin.splitlines() if line.startswith("## ")]
-    check("a one-prompt row still gets 2 H2s", 4 <= len(thin_heads) <= 5, str(thin_heads))
-    empty = runner._demo_blog("demo", {"topic": "", "prompts": []}, "bare-slug", 1)
-    check("a bare row still produces a marked blog", empty.startswith(runner.DEMO_MARKER))
-    other = runner._demo_blog("demo", row, "a-different-slug", 1)
-    check("a different slug produces different content", other != first)
+    try:
+        asyncio.run(app_mod.api_answers("demo", "any-topic",
+                                        app_mod.AnswersRequest(answers=[])))
+        check("POST /api/clients/demo/blogs/.../answers 409s", False, "it accepted the answers")
+    except HTTPException as exc:
+        check("POST /api/clients/demo/blogs/.../answers 409s", exc.status_code == 409,
+              f"status {exc.status_code}")
+        check("the answers 409 detail is the refusal sentence",
+              exc.detail == runner.demo_refusal_detail("demo"), str(exc.detail))
 
 
 def test_repo_has_no_secrets():
-    print("\n[9] No secret from ~/.claude.json anywhere under geo-factory")
+    print("\n[8] No secret from ~/.claude.json anywhere under geo-factory")
     secrets = _secret_values()
     if not secrets:
         check("secrets available to grep for", False, "none found in ~/.claude.json")
@@ -328,7 +367,7 @@ def main():
           "no blog generated.")
     for test in (test_transport_http, test_transport_stdio, test_transport_missing,
                  test_session_options, test_sdk_field_names, test_mcp_json_file,
-                 test_demo_client, test_demo_blog_shape, test_repo_has_no_secrets):
+                 test_demo_refusal, test_repo_has_no_secrets):
         test()
     print(f"\n{CHECKS[0] - len(FAILURES)}/{CHECKS[0]} checks passed")
     if FAILURES:

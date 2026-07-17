@@ -6,11 +6,10 @@ it manages only its own topic. Progress is read exclusively from
 clients/<client>/output/<topic_slug>/status.jsonl, never from agent output.
 
 CLI (debugging and the validation step):
-  .venv/bin/python -m server.runner --client demo --row 0 [--mock]
+  .venv/bin/python -m server.runner --client <slug> --row 0
 """
 import argparse
 import asyncio
-import hashlib
 import importlib.util
 import json
 import logging
@@ -107,12 +106,6 @@ class RunnerConfigError(Exception):
     """Missing runner configuration (MCP env vars): fail loudly at dispatch."""
 
 
-def geo_mock():
-    # Read at CALL time, not import time, so tests and the server can flip
-    # GEO_MOCK without re-importing the module.
-    return os.environ.get("GEO_MOCK") == "1"
-
-
 # ---------------------------------------------------------------------------
 # Client config
 # ---------------------------------------------------------------------------
@@ -165,20 +158,17 @@ def is_demo_client(client_slug, clients_root=None):
     return load_client_config(client_slug, clients_root).get("demo_mode") is True
 
 
-def should_mock(client_slug, mock=None, clients_root=None):
-    """Decide mock vs real for ONE topic, without running it.
+def demo_refusal_detail(client_slug):
+    """The one sentence every demo refusal carries, API 409s and engine PreflightErrors alike.
 
-    A demo client is ALWAYS mock, in every environment, including a production
-    deployment holding real credentials, so it can never spend an API call or a
-    token. That is the point of the demo org: an operator demoing it cannot
-    accidentally bill anyone or touch a live source.
+    One copy on purpose: the routes refuse at the boundary and run_batch and revise_topic
+    refuse again underneath them, and two wordings of the same refusal is how an operator
+    comes to believe two different rules exist.
     """
-    if mock:
-        return True
-    # Read GEO_MOCK at call time, not import time: the server flips it in-process.
-    if geo_mock():
-        return True
-    return is_demo_client(client_slug, clients_root)
+    return (
+        f"demo-fixture client {client_slug!r}: mock mode is removed, and a demo fixture "
+        f"must never spend real API credits. Real clients run the full pipeline."
+    )
 
 
 _STATUS_MODULE = None
@@ -1186,277 +1176,6 @@ async def _sdk_session(client_slug, row, topic_slug, out_dir):
 
 
 # ---------------------------------------------------------------------------
-# Mock session. FAKE THE AGENT, NEVER THE PLUMBING: a mock that mutates state
-# directly would leave status.py, the only thing carrying progress in
-# production, completely untested. So every status line below is appended by
-# running python3 .claude/status.py as a subprocess, exactly like real agents.
-# ---------------------------------------------------------------------------
-
-async def _emit(out_dir, topic_slug, stage, event, iteration, score=None, status="running", note=""):
-    cmd = [
-        sys.executable, str(REPO_ROOT / ".claude" / "status.py"),
-        "--out", str(out_dir), "--slug", topic_slug, "--stage", stage,
-        "--event", event, "--iter", str(iteration), "--status", status,
-    ]
-    if score is not None:
-        cmd += ["--score", str(score)]
-    if note:
-        cmd += ["--note", note]
-    proc = await asyncio.create_subprocess_exec(*cmd, env=db.agent_env())
-    code = await proc.wait()
-    if code != 0:
-        raise RuntimeError(f"status.py exited {code} for {topic_slug} {stage}/{event}")
-
-
-async def _ask(out_dir, topic_slug, iteration, score, ask, why, area):
-    """Write questions.json by running .claude/questions.py, exactly as a real evaluator does.
-
-    The same rule _emit follows: fake the agent, never the plumbing. A mock that wrote this file
-    itself would leave the validation in questions.py, the only thing standing between an
-    evaluator and a form the operator cannot answer, untested by every session we can afford.
-    """
-    cmd = [
-        sys.executable, str(REPO_ROOT / ".claude" / "questions.py"),
-        "--out", str(out_dir), "--slug", topic_slug, "--iter", str(iteration),
-        "--score", str(score), "--ask", ask, "--why", why, "--area", area,
-    ]
-    proc = await asyncio.create_subprocess_exec(*cmd, env=db.agent_env())
-    code = await proc.wait()
-    if code != 0:
-        raise RuntimeError(f"questions.py exited {code} for {topic_slug}")
-
-
-def _mock_plan(topic_slug):
-    """Deterministic per-slug plan from md5(topic_slug): no random module, so
-    the concurrency proof is reproducible run to run.
-
-    Distribution: roughly a third of slugs pass on iteration 1, most by 2-3,
-    and slugs whose hash lands in a narrow band hit the 4-iteration cap and
-    terminate needs_review, so the amber path is testable."""
-    digest = hashlib.md5(topic_slug.encode("utf-8")).hexdigest()
-    seed = int(digest[:8], 16) % 100
-    salt = bytes.fromhex(digest)
-
-    if seed < 33:
-        pass_iter = 1
-    elif seed < 61:
-        pass_iter = 2
-    elif seed < 85:
-        pass_iter = 3
-    elif seed < 93:
-        pass_iter = 4
-    else:
-        pass_iter = None  # cap hit: the needs_review path
-
-    if pass_iter is None:
-        scores = [85 + seed % 3, 89, 92, 92]  # rises then stalls below 95
-        total_iters = 4
-    else:
-        final = 95 + seed % 4
-        scores = [min(94, 83 + seed % 4 + i * 4) for i in range(pass_iter - 1)] + [final]
-        total_iters = pass_iter
-
-    def dur(index, low, span):
-        return low + (salt[index % 16] / 255.0) * span
-
-    return {
-        "scores": scores,
-        "total_iters": total_iters,
-        "passed": pass_iter is not None,
-        "research": dur(0, 0.7, 0.8),
-        "write": dur(1, 0.35, 0.45),
-        "gates": dur(2, 0.08, 0.12),
-        "links": dur(3, 0.12, 0.2),
-        "eval": dur(4, 0.25, 0.35),
-    }
-
-
-# The honesty marker. It leads every artifact the mock path writes, so a demo
-# blog can never be mistaken for a researched one by a reader, a reviewer, or a
-# tool that greps the file.
-DEMO_MARKER = "Demo content. Generated without research or API calls. Not for publication."
-
-_DEMO_ANGLES = (
-    "a practical starting point",
-    "a short orientation",
-    "a working baseline",
-    "a quick decision aid",
-)
-
-# What the demo evaluator names as the source it wants confirmed. It is the honest answer for a
-# path that fetched nothing, and it keeps a demo question unmistakable for a real one.
-_DEMO_QUESTION_SOURCE = "the demo dossier, which fetched nothing"
-
-_DEMO_CRITERIA = (
-    ("Fit", "How closely an option matches the need described above."),
-    ("Effort", "What a team spends getting from decision to first result."),
-    ("Cost", "The recurring commitment once the choice is live."),
-    ("Risk", "What it costs to reverse the choice later."),
-)
-
-
-def _demo_headings(topic, prompts):
-    """2 or 3 H2s, taken from the target prompts so an arbitrary uploaded row
-    shapes the piece. A row with one prompt gets a synthesized second H2, because
-    a one-H2 demo does not look like the real structure."""
-    heads = [p for p in prompts[:3] if p]
-    if not heads:
-        heads = [f"What is {topic}?"]
-    while len(heads) < 2:
-        heads.append(f"What should you check before acting on {topic}?")
-    return heads
-
-
-def _demo_blog(client_slug, row, topic_slug, iteration):
-    """The precoded short blog for the demo org.
-
-    Deterministic from md5(topic_slug) and templated from the topic, the covers
-    text, and the target prompts, so an operator can upload any CSV and demo it.
-    No research, no fetch, no model call: every word here is assembled locally.
-    """
-    topic = row.get("topic") or topic_slug
-    covers = row.get("covers") or f"An overview of {topic}."
-    prompts = [p for p in row.get("prompts", []) if p]
-    salt = bytes.fromhex(hashlib.md5(topic_slug.encode("utf-8")).hexdigest())
-
-    angle = _DEMO_ANGLES[salt[0] % len(_DEMO_ANGLES)]
-    heads = _demo_headings(topic, prompts)
-    criteria = [_DEMO_CRITERIA[(salt[1] + i) % len(_DEMO_CRITERIA)] for i in range(3)]
-    faq_source = prompts or [f"What is {topic}?"]
-    faqs = [faq_source[i % len(faq_source)] for i in range(3)]
-
-    parts = [
-        DEMO_MARKER,
-        "",
-        f"# {topic}",
-        "",
-        f"**TL;DR:** {topic} is covered here as {angle} for {client_slug}. "
-        f"The brief for this piece reads: {covers} "
-        f"A real run would answer each target prompt from a frozen, source vetted dossier. "
-        f"This demo shows the shape of that answer, not its evidence.",
-        "",
-    ]
-
-    for index, head in enumerate(heads):
-        parts += [
-            f"## {head}",
-            "",
-            f"This section is where the pipeline answers \"{head}\" in the first two sentences, "
-            f"then supports it. The real writer draws every figure from the dossier and links it "
-            f"to the source that carries it. In this demo there is no dossier, so there is no "
-            f"figure to quote.",
-            "",
-        ]
-        if index == 0:
-            parts += [
-                f"| Criterion | What it decides |",
-                f"|---|---|",
-            ] + [f"| {name} | {desc} |" for name, desc in criteria] + [""]
-
-    parts += ["## FAQ", ""]
-    for question in faqs:
-        parts += [
-            f"**{question}**",
-            "",
-            f"A real answer opens with one direct sentence, then 75 to 300 words of sourced "
-            f"context. This demo answer exists to show the FAQ shape for \"{topic}\". "
-            f"It carries no researched claim and cites nothing.",
-            "",
-        ]
-
-    parts += [
-        "## Sources and References",
-        "",
-        "None. This demo blog was generated without research or API calls, so it has no sources "
-        "to list. A real blog ends with every cited source and its full URL.",
-        "",
-    ]
-    return "\n".join(parts)
-
-
-async def _mock_session(client_slug, row, topic_slug, out_dir):
-    out = Path(out_dir)
-    plan = _mock_plan(topic_slug)
-    topic = row.get("topic", topic_slug)
-
-    await _emit(out, topic_slug, "research", "start", 1)
-    await asyncio.sleep(plan["research"])
-    (out / "dossier.md").write_text(
-        f"{DEMO_MARKER}\n\n# Dossier: {topic}\n\n"
-        f"Client: {client_slug}. A real run lists vetted sources here, each with its figure, "
-        f"originator, date, and caveats, all fetched in full. This demo fetched nothing.\n",
-        encoding="utf-8",
-    )
-    await _emit(out, topic_slug, "research", "end", 1, note="demo dossier written")
-
-    for iteration in range(1, plan["total_iters"] + 1):
-        write_stage = "write" if iteration == 1 else "revise"
-        score = plan["scores"][iteration - 1]
-
-        await _emit(out, topic_slug, write_stage, "start", iteration)
-        await asyncio.sleep(plan["write"])
-        (out / "blog.md").write_text(_demo_blog(client_slug, row, topic_slug, iteration),
-                                     encoding="utf-8")
-        await _emit(out, topic_slug, write_stage, "end", iteration)
-
-        await _emit(out, topic_slug, "gates", "start", iteration)
-        await asyncio.sleep(plan["gates"])
-        await _emit(out, topic_slug, "gates", "end", iteration, note="exit 0")
-
-        await _emit(out, topic_slug, "links", "start", iteration)
-        await asyncio.sleep(plan["links"])
-        await _emit(out, topic_slug, "links", "end", iteration, note="0 corrected")
-
-        await _emit(out, topic_slug, "eval", "start", iteration)
-        await asyncio.sleep(plan["eval"])
-        (out / "eval.md").write_text(
-            f"{DEMO_MARKER}\n\nSCORE: {score}\n\n"
-            f"Iteration {iteration} of the demo eval for {topic}. No rubric was applied and no "
-            f"draft was audited: this score comes from a hash of the topic slug.\n\n"
-            f"- Area: Draft. Demo fix item.\n- Area: Mechanics. Demo fix item.\n",
-            encoding="utf-8",
-        )
-        await _emit(out, topic_slug, "eval", "end", iteration, score=score,
-                    note="demo audit, no rubric applied")
-
-    final_iter = plan["total_iters"]
-    final_score = plan["scores"][-1]
-    if plan["passed"]:
-        await _emit(out, topic_slug, "eval", "end", final_iter, score=final_score,
-                    status="done", note=f"ships at {final_score}, first score >= 95 is final")
-    else:
-        # THE CAP HIT, THE ONE MOCK PATH THAT ENDS needs_review, AND IT ASKS A QUESTION.
-        #
-        # A cap hit is not needs_review by itself. needs_review means a human has something
-        # waiting, so the evaluator that wants one has to say what it wants, naming the source
-        # and the claim. Without the ask this line is a dead end and the engine corrects it to
-        # failed, which is the honest answer for a loop that cannot speak to its own stall.
-        # Asking here is also what keeps the earned path covered: the form, the operator's
-        # answer, and the surgical revise are only reachable in mock through this branch.
-        heads = _demo_headings(topic, [p for p in row.get("prompts", []) if p])
-        await _ask(
-            out, topic_slug, final_iter, final_score,
-            ask=(f"Demo question, asked without auditing a draft. Iteration {final_iter} of "
-                 f"{topic} cites {_DEMO_QUESTION_SOURCE} for its answer to \"{heads[0]}\". Does "
-                 f"that source support the claim as written?"),
-            why=(f"Demo. The draft stalled at {final_score}, below the {SHIP_SCORE} ship band, and "
-                 f"the answer decides what the revise fixes. The hold is blocking because the "
-                 f"question is current, which is what blocks at every score. A real "
-                 f"evaluator asks exactly this when a Sourcing top-up pulls a new source mid "
-                 f"loop, naming the source and the claim so the operator answers without opening "
-                 f"the draft."),
-            area="Sourcing",
-        )
-        (out / "NEEDS_REVIEW").write_text(
-            f"{DEMO_MARKER}\n\n4-iteration cap hit without reaching 95, and the evaluator asked "
-            f"the operator a question. See questions.json.\n", encoding="utf-8")
-        await _emit(out, topic_slug, "eval", "end", final_iter, score=final_score,
-                    status="needs_review",
-                    note="4-iteration cap hit without reaching 95, and the evaluator asked the "
-                         "operator 1 question")
-
-
-# ---------------------------------------------------------------------------
 # Supabase sync hooks: materialize scratch from the record before a session,
 # commit scratch to the record after the terminal line.
 #
@@ -1552,7 +1271,7 @@ def _schedule_commit(client_slug, topic_slug):
 # Per-topic and per-batch dispatch
 # ---------------------------------------------------------------------------
 
-async def run_topic(client_slug, row, *, mock=None, run_dir_root=None, precheck_error=None):
+async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None):
     """One blog, one SDK session, plus the died-session safety net.
 
     precheck_error carries a batch-level refusal (canonical-facts drafting failed) down to
@@ -1585,8 +1304,7 @@ async def run_topic(client_slug, row, *, mock=None, run_dir_root=None, precheck_
         # ordinals continue the record's, which means the file can grow here, and a baseline
         # taken earlier would count the record's history as this session's lines. A resumed
         # topic finds its frozen dossier, blog.md and links-verified.txt exactly as the record
-        # holds them; existing scratch is left alone. Mock and demo topics come through here
-        # too: they are the affordable proof of exactly this plumbing. Skipped when the record
+        # holds them; existing scratch is left alone. Skipped when the record
         # does not know the client (see _materialize_topic_scratch). A failure for a known
         # client falls to the generic handler below and writes the terminal failed line: a
         # session spawned over scratch the record could not lay down reads the wrong facts.
@@ -1596,39 +1314,29 @@ async def run_topic(client_slug, row, *, mock=None, run_dir_root=None, precheck_
         # question below is about THIS session rather than about the file.
         baseline = _status_baseline(out_dir)
 
-        # GEO_MOCK, an explicit mock=True, or a demo_mode client. A demo client
-        # resolves to mock even here in a production process holding real
-        # credentials, so demoing can never spend an API call or a token.
-        mock = should_mock(client_slug, mock=mock, clients_root=clients_root)
-
-        # A batch-level refusal kills this topic whether or not it is mock, and it is checked
-        # BEFORE the mock branch on purpose. precheck_error is not preflight. Preflight asks
-        # whether THIS client's file is fit to write against, which a mock topic never reads and
-        # can honestly skip. precheck_error reports that the barrier ahead of this topic already
-        # failed, and a run whose fact base could not be built is dead for every topic in it. A
-        # mock topic that wrote a blog past that barrier would also make the failure path the one
-        # part of this feature no affordable test ever exercises, which is the same reason the
-        # fact-base hook itself runs under mock.
+        # A batch-level refusal is checked BEFORE preflight on purpose. precheck_error is not
+        # preflight. Preflight asks whether THIS client's file is fit to write against.
+        # precheck_error reports that the barrier ahead of this topic already failed, and a
+        # run whose fact base could not be built is dead for every topic in it.
         if precheck_error is not None:
             raise PreflightError(str(precheck_error))
 
-        if not mock:
-            # Preflight BEFORE any SDK spawn: every blog for the client inherits
-            # canonical-facts.md, so an unreviewed one poisons the whole queue
-            # silently. Refusing here costs nothing; refusing mid-run costs a blog.
-            #
-            # The missing branch is now a backstop rather than the usual answer: run_batch builds a
-            # missing fact base and waits, and refuses the whole run when it cannot. It stays
-            # because run_topic is callable on its own, and because a file that vanished between
-            # the hook and this line is a reason to stop, not to guess.
-            facts = canonical_facts_path(client_slug, clients_root)
-            if not facts.is_file():
-                raise PreflightError(f"preflight failed for {client_slug}: {facts} is missing")
-            if "PLACEHOLDER" in facts.read_text(encoding="utf-8"):
-                raise PreflightError(
-                    f"preflight failed for {client_slug}: canonical-facts.md still contains "
-                    f"the token PLACEHOLDER and has not been reviewed"
-                )
+        # Preflight BEFORE any SDK spawn: every blog for the client inherits
+        # canonical-facts.md, so an unreviewed one poisons the whole queue
+        # silently. Refusing here costs nothing; refusing mid-run costs a blog.
+        #
+        # The missing branch is a backstop rather than the usual answer: run_batch builds a
+        # missing fact base and waits, and refuses the whole run when it cannot. It stays
+        # because run_topic is callable on its own, and because a file that vanished between
+        # the hook and this line is a reason to stop, not to guess.
+        facts = canonical_facts_path(client_slug, clients_root)
+        if not facts.is_file():
+            raise PreflightError(f"preflight failed for {client_slug}: {facts} is missing")
+        if "PLACEHOLDER" in facts.read_text(encoding="utf-8"):
+            raise PreflightError(
+                f"preflight failed for {client_slug}: canonical-facts.md still contains "
+                f"the token PLACEHOLDER and has not been reviewed"
+            )
 
         retries = int(os.environ.get("GEO_RETRIES", "1"))
         attempt = 0
@@ -1644,10 +1352,7 @@ async def run_topic(client_slug, row, *, mock=None, run_dir_root=None, precheck_
                     note=f"session died without a terminal status; retry {attempt - 1} of "
                          f"{retries} with a fresh SDK session",
                 )
-            if mock:
-                await _mock_session(client_slug, row, topic_slug, out_dir)
-            else:
-                await _sdk_session(client_slug, row, topic_slug, out_dir)
+            await _sdk_session(client_slug, row, topic_slug, out_dir)
 
             lines = _read_status(out_dir)
             # Only lines THIS session appended. Over the whole file, a resumed topic finds the
@@ -1917,54 +1622,6 @@ Absolute rules:
 """
 
 
-async def _mock_revise_session(client_slug, row, topic_slug, out_dir, iteration, prev_score):
-    """The mock revise. Fakes the AGENT, never the plumbing: every status line here goes through
-    .claude/status.py as a subprocess, exactly as the real agents do, and blog.md is really
-    rewritten so the restore path has something real to undo.
-
-    The score moves by a deterministic delta from md5(topic_slug), so a given slug always revises
-    the same direction and both branches of the keep-the-best rule are reachable without a test
-    hook in production code. It leans on prev_score only to land in a believable band; a real
-    evaluator scores the draft blind and has no idea what it scored last time.
-    """
-    out = Path(out_dir)
-    salt = bytes.fromhex(hashlib.md5(topic_slug.encode("utf-8")).hexdigest())
-    base = 90 if prev_score is None else prev_score
-    new_score = max(0, min(100, base + (salt[5] % 9) - 4))
-
-    await _emit(out, topic_slug, "revise", "start", iteration,
-                note="demo surgical revise, operator answers applied")
-    await asyncio.sleep(0.05)
-    existing = (out / "blog.md").read_text(encoding="utf-8") if (out / "blog.md").is_file() else ""
-    (out / "blog.md").write_text(
-        existing + f"\n\n<!-- {DEMO_MARKER} Surgical revise at iteration {iteration}. No answer "
-                   f"was read and no draft was edited: this line exists so the restore path has "
-                   f"a real change to undo. -->\n",
-        encoding="utf-8",
-    )
-    await _emit(out, topic_slug, "revise", "end", iteration, note="demo revise applied")
-
-    await _emit(out, topic_slug, "gates", "start", iteration)
-    await asyncio.sleep(0.02)
-    await _emit(out, topic_slug, "gates", "end", iteration, note="exit 0")
-
-    await _emit(out, topic_slug, "links", "start", iteration)
-    await asyncio.sleep(0.02)
-    await _emit(out, topic_slug, "links", "end", iteration, note="0 changed links to verify")
-
-    await _emit(out, topic_slug, "eval", "start", iteration)
-    await asyncio.sleep(0.05)
-    (out / "eval.md").write_text(
-        f"{DEMO_MARKER}\n\nSCORE: {new_score}\n\n"
-        f"Iteration {iteration} of the demo eval for {topic_slug}, after a surgical revise. No "
-        f"rubric was applied and no draft was audited: this score comes from a hash of the topic "
-        f"slug.\n\n- Area: Draft. Demo fix item.\n",
-        encoding="utf-8",
-    )
-    await _emit(out, topic_slug, "eval", "end", iteration, score=new_score,
-                note="demo audit of the clarified draft, no rubric applied")
-
-
 async def _sdk_revise_session(client_slug, row, topic_slug, out_dir, iteration):
     """One revise, one real SDK session, built exactly like _sdk_session: same options, same
     agents, a different lead prompt. The revise is a different JOB, not a different engine."""
@@ -2025,7 +1682,7 @@ def register_revise_run(run_id, client_slug, topic_slug, root=None):
     return register_run(run_id, client_slug, topics)
 
 
-async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_dir_root=None):
+async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=None):
     """Re-open ONE finished topic with the operator's answers. THE CLARIFIED DRAFT SHIPS.
 
     Ships the clarified draft at whatever it scores, higher or lower, because the operator's
@@ -2081,24 +1738,28 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
             mark_running(run_id)
             mark_phase(run_id, "topics")
 
-            mock = should_mock(client_slug, mock=mock, clients_root=clients_root)
+            # THE DEMO REFUSAL, belt and braces under the API's own 409. A demo fixture never
+            # runs a session: the route already refuses it, and this line is what holds when
+            # something bypasses the route, because a revise is a real SDK session and a demo
+            # fixture must never spend real API credits.
+            if is_demo_client(client_slug, clients_root):
+                raise PreflightError(demo_refusal_detail(client_slug))
             if not blog.is_file():
                 raise PreflightError(
                     f"cannot revise {client_slug}/{topic_slug}: {blog} does not exist, and a "
                     f"surgical revise edits a draft rather than writing one"
                 )
-            if not mock:
-                # The same refusal run_topic makes, for the same reason: the writer in this
-                # session reads canonical-facts.md and every claim it touches inherits that file.
-                # A revise is no less bound by it than a first draft.
-                facts = canonical_facts_path(client_slug, clients_root)
-                if not facts.is_file():
-                    raise PreflightError(f"preflight failed for {client_slug}: {facts} is missing")
-                if "PLACEHOLDER" in facts.read_text(encoding="utf-8"):
-                    raise PreflightError(
-                        f"preflight failed for {client_slug}: canonical-facts.md still contains "
-                        f"the token PLACEHOLDER and has not been reviewed"
-                    )
+            # The same refusal run_topic makes, for the same reason: the writer in this
+            # session reads canonical-facts.md and every claim it touches inherits that file.
+            # A revise is no less bound by it than a first draft.
+            facts = canonical_facts_path(client_slug, clients_root)
+            if not facts.is_file():
+                raise PreflightError(f"preflight failed for {client_slug}: {facts} is missing")
+            if "PLACEHOLDER" in facts.read_text(encoding="utf-8"):
+                raise PreflightError(
+                    f"preflight failed for {client_slug}: canonical-facts.md still contains "
+                    f"the token PLACEHOLDER and has not been reviewed"
+                )
 
             # THE VERDICT SNAPSHOT, BEFORE THE MATERIALIZE ROUND TRIP BELOW. materialize_topic
             # and materialize_answers never touch status.jsonl, so these reads are identical on
@@ -2153,11 +1814,7 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
 
             row = _row_for_topic(client_slug, topic_slug)
 
-            if mock:
-                await _mock_revise_session(client_slug, row, topic_slug, out_dir, iteration,
-                                           prev_score)
-            else:
-                await _sdk_revise_session(client_slug, row, topic_slug, out_dir, iteration)
+            await _sdk_revise_session(client_slug, row, topic_slug, out_dir, iteration)
 
             # Only lines this session appended. Re-reading the whole file would find the PREVIOUS
             # eval's score sitting there and read it as this revise's result, which for a session
@@ -2534,7 +2191,7 @@ async def _notify(callback, payload):
     await asyncio.shield(delivery)
 
 
-async def run_batch(client_slug, rows, *, mock=None, on_topic_done=None, run_id=None):
+async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
     """Run every selected row for one client. return_exceptions=True because
     one failed topic must never cancel the other four in flight.
 
@@ -2544,6 +2201,14 @@ async def run_batch(client_slug, rows, *, mock=None, on_topic_done=None, run_id=
     the final gather barrier would report every topic only after the slowest one
     landed, which is exactly the batch behavior this runner does not have.
     """
+    # THE DEMO REFUSAL, FIRST, before the baselines, the lock, the materialize and above all
+    # the facts phase. A demo fixture must never spend real API credits, and a demo client
+    # with no canonical-facts.md must never reach ensure_facts, which would open a real
+    # session to build a fact base for a fake brand. The API route already 409s this; the
+    # raise here is what holds when something bypasses the route.
+    if is_demo_client(client_slug):
+        raise PreflightError(demo_refusal_detail(client_slug))
+
     async def guarded(position, row):
         topic_slug = row.get("topic_slug") or slugify(row.get("topic", ""))
         # The roadmap row index when the row carries one, so a ledger records
@@ -2551,7 +2216,7 @@ async def run_batch(client_slug, rows, *, mock=None, on_topic_done=None, run_id=
         index = row.get("index", position)
         try:
             async with TOPIC_SEMAPHORE:
-                result = await run_topic(client_slug, row, mock=mock,
+                result = await run_topic(client_slug, row,
                                          precheck_error=facts_error)
         except asyncio.CancelledError:
             # THE LEDGER ENTRY FOR A BLOG THAT SHIPPED ANYWAY. _notify's shield covers the window
@@ -2644,10 +2309,6 @@ async def run_batch(client_slug, rows, *, mock=None, on_topic_done=None, run_id=
             # already refuses. Both wrong answers are avoided by not touching it, and run_topic's
             # preflight then refuses the run exactly as it does today.
             #
-            # Mock runs come through here too, and spend nothing doing it: facts_gen writes a local
-            # file with no session, no fetch and no token, exactly as the mock blog path writes a local
-            # blog. Skipping the hook entirely under mock would leave the one step that gates every
-            # real run untested by every test we can afford to run.
             # Imported here, not at module scope: facts_gen imports this module, so a top-level import
             # would close the cycle at startup. The old canonical-facts hook dodged it the same way.
             from . import facts_gen
@@ -2755,14 +2416,8 @@ def _cli(argv=None):
     parser.add_argument("--client", required=True, help="client slug under clients/")
     parser.add_argument("--row", required=True, type=int, action="append",
                         help="0-based roadmap row index; repeatable")
-    parser.add_argument("--mock", action="store_true",
-                        help="GEO_MOCK path: no API key, no MCP servers, plumbing fully exercised. "
-                             "A demo_mode client takes this path with or without the flag.")
     args = parser.parse_args(argv)
 
-    # Pass the flag through rather than resolving here: run_topic owns the
-    # decision, so a demo client is mock even without --mock.
-    mock = args.mock or None
     try:
         payload = roadmap.load_roadmap(args.client)
     except roadmap.RoadmapNotFound as exc:
@@ -2776,7 +2431,7 @@ def _cli(argv=None):
               file=sys.stderr)
         return 1
 
-    results = asyncio.run(run_batch(args.client, rows, mock=mock))
+    results = asyncio.run(run_batch(args.client, rows))
     print(json.dumps(results, indent=2))
 
     exit_code = 0

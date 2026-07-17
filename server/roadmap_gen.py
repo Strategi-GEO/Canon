@@ -10,9 +10,9 @@ beside it) on local disk, exactly as before. The RECORD is roadmap_sheets: after
 is validated, _push_sheet lands the sheet, its parsed rows and the report in the database in
 one transaction, and the disk copies stay behind as scratch.
 
-It reuses runner._resolve_mcp_servers, runner.should_mock and roadmap.parse_csv rather than
-duplicating any of them, so there is exactly one definition of "MCP is configured", one
-definition of "this run is mock", and one definition of "this CSV parses" in the codebase.
+It reuses runner._resolve_mcp_servers and roadmap.parse_csv rather than duplicating either,
+so there is exactly one definition of "MCP is configured" and one definition of "this CSV
+parses" in the codebase.
 
 The failure rule that shapes this module: a roadmap_sheets row makes roadmap.has_roadmap
 true, which blocks both an upload and a retry of generation. So a sheet the engine cannot
@@ -21,9 +21,6 @@ replace and no parser will read. Validation below runs BEFORE the push, and it d
 unparseable scratch file too, so a later session cannot pick it up as its own output.
 """
 import asyncio
-import csv
-import hashlib
-import io
 import os
 import re
 from datetime import datetime, timezone
@@ -42,12 +39,6 @@ PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "roadmap-generation.
 # the session with the roadmap half decided and no CSV written, and the operator would pay for
 # the whole session to be told nothing was produced.
 MAX_TURNS = 200
-
-# The five-column contract from the prompt's OUTPUT CONTRACT section. Written here only by the
-# mock path; a real session writes its own header. Columns 3 and 4 are read by a human and
-# ignored by the engine, which reads 1, 2 and 5 by position (see roadmap.py).
-CSV_COLUMNS = ("Content Topic", "What the Piece Covers", "Format", "Search Intent",
-               "Target Prompts")
 
 _PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
 
@@ -113,7 +104,9 @@ def start_job(client_slug, brand_url, piece_count, notes):
         "report": None,
         "rows": None,
         "error": None,
-        "mock": runner.should_mock(client_slug),
+        # Wire compatibility: readers of this job record still expect the key. The mock
+        # execution path is removed, so the honest value is the literal False, always.
+        "mock": False,
     }
     GEN_JOBS[client_slug] = job
 
@@ -396,109 +389,11 @@ def _push_sheet(client_slug):
 
 
 # ---------------------------------------------------------------------------
-# Mock generation. Spends nothing: no Firecrawl, no DataForSEO, no model, no token.
-# ---------------------------------------------------------------------------
-
-_MOCK_THEMES = (
-    "supplier selection",
-    "pricing and budgets",
-    "buyer shortlists",
-    "category comparison",
-    "a first purchase checklist",
-    "vendor credibility",
-    "use case fit",
-    "switching costs",
-)
-
-_MOCK_FILLER_FORMATS = ("Buyer's guide", "Explainer", "Cost breakdown", "Comparison",
-                        "How-to", "Listicle")
-
-
-def _mock_rows(client_slug, brand_url, piece_count, notes):
-    """piece_count rows, derived from a hash of the inputs so the same inputs give the same
-    sheet. No random module anywhere: a mock whose output moved between runs would make every
-    test of this path a coin flip.
-
-    The structure mirrors the prompt's Stage 5 (one hub listicle, one comparison anchor, one
-    FAQ entity, the rest commercial or informational) so the sheet exercises the same shapes a
-    real one does. None of it is research, and every row says so in its own scope cell.
-    """
-    salt = bytes.fromhex(hashlib.md5(
-        f"{client_slug}|{brand_url}|{piece_count}|{notes}".encode("utf-8")
-    ).hexdigest())
-
-    rows = []
-    for position in range(piece_count):
-        number = position + 1
-        theme = _MOCK_THEMES[(salt[position % 16] + position) % len(_MOCK_THEMES)]
-
-        if position == 0:
-            fmt, intent = "Hub listicle", "Commercial"
-        elif position == 1:
-            fmt, intent = "Comparison anchor", "Commercial"
-        elif number == piece_count and piece_count >= 3:
-            fmt, intent = "FAQ (entity)", "Navigational"
-        else:
-            fmt = _MOCK_FILLER_FORMATS[(salt[(position + 5) % 16]) % len(_MOCK_FILLER_FORMATS)]
-            intent = "Commercial" if salt[(position + 9) % 16] % 3 else "Informational"
-
-        prompts = " | ".join((
-            f"which companies should I shortlist for {theme}",
-            f"how do the main options for {theme} compare",
-            f"what should I check before committing to {theme}",
-        ))
-        rows.append([
-            f"Mock row {number}: {theme} for {client_slug}",
-            f"{runner.DEMO_MARKER} This cell is shaped like a real scope cell and carries no "
-            f"research. A real row names what is in the piece, its angle, the proof it "
-            f"carries, and the commercial through line to what {brand_url} sells.",
-            fmt,
-            intent,
-            prompts,
-        ])
-    return rows
-
-
-def _write_mock_csv(client_slug, rows):
-    """Quote every field, exactly as the prompt's mechanics require, so the mock file and a
-    real one round trip through the same parser identically."""
-    buffer = io.StringIO()
-    writer = csv.writer(buffer, quoting=csv.QUOTE_ALL, lineterminator="\n")
-    writer.writerow(CSV_COLUMNS)
-    writer.writerows(rows)
-
-    path = roadmap.roadmap_path(client_slug)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(buffer.getvalue(), encoding="utf-8")
-    return path
-
-
-def _mock_report(client_slug, brand_url, piece_count, notes, path):
-    """The honest non-answer. It leads with what it is, so an operator who skims cannot read
-    this as a researched roadmap, and it names the mock switch so they know why they got it."""
-    return (
-        f"{runner.DEMO_MARKER}\n\n"
-        f"This is MOCK output. No research ran behind it: no Firecrawl call, no DataForSEO "
-        f"call, no model call, and no token spent. Nothing was read from {brand_url}, and "
-        f"nothing here is a fact about a real brand.\n\n"
-        f"The {piece_count} row(s) at {path} were assembled locally from a hash of the client "
-        f"slug, the brand URL, the piece count, and the notes, so the same inputs always give "
-        f"the same sheet. Their topics, formats, intents, and target prompts are filler in the "
-        f"shape of the real five-column contract. They exist to exercise the plumbing, and "
-        f"they must never be published or handed to a client.\n\n"
-        f"Notes carried into this run: {notes.strip() or '(none given)'}\n\n"
-        f"This run was mock because GEO_MOCK=1 is set or because {client_slug} is a demo_mode "
-        f"client. A demo client is always mock, in every environment, so it can never spend an "
-        f"API call. Run a real generation against a non-demo client with GEO_MOCK unset."
-    )
-
-
-# ---------------------------------------------------------------------------
 # The session
 # ---------------------------------------------------------------------------
 
 async def generate_roadmap(client_slug, brand_url, piece_count, notes):
-    """One session, or the local mock. Returns {"report": str, "mock": bool}.
+    """One real session, always. Returns {"report": str, "mock": bool}, mock always False.
 
     It does not decide whether the run succeeded: the caller re-parses the file on disk. What
     an agent says it wrote and what it wrote are two different claims, and only one of them is
@@ -506,14 +401,10 @@ async def generate_roadmap(client_slug, brand_url, piece_count, notes):
     """
     notes = str(notes or "")
 
-    if runner.should_mock(client_slug):
-        # GEO_MOCK=1 or a demo_mode client. Both spend nothing, so no session opens here at
-        # all: the CSV and the report are assembled locally, in process.
-        path = _write_mock_csv(client_slug, _mock_rows(client_slug, brand_url, piece_count, notes))
-        return {
-            "report": _mock_report(client_slug, brand_url, piece_count, notes, path),
-            "mock": True,
-        }
+    # A demo fixture never opens this session: a roadmap for a fake brand is real API spend
+    # buying nothing, and the mock path that used to make it free is removed.
+    if runner.is_demo_client(client_slug):
+        raise GenerationError(runner.demo_refusal_detail(client_slug))
 
     try:
         from claude_agent_sdk import ClaudeAgentOptions, query

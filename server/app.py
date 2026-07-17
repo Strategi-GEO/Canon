@@ -199,12 +199,10 @@ async def api_clients():
         ok, reason = _preflight(entry["slug"])
         entry["preflight"] = {"ok": ok, "reason": reason}
         client_list.append(entry)
-    # geo_mock is reported so the UI can shout about it. Only the demo org is
-    # meant to produce fake output; GEO_MOCK=1 fakes EVERY client while still
-    # saving the result into that client's real output folder and ledger, so a
-    # forgotten switch would quietly fill a live brand with unresearched drafts.
-    # Anything this dangerous has to be visible, not just documented.
-    return {"geo_mock": runner.geo_mock(), "clients": client_list}
+    # geo_mock is a wire-compat field the dashboard still reads, and it is now the literal
+    # False: the mock execution path is removed from the engine, so no client can ever
+    # produce fake output. The key stays so no reader's shape breaks; the value is the truth.
+    return {"geo_mock": False, "clients": client_list}
 
 
 # ---------------------------------------------------------------------------
@@ -217,11 +215,10 @@ async def api_clients():
 
 @app.get("/api/orgs")
 async def api_orgs():
-    # geo_mock rides at the top level for the same reason /api/clients reports it: only demo
-    # brands are meant to produce fake output, and a forgotten GEO_MOCK=1 fakes EVERY brand
-    # while still saving into that brand's real folder and ledger. The UI has to be able to
-    # shout about it, so it cannot be left implicit here either.
-    return {"geo_mock": runner.geo_mock(), "orgs": clients_mod.list_orgs()}
+    # geo_mock rides at the top level for the same reason /api/clients carries it: the
+    # dashboard reads the key. It is the literal False now that the mock execution path is
+    # removed; the field stays so no reader's shape breaks.
+    return {"geo_mock": False, "orgs": clients_mod.list_orgs()}
 
 
 @app.get("/api/orgs/{org_slug}")
@@ -976,6 +973,14 @@ async def api_answers(slug: str, topic: str, body: AnswersRequest):
     by typing.
     """
     _client_or_404(slug)
+
+    # THE DEMO REFUSAL, before the topic is even resolved. An answer dispatches a surgical
+    # revise, which is a real SDK session, and a demo fixture must never spend real API
+    # credits: the mock path that used to make this free is removed. runner.revise_topic
+    # refuses this too, so nothing bypassing the route can spend money on a fixture.
+    if runner.is_demo_client(slug):
+        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
+
     _topic_or_404(slug, topic)
 
     try:
@@ -1088,13 +1093,13 @@ async def _on_topic_done(slug, run_id, result):
         log.exception("ledger append failed for run %s client %s", run_id, slug)
 
 
-async def _batch_task(run_id, slug, rows, mock):
+async def _batch_task(run_id, slug, rows):
     try:
         callback = lambda result: _on_topic_done(slug, run_id, result)
         # run_id is passed so run_batch can flip this run from queued to running at the
         # instant it takes CLIENT_LOCK. Only the runner knows that moment: the lock is
         # repo-wide and a session can wait behind another for minutes.
-        await runner.run_batch(slug, rows, mock=mock, on_topic_done=callback,
+        await runner.run_batch(slug, rows, on_topic_done=callback,
                                run_id=run_id)
     except Exception:
         # The run must still flip to not-live for /api/runs and the SSE
@@ -1144,6 +1149,14 @@ async def api_stop_client_runs(slug: str):
 @app.post("/api/clients/{slug}/generate", status_code=202)
 async def api_generate(slug: str, body: GenerateRequest):
     _client_or_404(slug)
+
+    # THE DEMO REFUSAL, before anything else is even validated. A demo fixture can no longer
+    # generate anything: the mock path that used to make it free is removed, so the only thing
+    # a generate could do here is open real SDK sessions, and for a demo client with no
+    # canonical-facts.md the very first spend would be ensure_facts building a fact base for a
+    # fake brand. runner.run_batch refuses this too, so nothing bypassing the route can spend.
+    if runner.is_demo_client(slug):
+        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
 
     # When an upload_id is present, re-read and re-parse THAT archived file
     # server-side. The browser sends row indices only: it never gets to tell the
@@ -1217,13 +1230,9 @@ async def api_generate(slug: str, body: GenerateRequest):
             "duplicates": duplicates,
         })
 
-    # Mock mode comes from the GEO_MOCK env only; a request can never choose
-    # it, so a production deployment cannot be tricked into fake output.
-    mock = runner.geo_mock()
-    if not mock:
-        ok, reason = _preflight(slug)
-        if not ok:
-            raise HTTPException(status_code=409, detail=f"preflight failed for {slug}: {reason}")
+    ok, reason = _preflight(slug)
+    if not ok:
+        raise HTTPException(status_code=409, detail=f"preflight failed for {slug}: {reason}")
 
     run_id = uuid.uuid4().hex
     topics = []
@@ -1267,7 +1276,7 @@ async def api_generate(slug: str, body: GenerateRequest):
     # in that window, for the life of the process. A done-callback fires on every path there is,
     # including the never-started one, which is why the two jobs that already keep handles settled
     # on it rather than on a finally.
-    task = asyncio.create_task(_batch_task(run_id, slug, selected, mock))
+    task = asyncio.create_task(_batch_task(run_id, slug, selected))
     runner.register_run_task(run_id, task)
     task.add_done_callback(lambda _task: runner._discard_run_task(run_id))
     return {"run_id": run_id, "topics": topics}
@@ -1281,8 +1290,8 @@ async def api_generate(slug: str, body: GenerateRequest):
 
 class _TopicTail:
     """Byte-offset tail over one topic's status.jsonl. File-based on purpose:
-    mock mode must exercise the exact plumbing production uses, so progress is
-    never read from in-memory state."""
+    the agents append to that file and nothing else, so progress is never read
+    from in-memory state."""
 
     def __init__(self, client, topic_slug, start_offset=0):
         self.topic_slug = topic_slug

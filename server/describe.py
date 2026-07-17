@@ -11,8 +11,8 @@ in this codebase and this module cannot drift into a second, more permissive one
 
 It degrades honestly. Without Firecrawl there is nothing to read the site with, and an agent
 with no fetch tool invents a plausible brand summary rather than failing, which is the exact
-failure this whole engine is built to prevent. So no MCP or GEO_MOCK=1 returns a placeholder
-that SAYS it was not generated from the live site, never a guess.
+failure this whole engine is built to prevent. So no MCP returns a placeholder that SAYS it
+was not generated from the live site, never a guess.
 """
 import asyncio
 import os
@@ -166,11 +166,6 @@ async def draft_description(name, domain):
 
     if not domain:
         return _placeholder(name, domain, "the client has no domain recorded")
-    if runner.geo_mock():
-        # GEO_MOCK is the global test switch. Faking a description here would put an
-        # invented paragraph into a real client's config from a test run, so mock mode
-        # says what it is instead.
-        return _placeholder(name, domain, "GEO_MOCK=1 is set, so no live fetch ran")
 
     ok, reason = runner.check_real_mode_ready()
     if not ok:

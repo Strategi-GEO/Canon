@@ -21,7 +21,6 @@ import httpx
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from server import runner as runner_mod  # noqa: E402
 from server.cms import client as cms_client  # noqa: E402
 from server.cms import gate, payload  # noqa: E402
 
@@ -63,13 +62,7 @@ class FakeRunner:
     fetch_status_lines and fetch_blog are the gate's Supabase-era injection seams: a runner
     that carries them answers instead of the record, which is what keeps this suite off the
     live database while the fixtures stay plain files in a temp root.
-
-    DEMO_MARKER is taken from the REAL runner, never re-typed here. A copy would let the
-    engine change its marker while this suite kept passing against the old string, which is
-    the exact drift that would silently reopen the mock-content hole.
     """
-
-    DEMO_MARKER = runner_mod.DEMO_MARKER
 
     def __init__(self, root, status_lines, demo=False):
         self.root = Path(root)
@@ -154,9 +147,9 @@ with tempfile.TemporaryDirectory() as tmp:
     except gate.PublishRefused:
         check("a missing blog.md is refused", True)
 
-    # A DEMO blog reaches "done" on the same path a real one does, and its
-    # "not for publication" marker is prose the CMS cannot read. Status alone would
-    # pass it, so the client check must refuse it first.
+    # A DEMO blog in the record can carry status "done" (the fixtures predate the engine's
+    # demo refusal), and old demo artifacts are placeholder text a CMS editor could approve.
+    # Status alone would pass it, so the client check must refuse it first.
     _seed(tmp, "demo", "demo-topic")
     runner = FakeRunner(tmp, [{"status": "done"}], demo=True)
     try:
@@ -166,44 +159,20 @@ with tempfile.TemporaryDirectory() as tmp:
         check("a done DEMO blog is still refused", True)
         check("the demo refusal says why", "demo" in str(refused).lower(), str(refused))
 
-    # THE GEO_MOCK HOLE. This is the one the demo_mode check does NOT catch and it is the
-    # most dangerous case this suite covers, so it is tested against a blog built by the REAL
-    # runner rather than a hand-written fixture: a fake marker string here would pass while
-    # the engine shipped something else.
-    #
-    # GEO_MOCK=1 fakes EVERY client, real ones included, and writes the result into that
-    # client's real output folder and real ledger with status "done". So this blog belongs to
-    # a NON-demo client (demo=False) and is terminally done: every other check passes it.
-    mock_md = runner_mod._demo_blog(
-        "vacation-village",
-        {"topic": "Is Chikkamagaluru Worth It", "covers": "x", "prompts": ["p"]},
-        "is-chikkamagaluru-worth-it",
-        1,
-    )
-    check(
-        "the real runner still marks mock blogs (if this fails, the marker moved)",
-        runner_mod.DEMO_MARKER in mock_md,
-    )
-    check(
-        "and split_title WOULD strip that marker, which is why the gate must catch it first",
-        runner_mod.DEMO_MARKER not in payload.split_title(mock_md)[1],
-    )
-
-    _seed(tmp, "vacation-village", "is-chikkamagaluru-worth-it", text=mock_md)
-    runner = FakeRunner(tmp, [{"status": "done"}], demo=False)
+    # The demo refusal is a check on the CLIENT, not the artifact, so it must fire before any
+    # artifact or status is read: a demo client with no blog on disk at all still refuses as
+    # demo, never as "no blog", and the endpoint gets the status it names the refusal with.
+    runner = FakeRunner(tmp, [], demo=True)
     try:
-        gate.build_for_publish(runner, FakeLedger({}), "vacation-village", "is-chikkamagaluru-worth-it")
-        check("a GEO_MOCK blog for a REAL client is refused", False, "IT BUILT A PAYLOAD")
+        gate.build_for_publish(runner, FakeLedger({}), "demo", "never-written-topic")
+        check("the demo refusal fires before any artifact is read", False, "it built a payload")
     except gate.PublishRefused as refused:
-        check("a GEO_MOCK blog for a REAL client is refused", True)
-        check(
-            "the mock refusal names GEO_MOCK, since demo_mode is not why",
-            "GEO_MOCK" in str(refused),
-            str(refused),
-        )
+        check("the demo refusal fires before any artifact is read", True)
+        check("the demo refusal carries status='demo' for the endpoint to name",
+              refused.status == "demo", str(refused.status))
 
-    # The mirror of the above: a real blog for the same real client must still publish, so
-    # the marker check cannot have been implemented as "refuse this client".
+    # The mirror: a real blog for a real client must still publish, so the refusal cannot
+    # have been implemented wider than the demo flag.
     _seed(tmp, "vacation-village", "a-real-topic")
     runner = FakeRunner(tmp, [{"status": "done"}], demo=False)
     real = gate.build_for_publish(runner, FakeLedger({}), "vacation-village", "a-real-topic")
