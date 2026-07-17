@@ -1570,21 +1570,31 @@ async def run_topic(client_slug, row, *, mock=None, run_dir_root=None, precheck_
     out_dir = output_dir(client_slug, topic_slug, root=run_dir_root)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Before anything can append. See _status_baseline: this topic may have been run before, and
-    # every terminal question below is about THIS session rather than about the file.
+    # Taken TWICE, and both takes are load-bearing. This first take is what the
+    # cancel arm sees if a stop lands inside the materialize await below: for
+    # existing scratch it counts exactly the prior runs' lines, so a resumed
+    # topic stopped a second time still gets its own terminal line in its own
+    # SSE window. The second take, after materialization, covers re-laid
+    # scratch, where the file may have grown by the record's whole history.
     baseline = _status_baseline(out_dir)
 
     append_status = _status_module().append_status
     try:
-        # LAY THIS TOPIC'S SCRATCH DOWN FROM THE RECORD before the session spawns. A resumed
+        # LAY THIS TOPIC'S SCRATCH DOWN FROM THE RECORD before the session spawns, and BEFORE
+        # the baseline: materialization re-lays status.jsonl on reclaimed scratch so disk
+        # ordinals continue the record's, which means the file can grow here, and a baseline
+        # taken earlier would count the record's history as this session's lines. A resumed
         # topic finds its frozen dossier, blog.md and links-verified.txt exactly as the record
-        # holds them; existing scratch is left alone, and status.jsonl is never touched, so the
-        # baseline above still counts only what this session appends. Mock and demo topics come
-        # through here too: they are the affordable proof of exactly this plumbing. Skipped when
-        # the record does not know the client (see _materialize_topic_scratch). A failure for a
-        # known client falls to the generic handler below and writes the terminal failed line:
-        # a session spawned over scratch the record could not lay down reads the wrong facts.
+        # holds them; existing scratch is left alone. Mock and demo topics come through here
+        # too: they are the affordable proof of exactly this plumbing. Skipped when the record
+        # does not know the client (see _materialize_topic_scratch). A failure for a known
+        # client falls to the generic handler below and writes the terminal failed line: a
+        # session spawned over scratch the record could not lay down reads the wrong facts.
         await asyncio.to_thread(_materialize_topic_scratch, client_slug, topic_slug)
+
+        # See _status_baseline: this topic may have been run before, and every terminal
+        # question below is about THIS session rather than about the file.
+        baseline = _status_baseline(out_dir)
 
         # GEO_MOCK, an explicit mock=True, or a demo_mode client. A demo client
         # resolves to mock even here in a production process holding real
@@ -2095,6 +2105,19 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
             # either side of the hook, and taking them FIRST closes the window the hook would
             # otherwise open: a stop landing inside the materialize await must re-state the
             # verdict this topic already earned, never write "stopped" over a done blog.
+            # LAY THE SCRATCH DOWN FROM THE RECORD FIRST, before every snapshot. Materialization
+            # can re-lay status.jsonl on reclaimed scratch (so disk ordinals continue the
+            # record's) and re-lays blog.md, eval.md, dossier, links, questions.json and
+            # answers.json. Every read below must therefore happen AFTER it: a verdict snapshot
+            # taken before it would see an empty feed on reclaimed scratch and invent a topic
+            # with no history, and a byte snapshot taken before it could miss an eval.md the
+            # record holds but the disk lost, making the restore unlink an artifact the record
+            # says exists. A stop landing INSIDE this await is handled by the failure arms,
+            # which re-derive the verdict from disk when the snapshot never ran. Skipped when
+            # the record does not know the client (see _materialize_topic_scratch).
+            await asyncio.to_thread(_materialize_topic_scratch, client_slug, topic_slug,
+                                    answers=True)
+
             lines_before = _read_status(out_dir)
             prev_score = _last_eval_score(lines_before)
 
@@ -2111,16 +2134,6 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
 
             iteration = _summarize(topic_slug, lines_before)["iterations"] + 1
             restored_iter = max(1, iteration - 1)
-
-            # LAY THE TOPIC SCRATCH DOWN FROM THE RECORD, BEFORE THE BYTE SNAPSHOT. The
-            # answer-driven revise needs the frozen dossier, links-verified.txt, blog.md,
-            # eval.md and the rebuilt questions.json and answers.json on disk exactly as the
-            # record holds them. The byte snapshot below is taken from the MATERIALIZED bytes on
-            # purpose: taken first, it could miss an eval.md the record holds but the disk lost,
-            # and the restore would then unlink an artifact the record says exists. Skipped when
-            # the record does not know the client (see _materialize_topic_scratch).
-            await asyncio.to_thread(_materialize_topic_scratch, client_slug, topic_slug,
-                                    answers=True)
 
             # THE BYTE SNAPSHOT, BEFORE ANYTHING CAN TOUCH THE DRAFT.
             #
@@ -2294,6 +2307,17 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
         # prev_score, and stamping `iteration` for them would push the topic past its own form
         # and close the operator's door. Where nothing was snapshotted at all, the defaults (1
         # and None) say exactly what the old else-branch said.
+        # A stop or crash landing inside the materialize await arrives with no verdict
+        # snapshot taken. The disk feed (materialized or original) is authoritative for the
+        # verdict this topic already earned, so re-derive it rather than writing "stopped"
+        # or a default iteration over a blog that has a real terminal line.
+        if prev_terminal is None:
+            _fresh = _read_status(out_dir)
+            _t = _terminal_line(_fresh) if _fresh else None
+            if _t is not None:
+                prev_terminal = _t
+                prev_score = _last_eval_score(_fresh)
+                restored_iter = max(1, _summarize(topic_slug, _fresh)["iterations"])
         append_status(
             str(out_dir), topic_slug, stage="eval", event="end",
             iter=restored_iter,
@@ -2363,6 +2387,17 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
         # states: a crash inside the materialize round trip has the verdict snapshot without the
         # byte snapshot, the disk bytes are the untouched original, and the defaults cover the
         # nothing-snapshotted case exactly as the old else-branch did.
+        # A stop or crash landing inside the materialize await arrives with no verdict
+        # snapshot taken. The disk feed (materialized or original) is authoritative for the
+        # verdict this topic already earned, so re-derive it rather than writing "stopped"
+        # or a default iteration over a blog that has a real terminal line.
+        if prev_terminal is None:
+            _fresh = _read_status(out_dir)
+            _t = _terminal_line(_fresh) if _fresh else None
+            if _t is not None:
+                prev_terminal = _t
+                prev_score = _last_eval_score(_fresh)
+                restored_iter = max(1, _summarize(topic_slug, _fresh)["iterations"])
         append_status(
             str(out_dir), topic_slug, stage="eval", event="end",
             iter=restored_iter,

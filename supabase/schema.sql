@@ -91,13 +91,14 @@ create table clients (
   industry    text not null default '',
   description text not null default '',
 
-  -- The client doc set, inlined. Measured: 6 client.md, 4 canonical-facts.md,
-  -- 3 never-claim.md. clients/blr-brewing/never-claim.md is ZERO BYTES, so an
-  -- existing-but-empty doc must round-trip as '' and an absent one as NULL.
-  -- Collapsing the two loses which files exist.
+  -- The client doc set, inlined. An existing-but-empty doc must round-trip as ''
+  -- and an absent one as NULL: collapsing the two loses which files exist, and
+  -- canonical_facts being NULL rather than '' is what has_canonical_facts turns on.
   client_md       text,
   canonical_facts text,
-  never_claim     text,
+  -- Stamped by sync.commit_client_facts when a facts build lands. Nullable
+  -- exactly when canonical_facts is: an absent record has no build time.
+  canonical_facts_at timestamptz,
 
   demo_mode   boolean not null default false,
   -- gates.json MINUS "organisation" (modelled by org_id above).
@@ -190,6 +191,8 @@ create table roadmap_sheets (
   filename   text not null,
   raw_csv    text not null,
   columns    text[] not null,
+  -- roadmap-report.md for generated sheets; null for uploads.
+  report     text,
   modified   timestamptz,
   created_at timestamptz not null default now()
 );
@@ -481,6 +484,9 @@ create table review_notes (
   -- from the topic's score now. Measured: blr-brewing/the-best-beer-gardens asked
   -- at iter 1 / score 89 and finished iter 2 / score 95.
   asked_score int check (asked_score between 0 and 100),
+  -- The form's iteration at asking time, from questions.json. Staleness
+  -- compares it against the topic's current iteration.
+  asked_iter  int check (asked_iter is null or asked_iter >= 1),
 
   -- W3C text-quote selector: {quote, prefix, suffix}. Null for whole-draft notes.
   anchor     jsonb,

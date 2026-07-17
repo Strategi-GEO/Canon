@@ -92,12 +92,24 @@ def materialize_client(slug):
     # lives at clients/<slug>/description.md, so the promise must be kept on
     # disk even when the description is empty.
     (cdir / "description.md").write_text(description or "", encoding="utf-8")
-    if facts is not None:
-        (cdir / "canonical-facts.md").write_text(facts, encoding="utf-8")
-    else:
-        # An absent record means absent scratch. Leaving a stale disk copy here
-        # would let preflight pass on facts the record no longer holds.
-        (cdir / "canonical-facts.md").unlink(missing_ok=True)
+    # canonical-facts.md is the ONE file where disk wins over the record,
+    # because the file IS the human's editing surface: the workflow is that a
+    # person reviews and hand-edits it, and no dashboard editor exists for it.
+    # Clobbering a hand-edit with the record would silently undo a human
+    # correction to the binding fact base, which is the worst possible silent
+    # loss this system can produce. So a disk copy that differs from the record
+    # is committed UP, and only an absent disk copy is laid down from the
+    # record. Every other client file keeps record-wins semantics.
+    facts_path = cdir / "canonical-facts.md"
+    disk_facts = _read(facts_path)
+    if disk_facts is not None and disk_facts != facts:
+        db.q("""update clients set canonical_facts = %s, canonical_facts_at = now()
+                where id = %s""", (disk_facts, cid), fetch="none")
+        log.warning("materialize_client: %s canonical-facts.md differed from the "
+                    "record; the disk copy (the human editing surface) was "
+                    "committed up", slug)
+    elif disk_facts is None and facts is not None:
+        facts_path.write_text(facts, encoding="utf-8")
 
     rdir = cdir / "Resources"
     rdir.mkdir(exist_ok=True)
@@ -124,6 +136,33 @@ def materialize_topic(client_slug, topic_slug):
         return
     tdir = _topic_dir(client_slug, topic_slug)
     tdir.mkdir(parents=True, exist_ok=True)
+
+    # status.jsonl is re-laid from the record FIRST, and this is load-bearing,
+    # not a convenience. commit_topic keys status_events on (topic_id, line_no)
+    # with ON CONFLICT DO NOTHING, which is only idempotent while disk ordinals
+    # continue where the record left off. A reclaimed scratch whose new
+    # status.jsonl restarted at line 0 would collide with the old run's rows and
+    # every new line, including a stop verdict, would be silently swallowed.
+    # Re-laying the feed makes the next session append at the record's
+    # high-water mark, so ordinals never collide and the runner's baseline
+    # slicing (lines[baseline:]) keeps meaning "this session's lines".
+    sj = tdir / "status.jsonl"
+    if not sj.is_file():
+        rows = db.q(
+            """select ts, coalesce(slug_reported, %s), stage, event, iter,
+                      score, status, note
+               from status_events where topic_id = %s order by line_no""",
+            (topic_slug, tid))
+        if rows:
+            lines = []
+            for ts, slug, stage, event, iteration, score, status, note in rows:
+                lines.append(json.dumps({
+                    "ts": ts.isoformat() if hasattr(ts, "isoformat") else ts,
+                    "slug": slug, "stage": stage, "event": event,
+                    "iter": iteration, "score": score, "status": status,
+                    "note": note or "",
+                }, ensure_ascii=False))
+            sj.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     dossier, links = db.q(
         "select dossier, links_verified from topics where id = %s",
@@ -225,7 +264,18 @@ def _summarize_lines(lines):
 
 
 def commit_topic(client_slug, topic_slug):
-    """Push one topic's scratch to the record. Idempotent; safe to re-run."""
+    """Push one topic's scratch to the record, in ONE transaction.
+
+    Idempotent AND atomic, and both properties are load-bearing. Idempotent:
+    status lines key on (topic_id, line_no) with ON CONFLICT DO NOTHING, a blog
+    version inserts only when the bytes moved, everything else upserts, so the
+    startup reconciler can re-commit blindly. Atomic: every statement runs on
+    one transaction, so a process death mid-commit leaves either the whole
+    commit or none of it. The single transaction is what keeps reconcile_all's
+    "ahead" test sound: a partial commit that landed the status lines but not
+    the dossier would read as up-to-date forever, and the stop contract's
+    promise that the frozen dossier is kept would die silently with it.
+    """
     tdir = _topic_dir(client_slug, topic_slug)
     if not tdir.is_dir():
         return
@@ -235,8 +285,6 @@ def commit_topic(client_slug, topic_slug):
         return
     tid = db.ensure_topic(client_slug, topic_slug)
 
-    # 1. Status lines, keyed by ordinal. The file is append-only, so line N is
-    # permanently the same event and re-pushing is a no-op.
     lines = []
     sj = tdir / "status.jsonl"
     if sj.is_file():
@@ -248,7 +296,20 @@ def commit_topic(client_slug, topic_slug):
                 lines.append((i, json.loads(raw)))
             except json.JSONDecodeError:
                 log.warning("malformed status line %d in %s, skipped", i, sj)
+
+    dossier = _read(tdir / "dossier.md")
+    links = _read(tdir / "links-verified.txt")
+    marker = _read(tdir / "NEEDS_REVIEW")
+    body = _read(tdir / "blog.md")
+    eval_body = _read(tdir / "eval.md")
+    status, score, iters = _summarize_lines([e for _, e in lines])
+    mtime = sj.stat().st_mtime if sj.is_file() else None
+
     with db.tx() as cur:
+        # 1. Status lines, keyed by ordinal. Append-only on disk, and
+        # materialize_topic re-lays the file from the record on reclaimed
+        # scratch, so disk ordinals always continue the record's and the
+        # conflict clause only ever suppresses genuine re-pushes.
         for line_no, e in lines:
             cur.execute(
                 """insert into status_events
@@ -261,102 +322,110 @@ def commit_topic(client_slug, topic_slug):
                  e.get("status") or "running", e.get("note") or "",
                  e.get("slug")))
 
-    # 2. Dossier, links, marker. The marker's three writers (engine correction,
-    # mock cap-hit, the session lead in-session) all land on the same file, so
-    # reading the file at commit time covers every writer without naming them.
-    dossier = _read(tdir / "dossier.md")
-    links = _read(tdir / "links-verified.txt")
-    marker = _read(tdir / "NEEDS_REVIEW")
-    mtime = sj.stat().st_mtime if sj.is_file() else None
-    db.q("""update topics set
-              dossier = coalesce(%s, dossier),
-              dossier_at = case when %s::text is not null and dossier is distinct from %s
-                                then coalesce(dossier_at, to_timestamp(%s)) else dossier_at end,
-              links_verified = coalesce(%s, links_verified),
-              review_note = %s
-            where id = %s""",
-         (dossier, dossier, dossier, mtime, links, marker, tid), fetch="none")
+        # 2. Dossier, links, marker. The marker's three writers (engine
+        # correction, mock cap-hit, the session lead) all land on one file, so
+        # reading the file covers every writer without naming them.
+        cur.execute(
+            """update topics set
+                 dossier = coalesce(%s, dossier),
+                 dossier_at = case when %s::text is not null and dossier is distinct from %s
+                                   then coalesce(dossier_at, to_timestamp(%s)) else dossier_at end,
+                 links_verified = coalesce(%s, links_verified),
+                 review_note = %s
+               where id = %s""",
+            (dossier, dossier, dossier, mtime, links, marker, tid))
 
-    # 3. The blog version. Insert only when the bytes moved: retries, stops and
-    # reconciler re-runs then re-commit nothing. Restores re-commit nothing
-    # either, because the restored bytes ARE the previous version's bytes.
-    body = _read(tdir / "blog.md")
-    eval_body = _read(tdir / "eval.md")
-    status, score, iters = _summarize_lines([e for _, e in lines])
-    if body:
-        latest = db.q(
-            """select id, body from blog_versions
-               where topic_id = %s order by version_no desc limit 1""",
-            (tid,), fetch="one")
-        blog_mtime = (tdir / "blog.md").stat().st_mtime
-        if latest is None or latest[1] != body:
-            h1 = next((l[2:].strip() for l in body.splitlines()
-                       if l.startswith("# ")), None)
-            vid = db.q(
-                """insert into blog_versions
-                     (topic_id, client_id, version_no, iteration, body, h1_title,
-                      word_count, score, eval_body, shipped, committed_at)
-                   values (%s, %s,
-                           coalesce((select max(version_no) from blog_versions
-                                     where topic_id = %s), 0) + 1,
-                           %s, %s, %s, %s, %s, %s, %s, to_timestamp(%s))
-                   returning id""",
-                (tid, cid, tid, max(min(iters, 8), 1), body, h1,
-                 len(body.split()), score, eval_body, status == "done",
-                 blog_mtime), fetch="val")
-        else:
-            vid = latest[0]
-            db.q("""update blog_versions
-                    set eval_body = coalesce(%s, eval_body),
-                        score = coalesce(%s, score),
-                        shipped = shipped or %s
-                    where id = %s""",
-                 (eval_body, score, status == "done", vid), fetch="none")
-        if status == "done":
-            db.q("update topics set shipped_version_id = %s where id = %s",
-                 (vid, tid), fetch="none")
+        # 3. The blog version. Insert only when the bytes moved: retries,
+        # stops, restores and reconciler re-runs then re-commit nothing,
+        # because restored bytes ARE the previous version's bytes.
+        vid = None
+        if body:
+            cur.execute(
+                """select id, body from blog_versions
+                   where topic_id = %s order by version_no desc limit 1""",
+                (tid,))
+            latest = cur.fetchone()
+            blog_mtime = (tdir / "blog.md").stat().st_mtime
+            if latest is None or latest[1] != body:
+                h1 = next((l[2:].strip() for l in body.splitlines()
+                           if l.startswith("# ")), None)
+                cur.execute(
+                    """insert into blog_versions
+                         (topic_id, client_id, version_no, iteration, body, h1_title,
+                          word_count, score, eval_body, shipped, committed_at)
+                       values (%s, %s,
+                               coalesce((select max(version_no) from blog_versions
+                                         where topic_id = %s), 0) + 1,
+                               %s, %s, %s, %s, %s, %s, %s, to_timestamp(%s))
+                       returning id""",
+                    (tid, cid, tid, max(min(iters, 8), 1), body, h1,
+                     len(body.split()), score, eval_body, status == "done",
+                     blog_mtime))
+                vid = cur.fetchone()[0]
+            else:
+                vid = latest[0]
+                cur.execute(
+                    """update blog_versions
+                       set eval_body = coalesce(%s, eval_body),
+                           score = coalesce(%s, score),
+                           shipped = shipped or %s
+                       where id = %s""",
+                    (eval_body, score, status == "done", vid))
+            if status == "done":
+                cur.execute(
+                    "update topics set shipped_version_id = %s where id = %s",
+                    (vid, tid))
 
-        # 4. The question form, replacing whole. questions.py rewrites the file
-        # whole per eval, so the record mirrors that: unanswered evaluator notes
-        # go, the current form comes. Answered notes stay; answers are history.
+        # 4. The question form, replacing whole, exactly as questions.py
+        # rewrites the file whole per eval. Unanswered evaluator notes go, the
+        # current form comes; answered notes are history and stay. The NOT
+        # EXISTS guard evaluates in this statement, so an answer committed
+        # before this transaction is seen and kept; an answer racing this
+        # transaction hits the FK on a deleted parent and fails LOUDLY on the
+        # operator's side, never silently.
         qj = tdir / "questions.json"
+        form = None
         if qj.is_file():
             try:
                 form = json.loads(qj.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 form = None
-            if form and isinstance(form.get("questions"), list):
-                with db.tx() as cur:
-                    cur.execute(
-                        """delete from review_notes n
-                           where n.topic_id = %s and n.author = 'evaluator'
-                             and n.parent_id is null
-                             and not exists (select 1 from review_notes r
-                                             where r.parent_id = n.id)""",
-                        (tid,))
-                    for item in form["questions"]:
-                        cur.execute(
-                            """insert into review_notes
-                                 (topic_id, client_id, blog_version_id, author,
-                                  ref, area, body, why, asked_score, asked_iter)
-                               values (%s,%s,%s,'evaluator',%s,%s,%s,%s,%s,%s)
-                               on conflict (blog_version_id, ref) do update
-                                 set body = excluded.body, why = excluded.why,
-                                     area = excluded.area,
-                                     asked_score = excluded.asked_score,
-                                     asked_iter = excluded.asked_iter""",
-                            (tid, cid, vid, item.get("id"), item.get("area"),
-                             item.get("question") or "", item.get("why"),
-                             form.get("score"), form.get("iter")))
-        else:
-            # No form on disk: the lead deleted it (pre-eval) or the engine
-            # cleared it post-revise. Unanswered notes for this topic follow it.
-            db.q("""delete from review_notes n
-                    where n.topic_id = %s and n.author = 'evaluator'
-                      and n.parent_id is null
-                      and not exists (select 1 from review_notes r
-                                      where r.parent_id = n.id)""",
-                 (tid,), fetch="none")
+        if form and isinstance(form.get("questions"), list) and vid:
+            cur.execute(
+                """delete from review_notes n
+                   where n.topic_id = %s and n.author = 'evaluator'
+                     and n.parent_id is null
+                     and not exists (select 1 from review_notes r
+                                     where r.parent_id = n.id)""",
+                (tid,))
+            for item in form["questions"]:
+                cur.execute(
+                    """insert into review_notes
+                         (topic_id, client_id, blog_version_id, author,
+                          ref, area, body, why, asked_score, asked_iter)
+                       values (%s,%s,%s,'evaluator',%s,%s,%s,%s,%s,%s)
+                       on conflict (blog_version_id, ref) do update
+                         set body = excluded.body, why = excluded.why,
+                             area = excluded.area,
+                             asked_score = excluded.asked_score,
+                             asked_iter = excluded.asked_iter""",
+                    (tid, cid, vid, item.get("id"), item.get("area"),
+                     item.get("question") or "", item.get("why"),
+                     form.get("score"), form.get("iter")))
+        elif form is None and not qj.is_file():
+            # No form on disk: the lead deleted it pre-eval or the engine
+            # cleared it post-revise. Unanswered notes for this topic follow
+            # it, EXCEPT while the topic is held: a needs_review hold is the
+            # operator's only door, and commit must never slam it because a
+            # mid-run commit fired while the lead had the file deleted.
+            if status != "needs_review":
+                cur.execute(
+                    """delete from review_notes n
+                       where n.topic_id = %s and n.author = 'evaluator'
+                         and n.parent_id is null
+                         and not exists (select 1 from review_notes r
+                                         where r.parent_id = n.id)""",
+                    (tid,))
 
 
 def commit_client_facts(client_slug):
@@ -427,6 +496,29 @@ def reconcile_all():
                        order by version_no desc limit 1""", (tid,), fetch="val")
             body = _read(tdir / "blog.md")
             if disk_lines > db_lines or (body is not None and body != db_body):
-                commit_topic(slug, tdir.name)
-                committed.append((slug, tdir.name))
+                # A LIVE topic is skipped: its session owns the scratch and will
+                # commit at its own terminal line. Committing under it would
+                # push a mid-session half-state into the record.
+                try:
+                    from . import runner
+                    live = any(tdir.name in (run.get("topics") or [])
+                               or any(t.get("topic_slug") == tdir.name
+                                      for t in (run.get("topics") or [])
+                                      if isinstance(t, dict))
+                               for run in runner.RUNS.values()
+                               if run.get("live") and run.get("client") == slug)
+                except Exception:
+                    live = False
+                if live:
+                    log.info("reconcile: %s/%s is in a live run, skipped", slug, tdir.name)
+                    continue
+                # One topic's failure must not strand every later topic: the
+                # sweep is the recovery path, and a recovery path that gives up
+                # on its first obstacle recovers nothing behind it.
+                try:
+                    commit_topic(slug, tdir.name)
+                    committed.append((slug, tdir.name))
+                except Exception:
+                    log.exception("reconcile: commit failed for %s/%s, continuing",
+                                  slug, tdir.name)
     return committed

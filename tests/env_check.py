@@ -38,24 +38,46 @@ def check(name, ok, detail=""):
         print(f"FAIL  {name}{': ' + detail if detail else ''}")
 
 
-# --- Layer 2, static: the banned idiom stays banned -------------------------
+# --- Layer 2, static: the banned idioms stay banned -------------------------
+# Every way Python spells "copy the whole environment", not just one of them:
+# dict(os.environ), os.environ.copy(), {**os.environ}, dict(**os.environ).
+# A check that bans a single spelling is a check a refactor walks around.
+_FULL_ENV = re.compile(
+    r"dict\(\s*os\.environ\s*[,)]"          # dict(os.environ) / dict(os.environ, ...)
+    r"|dict\(\s*\*\*\s*os\.environ"          # dict(**os.environ)
+    r"|os\.environ\.copy\(\)"                # os.environ.copy()
+    r"|\{\s*\*\*\s*os\.environ")             # {**os.environ}
 hits = []
 for py in (REPO / "server").rglob("*.py"):
     text = py.read_text(encoding="utf-8")
     for i, line in enumerate(text.splitlines(), 1):
-        if "dict(os.environ)" in line and not line.lstrip().startswith("#"):
+        if _FULL_ENV.search(line) and not line.lstrip().startswith("#"):
             hits.append(f"{py.relative_to(REPO)}:{i}")
-check("no server module builds a child env from dict(os.environ)",
+check("no server module copies the whole environment into a child env",
       not hits, "; ".join(hits))
 
+# Not just "an env= exists": the env must BE the allowlist. Anything else is a
+# door, whatever it is called.
 spawn_hits = []
 for py in (REPO / "server").rglob("*.py"):
     text = py.read_text(encoding="utf-8")
     for m in re.finditer(r"create_subprocess_exec\([^)]*\)", text, re.S):
-        if "env=" not in m.group(0):
+        if "env=db.agent_env()" not in m.group(0) and "env=agent_env()" not in m.group(0):
             spawn_hits.append(str(py.relative_to(REPO)))
-check("every create_subprocess_exec passes an explicit env",
+check("every create_subprocess_exec builds its env from agent_env()",
       not spawn_hits, "; ".join(spawn_hits))
+
+# Same rule for the SDK sessions: every env= inside a ClaudeAgentOptions call
+# must be the allowlist, checked per occurrence rather than per file.
+door_hits = []
+for py in (REPO / "server").rglob("*.py"):
+    text = py.read_text(encoding="utf-8")
+    for m in re.finditer(r"env\s*=\s*([^,\n]+)", text):
+        val = m.group(1).strip()
+        if "agent_env()" not in val and "os.environ" in val:
+            door_hits.append(f"{py.relative_to(REPO)}: env={val[:40]}")
+check("no env= kwarg anywhere feeds os.environ to a child",
+      not door_hits, "; ".join(door_hits))
 
 # --- Plant the canary, then exercise both layers ----------------------------
 CANARIES = {
