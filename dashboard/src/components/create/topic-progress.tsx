@@ -59,7 +59,17 @@ export function TopicProgress({
     <li className="px-4 py-4">
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
         <div className="min-w-0 flex-1">
-          <p className="text-sm leading-snug font-medium text-foreground">{topic.label}</p>
+          <p className="text-sm leading-snug font-medium text-foreground">
+            {/* Leads the title on a live run for the same reason it leads it in the library: a
+                queue of five is watched by someone who says "six is still going". A topic on no
+                row of the sheet on screen simply has no number to lead with. */}
+            {topic.roadmapIndex !== null ? (
+              <span className="machine mr-1.5 font-normal text-muted-foreground">
+                {topic.roadmapIndex + 1}.
+              </span>
+            ) : null}
+            {topic.label}
+          </p>
           <p className="machine mt-0.5 text-xs text-muted-foreground">{topic.topicSlug}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">

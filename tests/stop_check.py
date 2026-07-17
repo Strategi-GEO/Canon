@@ -1,0 +1,515 @@
+#!/usr/bin/env python3
+"""Cancellation checks for the stop-session feature. Spawns NOTHING and calls NO model.
+
+Every SDK seam is monkeypatched and every output root is a temp dir, so this never reads or
+writes a real brand. What it pins is the one thing the stop button promises and the one thing
+it must never do:
+
+  1. A topic that FINISHED keeps its verdict, its score and its ledger entry through a stop.
+  2. A topic that did NOT finish gets exactly one terminal `stopped` line, so its SSE stream
+     closes and the operator's watch view does not heartbeat forever on a dead session.
+
+Both halves failed in ways that only a cancel could reach, which is why they are tested here
+rather than left to the static checks: CancelledError is a BaseException, so every `except
+Exception` in the engine steps over it, and each of these paths had an arm that was missing,
+unguarded, or reading the wrong lines.
+
+  .venv/bin/python tests/stop_check.py
+"""
+import asyncio
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from server import facts_gen, runner  # noqa: E402
+
+FAILURES = []
+CHECKS = [0]
+
+
+def check(name, condition, detail=""):
+    CHECKS[0] += 1
+    if condition:
+        print(f"  PASS  {name}")
+    else:
+        print(f"  FAIL  {name}{': ' + detail if detail else ''}")
+        FAILURES.append(name)
+
+
+def _lines(out_dir):
+    path = Path(out_dir) / "status.jsonl"
+    if not path.is_file():
+        return []
+    return [json.loads(raw) for raw in path.read_text(encoding="utf-8").splitlines() if raw.strip()]
+
+
+def _terminals(out_dir):
+    return [line for line in _lines(out_dir) if line.get("status") in runner.TERMINAL_STATUSES]
+
+
+def _append(out_dir, slug, **kwargs):
+    """Append through the real status.py path, exactly as the engine does."""
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    payload = {"stage": "eval", "event": "end", "iter": 1, "score": None, "status": "running",
+               "note": ""}
+    payload.update(kwargs)
+    runner._status_module().append_status(str(out_dir), slug, **payload)
+
+
+def _rows(n):
+    return [{"topic": f"Topic {i}", "topic_slug": f"topic-{i}", "index": i} for i in range(n)]
+
+
+class _Roots:
+    """Point every output root at a temp dir. No real brand is ever touched.
+
+    has_canonical_facts is stubbed True on purpose, and the reason is worth stating: left alone,
+    run_batch finds no fact base for the fake brand and spends the whole test inside the FACTS
+    phase, so the topics are never dispatched and every batch assertion below silently tests the
+    facts path instead of the one it names. The sweep answers there too, which is exactly what
+    makes it silent. A stubbed fact base puts the run where these tests say it is.
+    """
+
+    def __enter__(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved_root = runner.OUTPUTS_ROOT
+        self.saved_facts = runner.has_canonical_facts
+        runner.OUTPUTS_ROOT = Path(self.tmp.name)
+        runner.has_canonical_facts = lambda slug, **k: True
+        return Path(self.tmp.name)
+
+    def __exit__(self, *exc):
+        runner.OUTPUTS_ROOT = self.saved_root
+        runner.has_canonical_facts = self.saved_facts
+        self.tmp.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# run_topic
+# ---------------------------------------------------------------------------
+
+def test_stop_mid_topic_writes_one_stopped_line():
+    async def scenario():
+        with _Roots():
+            out = runner.output_dir("brand", "topic-0")
+
+            async def hang(*a, **k):
+                await asyncio.sleep(10)
+
+            runner._mock_session = hang
+            task = asyncio.create_task(runner.run_topic("brand", _rows(1)[0], mock=True))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+            terminals = _terminals(out)
+            check("a stopped topic gets exactly one terminal line",
+                  len(terminals) == 1, f"got {terminals}")
+            check("that line is stopped, not failed",
+                  terminals and terminals[0]["status"] == "stopped",
+                  f"got {terminals}")
+            check("a stopped topic is never given a score it did not earn",
+                  terminals and terminals[0].get("score") is None, f"got {terminals}")
+
+    asyncio.run(scenario())
+
+
+def test_stop_keeps_a_blog_that_finished_microseconds_earlier():
+    """The operator's own promise: whichever blogs have been created will be kept."""
+    async def scenario():
+        with _Roots():
+            out = runner.output_dir("brand", "topic-0")
+
+            async def ships_then_hangs(client_slug, row, topic_slug, out_dir):
+                _append(out_dir, topic_slug, status="done", score=96, note="shipped")
+                await asyncio.sleep(10)
+
+            runner._mock_session = ships_then_hangs
+            task = asyncio.create_task(runner.run_topic("brand", _rows(1)[0], mock=True))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+            terminals = _terminals(out)
+            check("a stop never appends a second terminal line over a done topic",
+                  len(terminals) == 1, f"got {terminals}")
+            check("the done blog keeps done through a stop",
+                  terminals and terminals[-1]["status"] == "done", f"got {terminals}")
+            check("the done blog keeps its score through a stop",
+                  terminals and terminals[-1]["score"] == 96, f"got {terminals}")
+
+    asyncio.run(scenario())
+
+
+def test_a_resumed_topic_is_stoppable_again():
+    """The regression: the guard read the WHOLE file, found run 1's stopped line, and wrote
+    nothing for run 2, so run 2's SSE window never saw a terminal status and hung forever."""
+    async def scenario():
+        with _Roots():
+            out = runner.output_dir("brand", "topic-0")
+            _append(out, "topic-0", status="stopped", note="run 1, stopped by the operator")
+            before = len(_lines(out))
+
+            async def hang(*a, **k):
+                await asyncio.sleep(10)
+
+            runner._mock_session = hang
+            task = asyncio.create_task(runner.run_topic("brand", _rows(1)[0], mock=True))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+            window = _lines(out)[before:]
+            terminal = [line for line in window if line.get("status") in runner.TERMINAL_STATUSES]
+            check("a resumed topic stopped a second time writes a line in ITS OWN sse window",
+                  len(terminal) == 1, f"window was {window}")
+
+    asyncio.run(scenario())
+
+
+def test_a_resumed_topic_retries_its_own_dead_session():
+    """The mirror of the same bug: the retry loop saw run 1's terminal line and broke on
+    attempt 1, so a dead session never retried and reported run 1's verdict as run 2's."""
+    async def scenario():
+        with _Roots():
+            out = runner.output_dir("brand", "topic-0")
+            _append(out, "topic-0", status="stopped", note="run 1, stopped by the operator")
+            attempts = []
+
+            async def dies_without_a_verdict(client_slug, row, topic_slug, out_dir):
+                attempts.append(1)
+
+            runner._mock_session = dies_without_a_verdict
+            result = await runner.run_topic("brand", _rows(1)[0], mock=True)
+
+            check("a died session on a resumed topic still retries",
+                  len(attempts) == 2, f"attempted {len(attempts)} times")
+            check("a died session on a resumed topic reports failed, not the old verdict",
+                  result["status"] == "failed", f"got {result}")
+
+    asyncio.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# run_batch
+# ---------------------------------------------------------------------------
+
+def test_topics_queued_behind_the_semaphore_are_stopped():
+    """Any selection larger than five has topics suspended at TOPIC_SEMAPHORE. The cancel
+    lands on the acquire, before run_topic, so nothing there writes their line."""
+    async def scenario():
+        with _Roots():
+            async def hang(*a, **k):
+                await asyncio.sleep(10)
+
+            runner._mock_session = hang
+            rows = _rows(8)
+            task = asyncio.create_task(runner.run_batch("brand", rows, mock=True))
+            await asyncio.sleep(0.1)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+            missing = [row["topic_slug"] for row in rows
+                       if not _terminals(runner.output_dir("brand", row["topic_slug"]))]
+            doubled = [row["topic_slug"] for row in rows
+                       if len(_terminals(runner.output_dir("brand", row["topic_slug"]))) > 1]
+            check("every topic of eight gets a terminal line, not just the five in flight",
+                  not missing, f"no terminal line for {missing}")
+            check("no topic gets two terminal lines from one stop",
+                  not doubled, f"doubled for {doubled}")
+
+    asyncio.run(scenario())
+
+
+def test_a_run_stopped_while_queued_on_the_client_lock_is_swept():
+    """The wait for CLIENT_LOCK is 'many minutes' for real blogs, so it is where a stop is
+    most likely to land. guarded never runs, so not one status.jsonl would exist."""
+    async def scenario():
+        with _Roots():
+            rows = _rows(3)
+            async with runner.CLIENT_LOCK:
+                task = asyncio.create_task(runner.run_batch("brand", rows, mock=True))
+                await asyncio.sleep(0.05)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            statuses = [
+                (_terminals(runner.output_dir("brand", row["topic_slug"])) or [{}])[0].get("status")
+                for row in rows
+            ]
+            check("a run stopped while queued still terminates every one of its topics",
+                  statuses == ["stopped"] * 3, f"got {statuses}")
+
+    asyncio.run(scenario())
+
+
+def test_the_client_lock_is_released_on_the_cancel_path():
+    """The highest-consequence line in the feature: a leaked CLIENT_LOCK bricks every brand
+    in the repo until someone restarts the API."""
+    async def scenario():
+        with _Roots():
+            async def hang(*a, **k):
+                await asyncio.sleep(10)
+
+            runner._mock_session = hang
+            task = asyncio.create_task(runner.run_batch("brand", _rows(2), mock=True))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+            check("CLIENT_LOCK is not leaked by a stop", not runner.CLIENT_LOCK.locked())
+
+    asyncio.run(scenario())
+
+
+def test_a_blog_that_shipped_still_reaches_the_ledger():
+    """The window between the lead writing done and guarded's notify is hundreds of ms of
+    session wind-down. A cancel there lost the ledger entry for a blog that IS on disk, so a
+    later Generate would re-spend real quota rewriting a blog that already shipped."""
+    async def scenario():
+        with _Roots():
+            recorded = []
+
+            async def on_topic_done(payload):
+                recorded.append(payload)
+
+            async def ships_then_hangs(client_slug, row, topic_slug, out_dir):
+                _append(out_dir, topic_slug, status="done", score=96, note="shipped")
+                await asyncio.sleep(10)
+
+            runner._mock_session = ships_then_hangs
+            task = asyncio.create_task(
+                runner.run_batch("brand", _rows(1), mock=True, on_topic_done=on_topic_done))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            await asyncio.sleep(0.05)
+
+            check("a blog that shipped before the stop still reaches the ledger",
+                  len(recorded) == 1, f"ledger got {recorded}")
+            check("the ledger entry carries the score the blog earned",
+                  recorded and recorded[0].get("score") == 96, f"ledger got {recorded}")
+
+    asyncio.run(scenario())
+
+
+def test_a_stopped_blog_never_reaches_the_ledger():
+    """generated.csv is shipped blogs only."""
+    async def scenario():
+        with _Roots():
+            recorded = []
+
+            async def on_topic_done(payload):
+                recorded.append(payload)
+
+            async def hang(*a, **k):
+                await asyncio.sleep(10)
+
+            runner._mock_session = hang
+            task = asyncio.create_task(
+                runner.run_batch("brand", _rows(1), mock=True, on_topic_done=on_topic_done))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            await asyncio.sleep(0.05)
+
+            check("a stopped topic is never appended to the ledger",
+                  not recorded, f"ledger got {recorded}")
+
+    asyncio.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# revise_topic
+# ---------------------------------------------------------------------------
+
+def _seed_shipped_blog(root, slug="topic-0"):
+    out = runner.output_dir("brand", slug)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "blog.md").write_text("the draft that scored 96", encoding="utf-8")
+    _append(out, slug, status="done", score=96, note="shipped at 96")
+    return out
+
+
+def test_a_stopped_revise_does_not_unship_a_done_blog():
+    """The contract, twice over: a stop after SCORE >= 95 does not un-ship the blog, and a
+    topic that already wrote its terminal line keeps that line, its score and its ledger
+    entry. This arm used to write `stopped` over a 96 and the CMS gate then refused it
+    forever."""
+    async def scenario():
+        with _Roots() as root:
+            out = _seed_shipped_blog(root)
+
+            async def hang(*a, **k):
+                await asyncio.sleep(10)
+
+            runner._mock_revise_session = hang
+            task = asyncio.create_task(runner.revise_topic("brand", "topic-0", mock=True))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+            summary = runner._summarize("topic-0", _lines(out))
+            check("a stopped revise leaves the shipped blog done",
+                  summary["status"] == "done", f"got {summary}")
+            check("a stopped revise leaves the shipped score intact",
+                  summary["score"] == 96, f"got {summary}")
+            check("a stopped revise restores the original draft byte for byte",
+                  (out / "blog.md").read_text(encoding="utf-8") == "the draft that scored 96")
+
+    asyncio.run(scenario())
+
+
+def test_a_crashed_revise_does_not_fail_a_done_blog():
+    """Same shape, the sibling arm: a bookkeeping crash on an OPTIONAL rerun must never turn
+    a shipped blog into a failure."""
+    async def scenario():
+        with _Roots() as root:
+            out = _seed_shipped_blog(root)
+
+            async def boom(*a, **k):
+                raise RuntimeError("the revise session died")
+
+            runner._mock_revise_session = boom
+            try:
+                await runner.revise_topic("brand", "topic-0", mock=True)
+            except RuntimeError:
+                pass
+
+            summary = runner._summarize("topic-0", _lines(out))
+            check("a crashed revise leaves the shipped blog done",
+                  summary["status"] == "done", f"got {summary}")
+            check("a crashed revise leaves the shipped score intact",
+                  summary["score"] == 96, f"got {summary}")
+
+    asyncio.run(scenario())
+
+
+def test_a_stopped_revise_on_an_unfinished_topic_is_stopped():
+    """The other half of the same rule: with no verdict to keep, `stopped` is the honest word,
+    and the line still has to exist or the revise's own SSE stream never closes."""
+    async def scenario():
+        with _Roots():
+            out = runner.output_dir("brand", "topic-0")
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "blog.md").write_text("a draft nobody scored", encoding="utf-8")
+
+            async def hang(*a, **k):
+                await asyncio.sleep(10)
+
+            runner._mock_revise_session = hang
+            task = asyncio.create_task(runner.revise_topic("brand", "topic-0", mock=True))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+            terminals = _terminals(out)
+            check("a revise stopped on a topic with no verdict reports stopped",
+                  len(terminals) == 1 and terminals[0]["status"] == "stopped", f"got {terminals}")
+
+    asyncio.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# facts_gen
+# ---------------------------------------------------------------------------
+
+def test_a_stopped_facts_build_leaves_no_hollow_fact_base():
+    """The worst of the ten. The session authors canonical-facts.md as it goes, so a stop
+    lands on a real file with no do-not-claim list. has_canonical_facts is a bare is_file(),
+    so the next Generate SKIPS the build, and preflight only checks existence and
+    PLACEHOLDER, neither of which a truncated file trips. Every blog for the brand would then
+    inherit a fact base that forbids nothing."""
+    async def scenario():
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "canonical-facts.md"
+            path.write_text("# Facts\n\n## 1. Entity\n\n## 5. URLs\n", encoding="utf-8")
+
+            facts_gen.facts_path = lambda slug: path
+            runner.should_mock = lambda slug, **k: False
+
+            async def hangs_holding_write(slug):
+                await asyncio.sleep(10)
+
+            facts_gen.generate_facts = hangs_holding_write
+            task = asyncio.create_task(facts_gen.ensure_facts("brand"))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+            job = facts_gen.get_job("brand")
+            check("a stopped facts build discards the half written fact base",
+                  not path.is_file(), "the hollow file survived the stop")
+            check("a stopped facts build does not strand the job on running",
+                  job and job["state"] != "running", f"job state was {job and job['state']}")
+            check("a stopped facts build records why nothing is on disk",
+                  job and job["error"], f"job error was {job and job['error']}")
+
+    asyncio.run(scenario())
+
+
+def main():
+    print("stop_check: cancellation paths only. No CLI spawned, no query() called, "
+          "no real brand touched.")
+    for test in (test_stop_mid_topic_writes_one_stopped_line,
+                 test_stop_keeps_a_blog_that_finished_microseconds_earlier,
+                 test_a_resumed_topic_is_stoppable_again,
+                 test_a_resumed_topic_retries_its_own_dead_session,
+                 test_topics_queued_behind_the_semaphore_are_stopped,
+                 test_a_run_stopped_while_queued_on_the_client_lock_is_swept,
+                 test_the_client_lock_is_released_on_the_cancel_path,
+                 test_a_blog_that_shipped_still_reaches_the_ledger,
+                 test_a_stopped_blog_never_reaches_the_ledger,
+                 test_a_stopped_revise_does_not_unship_a_done_blog,
+                 test_a_crashed_revise_does_not_fail_a_done_blog,
+                 test_a_stopped_revise_on_an_unfinished_topic_is_stopped,
+                 test_a_stopped_facts_build_leaves_no_hollow_fact_base):
+        print(f"\n{test.__name__}")
+        test()
+    print(f"\n{CHECKS[0] - len(FAILURES)}/{CHECKS[0]} checks passed")
+    if FAILURES:
+        print("FAILED: " + ", ".join(FAILURES))
+        return 1
+    print("stop_check OK")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

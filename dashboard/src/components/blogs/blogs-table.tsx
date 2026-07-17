@@ -51,6 +51,16 @@ export function BlogsTable({
     <Table>
       <TableHeader>
         <TableRow className="hover:bg-transparent">
+          {/* First, and sortable, because sheet order is the order the work is discussed in.
+              Narrow: it holds two digits and the roadmap tops out well short of a third. */}
+          <SortableHead
+            label="#"
+            column="roadmap"
+            sortKey={sortKey}
+            sortDir={sortDir}
+            onSort={onSort}
+            className="w-12"
+          />
           <SortableHead
             label="Title"
             column="topic"
@@ -124,6 +134,9 @@ function Row({
         active && "bg-muted/60 shadow-[inset_2px_0_0_0_var(--primary)]",
       )}
     >
+      <TableCell className="py-2.5 align-top">
+        <RoadmapNumber index={blog.roadmap_index} />
+      </TableCell>
       {/* TableCell is nowrap by default, which suits machine values but truncates a real H1.
           The title column wraps instead. */}
       <TableCell className="max-w-sm py-2.5 whitespace-normal">
@@ -216,6 +229,33 @@ function WaitingChip({ signal }: { signal: WaitingSignal }) {
       )}
     </span>
   );
+}
+
+/**
+ * The blog's row on the roadmap, which is the name the work actually goes by: "we are done with
+ * six, send seven". Titles here run to a dozen words and half of them open with the same three,
+ * so the number is what a person holds in their head and what a client quotes back.
+ *
+ * DISPLAYED index + 1, matching the preview's own "#" column, so a number read here finds the
+ * same row there.
+ *
+ * A blog on no row gets a dash, never a number: the sheet was deleted or re-uploaded without
+ * this topic, and inventing a position for it would be worse than admitting it has none. A wrong
+ * number is not a missing number, it is blog six pointing at row nine, and the operator would act
+ * on it.
+ */
+function RoadmapNumber({ index }: { index: number | null }) {
+  if (index === null) {
+    return (
+      <span
+        title="This blog is not on the current roadmap. Its row was deleted, or the sheet was replaced since it was written."
+        className="machine cursor-default text-xs text-muted-foreground/50"
+      >
+        -
+      </span>
+    );
+  }
+  return <span className="machine text-sm text-muted-foreground">{index + 1}</span>;
 }
 
 /** No eval, no number. Not a zero, and not a dash dressed up as one. */

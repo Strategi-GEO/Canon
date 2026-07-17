@@ -122,7 +122,12 @@ export function RoadmapPanel({
               {preview.map((row) => (
                 <li key={row.index} className="flex items-start gap-3 py-2.5">
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm text-pretty text-foreground">{row.topic}</p>
+                    <p className="text-sm text-pretty text-foreground">
+                      {/* The row number, here as everywhere else. This is a preview of the sheet,
+                          so a row read here has to be findable in the sheet without counting. */}
+                      <span className="machine mr-1.5 text-muted-foreground">{row.index + 1}.</span>
+                      {row.topic}
+                    </p>
                     {/* What the piece covers, in place of the slug this used to print. A title
                         and its own slugified self say one thing twice, and neither says what
                         the topic actually is. The slug is the ledger key and it is still on

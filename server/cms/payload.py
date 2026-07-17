@@ -139,13 +139,28 @@ _TRAILING_STOPWORDS = frozenset({
     "or", "over", "per", "the", "to", "under", "with", "your",
 })
 
-SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+# Tokens whose full stop is not a sentence ending. "Rs." is the one that actually bites:
+# it is in every Vacation Village price, so a naive split publishes a description ending
+# "...plots, from Rs." with the number stranded on the other side of the cut.
+_ABBREVIATIONS = frozenset({
+    "rs.", "no.", "vs.", "etc.", "approx.", "est.", "inc.", "ltd.", "co.", "pvt.",
+    "mr.", "mrs.", "ms.", "dr.", "st.", "jr.", "sr.", "e.g.", "i.e.", "u.s.", "u.k.",
+    "sq.", "ft.", "km.", "hrs.", "yrs.", "min.", "max.", "fig.", "vol.", "ed.", "pp.",
+})
+
+# `\Z` not `$`: Python's `$` also matches just before a trailing newline, so `$` here would
+# pass "my-topic\n" as a valid slug and send it, and the CMS pattern would reject it.
+SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$")
 _TLDR_RE = re.compile(r"^\s*\*\*TL;DR:?\*\*:?\s*(.+)$", re.IGNORECASE)
 _SOURCES_H2_RE = re.compile(r"^##\s+sources\s+and\s+references\s*$", re.IGNORECASE)
 _ANY_H2_RE = re.compile(r"^##\s+")
 _URL_RE = re.compile(r"https?://\S+")
 _MD_LINK_RE = re.compile(r"\[([^\]]*)\]\((?:[^)]*)\)")
+# The link form, with the URL captured: used to lift a source's URL out of a markdown
+# bullet before any bare-URL scan sees it. Non-greedy on the target so a trailing ')' that
+# closes the link is not swallowed into the URL.
+_MD_LINK_URL_RE = re.compile(r"\[([^\]]*)\]\(\s*<?(https?://[^)\s>]+)>?\s*\)")
 
 
 class PayloadError(ValueError):
@@ -249,21 +264,68 @@ def extract_citations(body_md):
         stripped = line.strip()
         if not stripped.startswith(("-", "*")):
             continue
-        found = _URL_RE.search(stripped)
-        if not found:
-            continue
-        url = found.group(0).rstrip(".,;)")
-        if url in seen:
-            continue
-        seen.add(url)
 
-        label = _plain_text(stripped.lstrip("-* ").replace(found.group(0), "")).strip()
-        label = label.rstrip(".,; ").strip()
-        entry = {"url": url}
-        if label:
-            entry["title"] = label
-        citations.append(entry)
+        urls, label = _split_urls_and_label(stripped.lstrip("-* "))
+        for url in urls:
+            if url in seen:
+                continue
+            seen.add(url)
+            entry = {"url": url}
+            if label:
+                entry["title"] = label
+            citations.append(entry)
     return citations
+
+
+def _trim_url(raw):
+    """A matched URL with trailing sentence punctuation removed, parens kept balanced.
+
+    A naive rstrip(".,;)") corrupts real URLs: Wikipedia's disambiguation form
+    (".../Coffee_(beverage)") and plenty of government PDFs end in a genuine ')', and
+    chopping it ships a citation link that 404s. Counting decides it instead. A ')' that
+    closes a '(' inside the URL stays; one with nothing to close came from the prose
+    wrapping the link, as in "(see https://x.com/a)", and goes.
+    """
+    url = raw
+    while url and url[-1] in ".,;:!?'\"":
+        url = url[:-1]
+    while url.endswith(")") and url.count(")") > url.count("("):
+        url = url[:-1]
+    return url
+
+
+def _split_urls_and_label(text):
+    """(every URL in a source line, the human label left over).
+
+    ALL urls, not just the first: a house source line may cite two documents, and taking
+    only `_URL_RE.search` dropped the second citation entirely AND left its raw URL sitting
+    in the first one's title, because the label was built by removing just one URL.
+
+    Markdown links are unwrapped FIRST. "[Label](https://x)" contains a URL whose regex
+    match runs to the ')', so handling it as a bare URL leaves an unbalanced "[Label](" in
+    the title.
+    """
+    urls = []
+
+    def _take_md_link(match):
+        urls.append(_trim_url(match.group(2)))
+        # The link's own text survives as part of the label: it is the source's name.
+        return match.group(1)
+
+    remaining = _MD_LINK_URL_RE.sub(_take_md_link, text)
+
+    def _take_bare(match):
+        urls.append(_trim_url(match.group(0)))
+        return " "
+
+    remaining = _URL_RE.sub(_take_bare, remaining)
+
+    label = _plain_text(remaining)
+    # The colon joins the trailing set. The house line is `Publisher, "Title," date: URL`,
+    # so removing the URL strips the colon's object and leaves it dangling: this was 159 of
+    # 192 real citation titles ending in a bare ':'.
+    label = label.strip().rstrip(".,;: ").strip()
+    return [u for u in urls if u], label
 
 
 def _drop_dangling_words(text):
@@ -310,6 +372,39 @@ def meta_title_from(title):
     return clipped
 
 
+def _split_sentences(text):
+    """Sentences, without breaking on an abbreviation's full stop.
+
+    A plain split on "period, then space" is wrong for this client set: "Rs." appears in
+    every Vacation Village price, and "approx.", "vs." and "e.g." are ordinary in the house
+    voice. Breaking there makes the FIRST sentence "...from Rs." and publishes that as the
+    meta description, which reads as truncation and strands the number.
+
+    The rule is a boundary needs a following capital or digit, and the token before it must
+    not be a known abbreviation. This is not full NLP and does not need to be: it only has
+    to avoid cutting a real TL;DR in the wrong place.
+    """
+    out = []
+    for part in re.split(r"(?<=[.!?])\s+(?=[\"'(\[]?[A-Z0-9])", text):
+        part = part.strip()
+        if not part:
+            continue
+        # Glue onto the PREVIOUS piece when that piece ended on an abbreviation: the break
+        # between them was the abbreviation's own full stop, not a sentence ending.
+        if out and _ends_on_abbreviation(out[-1]):
+            out[-1] = f"{out[-1]} {part}"
+        else:
+            out.append(part)
+    return out
+
+
+def _ends_on_abbreviation(text):
+    """True when text's final token is an abbreviation rather than a sentence ending."""
+    last = text.rsplit(" ", 1)[-1].strip("\"')]").lower()
+    # The second test catches a single-letter initial ("J. Smith"), which no list can hold.
+    return last in _ABBREVIATIONS or bool(re.fullmatch(r"[a-z]\.", last))
+
+
 def meta_description_from(excerpt):
     """An SEO description, DERIVED from the TL;DR rather than written fresh.
 
@@ -330,7 +425,7 @@ def meta_description_from(excerpt):
     if not excerpt:
         return None
 
-    sentences = [s for s in re.split(r"(?<=[.!?])\s+", excerpt) if s.strip()]
+    sentences = _split_sentences(excerpt)
     if not sentences:
         return None
 
@@ -381,6 +476,12 @@ def build_payload(client_slug, topic_slug, blog_md, prompts=None, industry=None,
     stays pure and a test can build any client's payload without a clients/ tree on disk.
     """
     title, body = split_title(blog_md)
+    # BOTH are spec-required non-empty strings, so both are checked. The body was guarded
+    # and the title was not, which left one real gap: _H1_RE's `(.+?)` matches a space, so
+    # an H1 of "#" plus whitespace yields a title of "" that sails into the payload and
+    # earns a 422 the operator would have to decode from the CMS.
+    if not title.strip():
+        raise PayloadError("draft's H1 is empty, so there is no title to send")
     if not body.strip():
         raise PayloadError("draft has an H1 and nothing else, so there is no body to send")
 

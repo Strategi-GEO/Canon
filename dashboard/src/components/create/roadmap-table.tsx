@@ -144,6 +144,10 @@ export function RoadmapTable(
                 />
               </TableHead>
             ) : null}
+            {/* The row's own number, the same one the preview's "#" column shows and the same one
+                every blog written from this sheet carries. This table IS the sheet, so reading a
+                row here and finding it in the CSV should not require counting. */}
+            <TableHead className="machine w-10 align-middle text-xs font-medium">#</TableHead>
             <TableHead className="machine w-[26%] align-middle text-xs font-medium">topic</TableHead>
             <TableHead className="machine w-[30%] align-middle text-xs font-medium">what it covers</TableHead>
             <TableHead className="machine align-middle text-xs font-medium">target prompts</TableHead>
@@ -244,10 +248,18 @@ function Row({
             disabled={!selectable}
             onClick={selection.onCheckboxClick}
             onCheckedChange={() => selection.onCheckboxChange(row.index)}
-            aria-label={`Select ${row.topic}`}
+            // The number, so the checkbox a screen reader lands on names the row the same way
+            // the screen does rather than reading a dozen words of title to say which one.
+            aria-label={`Select row ${row.index + 1}, ${row.topic}`}
           />
         </TableCell>
       ) : null}
+
+      {/* Displayed index + 1, agreeing with the preview's "#" column, engine-error's "row N",
+          and the number every blog written from this row carries in the library. */}
+      <TableCell className="machine pt-4 align-top text-xs whitespace-normal text-muted-foreground">
+        {row.index + 1}
+      </TableCell>
 
       {/*
         The slug is gone from this cell. It was the topic a second time, hyphenated: the same

@@ -82,9 +82,36 @@ def assert_publishable(runner, client_slug, topic_slug):
         )
 
     try:
-        return blog_path.read_text(encoding="utf-8")
+        blog_md = blog_path.read_text(encoding="utf-8")
     except OSError as cause:
         raise PublishRefused(f"Cannot read blog.md for '{topic_slug}': {cause}", status=status)
+
+    # THE ARTIFACT IS ASKED WHETHER IT IS FAKE, because nothing else can be trusted to know.
+    #
+    # is_demo_client above catches only a client whose gates.json sets demo_mode. It does NOT
+    # catch GEO_MOCK=1, the global test switch, which fakes EVERY client, real ones included,
+    # while still writing the result into that client's REAL output folder and REAL ledger
+    # with a terminal status of "done". So a mock blog for Vacation Village reaches this
+    # function with is_demo_client False and status "done", and every check above passes it.
+    #
+    # The environment cannot answer this. GEO_MOCK is read at GENERATION time and a push
+    # happens later, in a process that may never have had it set, so runner.geo_mock() here
+    # would report on the wrong moment entirely. The file itself is the only witness to how
+    # it was made, and every mock and demo artifact carries DEMO_MARKER as its first line.
+    #
+    # This is the last line of defence and it has to hold: split_title drops everything above
+    # the H1, which is exactly where DEMO_MARKER sits, so a mock draft that got past here
+    # would arrive in a client's CMS as a clean, approvable article with the one line saying
+    # "Not for publication" removed on the way. Refuse on the raw text, before any transform.
+    if runner.DEMO_MARKER in blog_md:
+        raise PublishRefused(
+            f"'{topic_slug}' is mock content: it carries the engine's not-for-publication "
+            f"marker, so it was generated with no research and no API calls (demo mode, or a "
+            f"run with GEO_MOCK=1). It can never reach a CMS.",
+            status="mock",
+        )
+
+    return blog_md
 
 
 def build_for_publish(runner, ledger, client_slug, topic_slug, client=None):

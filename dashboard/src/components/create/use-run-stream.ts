@@ -18,6 +18,15 @@ export type SegState = "pending" | "active" | "done";
 export type Seed = {
   topicSlug: string;
   label: string;
+  /**
+   * Its row on the sheet ON SCREEN, or null when it is on no row there.
+   *
+   * Taken from the matched RoadmapRow and NEVER from the accepted topic's own index, for the
+   * reason seedsFor spells out below: the run's index points into the sheet the run STARTED
+   * from, which after any refresh is not the sheet being displayed. A number is a promise that
+   * it agrees with the roadmap the operator is looking at, and only the matched row can keep it.
+   */
+  roadmapIndex: number | null;
 };
 
 /**
@@ -37,6 +46,8 @@ const TERMINAL: ReadonlySet<RunStatus> = new Set<RunStatus>([
 export type TopicRun = {
   topicSlug: string;
   label: string;
+  /** This topic's row on the sheet on screen, or null. Carried from its Seed. See Seed. */
+  roadmapIndex: number | null;
   segments: Record<Segment, SegState>;
   /**
    * Keyed by iteration, not appended, because the lead's terminal line repeats the final
@@ -92,11 +103,18 @@ export function seedsFor(topics: readonly unknown[], rows: RoadmapRow[]): Seed[]
     if (typeof entry === "string") {
       const row = rows.find((r) => r.topic === entry || r.topic_slug === entry);
       if (row) {
-        return [{ topicSlug: row.topic_slug, label: row.topic }];
+        return [{ topicSlug: row.topic_slug, label: row.topic, roadmapIndex: row.index }];
       }
       // No roadmap match: fall back to the documented slug rule, lowercase with spaces to
       // hyphens. A wrong guess only leaves the row queued until its first frame arrives.
-      return [{ topicSlug: entry.toLowerCase().replace(/\s+/g, "-"), label: entry }];
+      // No row means no number: there is nothing on screen for one to point at.
+      return [
+        {
+          topicSlug: entry.toLowerCase().replace(/\s+/g, "-"),
+          label: entry,
+          roadmapIndex: null,
+        },
+      ];
     }
 
     if (entry && typeof entry === "object") {
@@ -120,7 +138,18 @@ export function seedsFor(topics: readonly unknown[], rows: RoadmapRow[]): Seed[]
       if (!topicSlug) {
         return [];
       }
-      return [{ topicSlug, label: row?.topic ?? topic.topic ?? topicSlug }];
+      // The NUMBER comes from the matched row for the same reason the SLUG does, and the
+      // paragraph above is the whole argument: topic.index points into the sheet the run
+      // started from. Reading it here would print a confident number from a different sheet,
+      // which is worse than the mislabelling described above, because a wrong label looks
+      // wrong on sight and a wrong number does not.
+      return [
+        {
+          topicSlug,
+          label: row?.topic ?? topic.topic ?? topicSlug,
+          roadmapIndex: row?.index ?? null,
+        },
+      ];
     }
 
     return [];
@@ -131,6 +160,7 @@ function blank(seed: Seed): TopicRun {
   return {
     topicSlug: seed.topicSlug,
     label: seed.label,
+    roadmapIndex: seed.roadmapIndex,
     segments: {
       research: "pending",
       write: "pending",
@@ -265,8 +295,15 @@ export function useRunStream(runId: string | null, seeds: Seed[]): StreamState {
         const i = current.findIndex((t) => t.topicSlug === e.topic_slug);
         if (i === -1) {
           // A frame for a topic no seed named. The engine is the authority on what is
-          // running, so show it rather than drop it.
-          return [...current, applyEvent(blank({ topicSlug: e.topic_slug, label: e.topic_slug }), e)];
+          // running, so show it rather than drop it. It gets no number: a frame carries a slug
+          // and nothing else, and no seed claimed it, so there is no row to read one from.
+          return [
+            ...current,
+            applyEvent(
+              blank({ topicSlug: e.topic_slug, label: e.topic_slug, roadmapIndex: null }),
+              e,
+            ),
+          ];
         }
         const next = [...current];
         next[i] = applyEvent(next[i], e);

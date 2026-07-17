@@ -22,6 +22,7 @@ strings can carry passive voice or a generic entity. The client quotes them for
 fidelity, so the gates skip those spans. Quoted spans are NOT exempt from the client's
 forbidden_claim_patterns: a forbidden claim stays forbidden even inside a quotation.
 """
+import difflib
 import json
 import os
 import re
@@ -62,6 +63,24 @@ IRREGULAR_PARTICIPLES = (
 )
 
 DEFAULT_WORD_BAND = {"min": 1200, "soft_max": 2000, "hard_max": 2500}
+
+# The structural spec's FAQ shape: a direct opening sentence, then 75 to 300 words of
+# context. The pairs gate counts questions and never reads the answers, so a six-pair
+# FAQ of one-liners passed the script and lost the point at the eval instead.
+FAQ_ANSWER_MIN = 75
+FAQ_ANSWER_MAX = 300
+
+# Near-duplicate prose. Threshold is 3+ occurrences, NOT 2, and the difference is the
+# whole calibration: the rubric rewards self-contained sections, so a body claim
+# restated once in the FAQ is the spec working rather than a defect. Three near-verbatim
+# copies of one sentence is what an eval actually charged a draft for.
+DUP_MIN_WORDS = 10
+# 0.80, not 0.85: two copies of one claim in a live draft measured 0.837 and slipped a
+# 0.85 gate. This catches lexical repetition ONLY. It cannot see semantic repetition, and
+# the same draft proves the limit: a third sentence restating the identical claim in
+# fresh words scored 0.648 against its twins. An evaluator charged all three as one
+# defect and was right to. Treat a PASS here as "no copy-paste", never as "not repetitive".
+DUP_RATIO = 0.80
 
 
 # --- Text helpers (load-bearing, preserved from the single-client engine) -------
@@ -351,6 +370,7 @@ def run_gates(md: str, cfg: dict) -> list:
     faq_idx = md.lower().find("## faq")
     if faq_idx == -1:
         gate("faq-6-pairs", "FAIL", "no '## FAQ' section found")
+        gate("faq-answer-length", "FAIL", "no '## FAQ' section to measure")
     else:
         tail = md[faq_idx:]
         src = tail.lower().find("## sources")
@@ -360,6 +380,80 @@ def run_gates(md: str, cfg: dict) -> list:
         qs += re.findall(r"^\*\*.+\?\*\*\s*$", faq_body, re.M)
         gate("faq-6-pairs", "PASS" if len(qs) >= 6 else "FAIL",
              f"{len(qs)} question headings (need 6+)")
+
+        # --- FAQ answers carry their 75 to 300 words ----------------------------
+        # Each answer runs from its question heading to the next one, or to the end of
+        # the FAQ body for the last pair. Measured link-stripped, exactly as word-count
+        # measures the document, so the two gates never disagree about what a word is.
+        qpat = re.compile(r"^(?:###\s+.+\?[ \t]*|\*\*.+\?\*\*[ \t]*)$", re.M)
+        marks = list(qpat.finditer(faq_body))
+        short, verbose = [], []
+        for i, m in enumerate(marks):
+            end = marks[i + 1].start() if i + 1 < len(marks) else len(faq_body)
+            answer = strip_links(faq_body[m.end():end])
+            n = len(re.findall(r"\b[\w'’₹%.,-]+\b", re.sub(r"[|#*>`]", " ", answer)))
+            label = m.group().strip().strip("*# ")[:40]
+            if n < FAQ_ANSWER_MIN:
+                short.append(f"{label!r} {n}w")
+            elif n > FAQ_ANSWER_MAX:
+                verbose.append(f"{label!r} {n}w")
+        if not marks:
+            gate("faq-answer-length", "FAIL", "no question headings to measure")
+        elif short:
+            gate("faq-answer-length", "FAIL",
+                 f"{len(short)} of {len(marks)} answers under the {FAQ_ANSWER_MIN}-word "
+                 f"floor, expand them: " + "; ".join(short))
+        elif verbose:
+            gate("faq-answer-length", "WARN",
+                 f"{len(verbose)} of {len(marks)} answers over {FAQ_ANSWER_MAX} words: "
+                 + "; ".join(verbose))
+        else:
+            gate("faq-answer-length", "PASS",
+                 f"all {len(marks)} answers within {FAQ_ANSWER_MIN}-{FAQ_ANSWER_MAX} words")
+
+    # --- near-duplicate sentences -----------------------------------------------
+    # Concision is the one graded dimension a script can see directly. This reads
+    # `stripped`, NOT `unquoted`: the other gates mask quoted spans so a client's
+    # required verbatim wording is never charged as passive or generic, but repetition
+    # is the opposite case. Saying the same attributed claim three times is padding no
+    # matter whose words it is, and §6.2 forces those repeats to be verbatim, so masking
+    # quotes here would hide the one thing this gate exists to find.
+    # Prose and bullets only. content_blocks() drops headings and tables, and dropping
+    # them is required, not a convenience: the spec says every target prompt must be
+    # reachable from an H2 or an FAQ question phrased verbatim, so an FAQ question
+    # echoing its H2 is the contract being followed. Reading raw markdown here charged
+    # four drafts for exactly that.
+    sents = [s
+             for kind, text, _ln in content_blocks(stripped)
+             for s in split_sentences(re.sub(r"[|#*>`]", " ", text))
+             if len(s.split()) >= DUP_MIN_WORDS]
+    norms = [re.sub(r"[^a-z0-9 ]", "", s.lower()).strip() for s in sents]
+    clusters, claimed = [], set()
+    for i, a in enumerate(norms):
+        if i in claimed or not a:
+            continue
+        group = [i]
+        for j in range(i + 1, len(norms)):
+            if j in claimed or not norms[j]:
+                continue
+            if difflib.SequenceMatcher(None, a, norms[j]).ratio() >= DUP_RATIO:
+                group.append(j)
+                claimed.add(j)
+        if len(group) > 1:
+            claimed.add(i)
+            clusters.append(group)
+    repeats = [g for g in clusters if len(g) >= 3]
+    twins = [g for g in clusters if len(g) == 2]
+    if repeats:
+        gate("no-duplicate-sentences", "FAIL",
+             "; ".join(f"{len(g)}x near-verbatim: {sents[g[0]][:64]!r}" for g in repeats))
+    elif twins:
+        gate("no-duplicate-sentences", "WARN",
+             "restated once, allowed if the section needs to stand alone: "
+             + "; ".join(f"{sents[g[0]][:64]!r}" for g in twins))
+    else:
+        gate("no-duplicate-sentences", "PASS",
+             f"no sentence repeated near-verbatim ({len(sents)} sentences checked)")
 
     # --- Sources section is last ------------------------------------------------
     heads = [(m.start(), m.group().strip()) for m in re.finditer(r"^##\s+.+$", md, re.M)]

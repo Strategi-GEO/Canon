@@ -19,8 +19,10 @@ nothing, and twenty drafts inherit that silence as permission. Validation below 
 cannot vouch for, because a brand with no fact base fails loudly and a brand with a hollow one
 does not fail at all.
 """
+import asyncio
 import os
 import re
+from contextlib import aclosing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -533,13 +535,22 @@ async def generate_facts(client_slug):
     )
 
     text = ""
+    # aclosing, rather than a bare `async for`, for the reason runner._sdk_session spells out and
+    # this session makes worse. query() is an async generator driving a Node subprocess, and the
+    # transport close lives in its finally; on the cancellation path a plain `async for` leaves
+    # that finally to whenever the generator is collected, which is not a guarantee of anything.
+    # The orphaned CLI child keeps its MCP servers and keeps spending the operator's PERSONAL
+    # subscription quota after they pressed Stop, and this particular child holds Write on
+    # canonical-facts.md, so it can also go on writing the file the stop path is trying to discard.
+    # A session someone already cancelled must not still be billing them, let alone still typing.
     try:
-        async for message in query(prompt=prompt, options=options):
-            found = _final_text(message)
-            if found:
-                # Keep the LAST text message. The prompt's closing line says the agent's final
-                # message IS the report; an earlier one is the model narrating a scrape.
-                text = found
+        async with aclosing(query(prompt=prompt, options=options)) as session:
+            async for message in session:
+                found = _final_text(message)
+                if found:
+                    # Keep the LAST text message. The prompt's closing line says the agent's final
+                    # message IS the report; an earlier one is the model narrating a scrape.
+                    text = found
     except ClaudeSDKError as exc:
         raise FactsGenerationError(f"the canonical facts session died ({exc})")
 
@@ -586,6 +597,44 @@ async def ensure_facts(client_slug, run_id=None):
         job["mock"] = result["mock"]
         job["error"] = _validate_written(client_slug)
         job["state"] = "failed" if job["error"] else "done"
+    except asyncio.CancelledError:
+        # THE OPERATOR STOPPED THE BRAND MID-BUILD, and without this arm the stop poisons every
+        # blog the brand will ever have. CancelledError is a BaseException, so NEITHER handler
+        # below sees it, and both of the things they do are things a stop needs done.
+        #
+        # _discard_unvouched is the one that matters. This session holds Write from its first turn
+        # and authors canonical-facts.md AS IT GOES, so a stop lands on a file that is real, is on
+        # disk, and has §1 through §5 but no §6 and no §9. Nothing here is rolled back by leaving
+        # it: the next Generate asks only `has_canonical_facts`, which is a bare is_file(), so the
+        # build is SKIPPED and never runs again; run_topic's preflight checks existence and the
+        # PLACEHOLDER token, neither of which a truncated file trips. So every blog for the brand
+        # is written against a fact base whose do-not-claim list does not exist. It forbids
+        # nothing, and twenty drafts inherit the silence as permission. That is the exact outcome
+        # _validate_written and _discard_unvouched were both written to prevent, and a stop is the
+        # one path that walked around them. Failure has to leave the brand as it found it, and a
+        # stop is no exception: the operator gets a brand with no fact base, which fails loudly
+        # the next time they press Generate, rather than a hollow one that never fails at all.
+        #
+        # DELETING NOTHING ELSE. This is the discard of an unvouched half-file this module already
+        # owns, not a stop deleting an operator's work: no dossier, draft or status line is touched
+        # here, and a fact base that VALIDATES is never discarded by this path.
+        #
+        # The state assignment is not bookkeeping either. Skipping it leaves the job on "running"
+        # for the life of the process, so job_running answers True forever, the clock in the UI
+        # never stops, and api_clear_facts_generation 409s permanently: the operator cannot even
+        # clear the record of the thing they stopped. "failed" is the honest state, because no
+        # fact base was produced, and the error line says who ended it and why nothing is on disk.
+        _discard_unvouched(client_slug)
+        job["error"] = (
+            "the operator stopped this brand while canonical-facts.md was being built, so no "
+            "fact base was written. Nothing partial was kept: a half-built fact base passes "
+            "preflight and silently poisons every blog behind it. Press Generate to build it "
+            "again from the start."
+        )
+        job["state"] = "failed"
+        # NEVER swallow a cancellation. run_batch is awaiting this, and a normal return here would
+        # tell it the fact base is ready and let it dispatch twenty topics into a stop.
+        raise
     except FactsGenerationError as exc:
         # The session had Write from its first turn, so a death here says nothing about whether a
         # file is on disk: validation has to run on the way out too, or the one outcome this module

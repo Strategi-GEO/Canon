@@ -193,7 +193,18 @@ function PreviewBody({
   return (
     <>
       <SheetHeader className="gap-0 border-b p-4 pr-14">
-        <SheetTitle className="text-base leading-snug text-pretty">{blog.topic}</SheetTitle>
+        <SheetTitle className="text-base leading-snug text-pretty">
+          {/* Ahead of the title, because this is the drawer someone opens when a client says
+              "change blog six" and the number is what confirms they opened the right one. It
+              reads as part of the heading rather than a chip beside it: the row IS the blog's
+              name here, the way a chapter number belongs to its chapter. */}
+          {blog.roadmap_index !== null ? (
+            <span className="machine mr-1.5 font-normal text-muted-foreground">
+              {blog.roadmap_index + 1}.
+            </span>
+          ) : null}
+          {blog.topic}
+        </SheetTitle>
         <SheetDescription asChild>
           <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
             {isKnownStatus(blog.status) ? <StatusBadge status={blog.status} /> : null}

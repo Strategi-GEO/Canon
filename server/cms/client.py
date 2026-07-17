@@ -167,20 +167,37 @@ async def push_draft(payload, api_key, *, url=None, client=None):
                 # connection is the same class of problem as a 5xx, and the request
                 # is idempotent, so retrying is safe.
                 last = CmsError(f"Cannot reach the CMS: {cause}")
+                if attempt == MAX_ATTEMPTS - 1:
+                    break
                 await asyncio.sleep(min(float(2 ** attempt), MAX_BACKOFF_SECONDS))
                 continue
 
             if response.status_code in (200, 201):
                 try:
-                    return response.json()
+                    body = response.json()
                 except ValueError:
                     raise CmsError(
                         "The CMS accepted the draft but its response was not JSON.",
                         status=response.status_code,
                     )
+                # A bare string, list or null is valid JSON and would sail through, then
+                # blow up in the endpoint on .get() as a 500: the push SUCCEEDED and the
+                # operator would be told the engine crashed. Fail here, where the message
+                # can say what actually happened.
+                if not isinstance(body, dict):
+                    raise CmsError(
+                        "The CMS accepted the draft but its response was not a JSON object, "
+                        "so the draft may exist despite this error.",
+                        status=response.status_code,
+                    )
+                return body
 
             if response.status_code == 429 or response.status_code >= 500:
                 last = CmsError(_error_message(response), status=response.status_code)
+                # The final attempt has nothing left to wait for: sleeping after it burns up
+                # to MAX_BACKOFF_SECONDS of an operator's spinner and then raises anyway.
+                if attempt == MAX_ATTEMPTS - 1:
+                    break
                 # No key material here, and no payload: the body is a whole blog.
                 log.warning(
                     "CMS push got %s, retrying (attempt %s of %s)",

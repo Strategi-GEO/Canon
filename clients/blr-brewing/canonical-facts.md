@@ -70,7 +70,7 @@ Treat the seat counts as the brand's own stated figures and attribute them that 
 | Outlet | Seats (brand's own figure) | Notes | Source |
 |---|---|---|---|
 | Whitefield | ~1,200, plus 300 to 400 at Hamilton | Only outlet with a Japanese kitchen (ramen, sushi, tempura, Japanese appetisers). 65,000 sq ft. Opened as the brand's fourth and largest outlet, announced Jan 2024. | [Whitefield page](https://www.blrbrewing.com/whitefield); [Brewer World, 30 Jan 2024](https://www.brewer-world.com/blr-brewing-co-introduces-indias-largest-waterfall-at-whitefield-brewpub-a-blend-of-nature-and-culinary-excellence/) ("65,000 sq. ft. with a seating capacity of 1200 covers") |
-| Kanakapura Road | ~600 | One-acre site built around 50 to 60 mature trees; Japanese koi pond. | [Kanakapura page](https://www.blrbrewing.com/blank) |
+| Kanakapura Road | ~600 (page fetched 2026-07-17) | One-acre site built around 50 to 60 mature trees; Japanese koi pond. The page also carries occasion copy, fetched in full 2026-07-17: it calls the outlet "a strong daytime and family-dining destination and a favourite for weekend brunch and Sunday celebrations", and its Best For block reads "Families: Daytime dining, weekend brunch, and pre/post-engagement and birthday celebrations". That copy is citable to this page under §6.1 #2's fetched-source branch. It is NOT independent corroboration: the page's phrasing tracks KB §1.7 and §2.1 near-verbatim (§7 #1), so it evidences what BLR Brewing Co. publishes, not that the pattern is real. | [Kanakapura page](https://www.blrbrewing.com/blank) |
 | Marathahalli | ~350 | Inside Prestige Tech Park. Daily corporate lunch buffet alongside the regular menu. | [Marathahalli page](https://www.blrbrewing.com/blank-3) |
 | Electronic City | ~325 | The brand's original 2019 outlet. Friday and Saturday DJ nights, Saturday live music. | [Electronic City page](https://www.blrbrewing.com/blank-1) |
 | Bellandur | ~250 | Tech-park corridor. Daily corporate lunch buffet. Parking managed by the host tech park, valet at outlet level. | [Bellandur page](https://www.blrbrewing.com/blank-4) |
@@ -292,11 +292,29 @@ forbidden one.
    weekend day", "Siebel Institute-trained brewmaster Umang Nair", the Liquid Journey framing, the
    founder's-favourite dish. The knowledge base is dated May 2026 and was prepared by Strategi,
    the same agency running this factory, and the site also hosts this factory's `/articles/`
-   output. **Resolution: where the site and the knowledge base agree on a brand-internal number,
-   that is ONE source, not two.** Those figures are recorded in §9 or attributed as the brand's
-   own statements in §2.2, never as corroborated fact. The precedence rule in the engine contract
-   assumes the site is independent of the resources. Here it is not. A human should confirm who
-   wrote the outlet pages and when.
+   output.
+
+   **WHO answered 2026-07-17; the DIRECTION reverses; the resolution does not.** The operator
+   (Strategi) states the client wrote the outlet pages independently. That is compatible with the
+   phrasing match only if the KB was written FROM the site rather than the site from the KB, and
+   the dates support it: the site footer reads © 2022, the knowledge base is dated May 2026. The
+   match is too close to be coincidence. KB §2.1: "Approximately 600 seats. One-acre property
+   built around 50 to 60 mature trees. Strong daytime and family dining destination." Kanakapura
+   page: "a ~600-seat outlet built on a one-acre site around 50 to 60 mature trees ... a strong
+   daytime and family-dining destination". KB §1.5: "tables and sections arranged around them so
+   that walking in feels like dining inside a park." Page: "sections and tables arranged among
+   them so walking in feels like dining inside a park."
+
+   **Resolution, unchanged by the direction: where the site and the knowledge base agree on a
+   brand-internal number, that is ONE source, not two.** Site agreement NEVER promotes a §9 row.
+   Those figures are recorded in §9 or attributed as the brand's own statements in §2.2, never as
+   corroborated fact. The engine contract's precedence rule assumes the site is independent of the
+   resources; it is not, in either direction. **"The client wrote the pages" does not make the
+   pages independent evidence: it makes them the brand's own first-hand statement, which is still
+   the brand talking about itself.** Reading this entry as "resolved, site is a second source"
+   would promote a large share of §9 on a false premise, which is the specific error it exists to
+   prevent. What remains genuinely open: whether the client drafted the page copy from its own
+   operational knowledge or from an earlier agency document.
 
 2. **Phone numbers: the homepage contradicts itself. RESOLVED.** The homepage location cards give
    Kanakapura Road +91 80 4716 2222 and Electronic City +91 80 4710 8277. The FIND US block on the

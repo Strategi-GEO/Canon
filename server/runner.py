@@ -395,6 +395,63 @@ def _terminal_line(lines):
     return None
 
 
+def _status_baseline(out_dir):
+    """How many status lines existed when THIS session took over the topic.
+
+    status.jsonl is append-only and OUTLIVES the run that created it, because a stopped or failed
+    topic is offered back to the operator to generate again ("Generate again to resume", and the
+    roadmap only ever withholds `done` topics). So the file a second run starts against already
+    carries the FIRST run's terminal line, and every question worth asking here is about this
+    session: did the session just now reach a verdict, or is it dying without one? Asking that of
+    the whole file answers with a verdict that belongs to a run which ended hours ago.
+
+    Both readers of this got it wrong the same way, and the bugs were mirror images. The retry
+    loop saw the old run's terminal line, broke on attempt 1 without retrying, and reported the
+    previous run's status as this run's result. The cancel arm saw the same line, skipped its
+    stopped append, and left the SSE stream open forever on the session the operator had just
+    killed, which is the exact failure that arm exists to prevent.
+
+    Taken ONCE, at entry, before anything can append: a baseline recomputed later would swallow
+    the very lines it is meant to notice.
+    """
+    return len(_read_status(out_dir))
+
+
+def _stop_line_if_unterminated(out_dir, topic_slug, baseline, note):
+    """Append the terminal stopped line for a topic THIS session left without a verdict.
+
+    THE GUARD IS THE OPERATOR'S PROMISE, IN CODE. "Whichever blogs have been created will be
+    kept" fails on one careless append here: a topic can reach done microseconds before the
+    cancel lands, status.jsonl is append-only, and _terminal_line reads the LAST terminal line,
+    so an unguarded append demotes a blog that shipped, is on disk, and may already be in the
+    ledger. Every surface flips together, because they all read that same last line. The contract
+    states the invariant plainly: a stop on an already-terminal topic is a no-op, never a second
+    terminal line.
+
+    Shared by run_topic (the topic that was mid-session) and run_batch (the topics that never
+    got one, either queued behind the semaphore or never dispatched at all because the stop
+    landed while the run was still waiting on CLIENT_LOCK or building the fact base). One
+    implementation because the guard and the line shape must not drift apart: a second copy is
+    how a topic comes to be stopped in one path and demoted in the other.
+
+    Returns True when a line was written, so a caller can report what it halted.
+    """
+    lines = _read_status(out_dir)
+    if _terminal_line(lines[baseline:]) is not None:
+        return False
+    # Whatever stage was in flight, kept as-is. A stop is the one terminal line that can land on
+    # any stage, so its "end" may have no matching "start"; consumers read the status field and
+    # never the stage, which is what makes that harmless. No score is invented: a topic that never
+    # reached a verdict does not get one attributed to it.
+    last = lines[-1] if lines else {}
+    _status_module().append_status(
+        str(out_dir), topic_slug,
+        stage=last.get("stage", "research"), event="end",
+        iter=last.get("iter", 1), status="stopped", note=note,
+    )
+    return True
+
+
 def _summarize(topic_slug, lines):
     """What a topic's status.jsonl adds up to: its status, its score, its iteration count.
 
@@ -1234,6 +1291,10 @@ async def run_topic(client_slug, row, *, mock=None, run_dir_root=None, precheck_
     out_dir = output_dir(client_slug, topic_slug, root=run_dir_root)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Before anything can append. See _status_baseline: this topic may have been run before, and
+    # every terminal question below is about THIS session rather than about the file.
+    baseline = _status_baseline(out_dir)
+
     append_status = _status_module().append_status
     try:
         # GEO_MOCK, an explicit mock=True, or a demo_mode client. A demo client
@@ -1290,7 +1351,11 @@ async def run_topic(client_slug, row, *, mock=None, run_dir_root=None, precheck_
                 await _sdk_session(client_slug, row, topic_slug, out_dir)
 
             lines = _read_status(out_dir)
-            if _terminal_line(lines):
+            # Only lines THIS session appended. Over the whole file, a resumed topic finds the
+            # PREVIOUS run's terminal line sitting there, breaks on attempt 1, and never retries
+            # the dead session this loop exists for; _enforce_terminal_status then returns that
+            # old verdict as this run's result, so a topic nobody stopped reports stopped.
+            if _terminal_line(lines[baseline:]):
                 break
             if attempt > retries:
                 # The session died and retries are spent: the lead never wrote its
@@ -1312,25 +1377,16 @@ async def run_topic(client_slug, row, *, mock=None, run_dir_root=None, precheck_
         # stream never closes and the operator watches a topic hang at "running" forever, on a
         # session that died the instant they asked it to.
         #
-        # THE GUARD IS THE OPERATOR'S PROMISE, IN CODE. "Whichever blogs have been created will be
-        # kept" fails on one line of carelessness here: a topic can reach done microseconds before
-        # the cancel lands, status.jsonl is append only, and _terminal_line reads the LAST terminal
-        # line, so an unguarded append demotes a blog that shipped, is on disk, and may already be
-        # in the ledger. Every surface flips together, because they all read that same last line.
-        # Checking first costs one read of a file this function has read twice already.
-        lines = _read_status(out_dir)
-        if _terminal_line(lines) is None:
-            # Whatever stage was in flight, kept as-is. A stop is the one terminal line that can
-            # land on any stage, so its "end" may have no matching "start"; consumers read the
-            # status field and never the stage, which is what makes that harmless. No score is
-            # invented: a topic that never reached a verdict does not get one attributed to it.
-            last = lines[-1] if lines else {}
-            append_status(
-                str(out_dir), topic_slug,
-                stage=last.get("stage", "research"), event="end",
-                iter=last.get("iter", 1), status="stopped",
-                note="stopped by the operator before this topic reached a verdict",
-            )
+        # The guard lives in _stop_line_if_unterminated, and it is the operator's promise in code:
+        # a topic that reached done microseconds before the cancel landed keeps its done. The
+        # baseline is what makes the guard read THIS session rather than the file, which matters
+        # the moment a stopped topic is generated again: measured over the whole file the guard
+        # finds run 1's stopped line, writes nothing for run 2, and hangs run 2's watch view at
+        # running forever, which is precisely what this arm exists to prevent.
+        _stop_line_if_unterminated(
+            out_dir, topic_slug, baseline,
+            "stopped by the operator before this topic reached a verdict",
+        )
         # NEVER swallow a cancellation. Returning normally here would report this topic to gather
         # as a success, hand the caller a summary of work that did not happen, and leave a task
         # that was asked to cancel claiming it did not, which asyncio is entitled to complain about
@@ -1629,9 +1685,11 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
     if get_run(run_id) is None:
         register_revise_run(run_id, client_slug, topic_slug, root=run_dir_root)
 
-    # Both are read by the failure handlers below, which can fire before either is set: a refusal
-    # raises before the snapshot exists, and iteration is only knowable once status.jsonl is read.
+    # All three are read by the failure handlers below, which can fire before any of them is set:
+    # a refusal raises before the snapshot exists, and iteration is only knowable once
+    # status.jsonl is read.
     prev_bytes = None
+    prev_terminal = None
     iteration = 1
 
     try:
@@ -1670,6 +1728,17 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
             prev_score = _last_eval_score(lines_before)
             shutil.copy2(blog, prev_blog)
             prev_bytes = blog.read_bytes()
+
+            # THE VERDICT THIS TOPIC ALREADY EARNED, snapshotted beside the bytes that earned it.
+            #
+            # A revise is only ever opened on a topic that already finished, so there is almost
+            # always a terminal line here, and it is the honest description of the draft the
+            # restore puts back. The failure arms below need it for exactly that: when they give
+            # the original bytes back, the original verdict is true again, and inventing a new one
+            # over the top of it is what demoted a shipped 96 to stopped. None only when a revise
+            # was driven at a topic that never reached a verdict, which the arms handle on their
+            # own terms.
+            prev_terminal = _terminal_line(lines_before)
 
             iteration = _summarize(topic_slug, lines_before)["iterations"] + 1
             row = _row_for_topic(client_slug, topic_slug)
@@ -1777,6 +1846,20 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
         # run reads only lines after it and would never see that older line. With nothing appended,
         # the operator's watch view hangs on a revise they stopped themselves.
         #
+        # THE LINE RE-STATES THE OLD VERDICT; IT DOES NOT INVENT A NEW ONE. Needing to append
+        # something is not a licence to append anything, and this arm used to write "stopped" over
+        # a blog that had already shipped at 96. status.jsonl is append-only and every reader takes
+        # the LAST terminal line, so that one word demoted a finished blog everywhere at once, and
+        # permanently: the CMS gate refuses anything that is not done, re-answering 409s as stale,
+        # and regenerating 409s as already_generated, so the operator had no door left. What was
+        # stopped here is the OPTIONAL rerun, not the blog: the draft on disk is the one that
+        # scored, byte for byte, so it keeps the verdict it earned. The contract says it twice, and
+        # this is both halves: a stop after SCORE >= 95 does not un-ship the blog, and a topic that
+        # already wrote its terminal line keeps that line, its score, and its ledger entry.
+        #
+        # Only a topic with NO verdict to restore is stopped here, which is a revise driven at a
+        # topic that never finished, and then "stopped" is the honest word for it.
+        #
         # STAGE "eval" AND prev_score, for the reason the handler below spells out: _last_eval_score
         # and _summarize read only stage="eval" end lines, and a stop can land after this session's
         # evaluator already scored the draft that was just thrown away. Tagging this "revise" would
@@ -1786,8 +1869,12 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
         # have.
         append_status(
             str(out_dir), topic_slug, stage="eval", event="end", iter=iteration,
-            score=prev_score if prev_bytes is not None else None, status="stopped",
-            note="the operator stopped this revise and the original draft was restored unchanged",
+            score=prev_score if prev_bytes is not None else None,
+            status=prev_terminal["status"] if prev_terminal else "stopped",
+            note=("the operator stopped this revise and the original draft was restored "
+                  "unchanged, so this topic keeps the verdict it already earned"
+                  if prev_terminal else
+                  "the operator stopped this revise before this topic reached a verdict"),
         )
         raise
     except (PreflightError, RunnerConfigError) as exc:
@@ -1825,10 +1912,22 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, mock=None, run_d
         traceback.print_exc(file=sys.stderr)
         print(f"[runner] revise_topic failed for {client_slug}/{topic_slug}: {exc}",
               file=sys.stderr)
+        # THE VERDICT SURVIVES THE CRASH, for the reason the cancel arm above spells out at
+        # length. A bookkeeping crash on an OPTIONAL rerun must never turn a shipped blog into a
+        # failure: "the higher score ships" guarantees the artifact on disk is the one that
+        # scored, the restore above is what honors it, and this line only has to say so. Writing
+        # "failed" here counted a blog sitting in generated.csv at 96 among the failures, painted
+        # it red, and had the CMS gate refuse it with no way back. What failed is this session,
+        # which the note names and the traceback records. A topic with no verdict to keep has
+        # genuinely failed, and only then does this say so.
         append_status(
             str(out_dir), topic_slug, stage="eval", event="end", iter=iteration,
-            score=prev_score if prev_bytes is not None else None, status="failed",
-            note=f"revise failed and the original draft was restored unchanged: "
+            score=prev_score if prev_bytes is not None else None,
+            status=prev_terminal["status"] if prev_terminal else "failed",
+            note=f"revise failed and the original draft was restored unchanged, so this topic "
+                 f"keeps the verdict it already earned: {type(exc).__name__}: {exc}"
+                 if prev_terminal else
+                 f"revise failed and the original draft was restored unchanged: "
                  f"{type(exc).__name__}: {exc}",
         )
         raise
@@ -1908,6 +2007,30 @@ async def run_batch(client_slug, rows, *, mock=None, on_topic_done=None, run_id=
             async with TOPIC_SEMAPHORE:
                 result = await run_topic(client_slug, row, mock=mock,
                                          precheck_error=facts_error)
+        except asyncio.CancelledError:
+            # THE LEDGER ENTRY FOR A BLOG THAT SHIPPED ANYWAY. _notify's shield covers the window
+            # from this await onward; this arm covers the window one await EARLIER, which was
+            # open for the whole of a session's wind-down and is the likelier of the two to be hit.
+            #
+            # The lead runs status.py and writes done, then the session unwinds: a final assistant
+            # message, a ResultMessage, the generator's aclose. Every one is an await, so a stop
+            # landing anywhere in there cancels run_topic, whose own cancel arm correctly sees the
+            # done line and keeps it. The blog is finished, on disk, terminal at 96. But
+            # CancelledError is a BaseException, so `except Exception` below never sees it, the
+            # notify at the end of this function is never reached, and no row is ever appended to
+            # generated.csv. The ledger is what dedupes the next batch and there is no
+            # reconciliation from disk anywhere, so the topic reads as ungenerated: it renders
+            # selectable, Generate accepts it, and a full real session re-spends Firecrawl,
+            # DataForSEO and model quota to overwrite a blog that already shipped, possibly with a
+            # worse one. That is the one bill a stop button must never produce.
+            #
+            # Read the verdict from disk rather than from `result`, which cancellation means was
+            # never assigned. Only a topic that actually reached done is reported: the ledger is
+            # shipped blogs only, and a stopped topic is never appended to it.
+            summary = _summarize(topic_slug, _read_status(output_dir(client_slug, topic_slug)))
+            if summary["status"] == "done":
+                await _notify(on_topic_done, dict(summary, row=row, index=index))
+            raise
         except Exception as exc:
             # Report the failure through the same callback, then re-raise so
             # gather's return_exceptions still records it for the return value.
@@ -1921,62 +2044,112 @@ async def run_batch(client_slug, rows, *, mock=None, on_topic_done=None, run_id=
         await _notify(on_topic_done, dict(result, row=row, index=index))
         return result
 
-    async with CLIENT_LOCK:
-        # Acquiring the lock IS the start of this session: until now it was queued behind
-        # whatever else held it. Recorded here rather than at submit time so a queued run
-        # cannot masquerade as a working one.
-        mark_running(run_id)
+    # THE BASELINES, BEFORE THE RUN QUEUES FOR THE LOCK.
+    #
+    # Taken here rather than inside guarded because the sweep below has to work for topics whose
+    # guarded never ran at all, and taken before CLIENT_LOCK because that wait is where a stop is
+    # MOST likely to land: the contract's own estimate of it is "many minutes", and a brand queued
+    # behind another brand's twenty blogs sits here for all of them. See _status_baseline for why
+    # the count and not the file.
+    baselines = {}
+    for position, row in enumerate(rows):
+        topic_slug = row.get("topic_slug") or slugify(row.get("topic", ""))
+        baselines[position] = (topic_slug, _status_baseline(output_dir(client_slug, topic_slug)))
 
-        # THE FACT BASE, BEFORE ANY TOPIC IS DISPATCHED, AND THE RUN WAITS FOR IT.
+    try:
+        async with CLIENT_LOCK:
+            # Acquiring the lock IS the start of this session: until now it was queued behind
+            # whatever else held it. Recorded here rather than at submit time so a queued run
+            # cannot masquerade as a working one.
+            mark_running(run_id)
+
+            # THE FACT BASE, BEFORE ANY TOPIC IS DISPATCHED, AND THE RUN WAITS FOR IT.
+            #
+            # canonical-facts.md is client scoped and every blog in this batch inherits it, so it is
+            # built once per run and not once per topic. It happens INSIDE the lock, after
+            # mark_running, because this is real work that belongs to this run: a session started
+            # before the lock would run while another client's batch still held the engine, and it
+            # would be invisible to the operator whose run had not started yet.
+            #
+            # Only a MISSING file is generated. A file carrying PLACEHOLDER is a human's unfinished
+            # review: generating over it destroys their work, and running against it is what preflight
+            # already refuses. Both wrong answers are avoided by not touching it, and run_topic's
+            # preflight then refuses the run exactly as it does today.
+            #
+            # Mock runs come through here too, and spend nothing doing it: facts_gen writes a local
+            # file with no session, no fetch and no token, exactly as the mock blog path writes a local
+            # blog. Skipping the hook entirely under mock would leave the one step that gates every
+            # real run untested by every test we can afford to run.
+            # Imported here, not at module scope: facts_gen imports this module, so a top-level import
+            # would close the cycle at startup. The old canonical-facts hook dodged it the same way.
+            from . import facts_gen
+
+            facts_error = None
+            if not has_canonical_facts(client_slug):
+                mark_phase(run_id, "facts")
+                try:
+                    await facts_gen.ensure_facts(client_slug, run_id=run_id)
+                except Exception as exc:
+                    # Loud, and terminal for the whole run. There is deliberately no fall-through: a
+                    # batch that wrote blogs against a missing fact base is the exact silent poisoning
+                    # the contract's Preflight rule exists to prevent, and it would poison them
+                    # quietly, twenty at a time, each one citing nothing.
+                    facts_error = (
+                        f"canonical-facts.md could not be built for {client_slug}, so no blog was "
+                        f"written: {exc}"
+                    )
+                    mark_run_error(run_id, facts_error)
+                    print(f"[runner] {facts_error}", file=sys.stderr)
+
+            # The failure is carried into each topic rather than raised here. Every topic still needs
+            # its own terminal failed line naming this reason: without one the SSE stream never closes
+            # and the operator watches a run that hangs at queued forever, which is strictly worse than
+            # a loud failure. run_topic refuses on precheck_error before any SDK session spawns, so
+            # nothing is dispatched against a client with no facts and no blog is written.
+            if facts_error is None:
+                mark_phase(run_id, "topics")
+
+            # Dispatch every topic at once; the semaphore admits five and topic six
+            # starts the instant a slot frees.
+            raw = await asyncio.gather(
+                *(guarded(position, row) for position, row in enumerate(rows)),
+                return_exceptions=True)
+    except asyncio.CancelledError:
+        # THE TOPICS NOBODY EVER DISPATCHED. Every arm before this one belongs to a topic that
+        # got as far as a session; this one is for the topics that did not, and without it a stop
+        # leaves them with no terminal line at all.
         #
-        # canonical-facts.md is client scoped and every blog in this batch inherits it, so it is
-        # built once per run and not once per topic. It happens INSIDE the lock, after
-        # mark_running, because this is real work that belongs to this run: a session started
-        # before the lock would run while another client's batch still held the engine, and it
-        # would be invisible to the operator whose run had not started yet.
+        # Three ways to be one of them, and the first two are the common case rather than a
+        # corner. The run is still QUEUED on CLIENT_LOCK behind another brand, so guarded has
+        # never run and not one status.jsonl exists. The run is in the FACTS phase, inside the
+        # lock, before any topic is dispatched. Or the run is live and topics six and up are
+        # suspended at TOPIC_SEMAPHORE, which is any selection larger than five: the cancel lands
+        # on the acquire, inside guarded but BEFORE run_topic, so run_topic's cancel arm, the only
+        # thing that writes their stopped line, never runs.
         #
-        # Only a MISSING file is generated. A file carrying PLACEHOLDER is a human's unfinished
-        # review: generating over it destroys their work, and running against it is what preflight
-        # already refuses. Both wrong answers are avoided by not touching it, and run_topic's
-        # preflight then refuses the run exactly as it does today.
+        # The SSE closer is what makes silence fatal. It closes only when every topic's own tail
+        # has SEEN a terminal status, and it NEVER consults the run record, so marking the run
+        # stopped does not save it: the operator presses Stop, /api/runs reports the run finished,
+        # and their watch view heartbeats at "running" forever on a session that is already dead.
+        # That is verbatim the harm TERMINAL_STATUSES was written to prevent.
         #
-        # Mock runs come through here too, and spend nothing doing it: facts_gen writes a local
-        # file with no session, no fetch and no token, exactly as the mock blog path writes a local
-        # blog. Skipping the hook entirely under mock would leave the one step that gates every
-        # real run untested by every test we can afford to run.
-        # Imported here, not at module scope: facts_gen imports this module, so a top-level import
-        # would close the cycle at startup. The old canonical-facts hook dodged it the same way.
-        from . import facts_gen
-
-        facts_error = None
-        if not has_canonical_facts(client_slug):
-            mark_phase(run_id, "facts")
-            try:
-                await facts_gen.ensure_facts(client_slug, run_id=run_id)
-            except Exception as exc:
-                # Loud, and terminal for the whole run. There is deliberately no fall-through: a
-                # batch that wrote blogs against a missing fact base is the exact silent poisoning
-                # the contract's Preflight rule exists to prevent, and it would poison them
-                # quietly, twenty at a time, each one citing nothing.
-                facts_error = (
-                    f"canonical-facts.md could not be built for {client_slug}, so no blog was "
-                    f"written: {exc}"
-                )
-                mark_run_error(run_id, facts_error)
-                print(f"[runner] {facts_error}", file=sys.stderr)
-
-        # The failure is carried into each topic rather than raised here. Every topic still needs
-        # its own terminal failed line naming this reason: without one the SSE stream never closes
-        # and the operator watches a run that hangs at queued forever, which is strictly worse than
-        # a loud failure. run_topic refuses on precheck_error before any SDK session spawns, so
-        # nothing is dispatched against a client with no facts and no blog is written.
-        if facts_error is None:
-            mark_phase(run_id, "topics")
-
-        # Dispatch every topic at once; the semaphore admits five and topic six
-        # starts the instant a slot frees.
-        raw = await asyncio.gather(*(guarded(position, row) for position, row in enumerate(rows)),
-                                   return_exceptions=True)
+        # Ordering is what makes this a sweep and not a race. A cancelled gather cancels its
+        # children and completes only once every one of them has finished unwinding, so by the
+        # time this arm runs, topics one to five have already written their own lines through
+        # run_topic. The guard inside _stop_line_if_unterminated then sees them and skips: this
+        # writes for the silent topics only, and a topic that reached done keeps its done.
+        for topic_slug, baseline in baselines.values():
+            out_dir = output_dir(client_slug, topic_slug)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            _stop_line_if_unterminated(
+                out_dir, topic_slug, baseline,
+                "the operator stopped this brand before this topic reached a verdict",
+            )
+        # NEVER swallow a cancellation, exactly as run_topic does not. CLIENT_LOCK releases on the
+        # way out because `async with` unwinds on the exception path like any other, which is the
+        # single highest-consequence line in this feature: a leaked lock bricks every brand in the
+        # repo until someone restarts the API.
+        raise
 
     results = []
     for row, outcome in zip(rows, raw):

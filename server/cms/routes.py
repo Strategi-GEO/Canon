@@ -37,6 +37,27 @@ def _org_slug(client_slug):
     return org.get("slug") or client_slug
 
 
+def _status_for(upstream):
+    """The status this endpoint answers with, given the CMS's own status.
+
+    Deliberately NOT a passthrough. The CMS's 401 means OUR key is bad, which is this
+    engine's misconfiguration and not the browser's, so echoing 401 to the dashboard would
+    read as "your session expired" and send an operator to log in somewhere. 503 says the
+    engine is not configured to do this right now, which is the truth.
+    """
+    if upstream in (401, 403):
+        # A bad or read-only key. The operator cannot fix it from the UI, but naming it
+        # sends whoever can to the right place immediately.
+        return 503
+    if upstream == 422:
+        # The CMS rejected our payload. Ours to fix, and 502 would blame the CMS for it.
+        return 422
+    if upstream == 429:
+        return 429
+    # 5xx, a non-JSON body, or an unreachable host: genuinely the upstream's failure.
+    return 502
+
+
 @router.post("/api/clients/{slug}/blogs/{topic_slug}/publish")
 async def api_publish_blog(slug: str, topic_slug: str):
     """Push one shipped blog to the CMS as a draft.
@@ -79,10 +100,15 @@ async def api_publish_blog(slug: str, topic_slug: str):
     try:
         result = await cms_client.push_draft(payload, key)
     except cms_client.CmsError as cause:
-        # 502: the engine is fine, the upstream refused. Its message is passed
-        # through because a 422 naming the offending field is the useful part.
-        log.warning("CMS push failed for %s/%s: %s", slug, topic_slug, cause)
-        raise HTTPException(status_code=502, detail=str(cause))
+        # The upstream status is MAPPED, not flattened. Every CmsError used to become a 502,
+        # which told an operator with a revoked key that the CMS was down: they would go and
+        # ask why cms.strategi.is was broken when the answer was their own credential. A 502
+        # is only honest when the CMS genuinely failed or was unreachable.
+        log.warning(
+            "CMS push failed for %s/%s (upstream %s): %s",
+            slug, topic_slug, cause.status or "unreachable", cause,
+        )
+        raise HTTPException(status_code=_status_for(cause.status), detail=str(cause))
 
     log.info(
         "CMS push ok for %s/%s: post %s",

@@ -10,11 +10,11 @@
 
 import type { BlogStatus, BlogSummary } from "@/types";
 
-export type SortKey = "created" | "score" | "status" | "topic";
+export type SortKey = "created" | "score" | "status" | "topic" | "roadmap";
 export type SortDir = "asc" | "desc";
 export type StatusFilter = BlogStatus | "all";
 
-export const SORT_KEYS: SortKey[] = ["created", "score", "status", "topic"];
+export const SORT_KEYS: SortKey[] = ["created", "score", "status", "topic", "roadmap"];
 export const STATUS_FILTERS: StatusFilter[] = [
   "all",
   "done",
@@ -77,6 +77,14 @@ export function sortBlogs(blogs: BlogSummary[], key: SortKey, dir: SortDir): Blo
     if (key === "created") {
       return a.created.localeCompare(b.created);
     }
+    if (key === "roadmap") {
+      // Sheet order, which is the order the operator and their client discuss the work in:
+      // "we are done with six, send seven". A blog on no row has no number to sort by and
+      // sorts last, exactly as a blog with no score does rather than posing as row one.
+      // Infinity rather than -1 here because these numbers are 0 based, so -1 would sort a
+      // rowless blog ABOVE row 1.
+      return (a.roadmap_index ?? Infinity) - (b.roadmap_index ?? Infinity);
+    }
     if (key === "status") {
       return statusRank(a.status) - statusRank(b.status);
     }
@@ -98,12 +106,31 @@ export function sortBlogs(blogs: BlogSummary[], key: SortKey, dir: SortDir): Blo
  * Title search, matched against the slug too. An operator who has the folder open in Finder
  * is holding a slug, not a title, and a search that made them translate one to the other
  * would be a search that fails on the operator's own vocabulary.
+ *
+ * A BARE NUMBER, or one written "#6", means the roadmap row and nothing else. That is a real
+ * exception to the substring rule and it is deliberate: in a library where every blog carries a
+ * number, an operator who types 6 means blog six, not the nine titles containing the character
+ * "6". Substring matching a digit is what makes a number search useless, because "1" matches
+ * almost everything. Anything that is not purely digits is text and searches as text, so a title
+ * with a number in it stays findable by typing more than the number.
  */
+const ROW_QUERY = /^#?\s*(\d+)$/;
+
 export function matchesQuery(blog: BlogSummary, query: string): boolean {
-  const needle = query.trim().toLowerCase();
-  if (needle === "") {
+  const trimmed = query.trim();
+  if (trimmed === "") {
     return true;
   }
+
+  const row = ROW_QUERY.exec(trimmed);
+  if (row) {
+    // Displayed numbers are 1 based, so the operator's "6" is index 5. A blog on no row can
+    // never match a row query: it has no number, and matching it would be answering a question
+    // about the sheet with a blog that is not on it.
+    return blog.roadmap_index !== null && blog.roadmap_index + 1 === Number(row[1]);
+  }
+
+  const needle = trimmed.toLowerCase();
   return (
     blog.topic.toLowerCase().includes(needle) || blog.topic_slug.toLowerCase().includes(needle)
   );

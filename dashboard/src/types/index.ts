@@ -446,6 +446,17 @@ export type BlogSummary = {
   /** Null on the same path that produces status "unknown": no status line, no count. */
   iterations: number | null;
   shipped: boolean;
+  /**
+   * This blog's row on the CURRENT roadmap, or null when it sits on no row: the sheet was
+   * deleted, or re-uploaded without this topic, or the blog was dropped into outputs/ by hand.
+   *
+   * ZERO BASED, exactly like RoadmapRow.index, and DISPLAYED AS index + 1. Both numbers describe
+   * one row, so a second convention for it is how an off-by-one is born: the preview's "#" column
+   * and engine-error.tsx both already display index + 1, and this agrees with them.
+   *
+   * Never coerce the null to 0. Zero is row one.
+   */
+  roadmap_index: number | null;
 };
 
 export type BlogsResponse = {

@@ -21,6 +21,7 @@ import httpx
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from server import runner as runner_mod  # noqa: E402
 from server.cms import client as cms_client  # noqa: E402
 from server.cms import gate, payload  # noqa: E402
 
@@ -54,11 +55,17 @@ Yes, when the purchase rests on usable years [not a promise](https://example.com
 
 
 class FakeRunner:
-    """The two runner seams gate.py touches, and nothing else.
+    """The runner seams gate.py touches, and nothing else.
 
     Deliberately not the real runner: this suite is about the gate's decision, and importing
     the SDK-spawning module to test a status check would be testing the wrong thing.
+
+    DEMO_MARKER is taken from the REAL runner, never re-typed here. A copy would let the
+    engine change its marker while this suite kept passing against the old string, which is
+    the exact drift that would silently reopen the mock-content hole.
     """
+
+    DEMO_MARKER = runner_mod.DEMO_MARKER
 
     def __init__(self, root, status_lines, demo=False):
         self.root = Path(root)
@@ -152,6 +159,49 @@ with tempfile.TemporaryDirectory() as tmp:
         check("a done DEMO blog is still refused", True)
         check("the demo refusal says why", "demo" in str(refused).lower(), str(refused))
 
+    # THE GEO_MOCK HOLE. This is the one the demo_mode check does NOT catch and it is the
+    # most dangerous case this suite covers, so it is tested against a blog built by the REAL
+    # runner rather than a hand-written fixture: a fake marker string here would pass while
+    # the engine shipped something else.
+    #
+    # GEO_MOCK=1 fakes EVERY client, real ones included, and writes the result into that
+    # client's real output folder and real ledger with status "done". So this blog belongs to
+    # a NON-demo client (demo=False) and is terminally done: every other check passes it.
+    mock_md = runner_mod._demo_blog(
+        "vacation-village",
+        {"topic": "Is Chikkamagaluru Worth It", "covers": "x", "prompts": ["p"]},
+        "is-chikkamagaluru-worth-it",
+        1,
+    )
+    check(
+        "the real runner still marks mock blogs (if this fails, the marker moved)",
+        runner_mod.DEMO_MARKER in mock_md,
+    )
+    check(
+        "and split_title WOULD strip that marker, which is why the gate must catch it first",
+        runner_mod.DEMO_MARKER not in payload.split_title(mock_md)[1],
+    )
+
+    _seed(tmp, "vacation-village", "is-chikkamagaluru-worth-it", text=mock_md)
+    runner = FakeRunner(tmp, [{"status": "done"}], demo=False)
+    try:
+        gate.build_for_publish(runner, FakeLedger({}), "vacation-village", "is-chikkamagaluru-worth-it")
+        check("a GEO_MOCK blog for a REAL client is refused", False, "IT BUILT A PAYLOAD")
+    except gate.PublishRefused as refused:
+        check("a GEO_MOCK blog for a REAL client is refused", True)
+        check(
+            "the mock refusal names GEO_MOCK, since demo_mode is not why",
+            "GEO_MOCK" in str(refused),
+            str(refused),
+        )
+
+    # The mirror of the above: a real blog for the same real client must still publish, so
+    # the marker check cannot have been implemented as "refuse this client".
+    _seed(tmp, "vacation-village", "a-real-topic")
+    runner = FakeRunner(tmp, [{"status": "done"}], demo=False)
+    real = gate.build_for_publish(runner, FakeLedger({}), "vacation-village", "a-real-topic")
+    check("a REAL blog for the same client still publishes", real["title"] != "")
+
 
 # ---------------------------------------------------------------------------
 # The payload: deterministic, allowlisted, and honest about what it lacks
@@ -194,6 +244,61 @@ check(
     "citation carries its full source line as the title",
     built["citations"][0]["title"].startswith("Aditya Birla Capital,"),
     built["citations"][0].get("title", ""),
+)
+
+# ---------------------------------------------------------------------------
+# Citation parsing: the audit reproduced every one of these against REAL blogs
+# ---------------------------------------------------------------------------
+print("\nCitations: real source lines, parsed without corruption")
+
+paren = payload.extract_citations(
+    '## Sources and References\n\n- Wikipedia, "Coffee (beverage)," 2024. https://en.wikipedia.org/wiki/Coffee_(beverage)\n'
+)
+check(
+    "a URL ending in a real ')' is NOT truncated",
+    paren[0]["url"] == "https://en.wikipedia.org/wiki/Coffee_(beverage)",
+    paren[0]["url"],
+)
+wrapped = payload.extract_citations(
+    "## Sources and References\n\n- Coffee Board (see https://coffeeboard.gov.in/data)\n"
+)
+check(
+    "a ')' belonging to the PROSE is still stripped",
+    wrapped[0]["url"] == "https://coffeeboard.gov.in/data",
+    wrapped[0]["url"],
+)
+
+two = payload.extract_citations(
+    '## Sources and References\n\n- Board, "Report," 2025. https://a.example.com/one and https://b.example.com/two\n'
+)
+check("a source line with two URLs yields TWO citations", len(two) == 2, str(two))
+check(
+    "and neither citation's title leaks a raw URL",
+    all("http" not in c.get("title", "") for c in two),
+    str([c.get("title") for c in two]),
+)
+
+md_link = payload.extract_citations(
+    "## Sources and References\n\n- [Coffee Board of India, 2025](https://coffeeboard.gov.in/x)\n"
+)
+check(
+    "a markdown-link source yields a clean URL",
+    md_link[0]["url"] == "https://coffeeboard.gov.in/x",
+    md_link[0]["url"],
+)
+check(
+    "and its title has no leftover '](' wreckage",
+    "](" not in md_link[0].get("title", "") and md_link[0].get("title") == "Coffee Board of India, 2025",
+    md_link[0].get("title", ""),
+)
+
+colon = payload.extract_citations(
+    '## Sources and References\n\n- Publisher, "Title," 1 January 2026: https://x.example.com/a\n'
+)
+check(
+    "a title does not end on a dangling colon",
+    not colon[0]["title"].endswith(":"),
+    colon[0]["title"],
 )
 
 check(
@@ -314,6 +419,39 @@ try:
     check("a draft with no H1 is rejected", False, "it built a payload")
 except payload.PayloadError:
     check("a draft with no H1 is rejected", True)
+
+# The spec requires a non-empty title. _H1_RE's `(.+?)` matches a space, so an H1 of a hash
+# plus whitespace produced title:"" and a 422 the operator would have to decode.
+try:
+    payload.build_payload("acme", "t", "#  \n\nReal body prose here.\n")
+    check("a whitespace-only H1 is rejected here, not by a 422", False, "it built a payload")
+except payload.PayloadError:
+    check("a whitespace-only H1 is rejected here, not by a 422", True)
+
+check(
+    "a slug with a trailing newline is not sent (Python's $ would have passed it)",
+    "suggested_slug" not in payload.build_payload("acme", "my-topic\n", BLOG),
+)
+
+# meta_description must not split on an abbreviation. "Rs." is in every VV price.
+rs = payload.meta_description_from(
+    "Plots start from Rs. 46,02,000 at the project. A second sentence follows here."
+)
+check(
+    "the description does not break on 'Rs.' and strand the number",
+    not rs.endswith("Rs.") and "46,02,000" in rs,
+    rs,
+)
+check(
+    "abbreviations mid-sentence do not fragment it",
+    payload.meta_description_from("Use approx. 20 units vs. the old way. Next sentence.")
+    .startswith("Use approx. 20 units vs. the old way."),
+    payload.meta_description_from("Use approx. 20 units vs. the old way. Next sentence."),
+)
+check(
+    "a real sentence boundary still splits",
+    len(payload._split_sentences("First one here. Second one here.")) == 2,
+)
 
 
 # ---------------------------------------------------------------------------

@@ -745,6 +745,9 @@ def _blog_history(slug):
         return []
 
     led = ledger.ledger_slugs(slug)
+    # Read ONCE for the whole scan, not once per blog: this is a CSV parse, and doing it inside the
+    # loop would re-read the same sheet twenty times to answer twenty copies of one question.
+    row_index = roadmap.index_by_slug(slug)
     blogs = []
     for topic_dir in output_root.iterdir():
         blog_path = topic_dir / "blog.md"
@@ -777,8 +780,18 @@ def _blog_history(slug):
             "status": summary.get("status") or "unknown",
             "iterations": summary.get("iterations"),
             "shipped": topic_slug in led,
+            # Which row of the CURRENT sheet this blog is, or None when it is on no row. Titles are
+            # long, near identical to each other, and nobody holds twenty of them in their head:
+            # "change blog six" is the question operators and their clients actually ask, and until
+            # this field existed the app could not answer it. Zero based, exactly like
+            # RoadmapRow.index; every DISPLAY adds one. See roadmap.index_by_slug.
+            "roadmap_index": row_index.get(topic_slug),
         })
 
+    # Newest first stays the default, because the library's own question is "what happened lately".
+    # Sorting by roadmap_index here would be wrong twice over: a blog on no row has none to sort by,
+    # and the operator can already order by number in the browser, where it is one click and
+    # reversible rather than a decision baked into every caller of this function.
     blogs.sort(key=lambda b: b["created"], reverse=True)
     return blogs
 
