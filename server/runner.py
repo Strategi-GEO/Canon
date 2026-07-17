@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import roadmap
+from . import db
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -1124,9 +1125,11 @@ def _session_options():
         max_budget_usd=float(budget) if budget else None,
         model=os.environ.get("GEO_MODEL") or None,
         # The CLI subprocess needs PATH (claude and npx must resolve) and every
-        # MCP credential named by ${VAR} in .mcp.json, so pass the environment
-        # through. The CLI interpolates those names against this env.
-        env=dict(os.environ),
+        # MCP credential named by ${VAR} in .mcp.json. db.agent_env() is the
+        # ALLOWLIST of what may cross: this session runs Bash under acceptEdits,
+        # so any env var in this process is an env var an agent can read, and
+        # the Supabase credentials must never be among them.
+        env=db.agent_env(),
     )
 
 
@@ -1190,7 +1193,7 @@ async def _emit(out_dir, topic_slug, stage, event, iteration, score=None, status
         cmd += ["--score", str(score)]
     if note:
         cmd += ["--note", note]
-    proc = await asyncio.create_subprocess_exec(*cmd)
+    proc = await asyncio.create_subprocess_exec(*cmd, env=db.agent_env())
     code = await proc.wait()
     if code != 0:
         raise RuntimeError(f"status.py exited {code} for {topic_slug} {stage}/{event}")
@@ -1208,7 +1211,7 @@ async def _ask(out_dir, topic_slug, iteration, score, ask, why, area):
         "--out", str(out_dir), "--slug", topic_slug, "--iter", str(iteration),
         "--score", str(score), "--ask", ask, "--why", why, "--area", area,
     ]
-    proc = await asyncio.create_subprocess_exec(*cmd)
+    proc = await asyncio.create_subprocess_exec(*cmd, env=db.agent_env())
     code = await proc.wait()
     if code != 0:
         raise RuntimeError(f"questions.py exited {code} for {topic_slug}")

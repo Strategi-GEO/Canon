@@ -19,6 +19,7 @@ import os
 from datetime import datetime, timezone
 
 from . import runner
+from . import db
 
 # Small on purpose. This is one scrape and one paragraph, so a session that has not finished
 # in a few turns is looping, not working, and a runaway onboarding helper would spend the
@@ -213,8 +214,9 @@ async def draft_description(name, domain):
         max_turns=MAX_TURNS,
         model=os.environ.get("GEO_MODEL") or None,
         # The CLI subprocess needs PATH and every MCP credential named by ${VAR} in
-        # .mcp.json, so the environment passes through exactly as runner.py does it.
-        env=dict(os.environ),
+        # .mcp.json. db.agent_env() is the allowlist of what may cross, exactly as
+        # runner.py does it; the Supabase credentials are never on it.
+        env=db.agent_env(),
     )
 
     text = ""

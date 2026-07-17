@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import clients as clients_mod
+from . import db
 from . import roadmap
 from . import runner
 
@@ -627,9 +628,10 @@ async def generate_facts(client_slug):
         max_turns=MAX_TURNS,
         max_budget_usd=float(budget) if budget else None,
         model=os.environ.get("GEO_MODEL") or None,
-        # The CLI subprocess needs PATH and every MCP credential named by ${VAR} in .mcp.json, so
-        # the environment passes through exactly as runner.py does it.
-        env=dict(os.environ),
+        # The CLI subprocess needs PATH and every MCP credential named by ${VAR} in .mcp.json.
+        # db.agent_env() is the allowlist of what may cross, exactly as runner.py does it;
+        # the Supabase credentials are never on it.
+        env=db.agent_env(),
     )
 
     text = ""

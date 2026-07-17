@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import runner
+from . import db
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -266,7 +267,8 @@ async def _draft_facts(inputs, path):
         mcp_servers=runner._resolve_mcp_servers(),
         max_turns=MAX_TURNS,
         model=os.environ.get("GEO_MODEL") or None,
-        env=dict(os.environ),
+        # Allowlisted, exactly as runner.py does it. See db.agent_env.
+        env=db.agent_env(),
     )
 
     try:

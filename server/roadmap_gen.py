@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import clients as clients_mod
+from . import db
 from . import roadmap, runner
 
 PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "roadmap-generation.md"
@@ -513,9 +514,10 @@ async def generate_roadmap(client_slug, brand_url, piece_count, notes):
         mcp_servers=servers,
         max_turns=MAX_TURNS,
         model=os.environ.get("GEO_MODEL") or None,
-        # The CLI subprocess needs PATH and every MCP credential named by ${VAR} in .mcp.json,
-        # so the environment passes through exactly as runner.py does it.
-        env=dict(os.environ),
+        # The CLI subprocess needs PATH and every MCP credential named by ${VAR} in .mcp.json.
+        # db.agent_env() is the allowlist of what may cross, exactly as runner.py does it;
+        # the Supabase credentials are never on it.
+        env=db.agent_env(),
     )
 
     text = ""
