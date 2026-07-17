@@ -4,7 +4,7 @@ A multi-client GEO blog factory wrapping the Claude Agent SDK. An operator opens
 UI, picks a client, loads that client's roadmap CSV, ticks the rows they want, and hits
 generate. The backend runs up to five blogs at a time; each one is researched, written,
 mechanically gated, link-verified, and scored by a hostile evaluator until it hits 95.
-Output is plain local .md files under `clients/<slug>/output/`, which the app previews in
+Output is plain local .md files under `outputs/<slug>/`, which the app previews in
 the browser. Six non-technical people share one deployment; the UI is a single HTML file
 served by the same process at `/`.
 
@@ -158,7 +158,9 @@ geo-factory/
       roadmap.csv           read-only topic queue; the app never writes it back
       generated.csv         append-only ledger of shipped blogs; created at onboarding
       uploads/              archived roadmap uploads, kept verbatim, never mutated
-      output/<topic-slug>/  blog.md, eval.md, dossier.md, status.jsonl, links-verified.txt
+  outputs/                  blog output, at the repo root and NOT under clients/, so
+                            operators browse and prune it in one place in Finder
+    <slug>/<topic-slug>/    blog.md, eval.md, dossier.md, status.jsonl, links-verified.txt
 ```
 
 **Preflight.** A client whose `canonical-facts.md` is missing or still contains the
@@ -271,7 +273,7 @@ batch-of-five barrier.
 Run by hand any time:
 
 ```
-python3 .claude/gates.py --client <slug> clients/<slug>/output/<topic-slug>/blog.md
+python3 .claude/gates.py --client <slug> outputs/<slug>/<topic-slug>/blog.md
 ```
 
 HOUSE rules are hardcoded in `gates.py` and apply to every client: zero em or en dashes,

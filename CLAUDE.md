@@ -59,7 +59,7 @@ number**, because a fresh Agent W on iteration 3 has no memory of iterations 1 a
 
 - **Agent R (researcher).** Input: the CSV row + `clients/<slug>/canonical-facts.md` +
   `clients/<slug>/Resources/`. Runs geo-research. Output:
-  `clients/<slug>/output/<topic-slug>/dossier.md`. Its fetch logs and rejected sources never
+  `outputs/<slug>/<topic-slug>/dossier.md`. Its fetch logs and rejected sources never
   leave its context.
 - **Agent W (writer).** Input: the CSV row + the frozen dossier + `canonical-facts.md` + its
   iteration number. Runs geo-content-writer, then self-runs the gate command below until it
@@ -100,7 +100,7 @@ top-up for that one claim; **Structure, Draft, Mechanics** go to Agent W. "Add a
 NEVER routes to the writer alone; the writer has no authority to invent a citation or URL.
 
 ## Status protocol
-`clients/<slug>/output/<topic-slug>/status.jsonl` is the ONLY progress feed. Each agent
+`outputs/<slug>/<topic-slug>/status.jsonl` is the ONLY progress feed. Each agent
 appends its OWN lines, because the session lead cannot see inside a subagent and is forbidden
 from reading subagent tool output into its own context.
 - **Agent R** appends: research start / end.
@@ -136,7 +136,7 @@ preflight, exactly as mock already does, and it can never spend an API call or a
 
 Its blogs are precoded: short, deterministic, generated with zero API calls, and templated from
 whatever topic the operator uploads, so demo mode works with an arbitrary CSV rather than a
-fixed list. They are saved to `clients/<slug>/output/<topic-slug>/blog.md` exactly like a real
+fixed list. They are saved to `outputs/<slug>/<topic-slug>/blog.md` exactly like a real
 blog, so the preview drawer, the status table and the ledger all behave identically. Determinism
 comes from a hash of the topic slug, never from randomness.
 
@@ -241,7 +241,7 @@ Nothing in an extra column is a source, and no extra overrides `canonical-facts.
 
 ## Mechanical gates
 ```
-python3 .claude/gates.py --client <slug> clients/<slug>/output/<topic-slug>/blog.md
+python3 .claude/gates.py --client <slug> outputs/<slug>/<topic-slug>/blog.md
 ```
 It merges the house rules with `clients/<slug>/gates.json`. Exit 1 on any FAIL, 0 on WARN.
 Agent W runs it until it exits 0, before the link pass and before the eval. Never spend an
@@ -312,7 +312,7 @@ house rules always hold:
   market, never from the client's own marketing or press releases.
 
 ## Output (per blog)
-`clients/<slug>/output/<topic-slug>/`:
+`outputs/<slug>/<topic-slug>/`:
 - `dossier.md` (frozen after Agent R)
 - `blog.md` (final, within the client word band)
 - `eval.md` (`SCORE: NN` on its own line near the top, plus the fix list)
@@ -479,7 +479,7 @@ DONE when the FIRST evaluator score is >= 95 on a draft that is already gate-cle
 link-clean. That score is final. Write the terminal `done` status and stop. 95 ships. 96
 ships. No score at or above 95 is borderline, and a better one is never worth seeking.
 
-Write `clients/<slug>/output/<topic-slug>/NEEDS_REVIEW` and the `needs_review` terminal status
+Write `outputs/<slug>/<topic-slug>/NEEDS_REVIEW` and the `needs_review` terminal status
 ONLY where the draft scored BELOW 95 and the evaluator has asked the operator a question that is
 on disk, current, and answerable. Both halves are required. Nothing else earns the status, and the
 engine checks it. The four old causes resolve like this:

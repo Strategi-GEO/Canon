@@ -55,7 +55,7 @@ python3 .claude/status.py --out <output_dir> --slug <slug> --stage research --ev
 python3 .claude/status.py --out <output_dir> --slug <slug> --stage research --event end --iter <n> --status running --note "N passed / N rejected"
 ```
 
-The `<output_dir>` is `clients/<slug>/output/<topic-slug>/`, the same directory the dossier is written to. The lead cannot see inside your context; this file is how it tracks the chain.
+The `<output_dir>` is `outputs/<slug>/<topic-slug>/`, the same directory the dossier is written to. The lead cannot see inside your context; this file is how it tracks the chain.
 
 ## Workflow
 
@@ -125,11 +125,11 @@ Before handing off, confirm every item on this checklist. If any item fails, fix
 
 ### Step 9: Hand off
 
-Save the dossier to `clients/<slug>/output/<topic-slug>/dossier.md` and log the research end line. The lead freezes the dossier and passes it to geo-content-writer. The writer drafts only from the dossier. If the writer needs a claim the dossier does not contain, the answer is a bounded research top-up, not an invented source.
+Save the dossier to `outputs/<slug>/<topic-slug>/dossier.md` and log the research end line. The lead freezes the dossier and passes it to geo-content-writer. The writer drafts only from the dossier. If the writer needs a claim the dossier does not contain, the answer is a bounded research top-up, not an invented source.
 
 ## Output format
 
-ALWAYS use this exact structure. Save it as `clients/<slug>/output/<topic-slug>/dossier.md`.
+ALWAYS use this exact structure. Save it as `outputs/<slug>/<topic-slug>/dossier.md`.
 
 ```
 # Research Dossier: [piece topic]

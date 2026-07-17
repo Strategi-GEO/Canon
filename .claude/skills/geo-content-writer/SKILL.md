@@ -90,7 +90,7 @@ Do not write yet. Verify the outline answers the core question completely, cover
 
 ### Step 5: Draft the piece
 
-Apply all core writing principles (below). Cite only from the dossier. Use the entity names exactly as `canonical-facts.md` gives them. Write the piece to `clients/<slug>/output/<topic-slug>/blog.md`.
+Apply all core writing principles (below). Cite only from the dossier. Use the entity names exactly as `canonical-facts.md` gives them. Write the piece to `outputs/<slug>/<topic-slug>/blog.md`.
 
 ### Step 6: Run the quality checklist
 
@@ -101,7 +101,7 @@ Before the gates, verify against `references/quality-checklist.md`. Confirm sepa
 Run the gate script and fix what it flags, repeating until it exits 0:
 
 ```
-python3 .claude/gates.py --client <slug> clients/<slug>/output/<topic-slug>/blog.md
+python3 .claude/gates.py --client <slug> outputs/<slug>/<topic-slug>/blog.md
 ```
 
 WARN passes and proceeds; only FAIL blocks. The script is the machine-checked authority on word band, banned characters, banned phrases, paragraph shape, voice, and entity clarity. Never spend an eval pass on something a script catches, so the draft must be gate-clean before the link pass and before it returns.
@@ -110,7 +110,7 @@ WARN passes and proceeds; only FAIL blocks. The script is the machine-checked au
 
 After the gates pass and before you return, verify every link. There is no link step after the eval, so this is the only one.
 
-- Firecrawl-fetch every link that is not already listed in `clients/<slug>/output/<topic-slug>/links-verified.txt`.
+- Firecrawl-fetch every link that is not already listed in `outputs/<slug>/<topic-slug>/links-verified.txt`.
 - Confirm each link resolves to the correct page AND that the cited source actually contains the claim it is attached to.
 - Fix any link that 404s, redirects to a homepage default, or points to a source that does not contain the claim.
 - Append every verified URL to `links-verified.txt`.
@@ -198,7 +198,7 @@ The word band comes from `clients/<slug>/gates.json`, and `gates.py` is the auth
 
 ## Output format
 
-Write the markdown file to `clients/<slug>/output/<topic-slug>/blog.md`.
+Write the markdown file to `outputs/<slug>/<topic-slug>/blog.md`.
 
 Use proper markdown hierarchy (# for H1, ## for H2, ### for H3), bullet lists with `-`, numbered lists with `1.`, and bold for emphasis on key terms only, not decorative bolding.
 
@@ -214,7 +214,7 @@ python3 .claude/status.py --out <output_dir> --slug <slug> --stage gates --event
 python3 .claude/status.py --out <output_dir> --slug <slug> --stage links --event end --iter <n> --status running
 ```
 
-Use stage `write` on a first draft and stage `revise` on a revision, then `gates`, then `links`, each with a start and an end line. The `<output_dir>` is `clients/<slug>/output/<topic-slug>/`. The lead cannot see inside your context; this file is how it tracks the chain.
+Use stage `write` on a first draft and stage `revise` on a revision, then `gates`, then `links`, each with a start and an end line. The `<output_dir>` is `outputs/<slug>/<topic-slug>/`. The lead cannot see inside your context; this file is how it tracks the chain.
 
 ## What the lead provides vs. what the skill provides
 

@@ -19,7 +19,7 @@ The lead gives you four things: the client slug, the topic slug, the output dire
 
 You may read ONLY these three inputs, and nothing else:
 
-1. The draft: `clients/<slug>/output/<topic-slug>/blog.md`.
+1. The draft: `outputs/<slug>/<topic-slug>/blog.md`.
 2. The rubric: `references/rubric.md`.
 3. The client's binding facts: `clients/<slug>/canonical-facts.md`.
 
@@ -79,11 +79,11 @@ Every reject needs a fix list. Every item on it carries an Area, one of exactly 
 
 ### Step 7: Write eval.md and log end
 
-Write the verdict to `clients/<slug>/output/<topic-slug>/eval.md` using the format below. Then append an end line to `status.jsonl` carrying the numeric score. Stop. Do not re-score, and do not touch `blog.md`.
+Write the verdict to `outputs/<slug>/<topic-slug>/eval.md` using the format below. Then append an end line to `status.jsonl` carrying the numeric score. Stop. Do not re-score, and do not touch `blog.md`.
 
 ## Output format
 
-Write `clients/<slug>/output/<topic-slug>/eval.md` with `SCORE: NN` on its own line near the top:
+Write `outputs/<slug>/<topic-slug>/eval.md` with `SCORE: NN` on its own line near the top:
 
 ```
 # Eval: [piece topic]
@@ -113,7 +113,7 @@ python3 .claude/status.py --out <output_dir> --slug <slug> --stage eval --event 
 python3 .claude/status.py --out <output_dir> --slug <slug> --stage eval --event end --iter <n> --score NN --status running
 ```
 
-The `<output_dir>` is `clients/<slug>/output/<topic-slug>/`, the same directory `eval.md` is written to. The lead cannot see inside your context; this end line is how it learns your score.
+The `<output_dir>` is `outputs/<slug>/<topic-slug>/`, the same directory `eval.md` is written to. The lead cannot see inside your context; this end line is how it learns your score.
 
 ## House style
 

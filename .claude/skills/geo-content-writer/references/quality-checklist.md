@@ -74,7 +74,7 @@ The piece belongs to one industry, named in the client's `client.md`. Load the m
 - [ ] Lists use `-` for bullets and `1.` for numbered items
 - [ ] Bold is used for emphasis on key terms only, not decoratively
 - [ ] A Sources and References section at the end lists every external source cited
-- [ ] The piece is saved to `clients/<slug>/output/<topic-slug>/blog.md`
+- [ ] The piece is saved to `outputs/<slug>/<topic-slug>/blog.md`
 
 ## Quotable statement check
 
