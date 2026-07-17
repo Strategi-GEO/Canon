@@ -50,8 +50,23 @@ WORKTREE = HERE.parent
 DEFAULT_SOURCE = WORKTREE.parent / "geo-factory"        # the engine + the data
 
 # Tripwires, measured with the app's own parsers. Not contracts: see the docstring.
+#
+# UPDATED 2026-07-17, deliberately, after the tripwire fired and caught a live
+# repair in progress. status_events moved 1339 -> 1343 and ledger_entries moved
+# 72 -> 68, and the two deltas are one event: the engine's "asking holds the
+# blog at any score" rule change was applied to the four blr-brewing blogs that
+# had shipped at 95/96 over their own unanswered questions. Each got one
+# appended needs_review line (+4 events) and had its ledger row removed
+# (-4 rows), un-shipping it. The four are liquid-journey,
+# the-best-places-to-celebrate-a-birthday, where-to-get-ramen, and
+# where-to-host-a-large-company-party: the same four every audit of this corpus
+# independently flags as its only real mess.
+#
+# These numbers were re-measured after the tree went quiet, not overridden with
+# --force while it was moving. If they drift again, find out why before touching
+# them: the number is not the point, knowing what changed is.
 EXPECTED = {
-    "orgs": 1,           # EXPLICIT orgs only; the other 4 are derived by org_membership
+    "orgs": 1,            # EXPLICIT orgs only; the other 4 are derived by org_membership
     "clients": 6,
     "client_resources": 5,
     "roadmap_uploads": 39,
@@ -59,8 +74,8 @@ EXPECTED = {
     "roadmap_rows": 49,   # BUILT rows; read_sheet's raw preview is 50 (acme-south's blank)
     "topics": 50,
     "blog_versions": 50,
-    "status_events": 1339,
-    "ledger_entries": 72,
+    "status_events": 1343,
+    "ledger_entries": 68,
     "review_notes": 16,   # 16 question items across 9 questions.json; 0 answers.json
 }
 
