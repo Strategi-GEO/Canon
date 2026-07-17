@@ -1,0 +1,582 @@
+-- GEO Factory: content schema for Supabase (Postgres 15/16/17).
+--
+-- Scope: the DATA that exists on disk today, and nothing else. There is no jobs
+-- queue and no `runs` table here, deliberately: RUNS is an in-process dict in
+-- server/runner.py holding asyncio handles, so no historical run record exists
+-- anywhere to migrate. The worker queue belongs in the migration that
+-- introduces the worker, not in the one that moves the corpus.
+--
+-- Every count in these comments was measured against the live corpus with the
+-- app's OWN parsers, never with `wc -l`. Comments anchor to SYMBOL NAMES, never
+-- line numbers: server/runner.py is edited concurrently and its lines move.
+--
+-- Idempotent: safe to re-run. Drops and rebuilds the public content schema.
+
+begin;
+
+create extension if not exists pgcrypto;
+
+-- ---------------------------------------------------------------------------
+-- Teardown (this migration owns every object it drops)
+-- ---------------------------------------------------------------------------
+drop view  if exists v_review_notes    cascade;
+drop view  if exists topic_rollup      cascade;
+drop view  if exists topics_live       cascade;
+drop view  if exists org_membership    cascade;
+
+drop table if exists review_notes      cascade;
+drop table if exists ledger_entries    cascade;
+drop table if exists status_events     cascade;
+drop table if exists blog_versions     cascade;
+drop table if exists topics            cascade;
+drop table if exists roadmap_rows      cascade;
+drop table if exists roadmap_sheets    cascade;
+drop table if exists roadmap_uploads   cascade;
+drop table if exists client_resources  cascade;
+drop table if exists client_members    cascade;
+drop table if exists clients           cascade;
+drop table if exists orgs              cascade;
+
+drop type   if exists topic_status cascade;
+drop type   if exists run_stage    cascade;
+drop type   if exists stage_event  cascade;
+drop type   if exists note_author  cascade;
+drop domain if exists client_slug  cascade;
+drop domain if exists topic_slug   cascade;
+
+-- ---------------------------------------------------------------------------
+-- Types
+-- ---------------------------------------------------------------------------
+
+-- Mirrors STATUSES / STAGES / EVENTS in .claude/status.py exactly.
+-- 'stopped' is declared there and appears in ZERO of the 1,339 live lines.
+-- It stays: the enum is sourced from the code, never from the data.
+create type topic_status as enum ('running','done','needs_review','failed','stopped');
+create type run_stage    as enum ('research','write','gates','links','eval','revise');
+create type stage_event  as enum ('start','end');
+create type note_author  as enum ('evaluator','operator','client');
+
+-- '_fixture-unreviewed' is a real client slug, hence the optional underscore.
+create domain client_slug as text check (value ~ '^_?[a-z0-9]+(-[a-z0-9]+)*$');
+create domain topic_slug  as text check (value ~ '^[a-z0-9]+(-[a-z0-9]+)*$');
+
+-- ---------------------------------------------------------------------------
+-- orgs / clients
+-- ---------------------------------------------------------------------------
+
+-- EXPLICIT organisations only. Measured: exactly ONE row (acme-group, holding
+-- acme-north and acme-south). The other four clients carry no `organisation`
+-- key in gates.json and MUST NOT get a row here.
+--
+-- server/clients.py `_organisation()` synthesizes a self-org on read, and the
+-- code states why it is never written down: a self-referencing org is
+-- deliberately not stored, because storing it twice invites the two copies to
+-- disagree after a rename. Materialising self-orgs here reintroduces exactly
+-- that drift. They are DERIVED by org_membership below, which reproduces the
+-- four orgs /api/orgs actually returns.
+create table orgs (
+  id         uuid primary key default gen_random_uuid(),
+  slug       client_slug not null unique,
+  name       text        not null check (btrim(name) <> ''),
+  created_at timestamptz not null default now()
+);
+
+create table clients (
+  id          uuid primary key default gen_random_uuid(),
+  -- NULLABLE on purpose: 4 of 6 clients have no explicit org. See orgs above.
+  org_id      uuid references orgs(id) on delete restrict,
+  slug        client_slug not null unique,   -- immutable: PATCH /api/clients/{slug} cannot change it
+  name        text not null check (btrim(name) <> ''),
+  domain      text not null default '',
+  industry    text not null default '',
+  description text not null default '',
+
+  -- The client doc set, inlined. Measured: 6 client.md, 4 canonical-facts.md,
+  -- 3 never-claim.md. clients/blr-brewing/never-claim.md is ZERO BYTES, so an
+  -- existing-but-empty doc must round-trip as '' and an absent one as NULL.
+  -- Collapsing the two loses which files exist.
+  client_md       text,
+  canonical_facts text,
+  never_claim     text,
+
+  demo_mode   boolean not null default false,
+  -- gates.json MINUS "organisation" (modelled by org_id above).
+  gates       jsonb not null default '{}'::jsonb,
+
+  created_at  timestamptz not null default now(),
+  deleted_at  timestamptz,
+
+  -- _preflight in server/app.py refuses to run a client whose canonical-facts.md
+  -- still contains PLACEHOLDER. Measured: _fixture-unreviewed is the one that
+  -- refuses; acme-north/acme-south have no facts file at all and pass, because
+  -- their fact base is built at run time.
+  preflight_ok boolean generated always as
+                 (canonical_facts is null or strpos(canonical_facts, 'PLACEHOLDER') = 0) stored,
+  is_fixture   boolean generated always as (left(slug, 1) = '_') stored,
+
+  -- Composite-FK target: lets a child carry client_id and be structurally
+  -- unable to point at a topic belonging to a different client.
+  unique (id, org_id)
+);
+
+create index clients_org on clients (org_id);
+
+-- The portal seam. Created EMPTY now so the schema is not rewritten when the
+-- client portal lands. Without it there is no mapping from auth.users to a
+-- client, and no RLS policy can be written against client_id at all.
+create table client_members (
+  client_id  uuid not null references clients(id) on delete cascade,
+  user_id    uuid not null,                 -- auth.users(id)
+  role       text not null check (role in ('admin','viewer','commenter')),
+  created_at timestamptz not null default now(),
+  primary key (client_id, user_id)
+);
+
+-- ---------------------------------------------------------------------------
+-- Resources and uploads
+-- ---------------------------------------------------------------------------
+
+-- clients/<slug>/Resources/ (the capital R is deliberate per server/clients.py:
+-- a lowercase variant would create a folder uploads land in and no agent reads).
+-- Measured: 5 files, ~12.8 MB (vacation-village 4, blr-brewing 1).
+-- Bytes live in Storage; this table is the index. Filenames CONTAIN SPACES, and
+-- canonical-facts.md refers to the brochure by exact filename, so the original
+-- name is preserved verbatim in `name` and never sanitized into the key.
+create table client_resources (
+  id           uuid primary key default gen_random_uuid(),
+  client_id    uuid not null references clients(id) on delete cascade,
+  name         text not null check (btrim(name) <> '' and length(name) <= 255),
+  object_path  text not null unique,          -- resources/<client_slug>/<sha256>
+  sha256       text not null check (sha256 ~ '^[0-9a-f]{64}$'),
+  size_bytes   bigint not null check (size_bytes >= 0 and size_bytes <= 26214400),  -- MAX_RESOURCE_BYTES
+  content_type text,
+  uploaded_at  timestamptz not null default now(),
+  unique (client_id, name)
+);
+
+-- clients/<slug>/uploads/ : the archived roadmap CSVs.
+-- Measured: 39 files, all .csv, ~157 KB total. This is a SECURITY CONTROL, not
+-- an archive: POST /generate re-parses the archived upload so a tampered browser
+-- payload cannot redirect a run. It must fail CLOSED, so the bytes stay in
+-- Postgres rather than Storage: a Storage round trip is one more thing that can
+-- fail open at exactly the wrong moment.
+create table roadmap_uploads (
+  id          uuid primary key default gen_random_uuid(),
+  client_id   uuid not null references clients(id) on delete cascade,
+  filename    text  not null,
+  raw         bytea not null check (length(raw) > 0 and length(raw) <= 2097152),  -- MAX_UPLOAD_BYTES = 2*1024*1024
+  uploaded_at timestamptz not null default now(),
+  unique (client_id, filename)
+);
+
+create index roadmap_uploads_client on roadmap_uploads (client_id);
+
+-- ---------------------------------------------------------------------------
+-- Roadmap
+-- ---------------------------------------------------------------------------
+
+-- One sheet per client. Measured: 5 sheets (acme-north has NO roadmap.csv).
+-- The UNIQUE on client_id IS the 409 the app returns on a second upload.
+--
+-- `raw_csv` holds the file byte-for-byte, and that is what makes the
+-- raw-vs-built distinction lossless. read_sheet() returns 50 RAW rows across the
+-- 5 sheets (including acme-south's blank row); load_roadmap()/_build_rows
+-- returns 49 INGESTABLE rows. Both numbers are correct and describe different
+-- things. roadmap_rows stores the 49; the 50-row preview regenerates from
+-- raw_csv on demand. Neither is lost and the two cannot drift.
+create table roadmap_sheets (
+  id         uuid primary key default gen_random_uuid(),
+  client_id  uuid not null unique references clients(id) on delete cascade,
+  filename   text not null,
+  raw_csv    text not null,
+  columns    text[] not null,
+  modified   timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create table roadmap_rows (
+  id        uuid primary key default gen_random_uuid(),
+  sheet_id  uuid not null references roadmap_sheets(id) on delete cascade,
+  client_id uuid not null references clients(id) on delete cascade,
+
+  -- 0-based, and GAPS ARE LEGAL: _build_rows enumerates BEFORE skipping blank
+  -- rows, so acme-south yields 0,1,3,4,5 with a real gap at 2. The skip rule is
+  -- "every cell blank", not "topic blank": a row with an empty topic but a real
+  -- `covers` is KEPT and surfaced to the operator. Never assert contiguity.
+  row_index int not null check (row_index >= 0),
+
+  topic     text not null,     -- COL_TOPIC   = 0
+  covers    text not null,     -- COL_COVERS  = 1
+  prompts   text[] not null,   -- COL_PROMPTS = 4
+  extras    jsonb not null default '[]'::jsonb,   -- surplus columns, keyed by header
+
+  -- Computed in Python with the app's own roadmap.slugify(), never re-derived in
+  -- SQL: a second implementation of a slug rule is a second thing to drift.
+  -- NULLABLE because an incomplete row may have no topic to slugify.
+  topic_slug topic_slug,
+
+  -- cardinality(), NOT array_length(): array_length('{}',1) returns NULL, which
+  -- would make `complete` NULL rather than false for the exact row this column
+  -- exists to catch (topic and covers present, prompts empty). `WHERE NOT
+  -- complete` then silently drops it, and prompts are BINDING per CLAUDE.md.
+  complete boolean generated always as
+             (btrim(topic) <> '' and btrim(covers) <> '' and cardinality(prompts) > 0) stored,
+
+  -- The app returns `missing` to the operator verbatim in its 422. `complete`
+  -- alone cannot rebuild which field was absent.
+  missing text[] generated always as (
+            array_remove(array[
+              case when btrim(topic)  = ''       then 'topic'   end,
+              case when btrim(covers) = ''       then 'covers'  end,
+              case when cardinality(prompts) = 0 then 'prompts' end], null)) stored,
+
+  unique (sheet_id, row_index),
+  unique (client_id, topic_slug)
+);
+
+create index roadmap_rows_client on roadmap_rows (client_id);
+
+-- ---------------------------------------------------------------------------
+-- topics / blog_versions
+-- ---------------------------------------------------------------------------
+
+-- One row per output folder. Measured: 50 (demo 30, blr-brewing 10,
+-- vacation-village 6, acme-north 4; acme-south and _fixture-unreviewed have 0).
+--
+-- THE CASE HAZARD: the folder is outputs/BLR-Brewing while the client is
+-- clients/blr-brewing. Those genuinely differ; the app resolves them only
+-- because APFS case-folds. `client_id` here always points at the canonical
+-- lowercase client. The migration casefold-matches and asserts a single hit.
+--
+-- status / score / iterations are NOT stored. They are a fold over
+-- status_events, derived by topic_rollup below. A stored rollup drifts the
+-- moment an event is appended without the matching UPDATE; at 1,339 events the
+-- view costs nothing and cannot drift by construction.
+create table topics (
+  id        uuid primary key default gen_random_uuid(),
+  client_id uuid not null references clients(id) on delete cascade,
+  slug      topic_slug not null,
+  title     text,
+
+  dossier    text,
+  dossier_at timestamptz,
+
+  -- links-verified.txt, verbatim and OPAQUE. Measured across the 16 files: 951
+  -- comment lines, 201 URL lines, 17 non-URL fragments, 130 blanks. It is a
+  -- working log that happens to contain URLs, not a link table. Parsing it into
+  -- rows would invent structure the file does not have.
+  links_verified text,
+
+  -- The NEEDS_REVIEW marker's contents. Measured: 13 markers, and ONE
+  -- (blr-brewing/how-to-plan-a-corporate-team-outing) is ZERO BYTES. Present but
+  -- empty must be '' and absent must be NULL, or the marker's existence is lost.
+  -- The marker is deliberately not served by the artifact endpoint.
+  review_note text,
+
+  shipped_version_id uuid,
+  created_at timestamptz not null default now(),
+  deleted_at timestamptz,
+
+  constraint dossier_ts check ((dossier is null) = (dossier_at is null)),
+  unique (client_id, slug),
+  -- Composite-FK target. A blog_versions row whose client_id disagrees with its
+  -- topic's client_id is then rejected by the database, not by a code path
+  -- someone has to remember to write.
+  unique (id, client_id)
+);
+
+create index topics_client_live on topics (client_id) where deleted_at is null;
+
+-- Versioned blog bodies. TEXT, not Storage: the whole corpus is 1.4 MB (blogs
+-- 345 KB, largest single blog 18 KB), and the artifact endpoint already answers
+-- text/plain. Storage would add a network hop and a second consistency domain to
+-- move less data than a single Resources PDF.
+--
+-- The migration writes exactly ONE version per topic (version_no = 1). Versions
+-- exist for the review portal: a client comment must anchor to the exact bytes
+-- it was written against, and an edit that reflows the text must not silently
+-- relocate the comment.
+--
+-- COMMIT RULE, and it is not the obvious one: commit a new version only when a
+-- session produced a SCORED draft. The engine restores the previous bytes when a
+-- revise earns no score, so "commit after the terminal line" would re-commit the
+-- original as a duplicate. And there is deliberately NO score comparison: the
+-- clarified draft ships at 91 as readily as at 97, because a comparison guarding
+-- a correctness pass hands back the original with its violation still in it.
+-- `superseded_reason` records "the revise produced no score, so the original was
+-- restored", never "scored lower, so it lost".
+create table blog_versions (
+  id         uuid primary key default gen_random_uuid(),
+  topic_id   uuid not null,
+  client_id  uuid not null,
+  version_no int not null check (version_no >= 1),
+  iteration  int check (iteration between 1 and 8),   -- observed 1..4
+
+  body       text not null check (length(body) > 0),
+  h1_title   text,
+  word_count int check (word_count >= 0),
+
+  score      int check (score between 0 and 100),
+  eval_body  text,
+
+  shipped    boolean not null default false,
+  superseded_reason text,
+
+  -- Backfilled from blog.md's mtime, NOT now(): the app's own history falls back
+  -- to mtime for a blog's date, and stamping now() would re-sort every migrated
+  -- blog to today.
+  committed_at timestamptz not null default now(),
+
+  foreign key (topic_id, client_id) references topics(id, client_id) on delete cascade,
+  unique (topic_id, version_no),
+  unique (id, topic_id)
+);
+
+create index blog_versions_topic on blog_versions (topic_id, version_no desc);
+
+alter table topics add constraint topics_shipped_version_fk
+  foreign key (shipped_version_id, id) references blog_versions(id, topic_id)
+  on delete set null;
+
+-- ---------------------------------------------------------------------------
+-- status_events
+-- ---------------------------------------------------------------------------
+
+-- APPEND-ONLY. Measured: 1,339 lines, 0 malformed, 0 blank, 0 duplicate ts.
+--
+-- `line_no` is the 0-based ordinal within the topic's status.jsonl, and it is
+-- the real key. The file is append-only, so line N is permanently the same
+-- event: it makes reload idempotent, and it preserves the ordinal ordering the
+-- terminal-line scan depends on. `ts` matches that order only incidentally and
+-- carries no uniqueness guarantee.
+--
+-- There is deliberately NO run_id column. .claude/status.py has no --run-id
+-- argument and ZERO of the 1,339 live lines carry one; the agent does not know
+-- its run_id. A column that is NULL for every row is a promise the writer cannot
+-- keep. Add it when status.py can populate it.
+--
+-- There is also deliberately NO "one terminal line per topic per run" uniqueness
+-- constraint. The engine APPENDS a second terminal line inside one run when it
+-- disagrees with the lead's verdict, on purpose, so the disagreement stays
+-- visible on disk. Measured: 4 such correction pairs, all blr-brewing. A
+-- uniqueness index here rejects that write.
+create table status_events (
+  id        bigserial primary key,
+  topic_id  uuid not null,
+  client_id uuid not null,
+  line_no   int  not null check (line_no >= 0),
+
+  ts     timestamptz not null,        -- status.py's own UTC stamp
+  stage  run_stage   not null,
+  event  stage_event not null,
+  iter   int not null check (iter >= 1),          -- live range 1..4
+  score  int check (score between 0 and 100),
+  status topic_status not null default 'running',
+  note   text not null default '',
+
+  -- 12 lines across 4 topics report a CLIENT slug in their `slug` field instead
+  -- of the topic slug. The directory is the truth; this preserves what the line
+  -- actually said rather than quietly correcting the record.
+  slug_reported text,
+
+  foreign key (topic_id, client_id) references topics(id, client_id) on delete cascade,
+  unique (topic_id, line_no),
+
+  -- Measured: score is non-null on exactly 198 lines, ALL of them (eval,end).
+  -- Not luck: the engine deliberately tags its cancel and crash lines stage=eval
+  -- so the summary can read a score off them.
+  constraint score_only_on_eval_end check (score is null or (stage = 'eval' and event = 'end'))
+);
+
+create index status_events_topic_line on status_events (topic_id, line_no);
+create index status_events_eval_score on status_events (topic_id, line_no desc)
+  where stage = 'eval' and event = 'end' and score is not null;
+
+-- ---------------------------------------------------------------------------
+-- ledger_entries
+-- ---------------------------------------------------------------------------
+
+-- The ship record: clients/<slug>/generated.csv, one row per shipped topic.
+-- Measured with csv.DictReader: 72 rows, 0 duplicates. (The "147" that has been
+-- quoted around this project is 153 physical lines minus 6 headers: 69 of the 72
+-- rows carry embedded newlines inside quoted `prompts` cells. CLAUDE.md warns
+-- about exactly this.)
+--
+-- THE UNIQUE IS THE FIX. server/ledger.py checks membership OUTSIDE the lock it
+-- takes to append, so two concurrent ships of one slug both see "absent" and
+-- both append. It duplicates; it cannot lose a write. Zero violations exist
+-- today, which is precisely why the constraint is free to add now. record_success
+-- becomes ON CONFLICT DO NOTHING and the racy pre-check is DELETED, not fixed.
+--
+-- NO topic_id FK, and that is load-bearing: this is a historical SNAPSHOT that
+-- must outlive what it references. Measured: 34 of 72 rows are orphans with no
+-- blog on disk (acme-south is 100% orphaned, 10 rows and 0 blogs). An FK would
+-- reject them.
+create table ledger_entries (
+  id           uuid primary key default gen_random_uuid(),
+  client_id    uuid not null references clients(id) on delete cascade,
+  topic_slug   topic_slug not null,
+  topic        text not null default '',
+  covers       text not null default '',
+  prompts      text[] not null default '{}',
+
+  -- Typed int at ingest via NULLIF(raw,'')::int, never cast at query time.
+  -- record_success writes "" when score is None. All 72 rows are numeric 95-98
+  -- TODAY, which is why a query-time cast has not thrown yet: latent, not safe.
+  score        int check (score between 0 and 100),
+  generated_at timestamptz not null default now(),
+
+  -- TEXT, not uuid, and no FK. Measured: 68 rows carry a 32-char hex run_id and
+  -- 4 carry the literal string 'retro-fix', which cannot cast to uuid. RUNS is
+  -- an in-process dict, so no run record exists for any of them anyway.
+  run_id       text,
+
+  unique (client_id, topic_slug)
+);
+
+create index ledger_entries_client on ledger_entries (client_id);
+
+-- ---------------------------------------------------------------------------
+-- review_notes
+-- ---------------------------------------------------------------------------
+
+-- One table for evaluator questions, operator answers, and (later) client
+-- comments. Measured: 9 questions.json holding 16 question items, and ZERO
+-- answers.json, so the reply path migrates nothing and is unexercised.
+--
+-- Anchored to blog_version_id, not to an iteration number: an iteration is not
+-- unique per topic, and the anchor is what makes staleness an FK comparison
+-- rather than an integer that resembles one.
+create table review_notes (
+  id              uuid primary key default gen_random_uuid(),
+  topic_id        uuid not null,
+  client_id       uuid not null,
+  blog_version_id uuid not null,
+  parent_id       uuid references review_notes(id) on delete cascade,
+
+  author    note_author not null,
+  author_id uuid,                    -- auth.users(id), null for engine-authored
+  ref       text,                    -- 'q1', 'q2', ... within a round
+  area      text check (area is null or area in ('Sourcing','Structure','Draft','Mechanics')),
+  body      text not null check (btrim(body) <> ''),
+  why       text,
+
+  -- questions.json carries its own score: the score AT ASKING TIME, which is a
+  -- record of what was true when the question was asked and legitimately differs
+  -- from the topic's score now. Measured: blr-brewing/the-best-beer-gardens asked
+  -- at iter 1 / score 89 and finished iter 2 / score 95.
+  asked_score int check (asked_score between 0 and 100),
+
+  -- W3C text-quote selector: {quote, prefix, suffix}. Null for whole-draft notes.
+  anchor     jsonb,
+  created_at timestamptz not null default now(),
+
+  foreign key (topic_id, client_id)       references topics(id, client_id)        on delete cascade,
+  foreign key (blog_version_id, topic_id) references blog_versions(id, topic_id)  on delete cascade,
+  constraint evaluator_states_why check (author <> 'evaluator' or (why is not null and area is not null)),
+  constraint reply_has_no_area    check (parent_id is null or area is null),
+  unique (blog_version_id, ref)
+);
+
+create index review_notes_topic on review_notes (topic_id, created_at);
+
+-- ---------------------------------------------------------------------------
+-- Views: the derived reads
+-- ---------------------------------------------------------------------------
+
+-- What /api/orgs actually returns: 4 orgs. Explicit orgs come from the table;
+-- self-orgs are synthesized here exactly as clients.py does on read, and the
+-- underscore fixture is skipped exactly as list_orgs skips it.
+create view org_membership as
+select coalesce(o.slug, c.slug) as org_slug,
+       coalesce(o.name, c.name) as org_name,
+       c.id   as client_id,
+       c.slug as client_slug,
+       c.name as client_name
+from clients c
+left join orgs o on o.id = c.org_id
+where left(c.slug, 1) <> '_'
+  and c.deleted_at is null;
+
+-- The fold over status_events. Replicates the engine's own summary:
+--   * the LAST terminal line wins, read by ORDINAL (line_no), never by ts
+--   * score is the last (eval,end) line carrying a non-null score
+--   * iterations is the high-water mark of iter
+--   * no terminal line at all means 'running', not 'failed'
+-- Verified against the engine's summary across all 1,339 lines / 50 topics:
+-- 0 mismatches on status, score, and iterations.
+create view topic_rollup as
+select t.id as topic_id,
+       coalesce((select s.status from status_events s
+                  where s.topic_id = t.id and s.status <> 'running'
+                  order by s.line_no desc limit 1), 'running'::topic_status) as status,
+       (select s.score from status_events s
+         where s.topic_id = t.id and s.stage = 'eval' and s.event = 'end' and s.score is not null
+         order by s.line_no desc limit 1) as score,
+       coalesce((select max(s.iter) from status_events s where s.topic_id = t.id), 0) as iterations,
+       (select count(*) from status_events s where s.topic_id = t.id) as event_count
+from topics t;
+
+-- has_blog is DERIVED, never stored. The engine treats the artifact's existence
+-- as the truth about whether a topic has a blog, and a stored boolean re-encodes
+-- that as something an operator's delete can silently falsify.
+create view topics_live as
+select t.*,
+       exists (select 1 from blog_versions v where v.topic_id = t.id) as has_blog
+from topics t
+where t.deleted_at is null;
+
+-- Staleness and answeredness as FK facts.
+--
+-- `blocking` deliberately DOES NOT consult the score, and its absence is the
+-- rule rather than a simplification. It used to return "not blocking" at or
+-- above the ship score, and that shipped two blogs at 96 over their own open
+-- questions, one of them publishing a claim its canonical-facts file lists as
+-- not citable. Answering is a DEMAND at every score. Measured: 4 topics are
+-- currently done at 95/96 WITH current unanswered questions, and a score-based
+-- formula reports every one of them as non-blocking.
+create view v_review_notes as
+select n.*,
+       (n.blog_version_id <> (select v.id from blog_versions v
+                               where v.topic_id = n.topic_id
+                               order by v.version_no desc limit 1)) as stale,
+       exists (select 1 from review_notes r where r.parent_id = n.id) as answered,
+       (n.blog_version_id = (select v.id from blog_versions v
+                              where v.topic_id = n.topic_id
+                              order by v.version_no desc limit 1)
+        and not exists (select 1 from review_notes r where r.parent_id = n.id)) as blocking
+from review_notes n
+where n.parent_id is null;
+
+-- ---------------------------------------------------------------------------
+-- Row Level Security: ON now, ZERO policies
+-- ---------------------------------------------------------------------------
+-- The server holds sb_secret_*, which BYPASSES RLS entirely, so none of this
+-- affects the app today. That is the point: it costs nothing now, and the day a
+-- publishable key is pointed at this database from a browser it fails CLOSED
+-- instead of open. RLS enabled with no policy is deny-all for anon and
+-- authenticated.
+alter table orgs             enable row level security;
+alter table clients          enable row level security;
+alter table client_members   enable row level security;
+alter table client_resources enable row level security;
+alter table roadmap_uploads  enable row level security;
+alter table roadmap_sheets   enable row level security;
+alter table roadmap_rows     enable row level security;
+alter table topics           enable row level security;
+alter table blog_versions    enable row level security;
+alter table status_events    enable row level security;
+alter table ledger_entries   enable row level security;
+alter table review_notes     enable row level security;
+
+-- A one-time REVOKE is point-in-time, and Supabase ships default privileges that
+-- GRANT every LATER-created table to anon. Without this, the next migration
+-- silently reopens the hole for tables that do not exist yet.
+alter default privileges in schema public revoke all on tables    from anon;
+alter default privileges in schema public revoke all on sequences from anon;
+alter default privileges in schema public revoke all on functions from anon;
+
+revoke all on all tables    in schema public from anon;
+revoke all on all sequences in schema public from anon;
+
+commit;
