@@ -78,9 +78,9 @@ def materialize_client(slug):
     if not cid:
         raise LookupError(f"unknown client {slug!r}")
     row = db.q(
-        """select gates, client_md, canonical_facts, never_claim
+        """select gates, client_md, canonical_facts, never_claim, description
            from clients where id = %s""", (cid,), fetch="one")
-    gates, client_md, facts, never_claim = row
+    gates, client_md, facts, never_claim, description = row
 
     cdir = _client_dir(slug)
     cdir.mkdir(parents=True, exist_ok=True)
@@ -89,6 +89,10 @@ def materialize_client(slug):
         encoding="utf-8")
     if client_md is not None:
         (cdir / "client.md").write_text(client_md, encoding="utf-8")
+    # client.md's template tells agents the operator-owned brand description
+    # lives at clients/<slug>/description.md, so the promise must be kept on
+    # disk even when the description is empty.
+    (cdir / "description.md").write_text(description or "", encoding="utf-8")
     if facts is not None:
         (cdir / "canonical-facts.md").write_text(facts, encoding="utf-8")
     else:
@@ -164,8 +168,17 @@ def materialize_answers(client_slug, topic_slug):
     tdir.mkdir(parents=True, exist_ok=True)
     asked_iter = next((r[6] for r in rows if r[6] is not None), 1)
     asked_score = next((r[5] for r in rows if r[5] is not None), None)
+    # Both files mirror their disk writers KEY FOR KEY: questions.json matches
+    # .claude/questions.py's payload, answers.json matches questions.py's
+    # _write_answers_to_disk. The keys are load-bearing, not cosmetic:
+    # is_answered() fires only when answers["iter"] equals the form's iter, so
+    # a materialized answers.json missing "iter" would never read as answered
+    # and the revise finally-arm's keep-vs-clear matrix would misfire.
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
     form = {
         "slug": topic_slug,
+        "asked": now,
         "iter": asked_iter,
         "score": asked_score,
         "questions": [
@@ -181,9 +194,15 @@ def materialize_answers(client_slug, topic_slug):
         if answer is not None
     ]
     if answers:
+        payload = {
+            "slug": topic_slug,
+            "answered_at": now,
+            "iter": asked_iter,
+            "score_when_asked": asked_score,
+            "answers": answers,
+        }
         (tdir / "answers.json").write_text(
-            json.dumps({"slug": topic_slug, "answers": answers},
-                       indent=2, ensure_ascii=False), encoding="utf-8")
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

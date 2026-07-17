@@ -1,70 +1,55 @@
-"""Client onboarding: the clients/<slug>/ directory, its config, and its Resources.
+"""Client onboarding: the clients row in Supabase, its docs, and its Resources.
 
-WHAT A CLIENT IS, on disk:
-  clients/<slug>/client.md           the brand brief the engine loads (readable, generated here)
-  clients/<slug>/gates.json          machine config gates.py and runner.py already consume
-  clients/<slug>/description.md      operator-owned brand description, editable
-  clients/<slug>/never-claim.md      operator-owned do-not-claim rules, one per line
-  clients/<slug>/canonical-facts.md  BINDING facts. NOT written here. See create_client.
-  clients/<slug>/roadmap.csv         optional saved roadmap
-  clients/<slug>/generated.csv       the append-only ledger, owned by server/ledger.py
-  clients/<slug>/Resources/          the client knowledge base agents read before any search
-  clients/<slug>/uploads/            archived operator CSVs
+WHAT A CLIENT IS, in the record (supabase/schema.sql):
+  clients.slug / name / domain / industry / description   the onboarding form fields
+  clients.client_md        the brand brief the engine loads (generated here at create)
+  clients.never_claim      operator-owned do-not-claim rules; '' is a real empty file,
+                           NULL means the file never existed (blr-brewing is the '' case)
+  clients.canonical_facts  BINDING facts. NOT written here. See create_client.
+  clients.gates            gates.json as jsonb, MINUS the "organisation" key: the org is
+                           modelled as clients.org_id -> orgs, never duplicated into gates
+  clients.demo_mode        the demo switch, mirrored inside gates for the disk copy
+  client_resources         the client knowledge base index; bytes live in Storage
 
-Blog OUTPUT is not here: it lives at outputs/<slug>/<topic-slug>/, and runner.py owns
-that path. This module reuses runner.ensure_client_output_dir and ledger.ensure_ledger
-rather than reimplementing either, so onboarding cannot drift from what the runner reads.
+The disk tree clients/<slug>/ is SCRATCH, laid down from the record by
+sync.materialize_client because agent subprocesses read real files (gates.py,
+client.md, canonical-facts.md, Resources/). This module writes the record and
+re-materializes; it never treats the disk copy as the truth.
 
-No concurrency primitive lives in this module. The client lock and the topic semaphore are
-in runner.py and nowhere else.
+Blog OUTPUT is not here: topics and blog_versions rows are owned by the runner
+and sync. blog_count below is a query over them, not a disk glob.
+
+No concurrency primitive lives in this module. The client lock and the topic
+semaphore are in runner.py and nowhere else.
 """
 import json
+import mimetypes
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 
-from . import ledger, runner
+from . import db, runner, sync
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLIENTS_DIR = REPO_ROOT / "clients"
 
 # The industry reference set is the source of truth for what an industry IS. A hardcoded
 # list here would rot the moment someone adds a reference file, and a client.md could then
-# name an industry reference that never loads.
+# name an industry reference that never loads. Deliberately still a glob over repo files:
+# these are skill assets Agent W reads from disk every run, not client data.
 INDUSTRIES_DIR = (
     REPO_ROOT / ".claude" / "skills" / "geo-content-writer" / "references" / "industries"
 )
 
-# The house default word band, matching CLAUDE.md. gates.json may override it per client.
+# The house default word band, matching CLAUDE.md. gates may override it per client.
 HOUSE_WORD_BAND = {"min": 1200, "soft_max": 2000, "hard_max": 2500}
 
 # A resource is a brochure, a deck, a sheet, a PDF. 25 MB is generous for that and small
-# enough that a mistaken upload fails fast instead of filling the disk.
+# enough that a mistaken upload fails fast instead of filling Storage.
 MAX_RESOURCE_BYTES = 25 * 1024 * 1024
 
 # Browser-supplied filenames are untrusted input. Everything outside this set becomes an
 # underscore, so a name can never carry a path separator, a dot-dot, or a shell character.
 _SAFE_RESOURCE_CHARS = re.compile(r"[^A-Za-z0-9._ -]")
-
-_KINDS = {
-    ".pdf": "pdf",
-    ".csv": "csv",
-    ".md": "markdown",
-    ".txt": "text",
-    ".doc": "document",
-    ".docx": "document",
-    ".rtf": "document",
-    ".ppt": "deck",
-    ".pptx": "deck",
-    ".xls": "sheet",
-    ".xlsx": "sheet",
-    ".png": "image",
-    ".jpg": "image",
-    ".jpeg": "image",
-    ".gif": "image",
-    ".webp": "image",
-    ".json": "data",
-}
 
 
 class ClientError(Exception):
@@ -80,7 +65,7 @@ class InvalidClient(ClientError):
 
 
 class UnknownClient(ClientError):
-    """No clients/<slug>/ directory with a gates.json."""
+    """No clients row with this slug."""
 
 
 class BadResource(ClientError):
@@ -88,39 +73,22 @@ class BadResource(ClientError):
 
 
 def slugify_client(name):
-    """Brand name -> directory slug: lowercase, runs of non-alphanumerics to one hyphen.
+    """Brand name -> slug: lowercase, runs of non-alphanumerics to one hyphen.
 
     Deliberately the same normalisation roadmap.slugify applies to topics, because a slug
     is a path segment either way and two brands that differ only in punctuation must not
-    quietly become two directories.
+    quietly become two records.
     """
     return re.sub(r"[^a-z0-9]+", "-", str(name or "").lower()).strip("-")
 
 
-def client_paths(slug):
-    root = CLIENTS_DIR / slug
-    return {
-        "root": root,
-        "client_md": root / "client.md",
-        "gates": root / "gates.json",
-        "description": root / "description.md",
-        "never_claim": root / "never-claim.md",
-        "canonical_facts": root / "canonical-facts.md",
-        "roadmap": root / "roadmap.csv",
-        "ledger": root / "generated.csv",
-        "resources": resources_dir(slug),
-        "uploads": root / "uploads",
-        "output": runner.client_output_dir(slug),
-    }
-
-
 def resources_dir(slug):
-    """clients/<slug>/Resources/, capital R.
+    """clients/<slug>/Resources/, capital R: the SCRATCH copy of the knowledge base.
 
-    The path is exact on purpose: CLAUDE.md's precedence order names
-    clients/<slug>/Resources/ as the client knowledge base every agent reads before any
-    external search. A lowercase variant would create a folder that uploads land in and no
-    agent ever opens, which looks like it works and silently is not read.
+    The path is exact on purpose: the engine contract names clients/<slug>/Resources/ as
+    the folder every agent reads before any external search, and sync.materialize_client
+    lays it down from Storage under exactly this name. A lowercase variant would create a
+    folder uploads land in and no agent ever opens.
     """
     return CLIENTS_DIR / slug / "Resources"
 
@@ -132,88 +100,92 @@ def list_industries():
     return sorted(path.stem for path in INDUSTRIES_DIR.glob("*.md"))
 
 
-def _read_text(path):
-    """Absent is empty, not an error: a client onboarded before these files existed, or one
-    whose operator has not filled them in yet, is a normal state."""
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-
-
-def _load_gates(slug):
-    path = client_paths(slug)["gates"]
-    try:
-        config = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return config if isinstance(config, dict) else {}
-
-
-def _created(root):
-    try:
-        stamp = root.stat().st_ctime
-    except OSError:
-        return ""
-    return datetime.fromtimestamp(stamp, tz=timezone.utc).isoformat()
-
-
-def _blog_count(slug):
-    """Blogs on disk, not ledger rows. The filesystem is the source of truth for what
-    exists, exactly as _blog_history in app.py already treats it."""
-    output_root = runner.client_output_dir(slug)
-    if not output_root.is_dir():
-        return 0
-    return sum(1 for topic_dir in output_root.iterdir() if (topic_dir / "blog.md").is_file())
-
-
 def exists(slug):
-    paths = client_paths(slug)
-    return paths["root"].is_dir() and paths["gates"].is_file()
+    """A client is a live clients row: deleted_at null. db.client_id is the one gate."""
+    return db.client_id(slug) is not None
 
 
-def _organisation(slug, gates):
-    """The org this brand belongs to, from gates.json's optional "organisation" key.
+# Every read of a client goes through this one statement, so list and single reads cannot
+# disagree on a count or a flag. blog_count counts topics that actually carry a committed
+# blog version, which is the record's answer to what _blog_count used to glob off disk.
+_CLIENT_SELECT = """
+    select c.slug, c.name, c.domain, c.industry, c.description, c.never_claim,
+           c.demo_mode, c.created_at,
+           exists (select 1 from roadmap_sheets r where r.client_id = c.id)
+             as has_roadmap,
+           (c.canonical_facts is not null) as has_canonical_facts,
+           (select count(*) from client_resources cr where cr.client_id = c.id)
+             as resource_count,
+           (select count(*) from topics t
+             where t.client_id = c.id and t.deleted_at is null
+               and exists (select 1 from blog_versions v where v.topic_id = t.id))
+             as blog_count,
+           o.slug as org_slug, o.name as org_name
+    from clients c
+    left join orgs o on o.id = c.org_id
+    where c.deleted_at is null
+"""
 
-    An ABSENT key means the client is its own single-brand org, which is the common case
-    today and the reason this synthesises rather than requiring the key: every existing
-    client keeps working with zero migration, and no brand ever renders under an empty org.
-    A self-referencing org is deliberately NOT written to gates.json by create_client: an
-    absent key already states this fact, and storing it twice invites the two copies to
-    disagree after a rename.
-    """
-    org = gates.get("organisation")
-    if isinstance(org, dict):
-        org_slug = slugify_client(org.get("slug") or org.get("name") or "")
-        org_name = str(org.get("name") or "").strip()
-        if org_slug and org_name:
-            return {"slug": org_slug, "name": org_name}
-    return {"slug": slug, "name": gates.get("name") or slug}
+
+def _client_from_row(row):
+    (slug, name, domain, industry, description, never_claim, demo_mode,
+     created_at, has_roadmap, has_facts, resource_count, blog_count,
+     org_slug, org_name) = row
+    return {
+        "slug": slug,
+        "name": name or slug,
+        # The org is a grouping over brands, resolved here so every reader of a client
+        # sees the same answer. An explicit org comes from the orgs join; a client with
+        # org_id null is its own single-brand org, synthesised on read and deliberately
+        # never stored, exactly as the gates.json "organisation" key was never written
+        # for the self case: two stored copies drift after a rename.
+        "organisation": {"slug": org_slug, "name": org_name} if org_slug
+                        else {"slug": slug, "name": name or slug},
+        "domain": domain or "",
+        "industry": industry or "",
+        "description": description or "",
+        # NULL (file never existed) and '' (a real zero-byte never-claim.md) both read as
+        # "" on the wire, matching the old _read_text behaviour. The record keeps the
+        # distinction; the wire never carried it.
+        "never_claim": never_claim or "",
+        "demo_mode": bool(demo_mode),
+        "has_roadmap": bool(has_roadmap),
+        "has_canonical_facts": bool(has_facts),
+        "resource_count": resource_count,
+        "blog_count": blog_count,
+        "created": created_at.isoformat() if created_at else "",
+    }
 
 
 def list_clients():
-    """Every client on disk. A client is a directory under clients/ carrying gates.json."""
-    if not CLIENTS_DIR.is_dir():
-        return []
-    found = []
-    for path in sorted(CLIENTS_DIR.iterdir()):
-        if path.is_dir() and (path / "gates.json").is_file():
-            found.append(read_client(path.name))
-    return found
+    """Every live client, sorted by slug in byte order.
+
+    collate "C" reproduces the old sorted(CLIENTS_DIR.iterdir()) exactly: the underscore
+    fixture sorts before the lowercase slugs, as it did on disk.
+    """
+    rows = db.q(_CLIENT_SELECT + ' order by c.slug collate "C"')
+    return [_client_from_row(row) for row in rows]
+
+
+def read_client(slug):
+    row = db.q(_CLIENT_SELECT + " and c.slug = %s", (slug,), fetch="one")
+    if row is None:
+        raise UnknownClient(f"unknown client {slug!r}")
+    return _client_from_row(row)
 
 
 def list_orgs():
     """Orgs grouped from the clients themselves: [{"slug","name","brands":[client, ...]}].
 
-    Derived on read, never stored. There is no orgs/ directory and no second config file,
-    so an org grouping cannot drift out of sync with the brands it groups: the brands ARE
-    the record. The brand stays the engine's unit of work because one brand owns exactly
-    one canonical-facts.md, never-claim list, entity-name set and roadmap.
+    Explicit orgs come from the orgs rows through the client join; every other brand is
+    its own single-brand org, derived on read. The brand stays the engine's unit of work
+    because one brand owns exactly one canonical_facts, never_claim list, entity-name set
+    and roadmap.
     """
     grouped = {}
     for client in list_clients():
-        # clients/_fixture-unreviewed is a test fixture for the preflight refusal, not a
-        # brand anyone writes for. It stays visible in GET /api/clients, which the existing
+        # _fixture-unreviewed is a test fixture for the preflight refusal, not a brand
+        # anyone writes for. It stays visible in GET /api/clients, which the existing
         # tests read, but it must never appear as an org an operator could create blogs in.
         if client["slug"].startswith("_"):
             continue
@@ -232,34 +204,6 @@ def read_org(org_slug):
         if org["slug"] == org_slug:
             return org
     return None
-
-
-def read_client(slug):
-    if not exists(slug):
-        raise UnknownClient(f"unknown client {slug!r}")
-    paths = client_paths(slug)
-    gates = _load_gates(slug)
-    return {
-        "slug": slug,
-        "name": gates.get("name") or slug,
-        # The org is a grouping over brands, resolved here so every reader of a client sees
-        # the same answer. See _organisation for why an absent key is not a missing value.
-        "organisation": _organisation(slug, gates),
-        # domain and industry live in gates.json because it is the machine-readable config
-        # every other reader already parses. client.md is prose for an agent to read, so
-        # scraping a field back out of it would make the brief load bearing for the API.
-        # A client onboarded before this feature has neither key, so both read empty.
-        "domain": gates.get("domain") or "",
-        "industry": gates.get("industry") or "",
-        "description": _read_text(paths["description"]),
-        "never_claim": _read_text(paths["never_claim"]),
-        "demo_mode": bool(gates.get("demo_mode", False)),
-        "has_roadmap": paths["roadmap"].is_file(),
-        "has_canonical_facts": paths["canonical_facts"].is_file(),
-        "resource_count": len(list_resources(slug)),
-        "blog_count": _blog_count(slug),
-        "created": _created(paths["root"]),
-    }
 
 
 def _client_md(name, domain, industry, slug):
@@ -320,18 +264,12 @@ with no extractable text is not a citable source.
 """
 
 
-def _write_gates(slug, config):
-    client_paths(slug)["gates"].write_text(
-        json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-
-
 def _org_config_value(organisation_name):
-    """An organisation_name -> the gates.json value, or None to write no key at all.
+    """An organisation_name -> {"slug","name"}, or None for "no explicit org".
 
-    Blank means "no explicit org", which is exactly what an absent key already says, so
-    nothing is written. Returning a self-referencing org here would store one fact in two
-    places and let them disagree later.
+    Blank means the brand is its own single-brand org, which the record states with a
+    null org_id and nothing else. Returning a self-referencing org here would store one
+    fact in two places and let them disagree later.
     """
     org_name = str(organisation_name or "").strip()
     if not org_name:
@@ -340,6 +278,19 @@ def _org_config_value(organisation_name):
     if not org_slug:
         raise InvalidClient("an organisation name must contain at least one letter or digit")
     return {"slug": org_slug, "name": org_name}
+
+
+def _upsert_org(org_config):
+    """The orgs row for an explicit org, created or renamed in place. Returns its id.
+
+    on conflict updates the name so the org rename an operator typed actually lands:
+    orgs.slug is the identity, the name is display.
+    """
+    return db.q(
+        """insert into orgs (slug, name) values (%s, %s)
+           on conflict (slug) do update set name = excluded.name
+           returning id""",
+        (org_config["slug"], org_config["name"]), fetch="val")
 
 
 def create_client(name, domain, industry, description="", never_claim="", demo_mode=False,
@@ -351,22 +302,25 @@ def create_client(name, domain, industry, description="", never_claim="", demo_m
     if slug.startswith("_"):
         # Unreachable through slugify_client, which strips leading punctuation, but the
         # guard is the contract: a leading underscore marks a test fixture such as
-        # clients/_fixture-unreviewed, and onboarding must never be able to mint or
-        # collide with one.
+        # _fixture-unreviewed, and onboarding must never be able to mint or collide
+        # with one.
         raise InvalidClient(f"the slug {slug!r} is reserved: names starting with _ are fixtures")
-    if exists(slug) or (CLIENTS_DIR / slug).exists():
+    # Soft-deleted rows still hold their slug (the unique constraint spans them), so the
+    # existence check deliberately ignores deleted_at: reviving a dead slug is a decision
+    # for a human with database access, not for an onboarding form.
+    if db.q("select 1 from clients where slug = %s", (slug,), fetch="val"):
         raise ClientExists(f"client {slug!r} already exists")
 
-    # Validated before the directory is made, so a bad org name refuses cleanly instead of
-    # leaving a half-built client on disk.
+    # Validated before any write, so a bad org name refuses cleanly instead of leaving a
+    # half-built client in the record.
     org_config = _org_config_value(organisation_name)
-
-    paths = client_paths(slug)
-    paths["root"].mkdir(parents=True, exist_ok=False)
 
     industry = str(industry or "").strip()
     domain = str(domain or "").strip()
 
+    # gates.json as it will be materialized to disk, MINUS "organisation": the org lives
+    # in org_id and is never duplicated into gates. demo_mode is mirrored here because
+    # runner.is_demo_client reads the disk copy of gates.json, which is built from this.
     config = {
         "client": slug,
         "name": name,
@@ -385,62 +339,86 @@ def create_client(name, domain, industry, description="", never_claim="", demo_m
         "forbidden_link_patterns": [],
         "forbidden_claim_patterns": [],
     }
-    if org_config is not None:
-        config["organisation"] = org_config
-    _write_gates(slug, config)
 
-    paths["client_md"].write_text(_client_md(name, domain, industry, slug), encoding="utf-8")
-    paths["description"].write_text(str(description or ""), encoding="utf-8")
-    paths["never_claim"].write_text(str(never_claim or ""), encoding="utf-8")
-    paths["resources"].mkdir(parents=True, exist_ok=True)
-    paths["uploads"].mkdir(parents=True, exist_ok=True)
+    org_id = _upsert_org(org_config) if org_config is not None else None
 
-    # canonical-facts.md is NOT written here, and onboarding must never write it. It is
+    # canonical_facts is NOT written here, and onboarding must never write it. It is
     # BINDING: every blog for this client inherits it, and the runner refuses a real run
-    # when it is missing or still unreviewed. That refusal is the only thing standing
-    # between an unreviewed file and a queue of blogs citing it as fact. A file this module
-    # created would either be an invention (facts nobody verified) or a placeholder that
-    # merely looks approved, and both defeat the preflight. It is drafted at generate time,
-    # seeded by never-claim.md, and approved by a human before it exists.
+    # when it is missing or still unreviewed. A value this module invented would either be
+    # a fabrication or a placeholder that merely looks approved, and both defeat the
+    # preflight. It is drafted at generate time, seeded by never_claim, and approved by a
+    # human before it exists.
+    try:
+        db.q(
+            """insert into clients
+                 (org_id, slug, name, domain, industry, description, client_md,
+                  never_claim, demo_mode, gates)
+               values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)""",
+            (org_id, slug, name, domain, industry, str(description or ""),
+             _client_md(name, domain, industry, slug), str(never_claim or ""),
+             bool(demo_mode), json.dumps(config, ensure_ascii=False)),
+            fetch="none")
+    except Exception as exc:
+        # Two concurrent creates both pass the pre-check; the unique constraint catches
+        # the loser, and it must surface as the same 409 the pre-check produces.
+        from psycopg import errors as pg_errors
+        if isinstance(exc, pg_errors.UniqueViolation):
+            raise ClientExists(f"client {slug!r} already exists")
+        raise
+    db.invalidate_client_cache()
 
-    ledger.ensure_ledger(slug)
+    # The two onboarding side effects the app still relies on. The output folder is
+    # scratch an operator can find in Finder before the first blog runs. Materialization
+    # lays clients/<slug>/ down from the record (gates.json, client.md, never-claim.md,
+    # Resources/) so the first run finds its files without a separate sync step. The old
+    # generated.csv create is gone: the ledger is a table now.
     runner.ensure_client_output_dir(slug)
+    sync.materialize_client(slug)
     return read_client(slug)
 
 
 def update_client(slug, description=None, never_claim=None, name=None, organisation_name=None):
-    """Write only what was passed. A None field is untouched, so a PATCH carrying one key
-    cannot blank the others, and gates.json keys this function was not given survive."""
-    if not exists(slug):
+    """Update only what was passed. A None field is untouched, so a PATCH carrying one key
+    cannot blank the others, and gates keys this function was not given survive."""
+    cid = db.client_id(slug)
+    if not cid:
         raise UnknownClient(f"unknown client {slug!r}")
-    paths = client_paths(slug)
 
+    sets, params = [], []
     if description is not None:
-        paths["description"].write_text(str(description), encoding="utf-8")
+        sets.append("description = %s")
+        params.append(str(description))
     if never_claim is not None:
-        paths["never_claim"].write_text(str(never_claim), encoding="utf-8")
+        sets.append("never_claim = %s")
+        params.append(str(never_claim))
     if name is not None:
         new_name = str(name).strip()
         if not new_name:
             raise InvalidClient("a client name cannot be blank")
-        # Read, mutate one key, write back. The slug is NOT recomputed: renaming the
-        # directory would orphan outputs/<slug>/, the ledger, and every status.jsonl an
-        # SSE stream is tailing right now.
-        config = _load_gates(slug)
-        config["name"] = new_name
-        _write_gates(slug, config)
+        # The slug is NOT recomputed: it keys clients/<slug>/, outputs/<slug>/, and every
+        # status.jsonl an SSE stream is tailing right now, and the schema declares it
+        # immutable. The gates copy of the name moves with the column so the materialized
+        # gates.json keeps saying what the record says.
+        sets.append("name = %s")
+        params.append(new_name)
+        sets.append("gates = jsonb_set(gates, '{name}', %s::jsonb)")
+        params.append(json.dumps(new_name))
     if organisation_name is not None:
-        # Moving a brand between orgs rewrites ONE key and renames NO directory. The brand
-        # slug keys clients/<slug>/, outputs/<slug>/, the ledger and any status.jsonl an SSE
-        # stream is tailing right now, so a rename that moved them would orphan a live run.
+        # Moving a brand between orgs rewrites ONE column and renames NO slug. Blank
+        # clears back to its own single-brand org, which is what a null org_id means.
         org_config = _org_config_value(organisation_name)
-        config = _load_gates(slug)
         if org_config is None:
-            # Cleared back to its own single-brand org, which is what an absent key means.
-            config.pop("organisation", None)
+            sets.append("org_id = null")
         else:
-            config["organisation"] = org_config
-        _write_gates(slug, config)
+            sets.append("org_id = %s")
+            params.append(_upsert_org(org_config))
+
+    if sets:
+        db.q(f"update clients set {', '.join(sets)} where id = %s",
+             (*params, cid), fetch="none")
+        # Scratch tracks the record: the next agent run reads gates.json and
+        # never-claim.md from disk, and they must say what was just recorded.
+        sync.materialize_client(slug)
 
     return read_client(slug)
 
@@ -449,32 +427,28 @@ def update_client(slug, description=None, never_claim=None, name=None, organisat
 # Resources
 # ---------------------------------------------------------------------------
 
-def _kind(name):
-    return _KINDS.get(Path(name).suffix.lower(), "file")
-
-
-def _resource_entry(path):
-    stat = path.stat()
-    return {
-        "name": path.name,
-        "size": stat.st_size,
-        "uploaded": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-        "kind": _kind(path.name),
-    }
-
-
 def list_resources(slug):
-    root = resources_dir(slug)
-    if not root.is_dir():
+    """The client's knowledge-base index, from the record.
+
+    collate "C" on lower(name) reproduces the old Python key=name.lower() sort exactly,
+    underscores before letters included.
+    """
+    cid = db.client_id(slug)
+    if not cid:
         return []
-    return sorted(
-        (_resource_entry(path) for path in root.iterdir() if path.is_file()),
-        key=lambda entry: entry["name"].lower(),
-    )
+    rows = db.q(
+        """select name, size_bytes, uploaded_at from client_resources
+           where client_id = %s order by lower(name) collate "C" """,
+        (cid,))
+    return [
+        {"name": name, "size": size,
+         "modified": uploaded_at.isoformat() if uploaded_at else ""}
+        for name, size, uploaded_at in rows
+    ]
 
 
 def safe_resource_name(filename):
-    """Untrusted browser-supplied name -> a name safe to join onto a path.
+    """Untrusted browser-supplied name -> a name safe to store and to join onto a path.
 
     The filename arrives from a browser and is attacker controlled: "../../../etc/passwd"
     is the canonical case. Take the basename, drop separators, allow only a known-good
@@ -501,7 +475,7 @@ def safe_resource_name(filename):
 def _inside_resources(slug, name):
     """Resolve and confirm containment. Same guard the output endpoint uses: the resolved
     path must stay inside this client's Resources dir even if the name smuggles separators
-    or dot-dots past the caller."""
+    or dot-dots past the caller. Still needed for the SCRATCH copy this module writes."""
     root = resources_dir(slug).resolve()
     path = (root / name).resolve()
     if root not in path.parents:
@@ -520,20 +494,38 @@ def save_resource(slug, filename, raw_bytes):
         raise BadResource("the uploaded file is empty")
 
     name = safe_resource_name(filename)
-    root = resources_dir(slug)
-    root.mkdir(parents=True, exist_ok=True)
     path = _inside_resources(slug, name)
     if path is None:
         raise BadResource(f"the filename {filename!r} does not resolve inside Resources")
-    path.write_bytes(raw_bytes)
-    return _resource_entry(path)
+
+    # The record first: Storage plus the client_resources index row.
+    db.resource_add(slug, name, raw_bytes,
+                    content_type=mimetypes.guess_type(name)[0])
+
+    # Then the scratch copy, because the next run reads Resources/ from disk and
+    # materializing now is cheaper than a Storage download at run start. Identical bytes
+    # skip the write: re-uploading the 12 MB kit must not churn the file.
+    resources_dir(slug).mkdir(parents=True, exist_ok=True)
+    if not (path.is_file() and path.read_bytes() == raw_bytes):
+        path.write_bytes(raw_bytes)
+
+    row = db.q(
+        """select size_bytes, uploaded_at from client_resources
+           where client_id = %s and name = %s""",
+        (db.client_id(slug), name), fetch="one")
+    size, uploaded_at = row if row else (len(raw_bytes), None)
+    return {"name": name, "size": size,
+            "modified": uploaded_at.isoformat() if uploaded_at else ""}
 
 
 def delete_resource(slug, name):
     if not exists(slug):
         raise UnknownClient(f"unknown client {slug!r}")
-    path = _inside_resources(slug, Path(str(name or "")).name)
-    if path is None or not path.is_file():
-        return False
-    path.unlink()
-    return True
+    clean = Path(str(name or "")).name
+    deleted = db.resource_delete(slug, clean)
+    # The scratch copy follows the record either way: a file the record no longer names
+    # must not survive on disk for an agent to read.
+    path = _inside_resources(slug, clean)
+    if path is not None and path.is_file():
+        path.unlink()
+    return bool(deleted)

@@ -28,9 +28,8 @@ Reads two real sheets if they are present and mutates nothing.
 
   .venv/bin/python tests/number_check.py
 """
-import shutil
 import sys
-import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -115,24 +114,35 @@ check(
 print()
 print("[2] A sheet Excel exported is a sheet every read path can read")
 
-# The upload path decodes with _decode (latin-1 fallback, so it accepts any bytes) and then writes
-# the operator's ORIGINAL BYTES verbatim. Both read paths used to open that file with a strict
-# utf-8-sig, so the app accepted a file it could never read again: one curly apostrophe out of
-# Excel on Windows is byte 0x92, and it 500'd the sheet preview, 500'd the blogs library through
-# this module's own index_by_slug, and failed every topic in a run when the fact base could not
-# build. Nothing about it was the operator's fault and no message pointed at the cause.
-_TMP = tempfile.mkdtemp()
-_ORIG_ROOT = roadmap.REPO_ROOT
-try:
-    roadmap.REPO_ROOT = Path(_TMP)
-    _dir = Path(_TMP) / "clients" / "winexcel"
-    _dir.mkdir(parents=True)
-    # 0x92 curly apostrophe, 0xe9 e-acute: an ordinary Excel-on-Windows export.
-    (_dir / "roadmap.csv").write_bytes(
-        b"Content Topic,What the Piece Covers,Format,Search Intent,Target Prompts\r\n"
-        b"Bengaluru\x92s best caf\xe9s,covers cafes,Hub listicle,Commercial,where to get coffee\r\n"
-    )
+# The upload path decodes with _decode (latin-1 fallback, so it accepts any bytes) and stores the
+# decoded TEXT in roadmap_sheets.raw_csv, which every read path now consumes. Before that, the
+# reads re-opened the operator's verbatim bytes with a strict utf-8-sig, so the app accepted a
+# file it could never read again: one curly apostrophe out of Excel on Windows is byte 0x92, and
+# it 500'd the sheet preview, 500'd the blogs library through this module's own index_by_slug,
+# and failed every topic in a run when the fact base could not build. Nothing about it was the
+# operator's fault and no message pointed at the cause.
+#
+# The injection goes through _fetch_sheet, the one choke point every roadmap read uses, and it
+# carries EXACTLY what save_upload stores for these bytes: _decode(raw_bytes). So this still
+# proves the same thing end to end, that a sheet Excel exported is a sheet every read path can
+# read, without writing a row to the live database.
 
+# 0x92 curly apostrophe, 0xe9 e-acute: an ordinary Excel-on-Windows export.
+_EXCEL_BYTES = (
+    b"Content Topic,What the Piece Covers,Format,Search Intent,Target Prompts\r\n"
+    b"Bengaluru\x92s best caf\xe9s,covers cafes,Hub listicle,Commercial,where to get coffee\r\n"
+)
+_ORIG_FETCH = roadmap._fetch_sheet
+
+
+def _fake_fetch(client_slug):
+    if client_slug != "winexcel":
+        return _ORIG_FETCH(client_slug)
+    return roadmap._decode(_EXCEL_BYTES), "roadmap.csv", datetime.now(timezone.utc)
+
+
+roadmap._fetch_sheet = _fake_fetch
+try:
     for name, call in (
         ("read_sheet (the preview)", lambda: roadmap.read_sheet("winexcel")),
         ("load_roadmap (the brief)", lambda: roadmap.load_roadmap("winexcel")),
@@ -159,8 +169,7 @@ try:
         repr(roadmap.load_roadmap("winexcel")["rows"][0]["topic"]),
     )
 finally:
-    roadmap.REPO_ROOT = _ORIG_ROOT
-    shutil.rmtree(_TMP, ignore_errors=True)
+    roadmap._fetch_sheet = _ORIG_FETCH
 
 # Order, not just tolerance. utf-8 must win so a normal file is never mojibake'd by a fallback that
 # cannot fail, and cp1252 must beat latin-1 so Excel's 0x92 reads as the apostrophe the operator

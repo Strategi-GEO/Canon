@@ -31,6 +31,7 @@ from . import clients as clients_mod
 from . import db
 from . import roadmap
 from . import runner
+from . import sync
 
 PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "canonical-facts-generation.md"
 
@@ -696,6 +697,17 @@ async def ensure_facts(client_slug, run_id=None):
         job["report"] = result["report"]
         job["mock"] = result["mock"]
         job["error"] = _validate_written(client_slug)
+        if not job["error"]:
+            # SUCCESS PATH ONLY, and the placement is the contract. The record must carry
+            # the facts every future materialize lays down, so a validated file is committed
+            # here, after _validate_written vouched for it. A cancelled build never reaches
+            # this line (CancelledError lands in the arm below, which discards the unvouched
+            # file and re-raises), and a failed validation already deleted the file, so
+            # canonical_facts in the record stays NULL on every path that produced no fact
+            # base: the stop contract holds because this line is unreachable from a stop.
+            # A commit failure falls to the generic handler below and fails the job loudly,
+            # because facts that never reached the record were not built.
+            sync.commit_client_facts(client_slug)
         job["state"] = "failed" if job["error"] else "done"
     except asyncio.CancelledError:
         # THE OPERATOR STOPPED THE BRAND MID-BUILD, and without this arm the stop poisons every

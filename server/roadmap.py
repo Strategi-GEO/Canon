@@ -28,9 +28,12 @@ operator's sheets guarantee it. Everything else is labelled because they do not.
 """
 import csv
 import io
+import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+
+from . import db
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -50,7 +53,7 @@ _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]")
 
 
 class RoadmapNotFound(Exception):
-    """Raised when clients/<slug>/roadmap.csv does not exist."""
+    """Raised when the client has no roadmap sheet in roadmap_sheets."""
 
 
 class BadUpload(Exception):
@@ -213,48 +216,52 @@ def _decode(raw_bytes):
     raise BadUpload("the file is not readable as text (tried utf-8, cp1252 and latin-1)")
 
 
-def _read_csv(path, what):
-    """The saved roadmap as raw CSV rows, decoded the SAME way the upload that wrote it was.
+def _fetch_sheet(client_slug):
+    """The single choke point every roadmap read goes through.
 
-    EVERY read of roadmap.csv comes through here, and that is the whole point. The upload path
-    decodes with _decode, which falls back to latin-1 and therefore accepts any byte sequence
-    alive, and then save_upload writes the operator's ORIGINAL BYTES verbatim. Both reads used to
-    open the result with a strict encoding="utf-8-sig" instead, so the app accepted a file it
-    could never read again.
+    Returns (raw_csv, filename, modified) from the client's roadmap_sheets row,
+    or raises RoadmapNotFound. raw_csv is the sheet TEXT: the write paths
+    (save_upload, roadmap_gen's completion push) decode the operator's or the
+    session's bytes ONCE with _decode on the way in, so every reader gets back
+    exactly the text the parse that accepted the sheet saw. The old split, where
+    the upload decoded leniently and the reads re-opened the file strictly as
+    utf-8-sig, once accepted an Excel cp1252 export it could never read again;
+    storing decoded text makes that mismatch unrepresentable.
 
-    That is not a theoretical mismatch. Excel on Windows exports cp1252, so one curly apostrophe
-    in "Bengaluru's best cafes" is byte 0x92 and nothing else has to go wrong. The upload reported
-    success. Then the sheet preview raised UnicodeDecodeError, the blogs library raised it while
-    looking up roadmap numbers and answered 500, and the fact base refused to build, which failed
-    every topic in the run over a file none of those sessions reads, writes or can repair. The
-    operator's only clue was that a CSV they had just been told was fine broke three unrelated
-    screens.
-
-    Decoding on read rather than validating on upload is deliberate. Rejecting the upload would be
-    the other way to make the two halves agree, and it would be worse: the file is fine, csv parses
-    it fine, and the operator's apostrophe is not an error worth refusing their whole sheet over.
+    Tests monkeypatch this function to inject a sheet without a database row.
     """
-    raw_bytes = path.read_bytes()
-    try:
-        text = _decode(raw_bytes)
-    except BadUpload as exc:
-        raise BadUpload(f"{what}: {exc}") from exc
+    cid = db.client_id(client_slug)
+    row = None
+    if cid:
+        row = db.q(
+            """select raw_csv, filename, coalesce(modified, created_at)
+               from roadmap_sheets where client_id = %s""",
+            (cid,), fetch="one")
+    if not row:
+        raise RoadmapNotFound(
+            f"no roadmap sheet for client {client_slug!r} in roadmap_sheets")
+    return row[0], row[1], row[2]
+
+
+def _csv_rows(text):
+    """The stored sheet text as raw CSV rows.
+
+    newline="" keeps the newlines inside quoted target-prompts cells intact,
+    exactly as the file read before it did.
+    """
     return list(csv.reader(io.StringIO(text, newline="")))
 
 
 def load_roadmap(client_slug):
     """Return the saved roadmap payload for a client: columns, rows, warnings.
 
-    clients/<slug>/roadmap.csv is an OPTIONAL saved roadmap shipped with a
-    client. It is read-only input and full of topics that have not been
-    generated. It is NOT the ledger: see server/ledger.py.
+    roadmap_sheets holds an OPTIONAL saved roadmap per client. It is read-only
+    input and full of topics that have not been generated. It is NOT the
+    ledger: see server/ledger.py.
     """
-    path = REPO_ROOT / "clients" / client_slug / "roadmap.csv"
-    if not path.is_file():
-        raise RoadmapNotFound(f"no roadmap.csv for client {client_slug!r} at {path}")
-
-    what = f"roadmap.csv for client {client_slug!r}"
-    return _parse_rows(_read_csv(path, what), what)
+    raw_csv, _filename, _modified = _fetch_sheet(client_slug)
+    what = f"the roadmap sheet for client {client_slug!r}"
+    return _parse_rows(_csv_rows(raw_csv), what)
 
 
 def index_by_slug(client_slug):
@@ -300,11 +307,23 @@ def safe_filename(filename):
 
 
 def roadmap_path(client_slug):
+    """The SCRATCH path a roadmap generation session writes to.
+
+    This is no longer where the roadmap lives: roadmap_sheets is the record, and
+    every reader goes through _fetch_sheet. The path survives because the SDK
+    session is file-only: roadmap_gen substitutes it into the prompt, the agent
+    writes it, and the completion path pushes the result into the record.
+    """
     return REPO_ROOT / "clients" / client_slug / "roadmap.csv"
 
 
 def has_roadmap(client_slug):
-    return roadmap_path(client_slug).is_file()
+    cid = db.client_id(client_slug)
+    if not cid:
+        return False
+    return bool(db.q(
+        "select exists(select 1 from roadmap_sheets where client_id = %s)",
+        (cid,), fetch="val"))
 
 
 def _read_raw(client_slug):
@@ -316,10 +335,8 @@ def _read_raw(client_slug):
     are theirs, and the fact that the factory has no use for them does not mean the operator
     has none.
     """
-    path = roadmap_path(client_slug)
-    if not path.is_file():
-        raise RoadmapNotFound(f"no roadmap.csv for client {client_slug!r} at {path}")
-    return _read_csv(path, f"roadmap.csv for client {client_slug!r}")
+    raw_csv, _filename, _modified = _fetch_sheet(client_slug)
+    return _csv_rows(raw_csv)
 
 
 def read_sheet(client_slug):
@@ -336,64 +353,117 @@ def read_sheet(client_slug):
     data: a sheet whose header row is shorter than its widest data row is common, and an
     unpadded header would misalign every column after the short point.
     """
-    raw_rows = _read_raw(client_slug)
-    path = roadmap_path(client_slug)
-    stat = path.stat()
+    raw_csv, filename, modified = _fetch_sheet(client_slug)
+    raw_rows = _csv_rows(raw_csv)
 
     width = max((len(row) for row in raw_rows), default=0)
     padded = [list(row) + [""] * (width - len(row)) for row in raw_rows]
 
     return {
-        "filename": path.name,
-        "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
-        "bytes": stat.st_size,
+        "filename": filename,
+        "modified": modified.astimezone(timezone.utc).isoformat(),
+        "bytes": len(raw_csv.encode("utf-8")),
         "columns": padded[0] if padded else [],
         "rows": padded[1:],
     }
 
 
 def delete_roadmap(client_slug):
-    """Archive the brand's roadmap into uploads/, then remove it. True when one was removed.
+    """Archive the brand's roadmap into roadmap_uploads, then remove the sheet. True when one
+    was removed.
 
-    Only roadmap.csv goes. The uploads/ archive stays, because /generate re-parses a live run
-    by upload_id and deleting the sheet under a run would strand it. The LEDGER
-    (generated.csv) and every blog under outputs/ also stay: they are what the roadmap
-    PRODUCED, not part of it, and a roadmap is replaced far more often than a brand's work
-    should be destroyed. Deleting a roadmap must never be a way to lose a shipped blog.
+    Only the roadmap_sheets row goes (its roadmap_rows cascade with it). The roadmap_uploads
+    archive stays, because /generate re-parses a live run by upload_id and deleting the sheet
+    under a run would strand it. The LEDGER (generated.csv) and every blog under outputs/ also
+    stay: they are what the roadmap PRODUCED, not part of it, and a roadmap is replaced far
+    more often than a brand's work should be destroyed. Deleting a roadmap must never be a way
+    to lose a shipped blog.
 
     IT IS ARCHIVED FIRST, and that is not belt and braces. Delete is the ONLY route to a new
     roadmap: the app refuses an upload or a generation while one exists, so an operator who
-    wants either must destroy what they have to get there. This function used to unlink an
-    irreplaceable file to satisfy that rule. An operator did exactly what the UI told them to,
-    pressed delete to reach Generate, and their 25 topics existed nowhere else the moment the
-    file went: uploads/ holds sheets that were UPLOADED, and a roadmap that was generated, or
-    edited in place, was never in there. The archive costs a few KB and makes the destructive
-    step recoverable, so the rule stops depending on the operator having their own copy.
+    wants either must destroy what they have to get there. An earlier version of this function
+    unlinked an irreplaceable file to satisfy that rule: an operator pressed delete to reach
+    Generate, and their 25 topics existed nowhere else the moment the file went, because the
+    archive holds sheets that were UPLOADED and a generated sheet was never in there. The
+    deletion-archive row costs a few KB and makes the destructive step recoverable, so the
+    rule stops depending on the operator having their own copy.
+
+    The sheet text is archived verbatim rather than re-serialised: this is the record of what
+    was deleted, and a round trip through a csv writer would quietly reformat the quoting and
+    the newlines inside the target-prompts cell, making the restored sheet differ from the
+    lost one. The generation report describes THIS sheet, so it is archived under the same
+    stamp and goes with it: left on the record, it would explain a document that no longer
+    exists. Archive and delete run in ONE transaction, so a failure leaves the sheet exactly
+    as it was rather than deleted-but-unarchived.
     """
-    path = roadmap_path(client_slug)
-    if not path.is_file():
+    cid = db.client_id(client_slug)
+    if not cid:
         return False
+    row = db.q(
+        "select id, raw_csv, report from roadmap_sheets where client_id = %s",
+        (cid,), fetch="one")
+    if not row:
+        return False
+    sheet_id, raw_csv, report = row
 
-    uploads = REPO_ROOT / "clients" / client_slug / "uploads"
-    uploads.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
-    # Named for what it is, so the archive does not read as another upload the operator made.
-    # The bytes are copied verbatim rather than re-serialised: this is the record of what was
-    # deleted, and a round trip through a csv writer would quietly reformat the quoting and the
-    # newlines inside the target-prompts cell, making the restored sheet differ from the lost one.
-    (uploads / f"{stamp}-deleted-roadmap.csv").write_bytes(path.read_bytes())
+    with db.tx() as cur:
+        # Named for what it is, so the archive does not read as another upload the operator made.
+        cur.execute(
+            """insert into roadmap_uploads (client_id, filename, raw)
+               values (%s, %s, %s)""",
+            (cid, f"{stamp}-deleted-roadmap.csv", raw_csv.encode("utf-8")))
+        if report:
+            cur.execute(
+                """insert into roadmap_uploads (client_id, filename, raw)
+                   values (%s, %s, %s)""",
+                (cid, f"{stamp}-deleted-roadmap-report.md", report.encode("utf-8")))
+        cur.execute("delete from roadmap_sheets where id = %s", (sheet_id,))
 
-    # The generation report describes THIS sheet: its row count, what the agent cut, what it
-    # disputed. Left behind, it would sit against whatever roadmap came next and explain a
-    # document that no longer exists, which is worse than no report at all. It is archived
-    # under the same stamp as the sheet it belongs to, so the pair can be read back together.
-    report = REPO_ROOT / "clients" / client_slug / "roadmap-report.md"
-    if report.is_file():
-        (uploads / f"{stamp}-deleted-roadmap-report.md").write_bytes(report.read_bytes())
-        report.unlink()
-
-    path.unlink()
+    # The disk copies are generation scratch, and they go with the sheet. Left behind, a stale
+    # roadmap.csv would be picked up by the NEXT generation's validate step as though that
+    # session had written it, silently resurrecting the sheet the operator just deleted.
+    roadmap_path(client_slug).unlink(missing_ok=True)
+    (REPO_ROOT / "clients" / client_slug / "roadmap-report.md").unlink(missing_ok=True)
     return True
+
+
+def _write_sheet(cur, cid, raw_text, payload, report=None):
+    """Upsert roadmap_sheets and rebuild roadmap_rows for one client, on an open
+    transaction cursor.
+
+    The ONE writer of the sheet record: save_upload and roadmap_gen's completion
+    push both land here, so the stored rows are always the output of the same
+    _build_rows parse that accepted the sheet, and the two routes cannot drift.
+    Delete plus insert rather than a row-wise upsert, because the sheet is
+    replaced whole: a leftover row from a longer previous sheet would be a row
+    the operator deleted coming back.
+
+    topic_slug is computed by this module's own slugify (already on the parsed
+    rows), never re-derived in SQL; an empty slug is stored as NULL because an
+    incomplete row may have no topic to slugify.
+    """
+    cur.execute(
+        """insert into roadmap_sheets (client_id, filename, raw_csv, columns, modified, report)
+           values (%s, 'roadmap.csv', %s, %s::text[], now(), %s)
+           on conflict (client_id) do update
+             set filename = excluded.filename,
+                 raw_csv  = excluded.raw_csv,
+                 columns  = excluded.columns,
+                 modified = excluded.modified,
+                 report   = excluded.report
+           returning id""",
+        (cid, raw_text, payload["columns"], report))
+    sheet_id = cur.fetchone()[0]
+    cur.execute("delete from roadmap_rows where sheet_id = %s", (sheet_id,))
+    for row in payload["rows"]:
+        cur.execute(
+            """insert into roadmap_rows
+                 (sheet_id, client_id, row_index, topic, covers, prompts, extras, topic_slug)
+               values (%s, %s, %s, %s, %s, %s::text[], %s::jsonb, %s)""",
+            (sheet_id, cid, row["index"], row["topic"], row["covers"],
+             row["prompts"], json.dumps(row["extras"]), row["topic_slug"] or None))
+    return sheet_id
 
 
 def save_upload(client_slug, filename, raw_bytes):
@@ -401,65 +471,83 @@ def save_upload(client_slug, filename, raw_bytes):
 
     Two artifacts, deliberately:
 
-    1. clients/<slug>/roadmap.csv IS the brand's roadmap from now on. An earlier version of
-       this function refused to write it, on the reasoning that an upload was transient input
-       for one submit and persisting it would "silently redefine the client". That reasoning
-       is retired, and the code was worse than the argument: the UI offered a "Replace
-       roadmap" button that replaced nothing, a refresh silently swapped the operator's sheet
-       back to a saved one they had not chosen, and a run's row indices pointed into a
-       different document than the one on screen. The upload IS the roadmap: that is what an
-       operator means by uploading it, and the app now refuses an upload while a roadmap
-       exists, so redefining a brand takes a deliberate delete first and is never silent.
+    1. The roadmap_sheets row IS the brand's roadmap from now on. An earlier version of
+       this function refused to persist an upload, on the reasoning that it was transient
+       input for one submit and persisting it would "silently redefine the client". That
+       reasoning is retired, and the code was worse than the argument: the UI offered a
+       "Replace roadmap" button that replaced nothing, a refresh silently swapped the
+       operator's sheet back to a saved one they had not chosen, and a run's row indices
+       pointed into a different document than the one on screen. The upload IS the roadmap:
+       that is what an operator means by uploading it, and the app refuses an upload while a
+       roadmap exists, so redefining a brand takes a deliberate delete first and is never
+       silent.
 
-    2. uploads/<stamp>-<name>.csv is the archive, and it stays. /generate re-parses BY
+    2. The roadmap_uploads row is the archive, and it stays. /generate re-parses BY
        upload_id rather than trusting row content posted by a browser, which is an integrity
        property worth keeping: it is the reason a browser cannot smuggle rows into a run.
+       The archived `raw` is the operator's ORIGINAL BYTES verbatim, never a
+       re-serialisation: a round trip through a writer would quietly reformat quoting and
+       newlines inside the target-prompts cell. The sheet's raw_csv is those bytes through
+       _decode, once, so every later read gets the text this accepting parse saw.
 
-    Nothing is written until the parse succeeds, so a malformed CSV cannot destroy the roadmap
-    the brand already had.
+    Archive, sheet and rows land in ONE transaction, and nothing is written until the parse
+    succeeds, so a malformed CSV cannot destroy the roadmap the brand already had.
     """
-    client_dir = REPO_ROOT / "clients" / client_slug
-    if not client_dir.is_dir():
+    cid = db.client_id(client_slug)
+    if not cid:
         raise BadUpload(f"unknown client {client_slug!r}")
 
     if not raw_bytes:
         raise BadUpload("the uploaded file is empty")
+    if len(raw_bytes) > MAX_UPLOAD_BYTES:
+        raise BadUpload(
+            f"the uploaded file is {len(raw_bytes)} bytes; the roadmap limit is "
+            f"{MAX_UPLOAD_BYTES} bytes")
 
     # Parse FIRST. Every refusal below happens before a single byte is written, so a bad sheet
     # leaves the brand exactly as it was.
-    payload = parse_csv(_decode(raw_bytes))
+    raw_text = _decode(raw_bytes)
+    payload = parse_csv(raw_text)
     if not payload["rows"]:
         raise BadUpload("the CSV has a header row but no data rows")
 
-    uploads = client_dir / "uploads"
-    uploads.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
     archive_name = f"{stamp}-{safe_filename(filename)}"
     if not archive_name.endswith(".csv"):
         archive_name += ".csv"
-    archive = uploads / archive_name
-    archive.write_bytes(raw_bytes)
 
-    # The verbatim bytes, not a re-serialisation of the parse: the operator's file is the
-    # record, and a round trip through a writer would quietly reformat quoting and newlines
-    # inside the target-prompts cell.
-    roadmap_path(client_slug).write_bytes(raw_bytes)
+    with db.tx() as cur:
+        cur.execute(
+            """insert into roadmap_uploads (client_id, filename, raw)
+               values (%s, %s, %s)""",
+            (cid, archive_name, raw_bytes))
+        _write_sheet(cur, cid, raw_text, payload)
 
     return {
-        "archived": str(archive.relative_to(REPO_ROOT)),
-        "upload_id": archive.name,
+        "archived": f"roadmap_uploads/{client_slug}/{archive_name}",
+        "upload_id": archive_name,
         "rows": len(payload["rows"]),
         "columns": payload["columns"],
     }
 
 
 def load_upload(client_slug, upload_id):
-    """Re-parse a previously archived upload by id. Never trust a browser's rows."""
+    """Re-parse a previously archived upload by id. Never trust a browser's rows.
+
+    This is a SECURITY CONTROL and it FAILS CLOSED: no matching roadmap_uploads
+    row means BadUpload, never a fallback to whatever rows the caller posted. A
+    tampered browser payload must not be able to redirect a run.
+    """
     name = safe_filename(upload_id)
-    path = REPO_ROOT / "clients" / client_slug / "uploads" / name
-    if not path.is_file():
+    cid = db.client_id(client_slug)
+    raw = None
+    if cid:
+        raw = db.q(
+            "select raw from roadmap_uploads where client_id = %s and filename = %s",
+            (cid, name), fetch="val")
+    if raw is None:
         raise BadUpload(f"unknown upload_id {upload_id!r} for client {client_slug!r}")
-    return parse_csv(_decode(path.read_bytes()))
+    return parse_csv(_decode(bytes(raw)))
 
 
 def annotate_generated(client_slug, payload):

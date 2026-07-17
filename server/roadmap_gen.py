@@ -1,18 +1,24 @@
-"""Generate clients/<slug>/roadmap.csv from the brand's live site, in ONE SDK session.
+"""Generate a brand's roadmap from its live site, in ONE SDK session.
 
 This is the other way a brand gets a roadmap. The first is an operator upload; this one hands
 the whole job (read the site, pull demand data, pick the topics, write the sheet) to a single
 agent session driven by server/prompts/roadmap-generation.md. The prompt is the strategy and
 this module is the plumbing: nothing about how a roadmap is chosen lives in Python.
 
-It reuses runner._resolve_mcp_servers, runner.should_mock and roadmap.load_roadmap rather than
+The SDK session is FILE-ONLY: it writes clients/<slug>/roadmap.csv (and its report lands
+beside it) on local disk, exactly as before. The RECORD is roadmap_sheets: after the session
+is validated, _push_sheet lands the sheet, its parsed rows and the report in the database in
+one transaction, and the disk copies stay behind as scratch.
+
+It reuses runner._resolve_mcp_servers, runner.should_mock and roadmap.parse_csv rather than
 duplicating any of them, so there is exactly one definition of "MCP is configured", one
 definition of "this run is mock", and one definition of "this CSV parses" in the codebase.
 
-The failure rule that shapes this module: a roadmap.csv on disk makes roadmap.has_roadmap
-true, which blocks both an upload and a retry of generation. So a session that writes a sheet
-the engine cannot read must leave NOTHING behind, or it strands the brand with a file no route
-will accept and no parser will read. Validation below deletes what it cannot parse.
+The failure rule that shapes this module: a roadmap_sheets row makes roadmap.has_roadmap
+true, which blocks both an upload and a retry of generation. So a sheet the engine cannot
+read must NEVER reach the record, or it strands the brand with a roadmap no route will
+replace and no parser will read. Validation below runs BEFORE the push, and it deletes the
+unparseable scratch file too, so a later session cannot pick it up as its own output.
 """
 import asyncio
 import csv
@@ -123,7 +129,6 @@ def start_job(client_slug, brand_url, piece_count, notes):
             rows, error = _validate_written(client_slug)
             job["rows"] = rows
             job["error"] = error
-            job["state"] = "failed" if error else "done"
             # Saved to disk BEFORE the job settles, and saved on failure too. The job dict lives
             # in this process's memory, so until this line ran, the report existed nowhere else:
             # a restart, and the operator lost the analysis they had paid a long real session
@@ -131,6 +136,15 @@ def start_job(client_slug, brand_url, piece_count, notes):
             # frequently worth more than the sheet, because it carries what the agent CUT and
             # what it disputes, and none of that is recoverable by reading the rows.
             _save_report(client_slug, job)
+            if not error:
+                # The push happens while the job still reads as "running", because
+                # job_running and has_roadmap are the two halves of one mutual-exclusion
+                # gate: settling the job first would open a window where neither half
+                # holds and a concurrent upload could land, only to be clobbered by
+                # this push. A push failure falls to the handlers below and fails the
+                # job loudly: a roadmap that never reached the record was not produced.
+                _push_sheet(client_slug)
+            job["state"] = "failed" if error else "done"
         except GenerationError as exc:
             job["error"] = str(exc)
             job["state"] = "failed"
@@ -241,14 +255,18 @@ def report_path(client_slug):
 def read_report(client_slug):
     """The saved report as {"content", plus whatever the front matter recorded}, or None.
 
-    Parsed back out of the file rather than read from GEN_JOBS, so it answers the same in a
-    fresh process a week later. That is the entire point of writing it down.
+    Read from roadmap_sheets.report rather than from GEN_JOBS, so it answers the same in a
+    fresh process a week later. That is the entire point of writing it down. The column lives
+    on the sheet row because the report is the account of that exact sheet: deleting the
+    roadmap takes its report with it, archived under the same stamp.
     """
-    path = report_path(client_slug)
-    if not path.is_file():
+    cid = db.client_id(client_slug)
+    if not cid:
         return None
-
-    text = path.read_text(encoding="utf-8")
+    text = db.q("select report from roadmap_sheets where client_id = %s",
+                (cid,), fetch="val")
+    if text is None:
+        return None
     meta = {}
     body = text
     if text.startswith("---\n"):
@@ -308,16 +326,22 @@ def _save_report(client_slug, job):
 def _validate_written(client_slug):
     """Parse the file the session claims to have written. Returns (rows, error).
 
+    Parsed straight off the DISK file, deliberately not through roadmap.load_roadmap: that
+    reads the roadmap_sheets record, and the whole point of this step is to decide whether
+    the session's file EARNS a push into that record. Same decode, same parser, so "this CSV
+    parses" means the same thing here as it does on the upload route.
+
     Three outcomes, and the third is why this function exists:
 
     1. It parses with rows: the roadmap is real, and the row count comes from re-parsing the
        file rather than from anything the agent said about it.
     2. No file: the prompt legitimately instructs the agent to write nothing and explain when
        it could not read the site, so this is a failure whose answer is the report.
-    3. It parses to nothing, or not at all: DELETE IT. A broken roadmap.csv makes
-       has_roadmap true, which blocks the upload route AND blocks a retry of generation, so it
-       would strand the brand with a sheet no part of the engine can read. Failure has to leave
-       the brand exactly as it found it.
+    3. It parses to nothing, or not at all: DELETE IT and push nothing. A broken sheet in the
+       record would make has_roadmap true, which blocks the upload route AND blocks a retry of
+       generation, stranding the brand with a roadmap no part of the engine can read; a broken
+       file left on disk would be read by the NEXT session's validation as its own output.
+       Failure has to leave the brand exactly as it found it.
     """
     path = roadmap.roadmap_path(client_slug)
     if not path.is_file():
@@ -327,8 +351,8 @@ def _validate_written(client_slug):
         )
 
     try:
-        payload = roadmap.load_roadmap(client_slug)
-    except (roadmap.RoadmapNotFound, roadmap.BadUpload) as exc:
+        payload = roadmap.parse_csv(roadmap._decode(path.read_bytes()))
+    except roadmap.BadUpload as exc:
         path.unlink(missing_ok=True)
         return None, (
             f"the session wrote a roadmap the engine cannot read, so it was deleted and the "
@@ -343,6 +367,32 @@ def _validate_written(client_slug):
             "deleted and the brand still has no roadmap"
         )
     return rows, None
+
+
+def _push_sheet(client_slug):
+    """Land the sheet the session left on disk, its parsed rows and its report in the record.
+
+    ONE transaction, through roadmap._write_sheet, the same writer the upload route uses, so
+    a generated sheet and an uploaded one obey identical row-build rules and a reader can
+    never see a sheet whose rows describe a different document. The disk copies stay behind
+    as scratch. Runs only after _validate_written passed, so nothing unvouched is pushed.
+    """
+    path = roadmap.roadmap_path(client_slug)
+    raw_text = roadmap._decode(path.read_bytes())
+    payload = roadmap.parse_csv(raw_text)
+
+    report = None
+    rpath = report_path(client_slug)
+    if rpath.is_file():
+        report = rpath.read_text(encoding="utf-8")
+
+    cid = db.client_id(client_slug)
+    if not cid:
+        raise GenerationError(
+            f"unknown client {client_slug!r}: the generated roadmap has no client record "
+            f"to land in")
+    with db.tx() as cur:
+        roadmap._write_sheet(cur, cid, raw_text, payload, report=report)
 
 
 # ---------------------------------------------------------------------------
