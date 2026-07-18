@@ -115,16 +115,13 @@ create table if not exists blog_comments (
   constraint blog_comments_reply_open check (parent_id is null or state = 'open')
 );
 
-create index if not exists blog_comments_topic on blog_comments (topic_id, created_at);
--- Replies are read BY PARENT, one query for a whole page of threads. Without this index
--- that read is a sequential scan of the table on every stage-page poll, ten seconds apart.
-create index if not exists blog_comments_parent on blog_comments (parent_id);
-
--- The two threading columns again, as alters. `create table if not exists` does NOTHING to
--- a table that already exists, so a developer database that ran an EARLIER revision of this
--- same (still unapplied) migration would take the new function bodies below and none of the
--- columns they read: a runtime failure on the client's first reply instead of an error
--- here. Both spellings must stay in step; the create above is the one a fresh build uses.
+-- The two threading columns again, as alters, and they run BEFORE the indexes and the
+-- constraint below because those READ the columns. `create table if not exists` does
+-- NOTHING to a table that already exists, so a database that ran an EARLIER revision of
+-- this migration holds blog_comments without them; ordering these after the index that
+-- keys on parent_id is what turned that case into `column "parent_id" does not exist` on
+-- a real database rather than the silent repair this block exists to perform. Both
+-- spellings must stay in step; the create above is the one a fresh build uses.
 alter table blog_comments add column if not exists parent_id uuid
   references blog_comments(id) on delete cascade;
 alter table blog_comments add column if not exists applying_since timestamptz;
@@ -140,6 +137,11 @@ begin
       check (parent_id is null or state = 'open');
   end if;
 end $$;
+
+create index if not exists blog_comments_topic on blog_comments (topic_id, created_at);
+-- Replies are read BY PARENT, one query for a whole page of threads. Without this index
+-- that read is a sequential scan of the table on every read of a stage page.
+create index if not exists blog_comments_parent on blog_comments (parent_id);
 
 -- RLS mirrors review_notes (001): membership-scoped SELECT for authenticated, nothing
 -- for anon. No INSERT or UPDATE policy or grant exists ON PURPOSE: client writes pass

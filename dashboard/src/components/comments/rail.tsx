@@ -25,9 +25,13 @@ import { useLatest, useSelectionCapture, type SelectionCapture } from "@/compone
  *
  * The layout is the part worth explaining. Cards want to sit at their passage's exact top,
  * which two cards on neighbouring sentences cannot both have, so a card that would overlap
- * the one above it is pushed down. The ACTIVE card is the exception: it always wins its own
+ * the one above it is pushed down. The CHOSEN card is the exception: it always wins its own
  * anchor and everything else reflows around it, upwards above it and downwards below it,
- * which is what makes clicking a card feel like it snaps to its sentence. Below the lg
+ * which is what makes clicking a card feel like it snaps to its sentence. HOVER NEVER MOVES
+ * ANYTHING: reading an article sweeps the pointer across the text, and a rail that reflowed
+ * on every crossed highlight rearranged itself continuously under a reader who had asked for
+ * nothing. Pointing raises the ring and lights the passage; a click is what moves the rail.
+ * Below the lg
  * breakpoint the whole arrangement collapses to a plain list under the article, because a
  * phone has no margin to put a rail in and a 20rem column beside a 20rem article is not a
  * reading experience.
@@ -89,7 +93,9 @@ function placeCards(
   cards: RailComment[],
   anchors: Map<string, Anchor>,
   heights: Record<string, number>,
-  activeId: string | null,
+  /** The card that keeps its exact anchor while the others reflow around it. A CHOSEN card
+   *  only: passing a hovered one here rearranges the rail under a reader's pointer. */
+  pivotId: string | null,
 ): { tops: Map<string, number>; height: number } {
   const heightOf = (id: string) => heights[id] ?? ASSUMED_CARD_HEIGHT;
 
@@ -108,7 +114,7 @@ function placeCards(
   anchored.sort((a, b) => a.top - b.top);
 
   const tops = anchored.map((row) => row.top);
-  const activeIndex = anchored.findIndex((row) => row.id === activeId);
+  const activeIndex = anchored.findIndex((row) => row.id === pivotId);
   const pivot = activeIndex >= 0 ? activeIndex : 0;
 
   // Above the pivot, walking up: each card ends where the one below it begins, minus the
@@ -219,6 +225,17 @@ export function CommentRail({
   // wins by default, because the passage somebody is writing about is the one they are
   // looking at.
   const live = hovered ?? activeId ?? composer?.id ?? null;
+
+  // WHAT THE LAYOUT PIVOTS ON, and it deliberately excludes hover.
+  //
+  // Feeding `live` to placeCards made every card in the rail move whenever the pointer
+  // crossed a highlight, because the pivot decides which card keeps its exact anchor and
+  // every other card reflows around it. Reading an article means sweeping the pointer over
+  // the text, so the rail rearranged itself continuously under a reader who had asked for
+  // nothing. A document tool moves its margin on a CHOICE (a click, a focus, opening a
+  // composer) and never on a glance. Hover keeps the highlight and the raised ring, which
+  // is the whole of what pointing at something should promise.
+  const pivotId = activeId ?? composer?.id ?? null;
 
   useIsomorphicLayoutEffect(() => {
     const container = articleRef.current;
@@ -354,7 +371,7 @@ export function CommentRail({
     () => new Map(anchors.map((anchor) => [anchor.id, anchor])),
     [anchors],
   );
-  const placement = placeCards(cards, anchorMap, heights, live);
+  const placement = placeCards(cards, anchorMap, heights, pivotId);
 
   return (
     <div className={cn("flex flex-col gap-6 lg:flex-row lg:items-start lg:gap-8", className)}>

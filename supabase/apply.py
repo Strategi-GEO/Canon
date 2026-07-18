@@ -4,10 +4,14 @@
     .venv/bin/python supabase/apply.py supabase/migrations/004_send_to_client.sql
 
 Exists because psql is not installed on every operator machine, while psycopg always is
-(the engine depends on it). It runs the file as ONE statement batch inside the file's own
-transaction: every migration here opens with `begin;` and closes with `commit;`, so this
-script deliberately does not add a transaction of its own and cannot half-apply one that
-brackets itself properly.
+(the engine depends on it).
+
+IT OPENS ITS OWN TRANSACTION AND THE FILE'S begin/commit RIDE INSIDE IT. The first version
+of this script trusted the file to bracket itself and connected with autocommit, which is
+how migration 005 half-applied on a real database: the run died on one bad statement with
+every statement before it already durable, leaving a schema that matched neither the old
+shape nor the new one. A migration is all-or-nothing or it is a guess, so the transaction
+is the script's own responsibility, not the file's.
 
 The DSN comes from server/db.py, which is the only place credentials are read, so this
 script never sees them and never puts them on a command line where `ps` would show them.
@@ -41,9 +45,16 @@ def main() -> int:
     import psycopg
 
     sql = path.read_text(encoding="utf-8")
-    with psycopg.connect(dsn, autocommit=True) as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql)
+    # autocommit=False, so psycopg holds ONE transaction around the whole file and rolls the
+    # lot back on any failure. The file's own begin/commit sit inside that and are harmless.
+    with psycopg.connect(dsn) as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     print(f"applied {path.name}")
     return 0
 
