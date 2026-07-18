@@ -4,6 +4,7 @@ import * as React from "react";
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   TableBody,
   TableCell,
@@ -122,111 +123,126 @@ export function RoadmapTable(
   const upload = props.mode === "pick" ? props.upload : null;
 
   return (
-    // The scroll container lives here rather than in ui/table, because `position: sticky`
-    // pins to the nearest scrolling ancestor: with the shared wrapper's overflow-x the header
-    // would pin to a box the height of the whole table and never actually stick. Owning the
-    // container is what makes the header hold on a 25 row roadmap, and it keeps the sideways
-    // overflow on the same element rather than on the page.
-    // overflow-y only, never overflow-x. The table is exactly as wide as this container and
-    // every cell wraps inside its share of it, so there is nothing to scroll sideways to. The
-    // vertical scroll stays because the sticky header pins to the nearest scrolling ancestor,
-    // and that is what holds the column names on a 25 row roadmap.
-    <div className="max-h-[65vh] w-full overflow-x-hidden overflow-y-auto">
+    // ONE provider around the whole table, not one per row, and it lives here because this is
+    // the component whose rows carry tooltips: Radix throws without an ancestor provider, and
+    // Create Blogs had none because nothing on it used a tooltip until the upload action.
+    //
+    // Wrapping HERE rather than in each row is deliberate. A provider is not just a
+    // requirement to satisfy, it is what makes a GROUP of tooltips behave: once one has
+    // opened, moving to the next row's button opens it immediately instead of waiting out the
+    // delay again. Twenty five isolated providers would satisfy Radix and lose that, because
+    // they share no such state. The blogs library and the blog stage page mount theirs at the
+    // same level over their own subtrees.
+    <TooltipProvider>
       {/*
-        table-fixed is what makes the promise above true. Under the default `auto` layout a
-        browser widens a column to fit its longest unbroken content, so one long prompt pushed
-        the table past the container and produced the sideways scroll. Fixed layout hands each
-        column a share of the width up front and makes the CONTENT wrap to it, which is the
-        whole point: the row grows downward instead of the table growing rightward.
+        The scroll container lives here rather than in ui/table, because `position: sticky`
+        pins to the nearest scrolling ancestor: with the shared wrapper's overflow-x the header
+        would pin to a box the height of the whole table and never actually stick. Owning the
+        container is what makes the header hold on a 25 row roadmap, and it keeps the sideways
+        overflow on the same element rather than on the page.
 
-        The percentages are the content's real shape: a topic is a title, a scope is a sentence
-        or two, and the prompts are three or four full questions, so they get the most room.
-
-        The prompts column renders in READ MODE ONLY, by the operator's instruction: the create
-        page is for ticking topics, and the prompts were the bulk of every row's height there.
-        They are still the binding part of a row, so they stay on the Content Roadmap tab, which
-        is the place to judge the sheet. Pick mode hands their share to topic and covers, so the
-        two modes size their prose columns differently on purpose.
+        overflow-y only, never overflow-x. The table is exactly as wide as this container and
+        every cell wraps inside its share of it, so there is nothing to scroll sideways to. The
+        vertical scroll stays because the sticky header pins to the nearest scrolling ancestor,
+        and that is what holds the column names on a 25 row roadmap.
       */}
-      <table className="w-full table-fixed caption-bottom text-sm">
-        <TableHeader className="sticky top-0 z-10 bg-card [&_tr]:border-b">
-          <TableRow className="hover:bg-transparent">
-            {props.mode === "pick" ? (
-              <TableHead className="w-9 align-middle">
-                <Checkbox
-                  checked={allSelected ? true : someSelected ? "indeterminate" : false}
-                  disabled={selectable.length === 0}
-                  onCheckedChange={(checked) => props.onToggleAll(checked === true)}
-                  aria-label={
-                    selectable.length === 0
-                      ? "No topics can be generated"
-                      : `Select all ${selectable.length} topics that can be generated`
-                  }
-                />
-              </TableHead>
-            ) : null}
-            {/* The row's own number, the same one the preview's "#" column shows and the same one
-                every blog written from this sheet carries. This table IS the sheet, so reading a
-                row here and finding it in the CSV should not require counting. */}
-            <TableHead className="machine w-10 align-middle text-xs font-medium">#</TableHead>
-            <TableHead
-              className={cn(
-                "machine align-middle text-xs font-medium",
-                props.mode === "pick" ? "w-[38%]" : "w-[26%]",
-              )}
-            >
-              topic
-            </TableHead>
-            {/* In pick mode covers carries no width class, so table-fixed hands it the whole
-                remainder: it is the last prose column there. */}
-            <TableHead
-              className={cn(
-                "machine align-middle text-xs font-medium",
-                props.mode === "read" && "w-[30%]",
-              )}
-            >
-              what it covers
-            </TableHead>
-            {props.mode === "read" ? (
-              <TableHead className="machine align-middle text-xs font-medium">target prompts</TableHead>
-            ) : null}
-            {props.mode === "read" || upload ? (
-              // Unlabelled on screen and named for a screen reader. A column of one icon button
-              // needs no title, and "actions" over a 25 row sheet is a word that earns nothing.
-              <TableHead className="w-12 align-middle">
-                <span className="sr-only">row actions</span>
-              </TableHead>
-            ) : null}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.map((row) => (
-            <Row
-              key={row.index}
-              row={row}
-              state={resolveRowState(row, facts)}
-              missing={props.mode === "pick" ? (props.incomplete.get(row.index) ?? null) : null}
-              selection={
-                props.mode === "pick"
-                  ? {
-                      checked: props.selected.has(row.index),
-                      onCheckboxClick: noteShift,
-                      onCheckboxChange: toggleRow,
+      <div className="max-h-[65vh] w-full overflow-x-hidden overflow-y-auto">
+        {/*
+          table-fixed is what makes the promise above true. Under the default `auto` layout a
+          browser widens a column to fit its longest unbroken content, so one long prompt pushed
+          the table past the container and produced the sideways scroll. Fixed layout hands each
+          column a share of the width up front and makes the CONTENT wrap to it, which is the
+          whole point: the row grows downward instead of the table growing rightward.
+
+          The percentages are the content's real shape: a topic is a title, a scope is a sentence
+          or two, and the prompts are three or four full questions, so they get the most room.
+
+          The prompts column renders in READ MODE ONLY, by the operator's instruction: the create
+          page is for ticking topics, and the prompts were the bulk of every row's height there.
+          They are still the binding part of a row, so they stay on the Content Roadmap tab, which
+          is the place to judge the sheet. Pick mode hands their share to topic and covers, so the
+          two modes size their prose columns differently on purpose.
+        */}
+        <table className="w-full table-fixed caption-bottom text-sm">
+          <TableHeader className="sticky top-0 z-10 bg-card [&_tr]:border-b">
+            <TableRow className="hover:bg-transparent">
+              {props.mode === "pick" ? (
+                <TableHead className="w-9 align-middle">
+                  <Checkbox
+                    checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                    disabled={selectable.length === 0}
+                    onCheckedChange={(checked) => props.onToggleAll(checked === true)}
+                    aria-label={
+                      selectable.length === 0
+                        ? "No topics can be generated"
+                        : `Select all ${selectable.length} topics that can be generated`
                     }
-                  : null
-              }
-              remove={
-                props.mode === "read"
-                  ? { onDelete: props.onDelete, locked: props.editingLocked }
-                  : null
-              }
-              upload={upload}
-              rowRefs={rowRefs}
-            />
-          ))}
-        </TableBody>
-      </table>
-    </div>
+                  />
+                </TableHead>
+              ) : null}
+              {/* The row's own number, the same one the preview's "#" column shows and the same one
+                  every blog written from this sheet carries. This table IS the sheet, so reading a
+                  row here and finding it in the CSV should not require counting. */}
+              <TableHead className="machine w-10 align-middle text-xs font-medium">#</TableHead>
+              <TableHead
+                className={cn(
+                  "machine align-middle text-xs font-medium",
+                  props.mode === "pick" ? "w-[38%]" : "w-[26%]",
+                )}
+              >
+                topic
+              </TableHead>
+              {/* In pick mode covers carries no width class, so table-fixed hands it the whole
+                  remainder: it is the last prose column there. */}
+              <TableHead
+                className={cn(
+                  "machine align-middle text-xs font-medium",
+                  props.mode === "read" && "w-[30%]",
+                )}
+              >
+                what it covers
+              </TableHead>
+              {props.mode === "read" ? (
+                <TableHead className="machine align-middle text-xs font-medium">target prompts</TableHead>
+              ) : null}
+              {props.mode === "read" || upload ? (
+                // Unlabelled on screen and named for a screen reader. A column of one icon button
+                // needs no title, and "actions" over a 25 row sheet is a word that earns nothing.
+                <TableHead className="w-12 align-middle">
+                  <span className="sr-only">row actions</span>
+                </TableHead>
+              ) : null}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((row) => (
+              <Row
+                key={row.index}
+                row={row}
+                state={resolveRowState(row, facts)}
+                missing={props.mode === "pick" ? (props.incomplete.get(row.index) ?? null) : null}
+                selection={
+                  props.mode === "pick"
+                    ? {
+                        checked: props.selected.has(row.index),
+                        onCheckboxClick: noteShift,
+                        onCheckboxChange: toggleRow,
+                      }
+                    : null
+                }
+                remove={
+                  props.mode === "read"
+                    ? { onDelete: props.onDelete, locked: props.editingLocked }
+                    : null
+                }
+                upload={upload}
+                rowRefs={rowRefs}
+              />
+            ))}
+          </TableBody>
+        </table>
+      </div>
+    </TooltipProvider>
   );
 }
 
