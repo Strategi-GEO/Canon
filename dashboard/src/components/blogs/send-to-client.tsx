@@ -107,34 +107,25 @@ export function SendToClient({
   }
 
   if (review.changes_requested > 0) {
+    // THE SEND IS GONE, not disabled. The blog is mid review round: the client is writing
+    // and the operator is resolving, and there is no version of "send it" that means
+    // anything until that finishes. A greyed button with a tooltip is an offer the operator
+    // has to read and reject on every visit, so the state says what it is and shows nothing
+    // to press. It comes back below, once a resolution has actually changed the article.
     return (
-      <span className="inline-flex items-center gap-2">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="inline-flex cursor-default items-center gap-1.5 rounded-md border border-review/25 bg-review-bg px-2.5 py-1 text-xs font-medium text-review">
-              <MessageCircleQuestion className="size-3.5" aria-hidden />
-              Changes requested
-            </span>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-xs">
-            The client suggested {review.changes_requested}{" "}
-            {review.changes_requested === 1 ? "change" : "changes"} from their portal. Each one
-            is in the panel under the article: resolve it with Claude or dismiss it.
-          </TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="inline-flex">
-              <Button size="sm" variant="outline" disabled>
-                <SendHorizontal data-icon="inline-start" aria-hidden />
-                Send again
-              </Button>
-            </span>
-          </TooltipTrigger>
-          {/* The engine's own refusal, shown before the press instead of after it. */}
-          <TooltipContent className="max-w-xs">{OPEN_CHANGES_REASON}</TooltipContent>
-        </Tooltip>
-      </span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex cursor-default items-center gap-1.5 rounded-md border border-review/25 bg-review-bg px-2.5 py-1 text-xs font-medium text-review">
+            <MessageCircleQuestion className="size-3.5" aria-hidden />
+            Changes requested
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs">
+          The client suggested {review.changes_requested}{" "}
+          {review.changes_requested === 1 ? "change" : "changes"} from their portal. Each one is
+          in the rail beside the article: resolve it with Claude or dismiss it. {OPEN_CHANGES_REASON}.
+        </TooltipContent>
+      </Tooltip>
     );
   }
 

@@ -118,7 +118,7 @@ function placeCards(
   const pivot = activeIndex >= 0 ? activeIndex : 0;
 
   // Above the pivot, walking up: each card ends where the one below it begins, minus the
-  // gap. This is what lets the active card keep its own anchor instead of being shoved down
+  // gap. This is what lets the chosen card keep its own anchor instead of being shoved down
   // by whatever happens to sit above it.
   for (let i = pivot - 1; i >= 0; i -= 1) {
     tops[i] = Math.min(anchored[i].top, tops[i + 1] - CARD_GAP - heightOf(anchored[i].id));
@@ -127,13 +127,19 @@ function placeCards(
   for (let i = pivot + 1; i < anchored.length; i += 1) {
     tops[i] = Math.max(anchored[i].top, tops[i - 1] + heightOf(anchored[i - 1].id) + CARD_GAP);
   }
-  // Enough cards above the active one and the upward pass runs off the top of the column,
-  // where they cannot be read at all. Correcting downwards crowds the active card instead,
-  // which is the honest trade: something has to give, and a card nobody can see is worse
-  // than a card that lost its exact alignment.
-  for (let i = 0; i < pivot; i += 1) {
-    const floor = i === 0 ? 0 : tops[i - 1] + heightOf(anchored[i - 1].id) + CARD_GAP;
-    tops[i] = Math.max(tops[i], floor);
+
+  // Enough cards above the chosen one and the upward pass runs off the top of the column,
+  // where they cannot be read at all. THE WHOLE RUN SLIDES DOWN by the overshoot rather than
+  // each card being clamped to zero independently: clamping preserved the pivot's position
+  // and paid for it by stacking the cards above it ON TOP OF EACH OTHER, which is precisely
+  // the overlap this function exists to prevent. Sliding keeps every gap intact and spends
+  // the pivot's exact alignment instead, which is the honest trade: something has to give,
+  // and a card that lost its alignment still reads, while two cards in the same place do not.
+  if (anchored.length > 0 && tops[0] < 0) {
+    const slide = -tops[0];
+    for (let i = 0; i < tops.length; i += 1) {
+      tops[i] += slide;
+    }
   }
 
   const out = new Map<string, number>();
@@ -303,7 +309,10 @@ export function CommentRail({
     for (const element of Array.from(column.querySelectorAll<HTMLElement>("[data-comment-card]"))) {
       const id = element.getAttribute("data-comment-card");
       if (id !== null) {
-        next[id] = element.offsetHeight;
+        // getBoundingClientRect, not offsetHeight: offsetHeight rounds to whole pixels and
+        // always DOWN, so a column of cards accumulates a sub-pixel of overlap each, and the
+        // gap between two of them quietly shrinks below what the layout asked for.
+        next[id] = element.getBoundingClientRect().height;
       }
     }
     setHeights((prev) => (sameHeights(prev, next) ? prev : next));
