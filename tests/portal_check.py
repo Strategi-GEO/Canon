@@ -163,9 +163,12 @@ else:
     fail("dashboard/src/app/api/roadmap/[brand]/route.ts is missing")
 
 # ---------------------------------------------------------------------------
-# 7. The one client write: exactly one rpc() call, and it is portal_submit_answers. A second
-#    RPC appearing means the client write surface grew without this file hearing about it.
+# 7. The client write surface: exactly the three SECURITY DEFINER functions, one per act a
+#    client may perform (answer the evaluator, suggest a change, approve the article). A
+#    fourth RPC appearing means the client write surface grew without this file hearing
+#    about it, and a missing one means a client act silently lost its door.
 # ---------------------------------------------------------------------------
+CLIENT_WRITES = {"portal_submit_answers", "portal_suggest_change", "portal_approve_blog"}
 rpc_calls = []
 for path in FILES:
     body = code_only(path.read_text(encoding="utf-8"))
@@ -174,10 +177,22 @@ for path in FILES:
         for m in re.findall(r"rpc[<(]\s*[^,]*,\s*[\"']([a-z_]+)[\"']", body)
     ]
 names = {name for _, name in rpc_calls}
-if names != {"portal_submit_answers"} and rpc_calls:
-    fail(f"unexpected rpc surface: {sorted(names)}")
-if not any(name == "portal_submit_answers" for _, name in rpc_calls):
-    fail("the answers route no longer calls portal_submit_answers")
+if names != CLIENT_WRITES and rpc_calls:
+    fail(f"unexpected rpc surface: {sorted(names)} (expected {sorted(CLIENT_WRITES)})")
+for expected in sorted(CLIENT_WRITES):
+    if not any(name == expected for _, name in rpc_calls):
+        fail(f"no client route calls {expected} any more")
+
+# ---------------------------------------------------------------------------
+# 8. blog_comments.author_email never crosses the client wire. The column carries whoever
+#    filed the comment, and on operator rows that is a Strategi email: a select that reaches
+#    for it would hand every portal login the team's addresses. The DB grant already blocks
+#    it; this catches the select before it 500s in production.
+# ---------------------------------------------------------------------------
+for path in FILES:
+    body = code_only(path.read_text(encoding="utf-8"))
+    if "author_email" in body:
+        fail(f"{path.relative_to(REPO)}: selects or names author_email on a client surface")
 
 # ---------------------------------------------------------------------------
 
@@ -193,5 +208,6 @@ print("  ok  dangerouslySetInnerHTML confined to the markdown sink; renderer esc
 print("  ok  no localStorage on the client surface")
 print("  ok  no em or en dashes")
 print("  ok  no create/repurpose/resources/settings routes; roadmap is GET-only")
-print("  ok  write surface is exactly portal_submit_answers")
+print("  ok  write surface is exactly the three portal definer functions")
+print("  ok  author_email never crosses the client wire")
 print("\nall portal checks passed")

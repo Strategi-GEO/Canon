@@ -3,7 +3,18 @@ import { byteCompare, clientId, ledgerSlugs } from "@/lib/server/clients";
 import { detail, failure, json } from "@/lib/server/http";
 import { inList, pg } from "@/lib/server/postgrest";
 
-type TopicRow = { id: string; slug: string; title: string | null };
+type TopicRow = {
+  id: string;
+  slug: string;
+  title: string | null;
+  sent_to_client_at: string | null;
+  client_approved_at: string | null;
+};
+type CommentRow = {
+  topic_id: string;
+  author: string;
+  state: string;
+};
 type VersionRow = {
   topic_id: string;
   h1_title: string | null;
@@ -40,10 +51,11 @@ export async function GET(
       return detail(404, `unknown client '${slug}'`);
     }
 
-    const [topics, versions, led, roadmapRows] = await Promise.all([
+    const [topics, versions, led, roadmapRows, comments] = await Promise.all([
       pg<TopicRow[]>(
         user.token,
-        `topics?select=id,slug,title&client_id=eq.${cid}&deleted_at=is.null`,
+        `topics?select=id,slug,title,sent_to_client_at,client_approved_at` +
+          `&client_id=eq.${cid}&deleted_at=is.null`,
       ),
       pg<VersionRow[]>(
         user.token,
@@ -56,6 +68,12 @@ export async function GET(
       pg<{ row_index: number; topic_slug: string | null }[]>(
         user.token,
         `roadmap_rows?select=row_index,topic_slug&client_id=eq.${cid}&order=row_index.asc`,
+      ),
+      // ONE brand-wide read folded to per-topic counts below, mirroring the engine's
+      // _blog_history: one grouped count, never an N+1 per topic.
+      pg<CommentRow[]>(
+        user.token,
+        `blog_comments?select=topic_id,author,state&client_id=eq.${cid}`,
       ),
     ]);
 
@@ -73,6 +91,21 @@ export async function GET(
     for (const row of roadmapRows) {
       if (row.topic_slug !== null && row.topic_slug !== "") {
         rowIndex.set(row.topic_slug, row.row_index);
+      }
+    }
+
+    // changes_requested, exactly as the engine's sent_state counts it: CLIENT-authored
+    // suggestions still open or mid-apply. applying counts because a resolve in flight is
+    // not resolved yet, and dropping it would flip the admin chip off a beat early, then
+    // back on if the apply fails. resolved/failed/dismissed rows are settled or the
+    // team's to retry, so they never gate a re-send.
+    const openByTopic = new Map<string, number>();
+    for (const comment of comments) {
+      if (
+        comment.author === "client" &&
+        (comment.state === "open" || comment.state === "applying")
+      ) {
+        openByTopic.set(comment.topic_id, (openByTopic.get(comment.topic_id) ?? 0) + 1);
       }
     }
 
@@ -109,6 +142,9 @@ export async function GET(
         iterations: folded.iterations,
         shipped: entry !== undefined,
         roadmap_index: rowIndex.get(topic.slug) ?? null,
+        sent_to_client: topic.sent_to_client_at,
+        client_approved: topic.client_approved_at,
+        changes_requested: openByTopic.get(topic.id) ?? 0,
       };
     });
 

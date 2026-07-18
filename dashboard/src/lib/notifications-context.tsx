@@ -77,6 +77,10 @@ const SECTION_FOR: Record<NotificationKind, string> = {
   roadmap: "/roadmap",
   // Client-answered questions render on the blog rows and in the drawer's rerun strip.
   answers: "/blogs",
+  // Both halves of the client review loop land on the blog list too: the delivery chips
+  // say which blog the client acted on, and its stage page is one click from there.
+  changes_requested: "/blogs",
+  client_approved: "/blogs",
 };
 
 const EMPTY: AppNotification[] = [];

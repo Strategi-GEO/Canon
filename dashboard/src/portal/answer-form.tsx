@@ -55,7 +55,7 @@ export function AnswerForm({
         // (another tab, or the team), or a new draft superseded it. The form on screen can
         // never succeed now, so an error message would strand the client on a dead form.
         // Reload instead: the page re-reads the record and renders what is actually true
-        // (the frozen answers view, a fresh form, or the delivered article).
+        // (the frozen answers view, a fresh form, or the article sent for review).
         onSubmitted();
         return;
       }

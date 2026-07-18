@@ -36,6 +36,9 @@ export function BrandRoute({
   const brandSlug = params.brand;
   const located = findBrand(brandSlug);
   const section = parseBrandPath(pathname)?.section ?? "";
+  // The FULL path after the brand, not parseBrandPath's first segment: a redirect built
+  // from the section alone would land /blogs/<topic> on the library, dropping the topic.
+  const rest = pathname.replace(/^\/admin\/org\/[^/]+\/[^/]+/, "");
 
   // A brand in the wrong org is a redirect, not an error, so it belongs in an effect rather
   // than in render. `replace` keeps the stale URL out of the back stack: going back should
@@ -43,9 +46,9 @@ export function BrandRoute({
   const wrongOrg = located !== null && located.org.slug !== orgSlug;
   React.useEffect(() => {
     if (wrongOrg && located) {
-      router.replace(brandHref(located.org.slug, located.brand.slug, section));
+      router.replace(brandHref(located.org.slug, located.brand.slug, rest));
     }
-  }, [wrongOrg, located, router, section]);
+  }, [wrongOrg, located, router, rest]);
 
   if (loading) {
     return <BrandRouteSkeleton section={section} />;

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowRight, CheckCircle2, Lock, MessageCircleQuestion } from "lucide-react";
+import { ArrowRight, CheckCircle2, FileCheck2, Lock, MessageCircleQuestion } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { formatDate, formatRelative, readingTime } from "@/portal/format";
 import { blogHref } from "@/portal/nav";
@@ -11,12 +11,16 @@ import type { PortalBlogCard } from "@/portal/types";
 import { cn } from "@/lib/utils";
 
 /**
- * The three visual registers of the home page, one per state, deliberately unequal:
+ * The four visual registers of the home page, one per state, deliberately unequal:
  *
- *   action    -- loud. Amber ground, a question count, a full-card link. This is the one
- *                thing the portal ever asks a client to do, so it is allowed to shout.
+ *   action    -- loud. Amber ground, a question count, a full-card link. The portal asks a
+ *                client for answers rarely, so this card is allowed to shout.
+ *   ready     -- inviting, on the brand's own accent. The happy ask: the article is
+ *                finished, read it and approve it or suggest changes.
  *   frozen    -- quiet rows with a lock. Nothing to do here; saying so calmly is the job.
- *   delivered -- a clean reading library. White cards, dates, reading time.
+ *   approved  -- a clean reading library. White cards, dates, reading time, a quiet
+ *                approved mark. This replaced the old "delivered" register: delivery is no
+ *                longer the end of the story, the client's approval is.
  */
 
 function cardHref(card: PortalBlogCard, singleBrand: boolean): string {
@@ -63,6 +67,36 @@ export function ActionCard({ card, showBrand }: { card: PortalBlogCard; showBran
   );
 }
 
+export function ReadyCard({ card, showBrand }: { card: PortalBlogCard; showBrand: boolean }) {
+  const { isSingleBrand } = usePortal();
+  return (
+    <Link
+      href={cardHref(card, isSingleBrand(card.org))}
+      className="group block rounded-xl border border-primary/25 bg-primary/5 p-4 outline-none transition-colors hover:border-primary/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          {showBrand ? (
+            <div className="mb-1.5">
+              <BrandChip name={card.brand_name} />
+            </div>
+          ) : null}
+          <h3 className="font-serif text-base leading-snug text-pretty">{card.title}</h3>
+          <p className="mt-1.5 flex items-center gap-1.5 text-xs text-primary">
+            <FileCheck2 className="size-3.5 shrink-0" aria-hidden />
+            Ready to post
+            <span className="text-muted-foreground">· sent {formatRelative(card.date)}</span>
+          </p>
+        </div>
+        <span className="mt-1 inline-flex shrink-0 items-center gap-1 text-xs font-medium text-foreground">
+          Review & approve
+          <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden />
+        </span>
+      </div>
+    </Link>
+  );
+}
+
 export function FrozenRow({ card, showBrand }: { card: PortalBlogCard; showBrand: boolean }) {
   const { isSingleBrand } = usePortal();
   return (
@@ -94,7 +128,7 @@ export function FrozenRow({ card, showBrand }: { card: PortalBlogCard; showBrand
   );
 }
 
-export function DeliveredCard({ card, showBrand }: { card: PortalBlogCard; showBrand: boolean }) {
+export function ApprovedCard({ card, showBrand }: { card: PortalBlogCard; showBrand: boolean }) {
   const { isSingleBrand } = usePortal();
   return (
     <Link
@@ -108,6 +142,11 @@ export function DeliveredCard({ card, showBrand }: { card: PortalBlogCard; showB
       ) : null}
       <h3 className="font-serif text-base leading-snug text-pretty">{card.title}</h3>
       <div className="mt-auto flex items-center gap-2 pt-3 text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1 font-medium text-ship">
+          <CheckCircle2 className="size-3.5" aria-hidden />
+          Approved
+        </span>
+        <span aria-hidden>·</span>
         <span>{formatDate(card.date)}</span>
         {card.word_count !== null ? (
           <>

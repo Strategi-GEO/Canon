@@ -2,17 +2,39 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowLeft, ArrowRight, Box, CheckCircle2, Clock, Inbox } from "lucide-react";
-import { ActionCard, DeliveredCard, FrozenRow, SectionHeading } from "@/portal/blog-cards";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Box,
+  Check,
+  CheckCircle2,
+  Clock,
+  Inbox,
+  Loader2,
+  MessageSquarePlus,
+} from "lucide-react";
+import { ActionCard, ApprovedCard, FrozenRow, ReadyCard, SectionHeading } from "@/portal/blog-cards";
 import { AnswerForm } from "@/portal/answer-form";
 import { MarkdownView } from "@/portal/markdown-view";
+import { SuggestableArticle, SuggestionsList } from "@/portal/suggest-changes";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ApiError, api, detailText } from "@/portal/api";
 import { formatDate, formatRelative, readingTime } from "@/portal/format";
 import { brandHref } from "@/portal/nav";
 import { usePortal } from "@/portal/portal-context";
-import type { PortalBlogDetail } from "@/portal/types";
+import type { PortalBlogDetail, SuggestBody } from "@/portal/types";
 
 /**
  * The client portal's views, one per resolved route. The (client) layout provides the
@@ -83,6 +105,7 @@ export function OrgChooser({ org: orgSlug }: { org: string }) {
 
   const mine = blogs.filter((blog) => blog.org === org.slug);
   const action = mine.filter((blog) => blog.state === "action");
+  const ready = mine.filter((blog) => blog.state === "ready");
 
   return (
     <div className="space-y-10">
@@ -105,6 +128,17 @@ export function OrgChooser({ org: orgSlug }: { org: string }) {
           <div className="space-y-3">
             {action.map((blog) => (
               <ActionCard key={`${blog.brand}/${blog.topic_slug}`} card={blog} showBrand />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {ready.length > 0 ? (
+        <section className="space-y-3" aria-label="Ready to post">
+          <SectionHeading count={ready.length}>Ready to post</SectionHeading>
+          <div className="space-y-3">
+            {ready.map((blog) => (
+              <ReadyCard key={`${blog.brand}/${blog.topic_slug}`} card={blog} showBrand />
             ))}
           </div>
         </section>
@@ -162,9 +196,10 @@ export function BrandOverview({ org, brand: brandSlug }: { org: string; brand: s
 
   const mine = blogs.filter((blog) => blog.brand === brand.slug && blog.org === org);
   const action = mine.filter((blog) => blog.state === "action");
+  const ready = mine.filter((blog) => blog.state === "ready");
   const frozen = mine.filter((blog) => blog.state === "frozen");
-  const delivered = mine.filter((blog) => blog.state === "delivered");
-  const recent = delivered.slice(0, 3);
+  const approved = mine.filter((blog) => blog.state === "approved");
+  const recent = approved.slice(0, 3);
 
   return (
     <div className="space-y-10">
@@ -190,16 +225,31 @@ export function BrandOverview({ org, brand: brandSlug }: { org: string; brand: s
             ))}
           </div>
         </section>
-      ) : frozen.length + delivered.length > 0 ? (
-        <div className="flex items-center gap-2 rounded-lg border border-ship/20 bg-ship-bg px-4 py-3 text-sm text-ship">
-          <CheckCircle2 className="size-4 shrink-0" aria-hidden />
-          Nothing needs your attention right now.
-        </div>
-      ) : (
-        <p className="rounded-lg border bg-card px-4 py-3 text-sm text-muted-foreground">
-          Articles appear here as our team prepares and delivers them.
-        </p>
-      )}
+      ) : null}
+
+      {ready.length > 0 ? (
+        <section className="space-y-3" aria-label="Ready to post">
+          <SectionHeading count={ready.length}>Ready to post</SectionHeading>
+          <div className="space-y-3">
+            {ready.map((blog) => (
+              <ReadyCard key={blog.topic_slug} card={blog} showBrand={false} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {action.length + ready.length === 0 ? (
+        frozen.length + approved.length > 0 ? (
+          <div className="flex items-center gap-2 rounded-lg border border-ship/20 bg-ship-bg px-4 py-3 text-sm text-ship">
+            <CheckCircle2 className="size-4 shrink-0" aria-hidden />
+            Nothing needs your attention right now.
+          </div>
+        ) : (
+          <p className="rounded-lg border bg-card px-4 py-3 text-sm text-muted-foreground">
+            Articles appear here as our team prepares and delivers them.
+          </p>
+        )
+      ) : null}
 
       {frozen.length > 0 ? (
         <section className="space-y-3" aria-label="In progress">
@@ -213,9 +263,9 @@ export function BrandOverview({ org, brand: brandSlug }: { org: string; brand: s
       ) : null}
 
       {recent.length > 0 ? (
-        <section className="space-y-3" aria-label="Recently delivered">
+        <section className="space-y-3" aria-label="Recently approved">
           <div className="flex items-baseline justify-between">
-            <SectionHeading>Recently delivered</SectionHeading>
+            <SectionHeading>Recently approved</SectionHeading>
             <Link
               href={brandHref(org, brand.slug, isSingleBrand(org), "/blogs")}
               className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
@@ -226,7 +276,7 @@ export function BrandOverview({ org, brand: brandSlug }: { org: string; brand: s
           </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {recent.map((blog) => (
-              <DeliveredCard key={blog.topic_slug} card={blog} showBrand={false} />
+              <ApprovedCard key={blog.topic_slug} card={blog} showBrand={false} />
             ))}
           </div>
         </section>
@@ -261,8 +311,9 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
   const brand = brands.find((entry) => entry.slug === brandSlug && entry.org === org);
   const mine = blogs.filter((blog) => blog.brand === brandSlug && blog.org === org);
   const action = mine.filter((blog) => blog.state === "action");
+  const ready = mine.filter((blog) => blog.state === "ready");
   const frozen = mine.filter((blog) => blog.state === "frozen");
-  const delivered = mine.filter((blog) => blog.state === "delivered");
+  const approved = mine.filter((blog) => blog.state === "approved");
 
   if (brand === undefined) {
     return <BrandUnavailable />;
@@ -285,7 +336,24 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
             ))}
           </div>
         </section>
-      ) : frozen.length + delivered.length > 0 ? (
+      ) : null}
+
+      {ready.length > 0 ? (
+        <section className="space-y-3" aria-label="Ready to post">
+          <SectionHeading count={ready.length}>Ready to post</SectionHeading>
+          <p className="text-xs text-muted-foreground">
+            Our team has finished these articles. Read each one, then approve it or
+            suggest changes.
+          </p>
+          <div className="space-y-3">
+            {ready.map((blog) => (
+              <ReadyCard key={blog.topic_slug} card={blog} showBrand={false} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {action.length + ready.length === 0 && frozen.length + approved.length > 0 ? (
         <div className="flex items-center gap-2 rounded-lg border border-ship/20 bg-ship-bg px-4 py-3 text-sm text-ship">
           <CheckCircle2 className="size-4 shrink-0" aria-hidden />
           Nothing needs your attention right now.
@@ -303,12 +371,12 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
         </section>
       ) : null}
 
-      {delivered.length > 0 ? (
-        <section className="space-y-3" aria-label="Delivered">
-          <SectionHeading>Delivered</SectionHeading>
+      {approved.length > 0 ? (
+        <section className="space-y-3" aria-label="Approved">
+          <SectionHeading>Approved</SectionHeading>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {delivered.map((blog) => (
-              <DeliveredCard key={blog.topic_slug} card={blog} showBrand={false} />
+            {approved.map((blog) => (
+              <ApprovedCard key={blog.topic_slug} card={blog} showBrand={false} />
             ))}
           </div>
         </section>
@@ -337,15 +405,27 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
   const [blog, setBlog] = React.useState<PortalBlogDetail | null>(null);
   const [error, setError] = React.useState<ApiError | null>(null);
   const [attempt, setAttempt] = React.useState(0);
+  // Suggest mode belongs to one article, so it is stored WITH the article it belongs to
+  // and derived below: navigating to another blog simply stops matching, which is the
+  // reset an effect would otherwise perform synchronously (the lint forbids that).
+  const suggestKey = `${brand}/${topic}`;
+  const [suggest, setSuggest] = React.useState({ key: suggestKey, on: false });
+  const suggesting = suggest.key === suggestKey && suggest.on;
+  const setSuggesting = React.useCallback(
+    (on: boolean) => setSuggest({ key: suggestKey, on }),
+    [suggestKey],
+  );
 
   React.useEffect(() => {
     const controller = new AbortController();
-    setError(null);
     api
       .blog(brand, topic, controller.signal)
       .then((data) => {
         if (!controller.signal.aborted) {
           setBlog(data);
+          // Cleared on the async settle, never synchronously in the effect body: a
+          // fresh read either replaces the error with the article or with a newer error.
+          setError(null);
         }
       })
       .catch((cause) => {
@@ -363,9 +443,27 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
 
   const reload = React.useCallback(() => {
     setBlog(null);
+    setError(null);
     setAttempt((n) => n + 1);
     portal.refresh();
   }, [portal]);
+
+  // Re-read the record WITHOUT clearing the page: after an approve or a suggestion the
+  // article on screen is still the article, so swapping in a skeleton would make a small
+  // act feel like a navigation. The fetch effect above swaps state in place when the
+  // fresh read lands; reload() stays the hard reset for error retries.
+  const refetch = React.useCallback(() => {
+    setAttempt((n) => n + 1);
+    portal.refresh();
+  }, [portal]);
+
+  const submitSuggestion = React.useCallback(
+    async (draft: SuggestBody) => {
+      await api.suggestChange(brand, topic, draft);
+      refetch();
+    },
+    [brand, topic, refetch],
+  );
 
   if (error !== null) {
     return (
@@ -418,8 +516,13 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
           {blog.title}
         </h1>
         <p className="text-xs text-muted-foreground">
-          {blog.state === "delivered" ? `Delivered ${formatDate(blog.date)}` : null}
-          {blog.state === "delivered" && blog.word_count !== null
+          {blog.state === "ready"
+            ? `Sent to you ${formatRelative(blog.sent ?? blog.date)}`
+            : null}
+          {blog.state === "approved"
+            ? `Approved ${formatDate(blog.approved ?? blog.date)}`
+            : null}
+          {(blog.state === "ready" || blog.state === "approved") && blog.word_count !== null
             ? ` · ${readingTime(blog.word_count)}`
             : null}
           {blog.state === "action" && blog.asked !== null
@@ -433,10 +536,58 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
         </p>
       </header>
 
-      {blog.state === "delivered" && blog.body !== null ? (
-        <article className="rounded-xl bg-card p-6 ring-1 ring-foreground/10 sm:p-10">
-          <MarkdownView source={blog.body} />
-        </article>
+      {blog.state === "ready" && blog.body !== null ? (
+        <div className="space-y-6">
+          <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 sm:flex sm:items-center sm:justify-between sm:gap-4">
+            <p className="text-sm leading-relaxed">
+              This article is ready for you. Approve it and our team takes it live, or
+              suggest changes and the team takes them from here.
+            </p>
+            <div className="mt-3 flex shrink-0 items-center gap-2 sm:mt-0">
+              <Button
+                size="sm"
+                variant="outline"
+                aria-pressed={suggesting}
+                onClick={() => setSuggesting(!suggesting)}
+              >
+                <MessageSquarePlus data-icon="inline-start" aria-hidden />
+                {suggesting ? "Done suggesting" : "Suggest changes"}
+              </Button>
+              <ApproveAction brand={blog.brand} topic={blog.topic_slug} onApproved={refetch} />
+            </div>
+          </div>
+
+          {suggesting ? (
+            <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+              Select any text in the article below, and a small card appears to take your
+              note. Send as many as you need; each one goes straight to our team.
+            </p>
+          ) : null}
+
+          <article className="rounded-xl bg-card p-6 ring-1 ring-foreground/10 sm:p-10">
+            <SuggestableArticle
+              source={blog.body}
+              active={suggesting}
+              onSubmit={submitSuggestion}
+            />
+          </article>
+
+          {blog.comments !== null ? <SuggestionsList comments={blog.comments} /> : null}
+        </div>
+      ) : null}
+
+      {blog.state === "approved" && blog.body !== null ? (
+        <div className="space-y-6">
+          <div className="flex items-center gap-2 rounded-lg border border-ship/20 bg-ship-bg px-4 py-3 text-sm text-ship">
+            <CheckCircle2 className="size-4 shrink-0" aria-hidden />
+            You approved this article {formatRelative(blog.approved ?? blog.date)}. Our
+            team takes it live from here.
+          </div>
+          <article className="rounded-xl bg-card p-6 ring-1 ring-foreground/10 sm:p-10">
+            <MarkdownView source={blog.body} />
+          </article>
+          {blog.comments !== null ? <SuggestionsList comments={blog.comments} /> : null}
+        </div>
       ) : null}
 
       {blog.state === "action" ? (
@@ -480,8 +631,8 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
             <Clock className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
             <div className="text-sm leading-relaxed text-muted-foreground">
               {blog.answers !== null
-                ? "Thank you. Your answers are with our editorial team and are being applied to the article. This page updates when the article is delivered, or if the review needs anything further from you."
-                : "This article is with our editorial team. This page updates when it is delivered, or if the review needs anything from you."}
+                ? "Thank you. Your answers are with our editorial team and are being applied to the article. This page updates when the article is ready for your review, or if the review needs anything further from you."
+                : "This article is with our editorial team. This page updates when it is ready for your review, or if the review needs anything from you."}
             </div>
           </div>
 
@@ -522,10 +673,17 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
 }
 
 function StateBadge({ blog }: { blog: PortalBlogDetail }) {
-  if (blog.state === "delivered") {
+  if (blog.state === "approved") {
     return (
       <Badge className="border-transparent bg-ship-bg text-ship" variant="outline">
-        Delivered
+        Approved
+      </Badge>
+    );
+  }
+  if (blog.state === "ready") {
+    return (
+      <Badge className="border-transparent bg-primary/10 text-primary" variant="outline">
+        Ready to post
       </Badge>
     );
   }
@@ -540,5 +698,104 @@ function StateBadge({ blog }: { blog: PortalBlogDetail }) {
     <Badge variant="secondary" className="font-normal">
       In progress
     </Badge>
+  );
+}
+
+/**
+ * The approve control, behind a confirm because it is the one client act with weight on
+ * the other side: the team reads an approval as the signal to take the article live.
+ * The dialog stays open until the request settles, so a refusal lands in front of the
+ * client instead of behind a closed dialog.
+ */
+function ApproveAction({
+  brand,
+  topic,
+  onApproved,
+}: {
+  brand: string;
+  topic: string;
+  /** The page re-reads the record here, so the view flips to approved from what is true. */
+  onApproved: () => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [pending, setPending] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  async function approve() {
+    setPending(true);
+    setError(null);
+    try {
+      await api.approveBlog(brand, topic);
+      setOpen(false);
+      onApproved();
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 409) {
+        // 409 means the record has moved past this button: approved in another tab, or
+        // the team re-sent a fresh revision. Either way the page re-reads and renders
+        // what is actually true, so an error message would only argue with it.
+        setOpen(false);
+        onApproved();
+        return;
+      }
+      setError(cause instanceof ApiError ? detailText(cause) : String(cause));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <AlertDialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) {
+          setError(null);
+        }
+      }}
+    >
+      <AlertDialogTrigger asChild>
+        <Button size="sm">
+          <Check data-icon="inline-start" aria-hidden />
+          Approve
+        </Button>
+      </AlertDialogTrigger>
+
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Approve this article?</AlertDialogTitle>
+          <AlertDialogDescription>
+            The team takes it live after your approval.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+
+        {error !== null ? (
+          <p
+            role="alert"
+            className="rounded-md border border-fail/20 bg-fail-bg px-3 py-2 text-xs font-medium text-fail"
+          >
+            {error}
+          </p>
+        ) : null}
+
+        <AlertDialogFooter>
+          <AlertDialogCancel size="sm" disabled={pending}>
+            Cancel
+          </AlertDialogCancel>
+          <AlertDialogAction
+            size="sm"
+            disabled={pending}
+            onClick={(event) => {
+              event.preventDefault();
+              void approve();
+            }}
+          >
+            {pending ? (
+              <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
+            ) : null}
+            Approve
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }

@@ -11,17 +11,16 @@ import {
 } from "@/components/blogs/blogs-filter";
 
 /**
- * The library's view state lives in the URL, not in useState.
+ * The library's view state lives in the URL, not in useState: an operator sets a filter
+ * once and expects it to survive the refresh they hit to re-read the disk, and a filtered
+ * list is a thing they paste to a teammate.
  *
- * An open preview that dies on refresh is a bug: the operator's next move after reading a
- * blog is pasting the link to whoever has to approve it, and a drawer keyed on component
- * state cannot be sent to anyone. The same argument covers the filter, which an operator
- * sets once and expects to survive the refresh they hit to re-read the disk.
+ * Filters and search REPLACE history. Typing seven characters must not cost seven Back
+ * presses to escape.
  *
- * Which history verb, and why it matters:
- *  - opening a preview PUSHES, so Back closes the drawer instead of leaving the library.
- *  - filters and search REPLACE. Typing seven characters must not cost seven Back presses
- *    to escape.
+ * ?blog= is LEGACY, read-only. The preview drawer that lived there is gone: a blog now has
+ * its own page under /blogs/<topic>. The param is still read so every link that was ever
+ * sent around redirects to that page instead of dying.
  */
 
 export const DEFAULTS = {
@@ -44,7 +43,8 @@ export type LibraryUrl = {
   status: StatusFilter;
   sortKey: SortKey;
   sortDir: SortDir;
-  /** The topic_slug named by ?blog, or null. Whether it EXISTS is the disk's answer, not ours. */
+  /** The topic_slug a LEGACY ?blog link names, or null. The library redirects it to the
+   *  blog's own page; nothing writes this param any more. */
   previewSlug: string | null;
   setQuery: (value: string) => void;
   setStatus: (value: StatusFilter) => void;
@@ -53,8 +53,6 @@ export type LibraryUrl = {
    *  the second write starts from a snapshot that never saw the first. */
   clearFilters: () => void;
   setSort: (key: SortKey) => void;
-  openPreview: (topicSlug: string) => void;
-  closePreview: () => void;
 };
 
 export function useLibraryUrl(): LibraryUrl {
@@ -67,11 +65,6 @@ export function useLibraryUrl(): LibraryUrl {
   const sortKey = one(params.get(PARAM.sort), SORT_KEYS, DEFAULTS.sort);
   const sortDir = one(params.get(PARAM.dir), ["asc", "desc"] as const, DEFAULTS.dir);
   const previewSlug = params.get(PARAM.blog);
-
-  // True only when THIS component pushed the open preview. A deep link arrives with ?blog
-  // already set and nothing of ours on the stack, so closing it with back() would send the
-  // operator to whatever page preceded the link, or off the site entirely.
-  const pushedPreview = React.useRef(false);
 
   const write = React.useCallback(
     (mutate: (next: URLSearchParams) => void, method: "push" | "replace") => {
@@ -121,24 +114,6 @@ export function useLibraryUrl(): LibraryUrl {
     [sortKey, sortDir, write],
   );
 
-  const openPreview = React.useCallback(
-    (topicSlug: string) => {
-      pushedPreview.current = true;
-      write((next) => next.set(PARAM.blog, topicSlug), "push");
-    },
-    [write],
-  );
-
-  const closePreview = React.useCallback(() => {
-    if (pushedPreview.current) {
-      pushedPreview.current = false;
-      // Unwinds the exact entry the open pushed, so the address bar and the Back button agree.
-      router.back();
-      return;
-    }
-    write((next) => next.delete(PARAM.blog), "replace");
-  }, [router, write]);
-
   return {
     query,
     status,
@@ -156,7 +131,5 @@ export function useLibraryUrl(): LibraryUrl {
       [write],
     ),
     setSort,
-    openPreview,
-    closePreview,
   };
 }

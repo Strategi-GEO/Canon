@@ -2,13 +2,13 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   FileText,
   FlaskConical,
   MessageCircleQuestion,
   RotateCw,
   Search,
-  SearchX,
   TriangleAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -26,7 +26,6 @@ import { cn } from "@/lib/utils";
 import { selectBlogs, type StatusFilter } from "@/components/blogs/blogs-filter";
 import { BlogsTable, TRIGGER_ATTR } from "@/components/blogs/blogs-table";
 import { useLibraryUrl } from "@/components/blogs/library-url";
-import { PreviewDrawer } from "@/components/blogs/preview-drawer";
 import {
   countWaiting,
   waitingSignal,
@@ -100,6 +99,7 @@ function Library({
   brandName: string;
   demoMode: boolean;
 }) {
+  const router = useRouter();
   const [blogs, setBlogs] = React.useState<BlogSummary[] | null>(null);
   const [error, setError] = React.useState<ApiError | null>(null);
   const [refreshing, setRefreshing] = React.useState(false);
@@ -107,6 +107,24 @@ function Library({
   const searchRef = React.useRef<HTMLInputElement>(null);
 
   const url = useLibraryUrl();
+
+  /** A blog's own page, the admin-review stage. The row links here and the whole-row
+   *  click navigates here; one builder so the two can never disagree. */
+  const blogHref = React.useCallback(
+    (topicSlug: string) =>
+      `${brandHref(orgSlug, brandSlug, "/blogs")}/${encodeURIComponent(topicSlug)}`,
+    [orgSlug, brandSlug],
+  );
+
+  // The drawer this library used to open lived at ?blog=<slug>, and those links were sent
+  // around: to clients, in Slack, in notification clicks. Every one of them now lands on
+  // the blog's own page. replace, not push, so Back does not bounce through the redirect.
+  const legacyPreview = url.previewSlug;
+  React.useEffect(() => {
+    if (legacyPreview !== null) {
+      router.replace(blogHref(legacyPreview));
+    }
+  }, [legacyPreview, blogHref, router]);
 
   // The engine is an external system, so this subscribes to it and writes state only from
   // the settled callbacks rather than synchronously inside the effect body.
@@ -155,36 +173,63 @@ function Library({
   }, [byTopic]);
 
   /**
-   * The bell hears about client-answered forms HERE, at the read that discovers them,
-   * because the portal has no channel into this app: a client answers on their side and
-   * the first this dashboard can know is its own questions read. One notification per
-   * (brand, topic, asking round): the ref dedups re-reads within this mount, and the
-   * bell's log dedups across remounts so the count never double-rises; the toast is
-   * skipped for rounds the log already carries, since re-announcing old news on every
-   * visit to the tab is how a bell gets ignored.
+   * The bell hears about the portal HERE, at the reads that discover it, because the portal
+   * has no channel into this app: a client answers a form, suggests changes, or approves a
+   * sent article on their side, and the first this dashboard can know is its own next read.
+   * Answered forms come off the questions read; the review loop's two edges, changes
+   * requested and approved, come off the summaries' own fields. One notification per event:
+   * the ref dedups re-reads within this mount, and the bell's log dedups across remounts so
+   * the count never double-rises; the toast is skipped for events the log already carries,
+   * since re-announcing old news on every visit to the tab is how a bell gets ignored.
    */
   const { log, notify } = useNotifications();
   const announcedRef = React.useRef(new Set<string>());
   React.useEffect(() => {
+    // The full bell id, so the ref and the log can never disagree about which event a key
+    // names: two kinds are allowed to build the same-looking key without colliding.
+    function announce(
+      kind: "answers" | "changes_requested" | "client_approved",
+      key: string,
+      topicCount: number | null,
+    ) {
+      const id = `${kind}:${key}`;
+      if (announcedRef.current.has(id) || log.some((note) => note.id === id)) {
+        announcedRef.current.add(id);
+        return;
+      }
+      announcedRef.current.add(id);
+      notify({ kind, brandSlug, key, topicCount });
+    }
+
     for (const [slug, entry] of byTopic) {
       const questions = entry.payload;
       if (!questions || !questions.answered || questions.answered_by !== "client") {
         continue;
       }
-      const key = `${brandSlug}/${slug}/${questions.iter}`;
-      if (announcedRef.current.has(key) || log.some((note) => note.id === `answers:${key}`)) {
-        announcedRef.current.add(key);
+      announce("answers", `${brandSlug}/${slug}/${questions.iter}`, questions.questions.length);
+    }
+
+    for (const blog of blogs ?? []) {
+      if (blog.status !== "done" || !blog.sent_to_client) {
         continue;
       }
-      announcedRef.current.add(key);
-      notify({
-        kind: "answers",
-        brandSlug,
-        key,
-        topicCount: questions.questions.length,
-      });
+      if ((blog.changes_requested ?? 0) > 0) {
+        // Keyed by the SEND stamp, not any comment id: one round of suggestions rings once
+        // however many comments it holds, and a fresh round after a re-send rings again,
+        // exactly as the answers kind rings once per asking round.
+        announce(
+          "changes_requested",
+          `${brandSlug}/${blog.topic_slug}/${blog.sent_to_client}`,
+          blog.changes_requested ?? 0,
+        );
+      }
+      if (blog.client_approved) {
+        // Keyed by the approval stamp itself: a re-send clears the approval, so a fresh
+        // one carries a fresh timestamp and is genuinely new news.
+        announce("client_approved", `${brandSlug}/${blog.topic_slug}/${blog.client_approved}`, null);
+      }
     }
-  }, [byTopic, brandSlug, log, notify]);
+  }, [byTopic, blogs, brandSlug, log, notify]);
 
   async function refresh() {
     setRefreshing(true);
@@ -193,17 +238,6 @@ function Library({
     setRefreshing(false);
   }
 
-  /**
-   * Both reads again, together. Answering files an answers.json, which changes what the
-   * questions endpoint says about this topic, and the revise it starts changes the blog's score:
-   * re-reading one without the other would show the new state of a blog beside the old answer to
-   * whether it is still waiting.
-   */
-  const questionsSettled = React.useCallback(() => {
-    void load();
-    reloadQuestions();
-  }, [load, reloadQuestions]);
-
   const shown = React.useMemo(
     () => selectBlogs(blogs ?? [], url.query, url.status, url.sortKey, url.sortDir),
     [blogs, url.query, url.status, url.sortKey, url.sortDir],
@@ -211,17 +245,10 @@ function Library({
 
   // The keyboard's row. A filter can hide whatever was picked, and a row that is not rendered
   // must not hold the table's only tab stop, so it falls back to the first visible row.
-  const candidate = picked ?? url.previewSlug;
   const activeSlug =
-    shown.find((blog) => blog.topic_slug === candidate)?.topic_slug ??
+    shown.find((blog) => blog.topic_slug === picked)?.topic_slug ??
     shown[0]?.topic_slug ??
     null;
-
-  const previewing = url.previewSlug !== null;
-  // The URL names a slug; the DISK decides whether it exists. A blog deleted in Finder leaves
-  // a link that still resolves to this page, and the honest answer is that it is gone.
-  const previewBlog = blogs?.find((blog) => blog.topic_slug === url.previewSlug) ?? null;
-  const previewMissing = previewing && blogs !== null && previewBlog === null;
 
   /** Moves the keyboard through the list by moving real focus, so Enter needs no handler of
    *  its own: the row's button is focused and Enter activates it natively. */
@@ -244,17 +271,15 @@ function Library({
     [shown, activeSlug],
   );
 
-  // Disabled while the drawer is open: Radix owns the keyboard inside it, and j is a letter
-  // someone may be typing into the search field. useHotkey already guards text fields.
-  const keys = { enabled: !previewing };
-  useHotkey("j", () => move(1), keys);
-  useHotkey("k", () => move(-1), keys);
+  // j is a letter someone may be typing into the search field; useHotkey guards text fields.
+  useHotkey("j", () => move(1));
+  useHotkey("k", () => move(-1));
   // Arrows only steer the list once the operator is IN it. Before that they scroll the page,
   // which is what an arrow key means everywhere else, and hijacking that would be rude.
-  const engaged = { enabled: !previewing && picked !== null };
+  const engaged = { enabled: picked !== null };
   useHotkey("arrowdown", () => move(1), engaged);
   useHotkey("arrowup", () => move(-1), engaged);
-  useHotkey("/", () => searchRef.current?.focus(), keys);
+  useHotkey("/", () => searchRef.current?.focus());
 
   const total = blogs?.length ?? 0;
   const filtering = url.query.trim() !== "" || url.status !== "all";
@@ -327,8 +352,6 @@ function Library({
 
       <WaitingOnYou signals={waiting} />
 
-      {previewMissing ? <MissingBlog slug={url.previewSlug} onClear={url.closePreview} /> : null}
-
       {error ? <EngineError error={error} onRetry={() => void refresh()} /> : null}
 
       {!error && blogs === null ? <Skeleton className="h-80 w-full" /> : null}
@@ -349,9 +372,10 @@ function Library({
                   sortDir={url.sortDir}
                   activeSlug={activeSlug}
                   onSort={url.setSort}
-                  onPreview={(blog) => {
+                  hrefFor={(blog) => blogHref(blog.topic_slug)}
+                  onOpen={(blog) => {
                     setPicked(blog.topic_slug);
-                    url.openPreview(blog.topic_slug);
+                    router.push(blogHref(blog.topic_slug));
                   }}
                 />
               )}
@@ -395,16 +419,6 @@ function Library({
         )
       ) : null}
 
-      {/* demoMode reaches the drawer for the Post button alone: a demo blog is templated
-          placeholder text, and the CMS has no way to know that once it arrives. */}
-      <PreviewDrawer
-        brandSlug={brandSlug}
-        blog={previewBlog}
-        demoMode={demoMode}
-        questions={previewBlog ? byTopic.get(previewBlog.topic_slug) : undefined}
-        onQuestionsSettled={questionsSettled}
-        onClose={url.closePreview}
-      />
     </div>
   );
 }
@@ -442,25 +456,6 @@ function WaitingOnYou({ signals }: { signals: ReadonlyMap<string, WaitingSignal>
             to read the questions and answer them.
           </p>
         </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-/** A shared link whose blog is no longer on disk. The link is not broken and the operator is
- *  not wrong: the file went away, which is exactly what the disk being the truth means. */
-function MissingBlog({ slug, onClear }: { slug: string | null; onClear: () => void }) {
-  return (
-    <Card className="mb-4 border-review/25 bg-review-bg">
-      <CardContent className="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
-        <SearchX className="size-4 shrink-0 text-review" aria-hidden />
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-medium text-review">This link names a blog that is gone</p>
-          <p className="machine mt-0.5 text-xs wrap-anywhere text-review/90">{slug}</p>
-        </div>
-        <Button variant="outline" size="sm" onClick={onClear}>
-          Clear
-        </Button>
       </CardContent>
     </Card>
   );

@@ -484,6 +484,28 @@ export type BlogSummary = {
    * Never coerce the null to 0. Zero is row one.
    */
   roadmap_index: number | null;
+  /**
+   * When an operator last pressed Send to client, UTC ISO, or null while the blog is still
+   * the team's. A done blog with null here sits in ADMIN REVIEW: shipped, editable on the
+   * blog stage page, and invisible to the client portal until the send. Every send re-stamps
+   * this, so after a Send again it carries the latest release, not the first. Optional on
+   * the wire so a summary from an engine build predating the field reads as unsent rather
+   * than breaking.
+   */
+  sent_to_client?: string | null;
+  /**
+   * When the client approved the sent article from their portal, UTC ISO, or null. The
+   * engine CLEARS this on every send, so a re-sent blog reads unapproved until the client
+   * approves the new text: an approval describes one exact article, never the topic.
+   * Optional on the wire for the same engine-age reason as sent_to_client.
+   */
+  client_approved?: string | null;
+  /**
+   * The client's suggested changes still owed a resolution: their comments in state open or
+   * applying. Zero for a topic with no comments, and the engine refuses a re-send while it
+   * is above zero. Optional on the wire for the same engine-age reason as sent_to_client.
+   */
+  changes_requested?: number;
 };
 
 export type BlogsResponse = {
@@ -591,6 +613,87 @@ export type PublishResult = {
   updated: boolean;
   skipped: string | null;
   preview_token: string | null;
+};
+
+/**
+ * One selection comment on a shipped blog: someone selected rendered text, wrote an
+ * instruction, and a short Claude session applies it to that passage.
+ *
+ * "applying" is the only spinning state, and "open" is the only one waiting on a person:
+ * a client's suggestion is recorded from the portal with no Claude behind it, and it sits
+ * open until the admin presses Resolve with Claude or dismisses it. An operator's own
+ * comment is born applying, so open on an operator comment never occurs in practice. A
+ * failed comment carries the engine's own reason in `error` and changed nothing; a
+ * resolved one carries the exact old/new replacements the session made in `edits`; a
+ * dismissed one was settled by hand and the UI hides it rather than deleting the record.
+ */
+export type BlogCommentState = "open" | "applying" | "resolved" | "failed" | "dismissed";
+
+export type BlogComment = {
+  id: string;
+  /** UTC ISO, from the engine. */
+  created: string;
+  /**
+   * Which SIDE filed it, because the two sides owe it different acts: an operator comment
+   * runs itself, a client comment waits for the admin to resolve or dismiss it.
+   */
+  author: "operator" | "client";
+  /** Who filed it, by email. "" when the engine could not say. */
+  author_email: string;
+  /** The rendered text the author selected, verbatim. */
+  selected_text: string;
+  context_before: string;
+  context_after: string;
+  /** The author's instruction for the selected passage. */
+  instruction: string;
+  state: BlogCommentState;
+  /** Null until the comment settles: resolved, failed, or dismissed. */
+  finished: string | null;
+  /** The engine's own sentence when state is "failed". Shown verbatim, never paraphrased. */
+  error: string | null;
+  /** The replacements actually made, present exactly when state is "resolved". */
+  edits: { old: string; new: string }[] | null;
+};
+
+export type BlogCommentsResponse = {
+  comments: BlogComment[];
+};
+
+/** What POST /comments takes. Context is optional help for placing an ambiguous selection. */
+export type AddCommentBody = {
+  selected_text: string;
+  instruction: string;
+  context_before?: string;
+  context_after?: string;
+};
+
+/** What POST /content answers: the committed word count, measured as the record measures it. */
+export type SaveContentResult = {
+  word_count: number;
+};
+
+/**
+ * Where one blog sits in the client review loop, exactly as the engine's sent_state reports
+ * it. GET /review answers with this, and so does POST /send, because a send is a move in
+ * this state machine and the caller should not need a second read to learn where it landed.
+ *
+ * The states are DERIVED, never stored: sent with open changes is "changes requested", sent
+ * and approved is "approved", sent otherwise is "sent for client review", and unsent is the
+ * editable admin-review stage. Every send re-stamps sent_to_client and CLEARS the approval,
+ * because an approval describes one exact article and a re-send replaces it.
+ */
+export type BlogReviewState = {
+  /** The latest send, UTC ISO, or null while the blog is still the team's. */
+  sent_to_client: string | null;
+  sent_to_client_by: string | null;
+  /** When the client approved the SENT article, or null. Cleared by every send. */
+  client_approved: string | null;
+  client_approved_by: string | null;
+  /**
+   * The client's open and applying comments. Above zero, the engine refuses a re-send:
+   * every suggestion is resolved or dismissed before the client sees a new version.
+   */
+  changes_requested: number;
 };
 
 /** The server whitelists exactly these artifact names, so the client should too. */

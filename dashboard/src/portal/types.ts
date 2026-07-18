@@ -5,7 +5,14 @@
  * tests/portal_check.py enforces it by grepping this app for the forbidden fields.
  */
 
-export type PortalState = "action" | "frozen" | "delivered";
+/**
+ * The portal's whole vocabulary for a blog, derived server-side (portal-data.ts) and never
+ * stored: action (the client owes answers), frozen (with the editorial team), ready (sent
+ * for the client's review: approve it or suggest changes), approved (the client signed it
+ * off and the team takes it live). "ready" and "approved" together replace the old
+ * terminal "delivered": delivery is no longer the end of the conversation, approval is.
+ */
+export type PortalState = "action" | "frozen" | "ready" | "approved";
 
 export type PortalOrg = {
   slug: string;
@@ -37,6 +44,10 @@ export type PortalBlogCard = {
   question_count: number | null;
   word_count: number | null;
   answered: boolean;
+  /** ready and approved only: when the team sent the article for review. UTC ISO. */
+  sent: string | null;
+  /** approved only: when the client approved. UTC ISO. */
+  approved: string | null;
 };
 
 export type Overview = {
@@ -58,6 +69,23 @@ export type PortalAnswerView = {
   answer: string;
 };
 
+/**
+ * One suggestion the client filed against a sent article, in the record's own states. The
+ * UI folds them to plain language (with the team / addressed / reviewed) because how a
+ * change gets applied is the team's machinery, never the client's concern. Deliberately no
+ * error field: a failed apply is the team's problem, and the wire not carrying the error
+ * is what guarantees no view can ever show it.
+ */
+export type PortalCommentState = "open" | "applying" | "resolved" | "failed" | "dismissed";
+
+export type PortalComment = {
+  id: string;
+  selected_text: string;
+  instruction: string;
+  state: PortalCommentState;
+  created: string;
+};
+
 export type PortalBlogDetail = {
   brand: string;
   brand_name: string;
@@ -66,15 +94,31 @@ export type PortalBlogDetail = {
   state: PortalState;
   date: string;
   word_count: number | null;
+  /** ready/approved: the sent article. action: the current draft under review. frozen: absent. */
   body: string | null;
   questions: PortalQuestion[] | null;
   asked: string | null;
   answers: PortalAnswerView[] | null;
   answered_at: string | null;
+  /** ready and approved only: the client's own suggestions, oldest first. */
+  comments: PortalComment[] | null;
+  /** ready and approved only: when the team sent the article for review. UTC ISO. */
+  sent: string | null;
+  /** approved only: when the client approved. UTC ISO. */
+  approved: string | null;
 };
 
 export type AnswersBody = {
   answers: { id: string; answer: string }[];
+};
+
+/** What one suggestion carries to the server: the rendered selection, enough surrounding
+ *  text to place it even when the passage repeats, and the client's note. */
+export type SuggestBody = {
+  selected_text: string;
+  context_before: string;
+  context_after: string;
+  instruction: string;
 };
 
 export type PortalRoadmapRow = {

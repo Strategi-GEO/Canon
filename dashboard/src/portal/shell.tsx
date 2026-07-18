@@ -3,7 +3,17 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ArrowLeft, Box, Check, ChevronsUpDown, Loader2, LogOut, Menu } from "lucide-react";
+import {
+  ArrowLeft,
+  Box,
+  Check,
+  ChevronsUpDown,
+  FileCheck2,
+  Loader2,
+  LogOut,
+  Menu,
+  MessageCircleQuestion,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -253,6 +263,53 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
+/**
+ * The portal's notifications, derived and nothing else: the overview the shell already
+ * holds IS the notification, so there is no bell, no history, and no read-state to store
+ * anywhere. Exactly two counts matter to a client (articles waiting on their answers,
+ * articles ready to approve), and each links home, where those sections sit at the top of
+ * the page. The strip simply disappears when both are zero: an empty notification area
+ * would only teach the client to stop looking at it.
+ */
+function AttentionStrip({ onNavigate }: { onNavigate?: () => void }) {
+  const { blogs, loading } = usePortal();
+  if (loading) {
+    return null;
+  }
+  const action = blogs.filter((blog) => blog.state === "action").length;
+  const ready = blogs.filter((blog) => blog.state === "ready").length;
+  if (action === 0 && ready === 0) {
+    return null;
+  }
+  const row =
+    "flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium transition-colors " +
+    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
+  return (
+    <div className="flex flex-col gap-1.5 border-t px-2.5 pt-3 pb-4" aria-label="Needs your attention">
+      {action > 0 ? (
+        <Link
+          href="/"
+          onClick={onNavigate}
+          className={cn(row, "bg-review-bg text-review hover:bg-review/15")}
+        >
+          <MessageCircleQuestion className="size-3.5 shrink-0" aria-hidden />
+          {action === 1 ? "1 article needs your answers" : `${action} articles need your answers`}
+        </Link>
+      ) : null}
+      {ready > 0 ? (
+        <Link
+          href="/"
+          onClick={onNavigate}
+          className={cn(row, "bg-primary/8 text-primary hover:bg-primary/15")}
+        >
+          <FileCheck2 className="size-3.5 shrink-0" aria-hidden />
+          {ready === 1 ? "1 ready to post" : `${ready} ready to post`}
+        </Link>
+      ) : null}
+    </div>
+  );
+}
+
 function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <div className="flex h-full flex-col">
@@ -262,6 +319,7 @@ function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
       <div className="flex-1 overflow-y-auto px-2.5 pb-4">
         <SidebarNav onNavigate={onNavigate} />
       </div>
+      <AttentionStrip onNavigate={onNavigate} />
     </div>
   );
 }
@@ -279,7 +337,13 @@ function Topbar() {
   const router = useRouter();
   const [open, setOpen] = React.useState(false);
   const [email, setEmail] = React.useState<string | null>(null);
-  const { orgs, brands } = usePortal();
+  const { orgs, brands, blogs } = usePortal();
+  // The mobile counterpart of the sidebar's attention strip: the sidebar is hidden below
+  // lg, so a small dot on the menu trigger says "open me" without inventing a second
+  // notification surface. Amber when answers are owed (the stronger ask), accent when
+  // articles are only waiting on approval.
+  const needsAnswers = blogs.some((blog) => blog.state === "action");
+  const needsApproval = blogs.some((blog) => blog.state === "ready");
 
   React.useEffect(() => {
     const read = () => setEmail(getSession()?.user.email ?? null);
@@ -298,8 +362,22 @@ function Topbar() {
     <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-border bg-card px-4 sm:px-6">
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetTrigger asChild>
-          <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="relative lg:hidden"
+            aria-label="Open navigation"
+          >
             <Menu aria-hidden />
+            {needsAnswers || needsApproval ? (
+              <span
+                aria-hidden
+                className={cn(
+                  "absolute top-1.5 right-1.5 size-2 rounded-full",
+                  needsAnswers ? "bg-review" : "bg-primary",
+                )}
+              />
+            ) : null}
           </Button>
         </SheetTrigger>
         <SheetContent side="left" className="w-64 gap-0 p-0">

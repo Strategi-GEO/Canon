@@ -1,5 +1,11 @@
 import { clearSession, ensureFreshToken } from "@/lib/session";
-import type { AnswersBody, Overview, PortalBlogDetail, PortalRoadmap } from "@/portal/types";
+import type {
+  AnswersBody,
+  Overview,
+  PortalBlogDetail,
+  PortalRoadmap,
+  SuggestBody,
+} from "@/portal/types";
 
 /**
  * The portal's API client. Same-origin only: the portal's Route Handlers ARE its backend,
@@ -97,6 +103,21 @@ export const api = {
   answer: (brand: string, topic: string, body: AnswersBody) =>
     request<unknown>(
       `/api/blog/${encodeURIComponent(brand)}/${encodeURIComponent(topic)}/answers`,
+      { method: "POST", body },
+    ),
+  /**
+   * The review-loop writes, POSTs to the portal's own Route Handlers, which call the
+   * database's definer functions with the caller's JWT exactly as answers does. Approve
+   * carries no body: the URL names the topic and the record supplies everything else.
+   */
+  approveBlog: (brand: string, topic: string) =>
+    request<unknown>(
+      `/api/blog/${encodeURIComponent(brand)}/${encodeURIComponent(topic)}/approve`,
+      { method: "POST" },
+    ),
+  suggestChange: (brand: string, topic: string, body: SuggestBody) =>
+    request<unknown>(
+      `/api/blog/${encodeURIComponent(brand)}/${encodeURIComponent(topic)}/suggest`,
       { method: "POST", body },
     ),
   roadmap: (brand: string, signal?: AbortSignal) =>

@@ -24,6 +24,7 @@ drop view  if exists topic_rollup      cascade;
 drop view  if exists topics_live       cascade;
 drop view  if exists org_membership    cascade;
 
+drop table if exists blog_comments     cascade;
 drop table if exists review_notes      cascade;
 drop table if exists ledger_entries    cascade;
 drop table if exists status_events     cascade;
@@ -42,6 +43,8 @@ drop table if exists orgs              cascade;
 drop function if exists auth_can_read_client(uuid) cascade;
 drop function if exists auth_org_slugs()           cascade;
 drop function if exists auth_is_admin()            cascade;
+drop function if exists portal_suggest_change(text, text, text, text, text, text) cascade;
+drop function if exists portal_approve_blog(text, text) cascade;
 
 drop type   if exists topic_status cascade;
 drop type   if exists run_stage    cascade;
@@ -326,6 +329,28 @@ create table topics (
   review_note text,
 
   shipped_version_id uuid,
+
+  -- The admin-review exit stamp (004, re-stampable since 005): a shipped blog is
+  -- client-visible on the portal only once an operator pressed Send to client. Null means
+  -- the blog, shipped or not, is still the team's. Engine-side, and EVERY send re-stamps
+  -- it: after a review round, Send again is a new release of changed bytes, not a repeat
+  -- of the first one, so the date moves and the approval below is cleared with it.
+  sent_to_client_at timestamptz,
+  sent_to_client_by text,
+
+  -- WHICH version the send released (005): the portal renders this version and a client
+  -- suggestion anchors to it, so an admin edit committed after the send cannot silently
+  -- move the text the client is commenting on. FK added after blog_versions, exactly
+  -- like shipped_version_id.
+  sent_version_id uuid,
+
+  -- The client's approval (005). mark_sent clears both on every send: an approval
+  -- describes the exact release the client read, and it must not survive a re-send of
+  -- different bytes as though the client had approved those too. client_approved_by is
+  -- an email and stays off the authenticated grants, like sent_to_client_by.
+  client_approved_at timestamptz,
+  client_approved_by text,
+
   created_at timestamptz not null default now(),
   deleted_at timestamptz,
 
@@ -388,6 +413,10 @@ create index blog_versions_topic on blog_versions (topic_id, version_no desc);
 
 alter table topics add constraint topics_shipped_version_fk
   foreign key (shipped_version_id, id) references blog_versions(id, topic_id)
+  on delete set null;
+
+alter table topics add constraint topics_sent_version_fk
+  foreign key (sent_version_id, id) references blog_versions(id, topic_id)
   on delete set null;
 
 -- ---------------------------------------------------------------------------
@@ -536,6 +565,46 @@ create table review_notes (
 create index review_notes_topic on review_notes (topic_id, created_at);
 
 -- ---------------------------------------------------------------------------
+-- blog_comments (005): selection comments, one table for both surfaces
+-- ---------------------------------------------------------------------------
+
+-- One row per selection comment, operator-authored and client-authored both. This is the
+-- record, not a working file: the client files suggestions from the hosted portal with no
+-- engine behind it, and two engines share one record, so a comment teammate A resolves
+-- must read as resolved on teammate B's machine. The state machine: 'open' (filed,
+-- nothing running; every client suggestion starts here), 'applying' (a Claude apply
+-- session is live on some engine), 'resolved' (the edit landed and committed), 'failed'
+-- (the apply refused or died; error says why, and Resolve retries it), 'dismissed'
+-- (closed without an edit). Operator comments skip 'open': the engine auto-applies them
+-- at filing.
+create table blog_comments (
+  id              uuid primary key default gen_random_uuid(),
+  topic_id        uuid not null,
+  client_id       uuid not null,
+  -- The version the selection was made against: topics.sent_version_id at filing time
+  -- for client suggestions, null for engine-filed operator comments (their apply always
+  -- runs against the record's latest body). Informational anchor with deliberately NO
+  -- FK: a comment must outlive the version it quotes, the way ledger_entries outlive
+  -- the topics they record, or pruning history silently deletes a client's request.
+  blog_version_id uuid,
+  author          text not null check (author in ('operator','client')),
+  author_email    text not null default '',
+  selected_text   text not null,
+  context_before  text not null default '',
+  context_after   text not null default '',
+  instruction     text not null,
+  state           text not null default 'open'
+                    check (state in ('open','applying','resolved','failed','dismissed')),
+  error           text,
+  edits           jsonb,
+  created_at      timestamptz not null default now(),
+  finished_at     timestamptz,
+  foreign key (topic_id, client_id) references topics(id, client_id) on delete cascade
+);
+
+create index blog_comments_topic on blog_comments (topic_id, created_at);
+
+-- ---------------------------------------------------------------------------
 -- Views: the derived reads
 -- ---------------------------------------------------------------------------
 
@@ -631,6 +700,7 @@ alter table blog_versions    enable row level security;
 alter table status_events    enable row level security;
 alter table ledger_entries   enable row level security;
 alter table review_notes     enable row level security;
+alter table blog_comments    enable row level security;
 
 -- Auth predicates (SECURITY DEFINER: read membership past the caller's own RLS,
 -- using Supabase's auth.uid() = request.jwt.claims.sub).
@@ -683,6 +753,8 @@ create policy read_scoped on ledger_entries    for select to authenticated
   using (auth_can_read_client(client_id));
 create policy read_scoped on review_notes      for select to authenticated
   using (auth_can_read_client(client_id));
+create policy read_scoped on blog_comments     for select to authenticated
+  using (auth_can_read_client(client_id));
 create policy read_scoped on clients for select to authenticated
   using (auth_can_read_client(id));
 create policy read_scoped on orgs for select to authenticated
@@ -700,6 +772,216 @@ grant select on clients, orgs, client_resources, roadmap_uploads, roadmap_sheets
   org_membership, topic_rollup, topics_live, v_review_notes,
   app_admins, org_members
   to authenticated;
+
+-- blog_comments is deliberately NOT in the table-wide grant above: it postdates 003's
+-- column-scoping, which never covers it, so the safe-columns-only grant lives here.
+-- Everything except author_email, which is a person's email address, operator material
+-- on operator rows and another user's PII on client rows. No INSERT or UPDATE grant
+-- exists on purpose: client writes pass through portal_suggest_change below, operator
+-- writes ride the engine's owner connection, and a third path would be a write the
+-- comment state machine never sees.
+grant select (id, topic_id, client_id, blog_version_id, author, selected_text,
+              context_before, context_after, instruction, state, error, edits,
+              created_at, finished_at)
+  on blog_comments to authenticated;
+
+-- ---------------------------------------------------------------------------
+-- The client review writes (005): two SECURITY DEFINER gates
+-- ---------------------------------------------------------------------------
+-- The portal's suggest-changes and approve actions, gated exactly as
+-- portal_submit_answers (002/003) is: caller, body, membership parity, role, then the
+-- topic's own state. SECURITY DEFINER because authenticated holds zero write grants, and
+-- these functions are the doors a client write may pass through. Every error leaves as
+-- 'PORTAL:<CODE>:<detail>' so the portal's route handler maps codes to HTTP statuses
+-- without parsing prose.
+
+-- Unlike a comment the admin files, NOTHING runs on insert here: the suggestion lands in
+-- state 'open' and waits for an operator's Resolve, because an apply is a real Claude
+-- session on an engine the client does not have.
+create or replace function portal_suggest_change(
+  p_brand       text,
+  p_topic       text,
+  p_selected    text,
+  p_before      text,
+  p_after       text,
+  p_instruction text
+) returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid       uuid := auth.uid();
+  v_email     text := coalesce(auth.jwt() ->> 'email', '');
+  v_is_admin  boolean;
+  v_is_member boolean;
+  v_cid       uuid;
+  v_tid       uuid;
+  v_sent_at   timestamptz;
+  v_sent_ver  uuid;
+  v_approved  timestamptz;
+  v_open      int;
+  v_id        uuid;
+begin
+  if v_uid is null then
+    raise exception 'PORTAL:AUTH:not authenticated';
+  end if;
+  if btrim(coalesce(p_selected, '')) = '' or btrim(coalesce(p_instruction, '')) = '' then
+    raise exception 'PORTAL:BADBODY:a suggestion needs both the selected text and an instruction';
+  end if;
+
+  select c.id into v_cid
+  from clients c
+  where c.slug = p_brand and c.deleted_at is null;
+
+  v_is_admin := exists (select 1 from app_admins a where a.user_id = v_uid);
+  v_is_member := v_cid is not null and (
+      v_is_admin
+      or exists (
+          select 1
+          from org_membership m
+          join org_members om on om.org_slug = m.org_slug
+          where m.client_id = v_cid and om.user_id = v_uid));
+
+  -- The 003 parity rule: a non-member learns nothing, because a brand that does not
+  -- exist and a brand in someone else's org answer identically.
+  if not v_is_member then
+    raise exception 'PORTAL:NOTFOUND:no blog to review for this account';
+  end if;
+
+  -- A member without the writing role is told so plainly: they can already see the
+  -- brand, so this reveals nothing, and role vocabulary stays out of the message.
+  if not (v_is_admin or exists (
+      select 1 from org_membership m
+      join org_members om on om.org_slug = m.org_slug
+      where m.client_id = v_cid and om.user_id = v_uid
+        and om.role in ('admin', 'commenter'))) then
+    raise exception 'PORTAL:ROLE:this account is not allowed to suggest changes for this brand';
+  end if;
+
+  select t.id, t.sent_to_client_at, t.sent_version_id, t.client_approved_at
+    into v_tid, v_sent_at, v_sent_ver, v_approved
+  from topics t
+  where t.client_id = v_cid and t.slug = p_topic and t.deleted_at is null;
+  if v_tid is null then
+    raise exception 'PORTAL:NOTFOUND:no blog to review for this account';
+  end if;
+
+  if v_sent_at is null then
+    raise exception 'PORTAL:NOTSENT:this article is not with you for review yet';
+  end if;
+  if v_approved is not null then
+    raise exception 'PORTAL:APPROVED:this article is already approved; the team takes it from here';
+  end if;
+
+  -- Serialize concurrent suggests on the topic row: two racing submits would otherwise
+  -- both count nine open suggestions and both insert past the guard below.
+  perform 1 from topics t where t.id = v_tid for update;
+
+  -- The spam guard. Ten unresolved suggestions on one article is not a review, it is a
+  -- rewrite request, and every open row blocks Send again on the admin side: without a
+  -- cap, one client could wedge an article's delivery indefinitely at zero cost.
+  select count(*) into v_open
+  from blog_comments c
+  where c.topic_id = v_tid and c.author = 'client' and c.state in ('open', 'applying');
+  if v_open >= 10 then
+    raise exception 'PORTAL:LIMIT:ten suggestions are already with the team; they will follow up once those are addressed';
+  end if;
+
+  insert into blog_comments
+    (topic_id, client_id, blog_version_id, author, author_email,
+     selected_text, context_before, context_after, instruction, state)
+  values
+    (v_tid, v_cid, v_sent_ver, 'client', v_email,
+     p_selected, coalesce(p_before, ''), coalesce(p_after, ''), p_instruction, 'open')
+  returning id into v_id;
+
+  return v_id;
+end
+$$;
+
+revoke all on function portal_suggest_change(text, text, text, text, text, text)
+  from public, anon;
+grant execute on function portal_suggest_change(text, text, text, text, text, text)
+  to authenticated;
+
+-- Same gates as portal_suggest_change, then the stamp. Approval stays available while
+-- the client's own suggestions are open (the portal keeps Approve live in the 'ready'
+-- state), so there is deliberately no open-comment refusal here: approving over an open
+-- suggestion is the client saying it no longer matters, and the admin dismisses it with
+-- that context. Already-approved refuses rather than re-stamps, because the stamp
+-- records WHEN the client accepted the release and a moving date falsifies that.
+create or replace function portal_approve_blog(
+  p_brand text,
+  p_topic text
+) returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid       uuid := auth.uid();
+  v_email     text := coalesce(auth.jwt() ->> 'email', '');
+  v_is_admin  boolean;
+  v_is_member boolean;
+  v_cid       uuid;
+  v_tid       uuid;
+  v_sent_at   timestamptz;
+  v_approved  timestamptz;
+begin
+  if v_uid is null then
+    raise exception 'PORTAL:AUTH:not authenticated';
+  end if;
+
+  select c.id into v_cid
+  from clients c
+  where c.slug = p_brand and c.deleted_at is null;
+
+  v_is_admin := exists (select 1 from app_admins a where a.user_id = v_uid);
+  v_is_member := v_cid is not null and (
+      v_is_admin
+      or exists (
+          select 1
+          from org_membership m
+          join org_members om on om.org_slug = m.org_slug
+          where m.client_id = v_cid and om.user_id = v_uid));
+
+  if not v_is_member then
+    raise exception 'PORTAL:NOTFOUND:no blog to review for this account';
+  end if;
+
+  if not (v_is_admin or exists (
+      select 1 from org_membership m
+      join org_members om on om.org_slug = m.org_slug
+      where m.client_id = v_cid and om.user_id = v_uid
+        and om.role in ('admin', 'commenter'))) then
+    raise exception 'PORTAL:ROLE:this account is not allowed to approve for this brand';
+  end if;
+
+  select t.id, t.sent_to_client_at, t.client_approved_at
+    into v_tid, v_sent_at, v_approved
+  from topics t
+  where t.client_id = v_cid and t.slug = p_topic and t.deleted_at is null;
+  if v_tid is null then
+    raise exception 'PORTAL:NOTFOUND:no blog to review for this account';
+  end if;
+
+  if v_sent_at is null then
+    raise exception 'PORTAL:NOTSENT:this article is not with you for review yet';
+  end if;
+  if v_approved is not null then
+    raise exception 'PORTAL:APPROVED:this article is already approved';
+  end if;
+
+  update topics
+     set client_approved_at = now(),
+         client_approved_by = v_email
+   where id = v_tid;
+end
+$$;
+
+revoke all on function portal_approve_blog(text, text) from public, anon;
+grant execute on function portal_approve_blog(text, text) to authenticated;
 
 -- A one-time REVOKE is point-in-time, and Supabase ships default privileges that
 -- GRANT every LATER-created table to anon. Without this, the next migration

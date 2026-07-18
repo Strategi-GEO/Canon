@@ -32,7 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
-from . import auth, client_answers, db, describe, facts_gen, ledger, roadmap, roadmap_gen, runner, sync
+from . import auth, blog_edit, client_answers, db, describe, facts_gen, ledger, roadmap, roadmap_gen, runner, sync
 # Aliased for the same reason clients is: "questions" is the natural name for the list of
 # questions inside a handler, and the shadowing bug that causes is silent.
 from . import questions as questions_mod
@@ -134,6 +134,26 @@ async def _reconcile_on_startup():
             )
         else:
             log.warning("startup reconcile: record and scratch agree (0 topics committed)")
+
+    task = asyncio.create_task(sweep())
+    _STARTUP_TASKS.add(task)
+    task.add_done_callback(_STARTUP_TASKS.discard)
+
+
+@app.on_event("startup")
+async def _fail_stranded_comment_applies():
+    """A comment apply lives in an in-memory task, so a restart orphans any comment this
+    engine left marked applying: it would hold the in-flight cap, refuse dismissal, and
+    disable the stage's Edit button forever. Failing it with a reason at boot is the
+    recovery door. The sweep is AGE-GUARDED now that comments live on the shared record
+    (a young applying row may be another machine's live apply, see reconcile_stranded),
+    and it runs as a background task for the same reason the reconcile sweep above does:
+    the server must come up even when the database is briefly unreachable."""
+    async def sweep():
+        try:
+            await asyncio.to_thread(blog_edit.reconcile_stranded)
+        except Exception:
+            log.exception("stranded-comment sweep failed; serving anyway")
 
     task = asyncio.create_task(sweep())
     _STARTUP_TASKS.add(task)
@@ -1109,11 +1129,36 @@ def _blog_history(slug):
         if live_entry is not None:
             entries[topic_slug] = live_entry
 
+    # The send-to-client stamp is a RECORD fact (two engines share one record, and a blog
+    # teammate A sent must read as sent on teammate B's machine), so it comes from topics
+    # for every entry, scratch-overlaid ones included. The review loop's two other facts
+    # ride the same read: the approval comes off the same topics rows, and the open
+    # client-suggestion counts come from ONE grouped query over blog_comments, never a
+    # per-topic probe (twenty blogs must not cost twenty counts).
+    sent_rows = db.q(
+        """select slug, sent_to_client_at, client_approved_at from topics
+           where client_id = %s and deleted_at is null""",
+        (client_id,))
+    sent_map = {row_slug: (sent, approved) for row_slug, sent, approved in sent_rows}
+    changes_map = dict(db.q(
+        """select t.slug, count(*)
+           from blog_comments c
+           join topics t on t.id = c.topic_id
+           where c.client_id = %s and c.author = 'client'
+             and c.state in ('open', 'applying')
+           group by t.slug""",
+        (client_id,)))
+
     # Newest first stays the default, because the library's own question is "what happened lately".
     # Sorting by roadmap_index here would be wrong twice over: a blog on no row has none to sort by,
     # and the operator can already order by number in the browser, where it is one click and
     # reversible rather than a decision baked into every caller of this function.
     blogs = list(entries.values())
+    for entry in blogs:
+        sent_at, approved_at = sent_map.get(entry["topic_slug"], (None, None))
+        entry["sent_to_client"] = sent_at.isoformat() if sent_at else None
+        entry["client_approved"] = approved_at.isoformat() if approved_at else None
+        entry["changes_requested"] = int(changes_map.get(entry["topic_slug"], 0))
     blogs.sort(key=lambda b: b["created"], reverse=True)
     return blogs
 
@@ -1330,6 +1375,256 @@ async def api_revise_answered(slug: str, topic: str,
     task.add_done_callback(
         lambda _task, t=tid, cs=slug, ts=topic: client_answers._release_later(t, cs, ts))
     return record
+
+
+# ---------------------------------------------------------------------------
+# The admin-review stage: operator edits on a SHIPPED blog, then the send to the client.
+#
+# These routes exist for exactly one workflow state: the blog is done (the evaluator passed
+# it and nothing is asked), and an operator is polishing it before the client receives it.
+# Nothing here touches the pipeline: the score stands, gates already ran before it, and the
+# only thing that changes is the article's bytes and, at the end, the sent stamp that lets
+# the portal show it. Every route refuses demo fixtures: a comment apply spends real API
+# credits, and a demo blog is templated placeholder text nobody should polish or deliver.
+# ---------------------------------------------------------------------------
+
+class CommentRequest(BaseModel):
+    selected_text: str
+    instruction: str
+    context_before: str = ""
+    context_after: str = ""
+
+
+class ContentRequest(BaseModel):
+    body: str
+
+
+def _topic_status(slug, topic_slug):
+    """The status fold for ONE topic, from the record. The callers below run after
+    _topic_or_404, so the client and topic both exist."""
+    client_id = db.client_id(slug)
+    summary = _status_summaries(client_id).get(topic_slug) or {}
+    return summary.get("status") or "unknown"
+
+
+def _require_done(slug, topic_slug, act):
+    """409 unless the topic's verdict is done. Editing a draft the pipeline still owns
+    races the writer and the revise restore; editing a failed one polishes something the
+    evaluator never passed. The stage is for shipped blogs, and the engine says so."""
+    status = _topic_status(slug, topic_slug)
+    if status != "done":
+        raise HTTPException(
+            status_code=409,
+            detail=f"{topic_slug!r} is {status}, not done; {act} is for shipped blogs only",
+        )
+
+
+@app.get("/api/clients/{slug}/blogs/{topic}/comments")
+async def api_blog_comments(slug: str, topic: str,
+                            user: auth.Identity = Depends(auth.require_user)):
+    _client_or_404(slug, user)
+    _topic_or_404(slug, topic)
+    return {"comments": await asyncio.to_thread(blog_edit.read_comments, slug, topic)}
+
+
+@app.post("/api/clients/{slug}/blogs/{topic}/comments", status_code=202)
+async def api_add_blog_comment(slug: str, topic: str, body: CommentRequest,
+                               user: auth.Identity = Depends(auth.require_admin)):
+    """File one selection comment and start the Claude session that applies it.
+
+    202 with the comment record: the apply is a real session taking tens of seconds, so
+    the browser watches the comment list rather than holding this request open. Refusals
+    run permanent-first, exactly as api_answers orders its own: demo, then the topic's
+    state, then the transient live run and in-flight cap, then the body the operator can
+    fix by typing.
+    """
+    _client_or_404(slug, user)
+    if runner.is_demo_client(slug):
+        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
+    _topic_or_404(slug, topic)
+    _require_done(slug, topic, "a Claude edit")
+    if _client_has_live_run(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"a run for {slug!r} is live; edit once it finishes so the engine's "
+                   f"own writes are not raced",
+        )
+    if await asyncio.to_thread(blog_edit.in_flight_count, slug, topic) >= blog_edit.MAX_IN_FLIGHT:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{blog_edit.MAX_IN_FLIGHT} changes are already in flight for "
+                   f"{topic!r}; wait for one to land before filing another",
+        )
+    selected = body.selected_text.strip()
+    instruction = body.instruction.strip()
+    if not selected or not instruction:
+        raise HTTPException(
+            status_code=422,
+            detail="a comment needs both the selected text and an instruction",
+        )
+
+    comment = await asyncio.to_thread(
+        blog_edit.add_comment,
+        slug, topic,
+        selected_text=selected,
+        instruction=instruction,
+        context_before=body.context_before,
+        context_after=body.context_after,
+        author="operator",
+        author_email=getattr(user, "email", "") or "",
+    )
+    blog_edit.start_apply(slug, topic, comment["id"])
+    return comment
+
+
+@app.post("/api/clients/{slug}/blogs/{topic}/comments/{comment_id}/resolve", status_code=202)
+async def api_resolve_blog_comment(slug: str, topic: str, comment_id: str,
+                                   user: auth.Identity = Depends(auth.require_admin)):
+    """Send one waiting comment to Claude. The client's suggestions arrive in state
+    'open' with no apply behind them (the portal runs no engine), so this button is
+    where an operator spends the session on one; a 'failed' comment of either author
+    retries through the same door. 202 with the flipped record, for the reason filing
+    a comment answers 202: the apply is a real session and the browser watches the
+    comment list. Refusals run permanent-first, exactly as filing orders its own: demo,
+    then the topic's state, then the transient live run and in-flight cap, then the
+    comment itself."""
+    _client_or_404(slug, user)
+    if runner.is_demo_client(slug):
+        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
+    _topic_or_404(slug, topic)
+    _require_done(slug, topic, "a Claude edit")
+    if _client_has_live_run(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"a run for {slug!r} is live; resolve once it finishes so the engine's "
+                   f"own writes are not raced",
+        )
+    if await asyncio.to_thread(blog_edit.in_flight_count, slug, topic) >= blog_edit.MAX_IN_FLIGHT:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{blog_edit.MAX_IN_FLIGHT} changes are already in flight for "
+                   f"{topic!r}; wait for one to land before starting another",
+        )
+    found = await asyncio.to_thread(blog_edit.get_comment, slug, topic, comment_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail=f"no comment {comment_id!r} on {topic!r}")
+    flipped = await asyncio.to_thread(blog_edit.resolve_comment, slug, topic, comment_id)
+    if flipped is None:
+        # The read above saw the comment, so the refusal is its state. The flip itself is
+        # atomic (update ... where state in ('open','failed')), which is what makes two
+        # admins pressing Resolve together yield one session, never two.
+        raise HTTPException(
+            status_code=409,
+            detail=f"this change is {found['state']}; only an open or failed one can "
+                   f"be resolved with Claude",
+        )
+    blog_edit.start_apply(slug, topic, comment_id)
+    return flipped
+
+
+@app.delete("/api/clients/{slug}/blogs/{topic}/comments/{comment_id}", status_code=204)
+async def api_delete_blog_comment(slug: str, topic: str, comment_id: str,
+                                  user: auth.Identity = Depends(auth.require_admin)):
+    """DISMISS one comment, any author's: closed without an edit, never deleted. The verb
+    changed with the shared record, because the client can see their own suggestion, and
+    a row that silently vanished reads as lost while a dismissed one reads as reviewed.
+    An applying one is still refused: its background task would land its verdict on a
+    row that reads closed."""
+    _client_or_404(slug, user)
+    _topic_or_404(slug, topic)
+    found = await asyncio.to_thread(blog_edit.get_comment, slug, topic, comment_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail=f"no comment {comment_id!r} on {topic!r}")
+    if found.get("state") == "applying":
+        raise HTTPException(
+            status_code=409,
+            detail="this change is still being applied; it can be dismissed once it lands",
+        )
+    if await asyncio.to_thread(blog_edit.dismiss_comment, slug, topic, comment_id) is None:
+        # A resolve flipped it to applying between the read above and the dismiss: the
+        # atomic close refused, so answer exactly what the pre-check would have.
+        raise HTTPException(
+            status_code=409,
+            detail="this change is still being applied; it can be dismissed once it lands",
+        )
+    return Response(status_code=204)
+
+
+@app.post("/api/clients/{slug}/blogs/{topic}/content")
+async def api_save_blog_content(slug: str, topic: str, body: ContentRequest,
+                                user: auth.Identity = Depends(auth.require_admin)):
+    """Save the operator's own edit of blog.md. Synchronous, not 202: the write plus the
+    record commit is subsecond, and the operator pressing Save deserves to know it landed
+    before the button releases."""
+    _client_or_404(slug, user)
+    if runner.is_demo_client(slug):
+        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
+    _topic_or_404(slug, topic)
+    _require_done(slug, topic, "editing")
+    if _client_has_live_run(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"a run for {slug!r} is live; edit once it finishes so the engine's "
+                   f"own writes are not raced",
+        )
+    text = body.body
+    if not text.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="an empty article cannot be saved; delete the topic instead if that "
+                   "is the intent",
+        )
+    if len(text.encode("utf-8")) > 1_000_000:
+        raise HTTPException(status_code=413, detail="the article is over 1 MB, which no blog is")
+
+    # Under the same lock the comment applies hold: a save landing inside an apply's
+    # read-session-write window would be overwritten by the apply's stale base. The UI
+    # disables Edit while a change is applying, so waiting here is rare and brief.
+    async with blog_edit.APPLY_LOCK:
+        word_count = await asyncio.to_thread(blog_edit.save_content, slug, topic, text)
+    return {"word_count": word_count}
+
+
+@app.post("/api/clients/{slug}/blogs/{topic}/send")
+async def api_send_blog_to_client(slug: str, topic: str,
+                                  user: auth.Identity = Depends(auth.require_admin)):
+    """Release one shipped blog to the client portal, first send and Send again both.
+
+    The portal shows a blog for review only once this stamp exists, so the admin-review
+    stage is the default for every shipped blog and this button is its exit. No longer
+    idempotent, deliberately: a re-send after a review round is a new release of changed
+    bytes, so every press re-stamps the date, pins sent_version_id to the latest
+    committed version, and clears the client's approval (mark_sent says why). The one
+    refusal is an open client suggestion, because sending over it would release an
+    article the client is still waiting to see changed, and the dialog owes them an
+    answer (resolve or dismiss) before the next version lands in their portal.
+    """
+    _client_or_404(slug, user)
+    if runner.is_demo_client(slug):
+        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
+    _topic_or_404(slug, topic)
+    _require_done(slug, topic, "sending to the client")
+    state = await asyncio.to_thread(blog_edit.sent_state, slug, topic)
+    if state["changes_requested"] > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="the client's suggestions are still open; resolve or dismiss each "
+                   "one before sending again",
+        )
+    email = getattr(user, "email", "") or ""
+    return await asyncio.to_thread(blog_edit.mark_sent, slug, topic, email)
+
+
+@app.get("/api/clients/{slug}/blogs/{topic}/review")
+async def api_blog_review(slug: str, topic: str,
+                          user: auth.Identity = Depends(auth.require_user)):
+    """The delivery state for one blog: sent, approved, and how many client suggestions
+    are open. The stage page polls this beside the comment list instead of refetching
+    the whole blogs listing for one topic's chip. require_user, not require_admin: it
+    is a read, and it reveals nothing the caller's scoped blogs list does not."""
+    _client_or_404(slug, user)
+    _topic_or_404(slug, topic)
+    return await asyncio.to_thread(blog_edit.sent_state, slug, topic)
 
 
 @app.get("/api/pending-reruns")

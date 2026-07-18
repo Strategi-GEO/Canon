@@ -1,6 +1,14 @@
 "use client";
 
-import { ArrowDown, ArrowUp, ChevronsUpDown, MessageCircleQuestion } from "lucide-react";
+import Link from "next/link";
+import {
+  ArrowDown,
+  ArrowUp,
+  Check,
+  CheckCheck,
+  ChevronsUpDown,
+  MessageCircleQuestion,
+} from "lucide-react";
 import {
   Table,
   TableBody,
@@ -18,9 +26,9 @@ import type { WaitingSignal } from "@/components/blogs/questions-state";
 import type { BlogSummary } from "@/types";
 
 /**
- * The attribute the library focuses through after the drawer closes. The trigger cannot be
- * held as an element reference: a deep link opens the drawer with no trigger ever clicked,
- * and a refresh replaces every node. A slug survives both, so the row is found by name.
+ * The attribute the library's keyboard moves real focus through: j and k find the active
+ * row's link by slug rather than by element reference, because a refresh replaces every
+ * node and a slug survives it.
  */
 export const TRIGGER_ATTR = "data-preview-trigger";
 
@@ -31,7 +39,8 @@ export function BlogsTable({
   sortDir,
   activeSlug,
   onSort,
-  onPreview,
+  hrefFor,
+  onOpen,
 }: {
   blogs: BlogSummary[];
   /**
@@ -45,7 +54,10 @@ export function BlogsTable({
   /** The row the keyboard is on. Highlighted, and the only row in the tab order. */
   activeSlug: string | null;
   onSort: (key: SortKey) => void;
-  onPreview: (blog: BlogSummary) => void;
+  /** The blog's own page. The title is a real link, so cmd-click and middle-click work. */
+  hrefFor: (blog: BlogSummary) => string;
+  /** The whole-row click, which the parent routes to the same page. */
+  onOpen: (blog: BlogSummary) => void;
 }) {
   return (
     <Table>
@@ -102,7 +114,8 @@ export function BlogsTable({
             blog={blog}
             waiting={waiting.get(blog.topic_slug) ?? null}
             active={blog.topic_slug === activeSlug}
-            onPreview={onPreview}
+            href={hrefFor(blog)}
+            onOpen={onOpen}
           />
         ))}
       </TableBody>
@@ -114,18 +127,20 @@ function Row({
   blog,
   waiting,
   active,
-  onPreview,
+  href,
+  onOpen,
 }: {
   blog: BlogSummary;
   waiting: WaitingSignal | null;
   active: boolean;
-  onPreview: (blog: BlogSummary) => void;
+  href: string;
+  onOpen: (blog: BlogSummary) => void;
 }) {
   return (
     <TableRow
-      // The row is a click target for the mouse, but the BUTTON in the title cell is the
-      // control: a screen reader gets a real named button, the pointer gets the whole row.
-      onClick={() => onPreview(blog)}
+      // The row is a click target for the mouse, but the LINK in the title cell is the
+      // control: a screen reader gets a real named link, the pointer gets the whole row.
+      onClick={() => onOpen(blog)}
       data-active={active || undefined}
       className={cn(
         "cursor-pointer",
@@ -140,16 +155,15 @@ function Row({
       {/* TableCell is nowrap by default, which suits machine values but truncates a real H1.
           The title column wraps instead. */}
       <TableCell className="max-w-sm py-2.5 whitespace-normal">
-        <button
-          type="button"
+        <Link
+          href={href}
           {...{ [TRIGGER_ATTR]: blog.topic_slug }}
           // Roving tabindex: one stop for the whole table, so Tab crosses the library rather
           // than walking every row in it.
           tabIndex={active ? 0 : -1}
           onClick={(event) => {
-            // The row handler would otherwise fire too and push the same history entry twice.
+            // The row handler would otherwise fire too and navigate a second time.
             event.stopPropagation();
-            onPreview(blog);
           }}
           className="block min-h-8 w-full rounded-sm text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         >
@@ -159,11 +173,11 @@ function Row({
           <span className="machine mt-0.5 block text-xs wrap-anywhere text-muted-foreground">
             {blog.topic_slug}
           </span>
-          {/* Inside the button, so the chip is part of what a screen reader reads out when it
+          {/* Inside the link, so the chip is part of what a screen reader reads out when it
               lands on the row rather than a colour a sighted operator alone gets to see. */}
           {waiting !== null ? <WaitingChip signal={waiting} /> : null}
-          <span className="sr-only">Open preview</span>
-        </button>
+          <span className="sr-only">Open blog</span>
+        </Link>
       </TableCell>
       <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
         <Tooltip>
@@ -178,7 +192,19 @@ function Row({
         <Score score={blog.score} shipped={blog.shipped} />
       </TableCell>
       <TableCell>
-        <Status status={blog.status} />
+        <span className="inline-flex items-center gap-1.5">
+          <Status status={blog.status} />
+          {/* Which shipped blogs already left admin review, and what the client did with
+              them. The unsent ones are the operator's queue, so the difference belongs in
+              the list. */}
+          {blog.status === "done" && blog.sent_to_client ? (
+            <DeliveryChip
+              sentAt={blog.sent_to_client}
+              approvedAt={blog.client_approved ?? null}
+              changes={blog.changes_requested ?? 0}
+            />
+          ) : null}
+        </span>
       </TableCell>
       <TableCell className="machine text-xs text-muted-foreground">
         {typeof blog.iterations === "number" ? blog.iterations : ""}
@@ -223,6 +249,71 @@ function WaitingChip({ signal }: { signal: WaitingSignal }) {
       <MessageCircleQuestion className="size-3 shrink-0" aria-hidden />
       <span className="machine">{signal.count}</span> {noun} to answer
     </span>
+  );
+}
+
+/**
+ * Where one sent blog sits with the client, in the row: sent / changes requested / approved,
+ * exactly one at a time because the states are exclusive by derivation. Tiny and muted next
+ * to the status badge, since the badge answers "did the factory finish" and this answers the
+ * follow-up, "and where is it now".
+ *
+ * "changes requested" wears the review tone, not the fail one: the client asking for changes
+ * is the review loop working, and the row is back in the operator's queue until each
+ * suggestion is resolved with Claude or dismissed. The other two are ship green, because both
+ * mean the article is out of the team's hands.
+ */
+function DeliveryChip({
+  sentAt,
+  approvedAt,
+  changes,
+}: {
+  sentAt: string;
+  approvedAt: string | null;
+  changes: number;
+}) {
+  if (changes > 0) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex cursor-default items-center gap-0.5 text-[0.6875rem] font-medium whitespace-nowrap text-review">
+            <MessageCircleQuestion className="size-3" aria-hidden />
+            changes requested
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs">
+          The client suggested {changes} {changes === 1 ? "change" : "changes"} from their
+          portal. Open the blog to resolve each with Claude or dismiss it; it cannot be
+          re-sent past them.
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+  if (approvedAt !== null) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex cursor-default items-center gap-0.5 text-[0.6875rem] font-medium text-ship">
+            <CheckCheck className="size-3" aria-hidden />
+            approved
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="machine">
+          Approved by the client {formatAbsolute(approvedAt)}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex cursor-default items-center gap-0.5 text-[0.6875rem] font-medium text-ship">
+          <Check className="size-3" aria-hidden />
+          sent
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="machine">Sent to client {formatAbsolute(sentAt)}</TooltipContent>
+    </Tooltip>
   );
 }
 

@@ -14,23 +14,39 @@ import { inList, pg } from "@/lib/server/postgrest";
  * receives its own org's brands, and an out-of-scope brand folds to "not found".
  *
  * STATE MODEL, the portal's whole vocabulary, derived and never stored:
- *   delivered -- the ledger records the blog as shipped. The article is final.
+ *   ready     -- the ledger records the blog as shipped AND an operator pressed Send to
+ *                client (topics.sent_to_client_at) AND the client has not approved it yet.
+ *                Shipped alone is not enough: a done blog sits in ADMIN REVIEW, editable
+ *                on the dashboard's blog stage page, until the send releases it. This is
+ *                the portal's acting state on a finished article: Approve and Suggest
+ *                changes both live here. Open suggestions read "with the team" on the
+ *                detail page, and the state STAYS ready with Approve still offered,
+ *                because a suggestion is input to the team, never a lock on the client.
+ *   approved  -- ready plus the client's approval stamp (topics.client_approved_at).
+ *                Terminal until the team sends again: every send clears the stamp, so an
+ *                approval always describes bytes the client actually reviewed, never an
+ *                article that changed underneath their sign-off.
  *   action    -- the blog is held at needs_review and the CURRENT question form is
  *                unanswered and not stale: the client can and should answer.
  *   frozen    -- the blog is with the editorial team and the client cannot act:
  *                either the form was answered (answers recorded, revise owed/running),
  *                or the form went stale / the hold carries no answerable form.
- *   hidden    -- everything else (failed, stopped, unknown, first runs in flight).
+ *   hidden    -- everything else (failed, stopped, unknown, first runs in flight, and a
+ *                shipped blog nobody sent yet with nothing the client ever acted on).
  *                A client portal is not a run console; work the team has not finished
  *                and the client cannot act on simply is not shown.
  *
- * A note on delivered-with-open-questions: a handful of legacy topics shipped under the old
- * score-gated rule while carrying current unanswered questions. Delivered wins here, because
- * the ledger says the artifact went out; the portal never summons a client to act on an
- * article they already received. New holds never reach done, so the case is legacy-only.
+ * The old "delivered" state is GONE, split by the approval stamp into ready and approved.
+ * Nothing a client used to see disappears: every topic that was delivered is sent, so it
+ * folds to one of the two new states, and the article stays readable in both.
+ *
+ * A note on sent-with-open-questions: a handful of legacy topics shipped under the old
+ * gate while carrying current unanswered questions. The send wins here, because the ledger
+ * says the artifact went out; the portal never summons a client to act on an article they
+ * already received. New holds never reach done, so the case is legacy-only.
  */
 
-export type PortalState = "action" | "frozen" | "delivered";
+export type PortalState = "action" | "frozen" | "ready" | "approved";
 
 export type PortalQuestion = {
   id: string;
@@ -46,6 +62,22 @@ export type PortalAnswerView = {
   answer: string;
 };
 
+/**
+ * One of the client's own suggestions, shown back to them on the detail page. The raw
+ * state travels and the UI maps it to plain language: open and applying read "with the
+ * team", resolved reads "addressed", dismissed reads "reviewed". failed deliberately reads
+ * "with the team" as well, and no error text is selected or carried here: a failed apply
+ * is the team's problem to retry, never the client's to debug. The author's email column
+ * is never selected anywhere on this surface.
+ */
+export type PortalComment = {
+  id: string;
+  selected_text: string;
+  instruction: string;
+  state: "open" | "applying" | "resolved" | "failed" | "dismissed";
+  created: string;
+};
+
 export type PortalBlogCard = {
   /** The org the brand belongs to, so a card can link to /{org}/{brand}/... on its own. */
   org: string;
@@ -54,12 +86,16 @@ export type PortalBlogCard = {
   topic_slug: string;
   title: string;
   state: PortalState;
-  /** The state's own date: shipped date, asked date, or answered date. UTC ISO. */
+  /** The state's own date: approved date, sent date, asked date, or answered date. UTC ISO. */
   date: string;
   question_count: number | null;
   word_count: number | null;
   /** frozen only: true when answers are recorded (vs a generic with-the-team hold). */
   answered: boolean;
+  /** ready and approved only: when the team sent the article for review. UTC ISO. */
+  sent: string | null;
+  /** approved only: when the client approved. UTC ISO. */
+  approved: string | null;
 };
 
 export type PortalOrg = {
@@ -76,7 +112,7 @@ export type PortalBlogDetail = {
   state: PortalState;
   date: string;
   word_count: number | null;
-  /** delivered: the shipped article. action: the current draft under review. frozen: absent. */
+  /** ready/approved: the article as sent. action: the current draft under review. frozen: absent. */
   body: string | null;
   /** action only: the form to answer. */
   questions: PortalQuestion[] | null;
@@ -84,6 +120,12 @@ export type PortalBlogDetail = {
   /** frozen-with-answers only: what was answered, read-only. */
   answers: PortalAnswerView[] | null;
   answered_at: string | null;
+  /** ready and approved only: the client's own suggestions, oldest first. */
+  comments: PortalComment[] | null;
+  /** ready and approved only: when the team sent the article for review. UTC ISO. */
+  sent: string | null;
+  /** approved only: when the client approved. UTC ISO. */
+  approved: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -97,7 +139,15 @@ type MembershipRow = {
   client_slug: string;
   client_name: string;
 };
-type TopicRow = { id: string; slug: string; title: string | null; shipped_version_id: string | null };
+type TopicRow = {
+  id: string;
+  slug: string;
+  title: string | null;
+  shipped_version_id: string | null;
+  sent_version_id: string | null;
+  sent_to_client_at: string | null;
+  client_approved_at: string | null;
+};
 type VersionRow = {
   id: string;
   topic_id: string;
@@ -120,6 +170,14 @@ type NoteRow = {
 };
 type ChildRow = { parent_id: string; body: string; created_at: string };
 type EventRow = { topic_id: string; iter: number; line_no: number; status: string };
+type CommentRow = {
+  id: string;
+  topic_id: string;
+  selected_text: string;
+  instruction: string;
+  state: PortalComment["state"];
+  created_at: string;
+};
 
 function byteCompare(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
@@ -199,7 +257,9 @@ type TopicFold = {
   topic: TopicRow;
   latest: VersionRow;
   shippedVersion: VersionRow | null;
+  sentVersion: VersionRow | null;
   ledger: LedgerRow | null;
+  comments: CommentRow[];
   form: NoteRow[];
   childByParent: Map<string, ChildRow>;
   formIter: number | null;
@@ -220,13 +280,15 @@ type BrandData = {
   notes: NoteRow[];
   children: ChildRow[];
   events: EventRow[];
+  comments: CommentRow[];
 };
 
 async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
-  const [topics, versions, ledger, notes, children, events] = await Promise.all([
+  const [topics, versions, ledger, notes, children, events, comments] = await Promise.all([
     pg<TopicRow[]>(
       token,
-      `topics?select=id,slug,title,shipped_version_id&client_id=eq.${clientId}&deleted_at=is.null`,
+      `topics?select=id,slug,title,shipped_version_id,sent_version_id,sent_to_client_at,client_approved_at` +
+        `&client_id=eq.${clientId}&deleted_at=is.null`,
     ),
     pg<VersionRow[]>(
       token,
@@ -250,8 +312,17 @@ async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
       token,
       `status_events?select=topic_id,iter,line_no,status&client_id=eq.${clientId}&order=line_no.asc`,
     ),
+    // The client's OWN suggestions only (author=client), safe columns only. The author's
+    // email column is never selected on this surface, and neither are error or edits:
+    // an apply failure and its diff are the team's material, and selecting a column the
+    // portal never shows is exactly the regression tests/portal_check.py exists to catch.
+    pg<CommentRow[]>(
+      token,
+      `blog_comments?select=id,topic_id,selected_text,instruction,state,created_at` +
+        `&client_id=eq.${clientId}&author=eq.client&order=created_at.asc`,
+    ),
   ]);
-  return { topics, versions, ledger, notes, children, events };
+  return { topics, versions, ledger, notes, children, events, comments };
 }
 
 /**
@@ -310,6 +381,14 @@ function foldTopics(data: BrandData): TopicFold[] {
     }
   }
 
+  // The client's own suggestions per topic, already oldest-first from the query's order.
+  const commentsByTopic = new Map<string, CommentRow[]>();
+  for (const comment of data.comments) {
+    const list = commentsByTopic.get(comment.topic_id) ?? [];
+    list.push(comment);
+    commentsByTopic.set(comment.topic_id, list);
+  }
+
   // topic_rollup's fold, minus the score it also computes: last non-running status by
   // ordinal wins; no terminal line means 'running'; zero events mean 'unknown'.
   const maxIter = new Map<string, number>();
@@ -359,10 +438,24 @@ function foldTopics(data: BrandData): TopicFold[] {
       topic.shipped_version_id !== null
         ? (versionById.get(topic.shipped_version_id) ?? null)
         : null;
+    const sentVersion =
+      topic.sent_version_id !== null
+        ? (versionById.get(topic.sent_version_id) ?? null)
+        : null;
 
     let state: PortalState | null = null;
-    if (shipped) {
-      state = "delivered";
+    if (shipped && topic.sent_to_client_at !== null) {
+      // Shipped AND released: the send stamp is the admin-review exit, pressed by an
+      // operator on the blog stage page. Without it a shipped blog is still the team's,
+      // so it falls through to the branches below exactly as it did before shipping: a
+      // client who answered a form keeps their with-the-team row (a blog must never
+      // vanish on them), and a blog they never acted on stays out of sight until it is
+      // sent. Legacy delivered blogs were backfilled as sent by migration 004, so
+      // nothing a client already received disappears. The approval stamp then splits the
+      // released article in two: approved once the client signed off, ready until then.
+      // The stamp alone decides it; open suggestions do NOT move a blog off ready,
+      // because the client keeps the right to approve past their own suggestions.
+      state = topic.client_approved_at !== null ? "approved" : "ready";
     } else if (form.length > 0 && !stale && !answered && status === "needs_review") {
       state = "action";
     } else if (form.length > 0 && answered) {
@@ -397,7 +490,9 @@ function foldTopics(data: BrandData): TopicFold[] {
       topic,
       latest: latestVersion,
       shippedVersion,
+      sentVersion,
       ledger: entry,
+      comments: commentsByTopic.get(topic.id) ?? [],
       form,
       childByParent,
       formIter,
@@ -422,16 +517,22 @@ function cardOf(
   if (fold.state === null) {
     return null;
   }
+  const released = fold.state === "ready" || fold.state === "approved";
   const shippedDate =
     fold.ledger?.generated_at ||
     fold.shippedVersion?.committed_at ||
     fold.latest.committed_at;
+  // ready and approved carry the stamp that created them, so a re-send or an approval is
+  // new activity and floats the card in the newest-first sort exactly when the client
+  // last needed to look at it. The shipped-date fallbacks are for legacy stamps only.
   const date =
-    fold.state === "delivered"
-      ? shippedDate
-      : fold.state === "action"
-        ? (fold.askedAt ?? fold.latest.committed_at)
-        : (fold.answeredAt ?? fold.askedAt ?? fold.latest.committed_at);
+    fold.state === "approved"
+      ? (fold.topic.client_approved_at ?? shippedDate)
+      : fold.state === "ready"
+        ? (fold.topic.sent_to_client_at ?? shippedDate)
+        : fold.state === "action"
+          ? (fold.askedAt ?? fold.latest.committed_at)
+          : (fold.answeredAt ?? fold.askedAt ?? fold.latest.committed_at);
   return {
     org,
     brand: brand.slug,
@@ -441,11 +542,12 @@ function cardOf(
     state: fold.state,
     date,
     question_count: fold.state === "action" ? fold.form.length : null,
-    word_count:
-      fold.state === "delivered"
-        ? ((fold.shippedVersion ?? fold.latest).word_count ?? null)
-        : null,
+    word_count: released
+      ? ((fold.sentVersion ?? fold.shippedVersion ?? fold.latest).word_count ?? null)
+      : null,
     answered: fold.state === "frozen" && fold.answered,
+    sent: released ? fold.topic.sent_to_client_at : null,
+    approved: fold.state === "approved" ? fold.topic.client_approved_at : null,
   };
 }
 
@@ -532,7 +634,7 @@ export async function buildRoadmap(
   if (brand === null) {
     return null;
   }
-  const [rows, ledger] = await Promise.all([
+  const [rows, ledger, sentRows] = await Promise.all([
     pg<{
       row_index: number;
       topic: string | null;
@@ -549,12 +651,19 @@ export async function buildRoadmap(
       token,
       `ledger_entries?select=topic,topic_slug,generated_at&client_id=eq.${brand.client_id}`,
     ),
+    // Delivered here must agree with the blog cards: shipped AND sent, never the ledger
+    // alone, or the plan would announce an article the library refuses to show.
+    pg<{ slug: string; sent_to_client_at: string | null }[]>(
+      token,
+      `topics?select=slug,sent_to_client_at&client_id=eq.${brand.client_id}&deleted_at=is.null`,
+    ),
   ]);
 
+  const sentBySlug = new Map(sentRows.map((row) => [row.slug, row.sent_to_client_at]));
   const shipped = new Map<string, LedgerRow>();
   for (const entry of ledger) {
     const slug = (entry.topic_slug || slugify(entry.topic ?? "")).trim();
-    if (slug !== "") {
+    if (slug !== "" && (sentBySlug.get(slug) ?? null) !== null) {
       shipped.set(slug, entry);
     }
   }
@@ -605,9 +714,16 @@ export async function buildDetail(
 
   // Bodies are fetched per detail, never in the list: an org's whole corpus in one
   // overview response would be most of a megabyte for no screen that shows it.
+  const released = fold.state === "ready" || fold.state === "approved";
   let body: string | null = null;
-  if (fold.state === "delivered") {
-    const versionId = (fold.shippedVersion ?? fold.latest).id;
+  if (released) {
+    // The SENT version's bytes, never the latest: a sent blog stays editable on the admin
+    // stage page, so the latest row can be a mid-edit draft nobody released. The client
+    // reviews, suggests against, and approves exactly what the send stamped
+    // (topics.sent_version_id); anything else would let an approval describe an article
+    // the client never saw. The fallbacks cover pre-005 sends the backfill stamped from
+    // the shipped version.
+    const versionId = (fold.sentVersion ?? fold.shippedVersion ?? fold.latest).id;
     const rows = await pg<{ body: string }[]>(token, `blog_versions?select=body&id=eq.${versionId}`);
     body = rows[0]?.body ?? null;
   } else if (fold.state === "action") {
@@ -628,10 +744,9 @@ export async function buildDetail(
     title: fold.title,
     state: fold.state,
     date: card?.date ?? fold.latest.committed_at,
-    word_count:
-      fold.state === "delivered"
-        ? ((fold.shippedVersion ?? fold.latest).word_count ?? null)
-        : null,
+    word_count: released
+      ? ((fold.sentVersion ?? fold.shippedVersion ?? fold.latest).word_count ?? null)
+      : null,
     body,
     questions:
       fold.state === "action"
@@ -653,5 +768,16 @@ export async function buildDetail(
           }))
         : null,
     answered_at: fold.state === "frozen" ? fold.answeredAt : null,
+    comments: released
+      ? fold.comments.map((row) => ({
+          id: row.id,
+          selected_text: row.selected_text,
+          instruction: row.instruction,
+          state: row.state,
+          created: row.created_at,
+        }))
+      : null,
+    sent: released ? fold.topic.sent_to_client_at : null,
+    approved: fold.state === "approved" ? fold.topic.client_approved_at : null,
   };
 }

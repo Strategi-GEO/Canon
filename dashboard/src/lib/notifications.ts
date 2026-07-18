@@ -20,7 +20,11 @@ import type { RunState, RunSummary } from "@/types";
 
 /**
  * The kinds of work this engine runs on the operator's behalf, each one a Claude Code session
- * that takes long enough to walk away from.
+ * that takes long enough to walk away from, plus the portal events that arrive with no session
+ * at all: "answers", "changes_requested" and "client_approved" are a CLIENT acting in their
+ * portal, which has no channel into this app, so the first a producer can know is its own next
+ * read of the record. They ring the same bell because the operator's question is the same
+ * either way: what happened while I was not looking, and what does it need from me.
  *
  * "roadmap" is declared and nothing emits it yet, which is deliberate rather than an oversight.
  * server/prompts/roadmap-generation.md is written and server/roadmap_gen.py, the driver its own
@@ -29,7 +33,13 @@ import type { RunState, RunSummary } from "@/types";
  * call at the point the job settles, rather than a second pass over this whole file. Until that
  * driver lands, no code path constructs one and the operator never sees the word.
  */
-export type NotificationKind = "run" | "describe" | "roadmap" | "answers";
+export type NotificationKind =
+  | "run"
+  | "describe"
+  | "roadmap"
+  | "answers"
+  | "changes_requested"
+  | "client_approved";
 
 export type AppNotification = {
   /** `${kind}:${key}`, so the same settled job observed by two polls can never list twice. */
@@ -47,7 +57,10 @@ export type AppNotification = {
   href: string | null;
   /** False from birth, always. Only opening the bell clears it. Never flipped back. */
   read: boolean;
-  /** For a run, how many blogs it carried. Null for kinds that do not count anything. */
+  /**
+   * What the kind counts: blogs for a run, answered questions for "answers", open
+   * suggestions for "changes_requested". Null for kinds that count nothing.
+   */
   topicCount: number | null;
   /** The engine's own words when the work failed, or null. Never flattened to "". */
   error: string | null;
@@ -135,6 +148,25 @@ export function copyFor(note: AppNotification, brandName: string): NotificationC
     return {
       title: "Client answered review questions",
       body: `${brandName}: ${count} ${count === 1 ? "question" : "questions"} answered from the portal. Open Blogs and click Rerun to apply them.`,
+    };
+  }
+
+  if (note.kind === "changes_requested") {
+    // The other portal loop: a client read the sent article and suggested changes. Each one
+    // waits on the operator's Resolve with Claude, and the blog cannot be re-sent past them.
+    const count = note.topicCount ?? 0;
+    return {
+      title: "Client requested changes",
+      body: `${brandName}: ${count} ${count === 1 ? "suggestion" : "suggestions"} from the portal. Open the blog to resolve each with Claude or dismiss it.`,
+    };
+  }
+
+  if (note.kind === "client_approved") {
+    // Nothing is owed here: the approval is the client's own act, and this line is the team
+    // hearing it. The blog page shows the stamp; publishing remains the operator's move.
+    return {
+      title: "Client approved a blog",
+      body: `${brandName}: the client approved a sent article from their portal. It is ready to take live.`,
     };
   }
 

@@ -1,8 +1,12 @@
 import { API_BASE } from "@/lib/config";
 import { clearSession, ensureFreshToken, getAccessToken } from "@/lib/session";
 import type {
+  AddCommentBody,
   AnswersBody,
+  BlogComment,
+  BlogCommentsResponse,
   BlogQuestions,
+  BlogReviewState,
   BlogsResponse,
   ClientsResponse,
   CreateClientBody,
@@ -24,6 +28,7 @@ import type {
   RoadmapSheet,
   RunSummary,
   RunsResponse,
+  SaveContentResult,
   StopRunsResult,
   UpdateClientBody,
   Client,
@@ -467,6 +472,84 @@ export const api = {
    */
   reviseBlog: (slug: string, topicSlug: string) =>
     request<RunSummary>(`/api/clients/${slug}/blogs/${topicSlug}/revise`, {
+      method: "POST",
+    }),
+
+  /**
+   * One blog's selection comments, with their apply states. Engine-only: the hosted
+   * build never calls this, because comments are the local engine's working file.
+   */
+  blogComments: (slug: string, topicSlug: string, signal?: AbortSignal) =>
+    request<BlogCommentsResponse>(
+      `/api/clients/${slug}/blogs/${topicSlug}/comments`,
+      { signal },
+    ),
+
+  /**
+   * Files one selection comment and starts the Claude session that applies it. 202 with
+   * the comment already in state "applying": the apply takes tens of seconds, so the
+   * browser polls the comment list rather than holding this request open. 409s worth
+   * reading rather than retrying: demo brand, a blog that is not done, a live run, or
+   * three changes already in flight.
+   */
+  addBlogComment: (slug: string, topicSlug: string, body: AddCommentBody) =>
+    request<BlogComment>(`/api/clients/${slug}/blogs/${topicSlug}/comments`, {
+      method: "POST",
+      body,
+    }),
+
+  /**
+   * Dismisses one comment: state flips to "dismissed" and the record stays, because a
+   * client's suggestion is part of the review trail even when the team declines it. 204,
+   * and 409 while the comment is still applying. Works for either author's comments.
+   */
+  deleteBlogComment: (slug: string, topicSlug: string, commentId: string) =>
+    request<null>(
+      `/api/clients/${slug}/blogs/${topicSlug}/comments/${encodeURIComponent(commentId)}`,
+      { method: "DELETE" },
+    ),
+
+  /**
+   * Starts the Claude apply for one open or failed comment: the Resolve with Claude button
+   * on a client suggestion, and the retry on a failed apply of either author's. 202 with
+   * the comment already flipped to "applying", so the poll takes over exactly as it does
+   * after addBlogComment. 409s worth reading rather than retrying: wrong state, a live
+   * run, a demo brand, or three changes already in flight.
+   */
+  resolveBlogComment: (slug: string, topicSlug: string, commentId: string) =>
+    request<BlogComment>(
+      `/api/clients/${slug}/blogs/${topicSlug}/comments/${encodeURIComponent(commentId)}/resolve`,
+      { method: "POST" },
+    ),
+
+  /**
+   * Where one blog sits in the client review loop: sent, approved, and how many client
+   * suggestions are still open. The stage page reads this beside the summary so a resolve
+   * or a dismiss can refresh the delivery chip without refetching the whole blogs list.
+   */
+  blogReview: (slug: string, topicSlug: string, signal?: AbortSignal) =>
+    request<BlogReviewState>(`/api/clients/${slug}/blogs/${topicSlug}/review`, { signal }),
+
+  /**
+   * Saves the operator's own edit of blog.md. Synchronous on purpose: the write plus the
+   * record commit is subsecond, and Save should not release until the edit is durable.
+   * The engine 409s anything not done, a demo brand, and a live run.
+   */
+  saveBlogContent: (slug: string, topicSlug: string, blogBody: string) =>
+    request<SaveContentResult>(`/api/clients/${slug}/blogs/${topicSlug}/content`, {
+      method: "POST",
+      body: { body: blogBody },
+    }),
+
+  /**
+   * Releases one shipped blog to the client portal, or releases it AGAIN after the client's
+   * suggestions were resolved. Every call re-stamps the send and clears any approval,
+   * because the client is approving an exact article and a re-send replaces it. 409 while
+   * any client suggestion is still open: resolve or dismiss each one first, and the detail
+   * says so in the engine's own words. Answers with the new review state.
+   */
+  sendBlogToClient: (slug: string, topicSlug: string) =>
+    request<BlogReviewState>(`/api/clients/${slug}/blogs/${topicSlug}/send`, {
       method: "POST",
     }),
 
