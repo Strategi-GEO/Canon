@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
-import { AppShell } from "@/components/shell/app-shell";
 import { THEME_INIT_SCRIPT } from "@/lib/theme";
 
 const geistSans = Geist({
@@ -52,7 +51,11 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
       <body className="min-h-full">
-        <AppShell>{children}</AppShell>
+        {/* ONE APP, TWO INTERFACES. The root layout is chrome-free on purpose: the shell is
+            chosen per segment, so it can differ by account. /admin/* mounts the operator's
+            AppShell (its layout), the client routes mount the PortalShell (their layout), and
+            /login and / stay bare. */}
+        {children}
         {/* Follows the operator's theme toggle through the theme store inside sonner.tsx,
             so toasts never render light chrome on a dark page or the reverse. */}
         <Toaster position="bottom-right" />

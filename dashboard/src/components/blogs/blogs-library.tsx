@@ -19,6 +19,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError, api } from "@/lib/api";
 import { brandHref } from "@/lib/orgs-context";
 import { formatCount } from "@/lib/format";
+import { useNotifications } from "@/lib/notifications-context";
 import { useBlogQuestions } from "@/lib/use-blog-questions";
 import { useHotkey } from "@/lib/use-hotkey";
 import { cn } from "@/lib/utils";
@@ -152,6 +153,38 @@ function Library({
     }
     return signals;
   }, [byTopic]);
+
+  /**
+   * The bell hears about client-answered forms HERE, at the read that discovers them,
+   * because the portal has no channel into this app: a client answers on their side and
+   * the first this dashboard can know is its own questions read. One notification per
+   * (brand, topic, asking round): the ref dedups re-reads within this mount, and the
+   * bell's log dedups across remounts so the count never double-rises; the toast is
+   * skipped for rounds the log already carries, since re-announcing old news on every
+   * visit to the tab is how a bell gets ignored.
+   */
+  const { log, notify } = useNotifications();
+  const announcedRef = React.useRef(new Set<string>());
+  React.useEffect(() => {
+    for (const [slug, entry] of byTopic) {
+      const questions = entry.payload;
+      if (!questions || !questions.answered || questions.answered_by !== "client") {
+        continue;
+      }
+      const key = `${brandSlug}/${slug}/${questions.iter}`;
+      if (announcedRef.current.has(key) || log.some((note) => note.id === `answers:${key}`)) {
+        announcedRef.current.add(key);
+        continue;
+      }
+      announcedRef.current.add(key);
+      notify({
+        kind: "answers",
+        brandSlug,
+        key,
+        topicCount: questions.questions.length,
+      });
+    }
+  }, [byTopic, brandSlug, log, notify]);
 
   async function refresh() {
     setRefreshing(true);

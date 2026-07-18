@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Check, Info, Loader2, MessageCircleQuestion, TriangleAlert } from "lucide-react";
+import { Check, Info, Loader2, MessageCircleQuestion, RefreshCw, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -205,6 +205,30 @@ export function AnswerQuestions({
     // No review reason here, deliberately. The operator has already acted, and the terminal note
     // belongs to the run that asked rather than to the revise their answers started: repeating
     // "held for a human" at the one moment the human is done would describe the wrong run.
+    if (questions.answered_by === "client" && !revising) {
+      // The portal loop closing: the client answered from their side, where no engine exists,
+      // so NOTHING has run yet and this form is owed its revise. The operator's Rerun is that
+      // dispatch, and it is a button rather than an automatism because it spends this
+      // machine's quota.
+      return (
+        <ClientAnswered
+          brandSlug={brandSlug}
+          topicSlug={topicSlug}
+          questions={questions}
+          lockedReason={
+            session === null
+              ? null
+              : session.state === "running"
+                ? "A session is running for this brand right now. The engine works one at a time, so it refuses a second: rerun once it lands."
+                : "A session for this brand is queued at the engine. The engine works one at a time, so it refuses a second: rerun once the queue clears."
+          }
+          onStarted={(run) => {
+            setAccepted(run);
+            onSettled();
+          }}
+        />
+      );
+    }
     return (
       <Answered
         questions={questions}
@@ -795,6 +819,107 @@ function Stale({
           ))}
         </ul>
       </details>
+    </Strip>
+  );
+}
+
+/**
+ * ClientAnswered: the client answered from the portal, and the revise those answers are owed
+ * has NOT run, because the portal has no engine to run it. This strip is the operator's
+ * summons: read what the client said, then Rerun. The button is deliberate spend, so it says
+ * what it does and is disabled with the reason whenever the engine would 409 it anyway.
+ *
+ * The Q and A render in full here. The operator is about to spend a session applying these
+ * answers, and clicking into the portal to find out what the client actually wrote is a hop
+ * this strip exists to remove.
+ */
+function ClientAnswered({
+  brandSlug,
+  topicSlug,
+  questions,
+  lockedReason,
+  onStarted,
+}: {
+  brandSlug: string;
+  topicSlug: string;
+  questions: BlogQuestions;
+  lockedReason: string | null;
+  onStarted: (run: RunSummary) => void;
+}) {
+  const [pending, setPending] = React.useState(false);
+  const [error, setError] = React.useState<ApiError | null>(null);
+
+  async function rerun() {
+    setPending(true);
+    setError(null);
+    try {
+      const run = await api.reviseBlog(brandSlug, topicSlug);
+      toast.success("Rerun started", {
+        description: "The engine is applying the client's answers to this draft.",
+      });
+      onStarted(run);
+    } catch (cause) {
+      if (cause instanceof ApiError) {
+        setError(cause);
+      } else {
+        setError(new ApiError(0, String(cause), null));
+      }
+      setPending(false);
+    }
+  }
+
+  return (
+    <Strip tone="review">
+      <p className="flex items-center gap-2 text-xs font-medium text-review">
+        <MessageCircleQuestion className="size-3.5 shrink-0" aria-hidden />
+        The client answered {questions.questions.length === 1 ? "this blog's question" : `all ${questions.questions.length} questions`} from their portal
+      </p>
+      <p className="mt-1.5 text-xs leading-relaxed text-review/90">
+        No revise has run yet: their answers were filed where no engine exists, so applying them
+        waits on you. Rerun starts the surgical revise on this machine, on this machine&apos;s
+        quota, and the clarified draft ships whatever it scores.
+      </p>
+      <ul className="mt-2 flex flex-col gap-2.5">
+        {questions.questions.map((item) => {
+          const reply = questions.answers?.find((entry) => entry.id === item.id) ?? null;
+          return (
+            <li key={item.id} className="text-xs leading-relaxed">
+              <p>
+                <span className="machine text-foreground">{item.area}</span>
+                <span className="text-muted-foreground">: {item.question}</span>
+              </p>
+              {reply !== null ? (
+                <p className="mt-1 rounded-md bg-background/60 px-2 py-1.5 whitespace-pre-wrap text-foreground">
+                  {reply.answer}
+                </p>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      {HOSTED_READONLY ? (
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+          This view is read-only. Rerun from the local dashboard, where the engine runs.
+        </p>
+      ) : (
+        <div className="mt-3">
+          <Button size="sm" onClick={rerun} disabled={pending || lockedReason !== null}>
+            {pending ? (
+              <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
+            ) : (
+              <RefreshCw data-icon="inline-start" aria-hidden />
+            )}
+            Rerun with their answers
+          </Button>
+          {lockedReason !== null ? (
+            <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{lockedReason}</p>
+          ) : null}
+          {error !== null ? <FieldError error={error} className="mt-1.5" /> : null}
+        </div>
+      )}
+      <p className="machine mt-2 text-xs text-muted-foreground">
+        asked {formatAbsolute(questions.asked)}
+      </p>
     </Strip>
   );
 }

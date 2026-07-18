@@ -202,6 +202,19 @@ function Row({
  */
 function WaitingChip({ signal }: { signal: WaitingSignal }) {
   const noun = signal.count === 1 ? "question" : "questions";
+  if (signal.kind === "client_answered") {
+    // The portal loop closing: the client answered, no engine ran at their submit, and
+    // this row now waits on the operator's Rerun. Green, not amber: the asking is done.
+    return (
+      <span
+        title="The client answered these questions from their portal. No revise has run yet: open the blog and click Rerun to apply their answers."
+        className="mt-1.5 inline-flex h-5 shrink-0 items-center gap-1 rounded border border-ship/25 bg-ship-bg px-1.5 text-[0.6875rem] leading-none font-medium text-ship"
+      >
+        <MessageCircleQuestion className="size-3 shrink-0" aria-hidden />
+        <span className="machine">{signal.count}</span> answered by client, rerun
+      </span>
+    );
+  }
   return (
     <span
       title="The evaluator asked something research cannot settle, so this blog is held until you answer, whatever it scored. Open it to read the questions."

@@ -50,7 +50,7 @@ export default function NewClientPage() {
               engine runs.
             </p>
             <Button size="sm" variant="outline" className="mt-6" asChild>
-              <Link href="/">Back to the dashboard</Link>
+              <Link href="/admin">Back to the dashboard</Link>
             </Button>
           </CardContent>
         </Card>
@@ -309,7 +309,7 @@ function NewClientForm() {
                 type="button"
                 variant="ghost"
                 size="sm"
-                onClick={() => router.push("/")}
+                onClick={() => router.push("/admin")}
                 disabled={submitting}
               >
                 Cancel
@@ -338,7 +338,7 @@ function OrgLocked({ orgName, known }: { orgName: string; known: boolean }) {
         {known
           ? `This brand joins ${orgName}. It is a grouping only: brands never share canonical facts or a roadmap. `
           : `No organisation named ${orgName} exists yet, so adding this brand creates it. `}
-        <Link href="/new" className="underline underline-offset-4 hover:text-foreground">
+        <Link href="/admin/new" className="underline underline-offset-4 hover:text-foreground">
           Add a client instead
         </Link>
       </p>

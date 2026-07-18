@@ -22,7 +22,7 @@ export default function NotFound() {
             get back to work.
           </p>
           <Button variant="outline" size="sm" className="mt-5" asChild>
-            <Link href="/">Go to your clients</Link>
+            <Link href="/admin">Go to your clients</Link>
           </Button>
         </CardContent>
       </Card>

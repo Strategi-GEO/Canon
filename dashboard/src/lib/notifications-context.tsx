@@ -75,6 +75,8 @@ const SECTION_FOR: Record<NotificationKind, string> = {
   run: "/blogs",
   describe: "",
   roadmap: "/roadmap",
+  // Client-answered questions render on the blog rows and in the drawer's rerun strip.
+  answers: "/blogs",
 };
 
 const EMPTY: AppNotification[] = [];

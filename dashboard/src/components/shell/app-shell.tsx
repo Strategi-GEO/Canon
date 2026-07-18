@@ -19,6 +19,7 @@ import {
   startSessionRefreshTimer,
   subscribeSession,
 } from "@/lib/session";
+import { api } from "@/lib/api";
 
 /**
  * OrgsProvider is the single fetch of the hierarchy. ClientsProvider sits inside it and only
@@ -96,6 +97,39 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       return startSessionRefreshTimer();
     }
   }, [authed]);
+
+  // THIS CONSOLE IS FOR THE STRATEGI TEAM. A client login (an org grant without the admin
+  // bit) is valid to the engine for scoped reads, so the login itself succeeds, but every
+  // surface here is admin-shaped: write buttons a client must never see, scores and eval
+  // internals a client must never read. The login page refuses them at the door; this
+  // check catches the other ways in (a session minted before the rule, another tab, a
+  // hand-carried token) and ejects it. Server-side enforcement is unchanged and remains
+  // the real wall; this is the pixels agreeing with it.
+  React.useEffect(() => {
+    if (authed !== true) {
+      return;
+    }
+    const controller = new AbortController();
+    api
+      .me(controller.signal)
+      .then((me) => {
+        if (!controller.signal.aborted && !me.is_admin) {
+          // A client login is valid but every surface here is admin-shaped. ONE SITE, ONE
+          // SESSION: the credential is already in the shared origin's storage, so no handoff
+          // is needed. Send them to the site ROOT (a relative path, never a bare host:port),
+          // and the portal that owns the root routes them to their own organisation, still
+          // signed in. Under the common login a client should never reach /admin at all;
+          // this stays as the belt-and-braces catch for a hand-typed URL or an old tab.
+          window.location.assign("/");
+        }
+      })
+      .catch(() => {
+        // Unreachable or erroring engine: fail open here, because every data fetch is
+        // about to fail loudly on its own and a scoped non-admin still sees only what
+        // RLS and the engine's own filters allow.
+      });
+    return () => controller.abort();
+  }, [authed, router]);
 
   // /login lives OUTSIDE the shell and outside the providers, because every provider here
   // fires authenticated fetches on mount and an unauthenticated visit would 401 them all

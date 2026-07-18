@@ -29,7 +29,7 @@ import type { RunState, RunSummary } from "@/types";
  * call at the point the job settles, rather than a second pass over this whole file. Until that
  * driver lands, no code path constructs one and the operator never sees the word.
  */
-export type NotificationKind = "run" | "describe" | "roadmap";
+export type NotificationKind = "run" | "describe" | "roadmap" | "answers";
 
 export type AppNotification = {
   /** `${kind}:${key}`, so the same settled job observed by two polls can never list twice. */
@@ -126,6 +126,16 @@ export function copyFor(note: AppNotification, brandName: string): NotificationC
           title: "Description draft failed",
           body: `${brandName}: ${note.error}`,
         };
+  }
+
+  if (note.kind === "answers") {
+    // The portal loop closing: a client answered where no engine exists, so the revise those
+    // answers are owed waits on the operator's Rerun, and this is the bell saying so.
+    const count = note.topicCount ?? 0;
+    return {
+      title: "Client answered review questions",
+      body: `${brandName}: ${count} ${count === 1 ? "question" : "questions"} answered from the portal. Open Blogs and click Rerun to apply them.`,
+    };
   }
 
   return note.error === null

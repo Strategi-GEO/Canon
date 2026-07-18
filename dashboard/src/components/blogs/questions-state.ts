@@ -68,14 +68,17 @@ export function modeOf(questions: BlogQuestions): QuestionsMode {
 }
 
 /**
- * What the library shows on a row: how many questions this blog is holding for the operator.
+ * What the library shows on a row: the one thing this blog is waiting on, if anything.
  *
- * A COUNT AND NOTHING ELSE. This carried a `blocking` flag too, so a row could say "shipped, 2
- * open questions" beside one saying "2 questions to answer", and the operator learned that the
- * first kind was theirs to ignore. There is now one obligation, so there is one shape: every row
- * with a signal is a blog held for an answer, whatever it scored.
+ * TWO KINDS, TWO DIFFERENT PEOPLE OWING AN ACT. "held" is the original signal: current
+ * questions, the OPERATOR (or the client, via the portal) owes answers. "client_answered" is
+ * the portal loop closing: the client answered from their side, no engine ran at their submit
+ * (the portal has none), so the blog now waits on the OPERATOR'S RERUN and the row must say
+ * so, because a client-answered form that nobody reruns is a blog frozen forever on both
+ * surfaces.
  */
 export type WaitingSignal = {
+  kind: "held" | "client_answered";
   count: number;
 };
 
@@ -87,27 +90,36 @@ export type WaitingSignal = {
  * chip that means "you cannot help this one" in a column of chips that mean "this one needs you"
  * teaches an operator to ignore both. The blog view says plainly what happened to it.
  *
- * An ANSWERED blog gets none either: the answering is done, and whatever it produced is a score,
- * which the row already carries in its own column.
+ * An OPERATOR-answered blog gets none either: the answering is done, its revise was dispatched
+ * at submit time, and whatever it produced is a score, which the row already carries in its own
+ * column. A CLIENT-answered blog is the exception, because its revise was NOT dispatched: the
+ * signal is the operator's summons to click Rerun.
  */
 export function waitingSignal(questions: BlogQuestions | null | undefined): WaitingSignal | null {
   if (!questions || questions.questions.length === 0) {
     return null;
   }
-  if (modeOf(questions) !== "held") {
-    return null;
+  const mode = modeOf(questions);
+  if (mode === "held") {
+    return { kind: "held", count: questions.questions.length };
   }
-  return { count: questions.questions.length };
+  if (mode === "answered" && questions.answered_by === "client") {
+    return { kind: "client_answered", count: questions.questions.length };
+  }
+  return null;
 }
 
 /**
- * The library's headline: how many blogs are held for an answer.
- *
- * ONE NUMBER, because there is one obligation. This used to return a blocking count beside a
- * total so the banner could separate a queue from an invitation, and the invitation half was the
- * old rule's whole mistake: it taught an operator that some of the evaluator's questions were
- * decoration. None of them are.
+ * The library's headline: how many blogs are held for an ANSWER. Client-answered rows are
+ * deliberately not in this number: their answering is done, and the banner that counts them
+ * is the rerun affordance on the row and in the blog view, not the waiting-on-you banner.
  */
 export function countWaiting(signals: ReadonlyMap<string, WaitingSignal>): { total: number } {
-  return { total: signals.size };
+  let total = 0;
+  for (const signal of signals.values()) {
+    if (signal.kind === "held") {
+      total += 1;
+    }
+  }
+  return { total };
 }

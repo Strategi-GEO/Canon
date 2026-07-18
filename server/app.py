@@ -32,7 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
-from . import auth, db, describe, facts_gen, ledger, roadmap, roadmap_gen, runner, sync
+from . import auth, client_answers, db, describe, facts_gen, ledger, roadmap, roadmap_gen, runner, sync
 # Aliased for the same reason clients is: "questions" is the natural name for the list of
 # questions inside a handler, and the shadowing bug that causes is silent.
 from . import questions as questions_mod
@@ -136,6 +136,36 @@ async def _reconcile_on_startup():
             log.warning("startup reconcile: record and scratch agree (0 topics committed)")
 
     task = asyncio.create_task(sweep())
+    _STARTUP_TASKS.add(task)
+    task.add_done_callback(_STARTUP_TASKS.discard)
+
+
+@app.on_event("startup")
+async def _client_answers_pickup():
+    """OPT-IN automation for the revises portal-submitted answers are owed.
+
+    The client portal writes answers into review_notes with no engine behind it
+    (supabase/migrations/002_client_portal.sql). The PRIMARY path for the revise
+    those answers are owed is the operator's own click: the dashboard shows the
+    client-answered form and POST .../revise dispatches it, so a person chooses
+    the moment this machine's quota is spent. This sweep is the optional hands-off
+    variant, DISABLED BY DEFAULT for exactly that billing reason: only a machine
+    started with GEO_ANSWERS_PICKUP=1 dispatches automatically (at startup and
+    every five minutes, behind the same cross-machine claim the rerun route takes).
+    """
+    if os.environ.get("GEO_ANSWERS_PICKUP", "0") != "1":
+        return
+
+    def dispatch(slug, topic_slug):
+        run_id = uuid.uuid4().hex
+        runner.register_revise_run(run_id, slug, topic_slug)
+        task = asyncio.create_task(_revise_task(run_id, slug, topic_slug))
+        runner.register_run_task(run_id, task)
+        task.add_done_callback(lambda _task: runner._discard_run_task(run_id))
+        return task
+
+    task = asyncio.create_task(
+        client_answers.run_forever(dispatch, _client_has_live_run))
     _STARTUP_TASKS.add(task)
     task.add_done_callback(_STARTUP_TASKS.discard)
 
@@ -1238,6 +1268,82 @@ async def api_answers(slug: str, topic: str, body: AnswersRequest,
     runner.register_run_task(run_id, task)
     task.add_done_callback(lambda _task: runner._discard_run_task(run_id))
     return record
+
+
+@app.post("/api/clients/{slug}/blogs/{topic}/revise", status_code=202)
+async def api_revise_answered(slug: str, topic: str,
+                              user: auth.Identity = Depends(auth.require_admin)):
+    """RERUN: dispatch the answer-driven revise an already-answered form is owed.
+
+    The portal records a client's answers with no engine behind it, so the revise the
+    contract mandates has nowhere to run at submit time. This route is that dispatch,
+    placed behind the operator's own click: the run spends THIS machine's quota, so a
+    person chooses the moment, which is also why the automatic pickup sweep ships
+    disabled. Admin-only: answering is the client's act, rerunning is the operator's.
+
+    Refusals mirror api_answers where they share a reason: demo, unknown topic, no form,
+    stale form, live run. Two are this route's own: a form nobody answered has nothing to
+    apply (409), and a claim already held means another machine's engine is mid-rerun on
+    this exact topic, so a second dispatch would double-spend (409). The claim is released
+    when the dispatched task settles; a crashed engine's claim expires on its own.
+    """
+    _client_or_404(slug, user)
+    if runner.is_demo_client(slug):
+        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
+    _topic_or_404(slug, topic)
+
+    try:
+        state = questions_mod.describe_questions(slug, topic)
+    except questions_mod.NoQuestions as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    if state["stale"]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"these questions describe an earlier draft of {topic!r}; a revise has "
+                   f"already replaced the draft they ask about, so there is nothing to rerun",
+        )
+    if not state["answered"]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"the questions on {topic!r} have no answers yet, so a rerun has nothing "
+                   f"to apply; answer them (or wait for the client to) first",
+        )
+    if _client_has_live_run(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"a run for {slug!r} is live; rerun once it finishes so the revise is "
+                   f"not queued behind it",
+        )
+
+    tid = db.topic_id(slug, topic)
+    if not client_answers.claim(tid):
+        raise HTTPException(
+            status_code=409,
+            detail="another engine already claimed this rerun; it is being reworked there",
+        )
+
+    run_id = uuid.uuid4().hex
+    record = runner.register_revise_run(run_id, slug, topic)
+    task = asyncio.create_task(_revise_task(run_id, slug, topic))
+    runner.register_run_task(run_id, task)
+    task.add_done_callback(lambda _task: runner._discard_run_task(run_id))
+    task.add_done_callback(
+        lambda _task, t=tid, cs=slug, ts=topic: client_answers._release_later(t, cs, ts))
+    return record
+
+
+@app.get("/api/pending-reruns")
+async def api_pending_reruns(user: auth.Identity = Depends(auth.require_admin)):
+    """Every topic sitting on an answered current form at needs_review: the rerun queue.
+
+    Admin-only for the same reason /api/describe-jobs is: the answer spans every brand
+    with no per-org filter, safe only behind the admin gate.
+    """
+    pending = await asyncio.to_thread(client_answers.pending_topics)
+    return {"pending": [
+        {"client": client_slug, "topic_slug": topic_slug}
+        for client_slug, topic_slug, _tid in pending
+    ]}
 
 
 async def _revise_task(run_id, slug, topic_slug):

@@ -218,11 +218,11 @@ export function useOrgs(): OrgsState {
    hrefs and nothing else stores them. */
 
 export function orgHref(orgSlug: string): string {
-  return `/org/${orgSlug}`;
+  return `/admin/org/${orgSlug}`;
 }
 
 export function brandHref(orgSlug: string, brandSlug: string, section = ""): string {
-  return `/org/${orgSlug}/${brandSlug}${section}`;
+  return `/admin/org/${orgSlug}/${brandSlug}${section}`;
 }
 
 /**
@@ -236,7 +236,7 @@ export function brandHref(orgSlug: string, brandSlug: string, section = ""): str
  * and matches, so an existing name joins that org instead of creating a near duplicate.
  */
 export function addBrandHref(orgName: string): string {
-  return `/new?org=${encodeURIComponent(orgName)}`;
+  return `/admin/new?org=${encodeURIComponent(orgName)}`;
 }
 
 /**

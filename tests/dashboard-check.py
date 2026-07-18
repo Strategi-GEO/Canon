@@ -146,7 +146,9 @@ def main() -> None:
     danger = [f for f, t in joined.items() if "dangerouslySetInnerHTML" in t]
     stray_danger = [
         f for f in danger
-        if not f.endswith("blogs/markdown-view.tsx") and f != "src/app/layout.tsx"
+        if not f.endswith("blogs/markdown-view.tsx")
+        and not f.endswith("portal/markdown-view.tsx")
+        and f != "src/app/layout.tsx"
     ]
     check(
         "dangerouslySetInnerHTML confined to the markdown renderer + theme init",

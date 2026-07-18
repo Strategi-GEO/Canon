@@ -52,7 +52,7 @@ export type BrandRouteParts = {
  * this is the only place either is derived, and no stored copy can contradict it.
  */
 export function parseBrandPath(pathname: string): BrandRouteParts | null {
-  const match = /^\/org\/([^/]+)\/([^/]+)(\/[^/]*)?/.exec(pathname);
+  const match = /^\/admin\/org\/([^/]+)\/([^/]+)(\/[^/]*)?/.exec(pathname);
   if (!match) {
     return null;
   }
@@ -61,7 +61,7 @@ export function parseBrandPath(pathname: string): BrandRouteParts | null {
 
 /** The org slug in the path, on an org home as well as anywhere inside a brand. */
 export function parseOrgPath(pathname: string): string | null {
-  const match = /^\/org\/([^/]+)/.exec(pathname);
+  const match = /^\/admin\/org\/([^/]+)/.exec(pathname);
   return match ? match[1] : null;
 }
 
@@ -75,7 +75,7 @@ export function isActiveSection(current: string, section: string): boolean {
 }
 
 export function pageTitle(pathname: string): string {
-  if (pathname === "/new") {
+  if (pathname === "/admin/new") {
     return "Add client";
   }
   const parts = parseBrandPath(pathname);

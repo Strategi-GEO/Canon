@@ -16,7 +16,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowRight, Bell, CircleAlert, FileText, Map as MapIcon, Sparkles } from "lucide-react";
+import { ArrowRight, Bell, CircleAlert, FileText, Map as MapIcon, MessageCircleQuestion, Sparkles } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -36,6 +36,7 @@ const ICON_FOR: Record<NotificationKind, typeof Bell> = {
   run: FileText,
   describe: Sparkles,
   roadmap: MapIcon,
+  answers: MessageCircleQuestion,
 };
 
 export function NotificationsBell() {

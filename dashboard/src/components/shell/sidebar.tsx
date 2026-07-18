@@ -14,7 +14,7 @@ import type { Org } from "@/types";
 export function Wordmark() {
   return (
     <Link
-      href="/"
+      href="/admin"
       className="font-wordmark block rounded-sm text-[1.0625rem] leading-tight tracking-tight text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
     >
       <span className="font-normal">Strategi</span>{" "}

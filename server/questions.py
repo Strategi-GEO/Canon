@@ -339,6 +339,31 @@ def describe_questions(client_slug, topic_slug, root=None):
     # iteration while keeping the anchor, and the iteration is what today's behavior reads.
     stale = form_iter != current_iteration(client_slug, topic_slug)
     answered = all(r[10] for r in rows)
+    # WHO answered, for the dashboard's rerun affordance. A client answer arrives from the
+    # portal with no revise dispatched (the portal has no engine), so the operator needs to
+    # see "the client answered" and click Rerun; an operator answer already dispatched its
+    # revise at submit time. Any client-authored reply marks the whole form client-answered:
+    # a mixed form still owes its revise to the same button.
+    answered_by = None
+    answers = None
+    if answered:
+        reply_rows = db.q(
+            """select q.ref, r.body, r.author::text from review_notes r
+               join review_notes q on q.id = r.parent_id
+               where q.topic_id = %s and q.author = 'evaluator' and q.parent_id is null
+                 and q.blog_version_id = (
+                     select n2.blog_version_id from review_notes n2
+                     where n2.topic_id = %s and n2.author = 'evaluator'
+                       and n2.parent_id is null
+                     order by n2.created_at desc limit 1)
+               order by q.created_at, q.ref""",
+            (tid, tid))
+        authors = {r[2] for r in reply_rows}
+        answered_by = "client" if "client" in authors else ("operator" if authors else None)
+        # The answer TEXTS travel with the form once it is answered, because the operator
+        # reads them before deciding to spend a rerun on them; before that, there is
+        # nothing to carry.
+        answers = [{"id": r[0], "answer": r[1]} for r in reply_rows]
     return {
         "slug": topic_slug,
         "asked": asked.isoformat() if asked is not None else None,
@@ -354,6 +379,8 @@ def describe_questions(client_slug, topic_slug, root=None):
         # score, see is_blocking.
         "blocking": (not stale) and (not answered),
         "answered": answered,
+        "answered_by": answered_by,
+        "answers": answers,
     }
 
 
@@ -369,6 +396,7 @@ def _describe_questions_from_disk(client_slug, topic_slug, root=None):
         raise NoQuestions(
             f"no {QUESTIONS_NAME} for {client_slug}/{topic_slug}: the evaluator asked nothing here"
         )
+    answered = is_answered(raw, client_slug, topic_slug, root=root)
     return {
         "slug": raw.get("slug") or topic_slug,
         "asked": raw.get("asked"),
@@ -377,7 +405,14 @@ def _describe_questions_from_disk(client_slug, topic_slug, root=None):
         "questions": raw.get("questions") or [],
         "stale": is_stale(raw, client_slug, topic_slug, root=root),
         "blocking": is_blocking(client_slug, topic_slug, root=root),
-        "answered": is_answered(raw, client_slug, topic_slug, root=root),
+        "answered": answered,
+        # Disk forms carry no author; a sandbox answers.json is the operator-era shape, so
+        # the wire key exists here too and says operator whenever answered at all.
+        "answered_by": "operator" if answered else None,
+        "answers": [
+            {"id": item.get("id"), "answer": item.get("answer")}
+            for item in (read_answers(client_slug, topic_slug, root=root) or {}).get("answers", [])
+        ] if answered else None,
     }
 
 
@@ -390,9 +425,10 @@ def write_answers(client_slug, topic_slug, submitted, root=None):
     named in UnansweredQuestions so the 422 can point at the fields to fill.
 
     One child row per answer, in ONE transaction: author 'operator', parent_id the question row's
-    id, body the answer text. A re-submit UPDATES the existing child rather than inserting a
-    second one, which preserves the file behavior of overwriting answers.json whole and keeps
-    materialize_answers' one-answer-per-question join honest.
+    id, body the answer text. A re-submit UPDATES the existing child rather than inserting a second
+    one, matched by parent_id ALONE so it overwrites a CLIENT-authored reply too, which preserves
+    the file behavior of overwriting answers.json whole and keeps materialize_answers'
+    one-answer-per-question join honest.
 
     THEN sync.materialize_answers rebuilds questions.json and answers.json on disk from the
     record, so the upcoming revise session finds both exactly as Agent E expects. The old direct
@@ -432,10 +468,16 @@ def write_answers(client_slug, topic_slug, submitted, root=None):
         for row_id, cid, vid, _qid, _question, text in built:
             # Update-then-insert rather than ON CONFLICT: the child carries no ref (a ref would
             # collide with its parent's under unique(blog_version_id, ref)), so there is no
-            # conflict target to name.
+            # conflict target to name. The match is by parent_id ALONE, never by author: an
+            # operator re-answer of a form the CLIENT already answered must OVERWRITE that client
+            # reply, not insert a second child beside it. Scoping the update to author 'operator'
+            # missed the client's row, so cur.rowcount came back 0 and a duplicate reply was
+            # inserted, which describe_questions then read as two answers to one question. The row
+            # is the operator's now, so it carries the same author 'operator' and null author_id
+            # the insert branch writes, leaving one reply per question whichever branch runs.
             cur.execute(
-                "update review_notes set body = %s "
-                "where parent_id = %s and author = 'operator'",
+                "update review_notes set body = %s, author = 'operator', author_id = null "
+                "where parent_id = %s",
                 (text, row_id))
             if cur.rowcount == 0:
                 cur.execute(

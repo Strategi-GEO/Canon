@@ -186,7 +186,7 @@ export function NotFoundCard({
           ) : null}
 
           <Button variant="outline" size="sm" className="mt-5" asChild>
-            <Link href="/">Go to your clients</Link>
+            <Link href="/admin">Go to your clients</Link>
           </Button>
         </CardContent>
       </Card>

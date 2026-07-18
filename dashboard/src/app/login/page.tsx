@@ -14,16 +14,17 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Wordmark } from "@/components/shell/sidebar";
-import { ApiError, request } from "@/lib/api";
+import { api, ApiError, request } from "@/lib/api";
 import { getSession, setSession, type Session } from "@/lib/session";
 
 /** What POST /api/login answers with. `expires_in` is real but redundant beside expires_at. */
 type LoginResponse = Session & { expires_in: number };
 
 /**
- * The one route outside the shell and outside the auth guard. AppShell renders it bare, so
- * no provider fires a fetch that would 401 before anyone has signed in. There is no sign-up
- * link on purpose: accounts are provisioned by the admin, so a link would only lead nowhere.
+ * THE ONE LOGIN for the whole app. Both operators and clients sign in here; the account
+ * decides the interface, not a separate door. On success the role routes the caller: an
+ * operator to /admin, a client to the site root, which sends them on to their own brand
+ * space. There is no sign-up link on purpose: accounts are provisioned by the Strategi team.
  */
 export default function LoginPage() {
   const router = useRouter();
@@ -32,7 +33,7 @@ export default function LoginPage() {
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  // Already signed in means nothing to do here: straight back to the app.
+  // Already signed in means nothing to do here: straight to the root, which routes by role.
   React.useEffect(() => {
     if (getSession() !== null) {
       router.replace("/");
@@ -60,7 +61,11 @@ export default function LoginPage() {
         expires_at: session.expires_at,
         user: session.user,
       });
-      router.replace("/");
+      // The credential is real, but WHOSE is it? An operator goes to the admin interface; a
+      // client goes to the root, which routes them on to their own brand space. Same app,
+      // same session, one hop, no second password and no cross-origin handoff.
+      const me = await api.me();
+      router.replace(me.is_admin ? "/admin" : "/");
       // Deliberately no setPending(false) on success: the button stays disabled for the
       // moment the redirect takes, instead of flashing back to life on a page that is leaving.
     } catch (cause) {

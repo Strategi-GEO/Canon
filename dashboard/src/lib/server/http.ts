@@ -10,7 +10,7 @@ export function json(body: unknown, status = 200): Response {
   return Response.json(body, { status });
 }
 
-export function detail(status: number, message: string): Response {
+export function detail(status: number, message: unknown): Response {
   return Response.json({ detail: message }, { status });
 }
 

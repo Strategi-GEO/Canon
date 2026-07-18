@@ -74,6 +74,21 @@ export type IndustriesResponse = {
   industries: string[];
 };
 
+/**
+ * GET /api/me: who this token is to the app. The shell reads exactly one bit of it,
+ * is_admin, because THIS CONSOLE IS FOR THE STRATEGI TEAM: a client login (an org grant
+ * without the admin bit) is refused at the door and sent to their Client Portal, where
+ * the same credential works. The scoping fields ride along for completeness; nothing in
+ * the dashboard branches on them.
+ */
+export type MeResponse = {
+  user_id: string;
+  email: string;
+  is_admin: boolean;
+  orgs: Organisation[];
+  clients: string[];
+};
+
 export type CreateClientBody = {
   name: string;
   domain: string;
@@ -536,6 +551,20 @@ export type BlogQuestions = {
    * form, which is a blog with no exit.
    */
   answered: boolean;
+  /**
+   * WHO answered, when `answered` is true: "client" when any answer arrived through the client
+   * portal, "operator" when the answers were filed here. The difference is an obligation: an
+   * operator's submit already dispatched its revise, but the portal has no engine behind it, so
+   * a client-answered form is a revise WAITING FOR THE OPERATOR'S RERUN, and the UI must say so
+   * and offer the button. Null when unanswered.
+   */
+  answered_by: "client" | "operator" | null;
+  /**
+   * The answer texts, present exactly when `answered` is true. The operator reads what the
+   * client actually wrote before spending a rerun on it; before answering there is nothing to
+   * carry, and the field is null rather than [].
+   */
+  answers: { id: string; answer: string }[] | null;
 };
 
 /**

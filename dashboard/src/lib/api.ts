@@ -13,6 +13,7 @@ import type {
   GenerateBody,
   GenerateRoadmapBody,
   IndustriesResponse,
+  MeResponse,
   Org,
   OrgsResponse,
   OutputFile,
@@ -100,6 +101,9 @@ function handleUnauthorized(path: string, status: number): void {
     return;
   }
   clearSession();
+  // ONE APP, ONE LOGIN at the site root. A dead session anywhere (admin or client) lands on
+  // /login, which re-authenticates and routes back by role. The guard avoids a redundant
+  // reload when the caller is already there.
   if (typeof window !== "undefined" && window.location.pathname !== "/login") {
     window.location.assign("/login");
   }
@@ -216,6 +220,13 @@ export async function requestText(path: string, signal?: AbortSignal): Promise<s
 }
 
 export const api = {
+  /**
+   * Who this token is. The shell and the login page read is_admin off it to keep client
+   * logins out of this console entirely: their credential is for the Client Portal, and
+   * every admin surface here assumes a Strategi operator is behind the keyboard.
+   */
+  me: (signal?: AbortSignal) => request<MeResponse>("/api/me", { signal }),
+
   clients: (signal?: AbortSignal) => request<ClientsResponse>("/api/clients", { signal }),
 
   /** The org grouping over brands. Derived by the engine, so it never drifts from clients. */
@@ -445,6 +456,18 @@ export const api = {
     request<RunSummary>(`/api/clients/${slug}/blogs/${topicSlug}/answers`, {
       method: "POST",
       body,
+    }),
+
+  /**
+   * Dispatches the answer-driven revise a CLIENT-answered form is owed. The portal records a
+   * client's answers with no engine behind it, so nothing ran at their submit time; this is
+   * the operator choosing the moment this machine's quota is spent. 202 with the run, exactly
+   * like answerQuestions. 409 means demo, stale, unanswered, a live brand session, or another
+   * machine's engine already mid-rerun on this topic; each detail says which.
+   */
+  reviseBlog: (slug: string, topicSlug: string) =>
+    request<RunSummary>(`/api/clients/${slug}/blogs/${topicSlug}/revise`, {
+      method: "POST",
     }),
 
   /**
