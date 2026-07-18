@@ -59,7 +59,8 @@ export type NotifyInput = {
   brandSlug: string;
   /** The part of the id that makes it unique within its kind: a run id, or a brand slug. */
   key: string;
-  /** Runs only. Null for kinds that count nothing. */
+  /** What this kind counts, per AppNotification.topicCount: blogs for a run, questions for
+   *  "answers", suggestions for "changes_requested". Null for kinds that count nothing. */
   topicCount?: number | null;
   /** The engine's own words on a failure, or null. Never "". */
   error?: string | null;

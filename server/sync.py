@@ -454,9 +454,23 @@ def reconcile_all():
     """Commit every topic whose scratch is ahead of the record.
 
     'Ahead' means: more status lines on disk than events in the record, or blog
-    bytes that differ from the latest committed version. Cheap to test, and
-    commit_topic is idempotent, so false positives cost one no-op commit.
-    Returns the list of (client, topic) committed, for the startup log.
+    bytes that differ from the latest committed version AND ARE NEWER THAN IT.
+    Cheap to test, and commit_topic is idempotent, so false positives cost one
+    no-op commit. Returns the list of (client, topic) committed, for the startup
+    log.
+
+    THE MTIME GUARD IS NOT AN OPTIMISATION, it is what stops this sweep from
+    reverting a teammate. Differing bytes were read as "scratch is ahead", which
+    is only true when scratch is the NEWER copy. Two engines share one record:
+    machine B holds a stale blog.md from a run weeks ago, machine A's operator
+    edits the article through the stage page, and B's next boot sees bytes that
+    differ and commits its old copy over A's edit, silently, as a new version. An
+    older file is BEHIND the record, not ahead of it, so nothing commits it, which
+    is the whole of the fix (materialize_topic leaves an existing blog.md alone,
+    so the stale copy stays on B's disk; it is scratch, and the apply path already
+    reads the record's bytes rather than it). The status-line count stays an
+    ahead-signal on its own: status.jsonl is append-only, so more lines can only
+    mean this disk saw events the record has not.
     """
     if not OUTPUTS_ROOT.is_dir():
         return []
@@ -487,15 +501,32 @@ def reconcile_all():
             tid = db.topic_id(slug, tdir.name)
             db_lines = 0
             db_body = None
+            db_committed = None
             if tid:
                 db_lines = db.q(
                     "select count(*) from status_events where topic_id = %s",
                     (tid,), fetch="val")
-                db_body = db.q(
-                    """select body from blog_versions where topic_id = %s
-                       order by version_no desc limit 1""", (tid,), fetch="val")
-            body = _read(tdir / "blog.md")
-            if disk_lines > db_lines or (body is not None and body != db_body):
+                version = db.q(
+                    """select body, committed_at from blog_versions where topic_id = %s
+                       order by version_no desc limit 1""", (tid,), fetch="one")
+                if version:
+                    db_body, db_committed = version
+            blog = tdir / "blog.md"
+            body = _read(blog)
+            # A record with no version at all cannot be ahead of anything, so any
+            # blog.md on disk is the only copy and commits. Otherwise the file has
+            # to be newer than the version it disagrees with. Clock skew between
+            # two machines is real and this comparison cannot see it: a machine
+            # running minutes fast can still commit a stale file, and one running
+            # minutes slow defers a genuine commit to a later boot. Both are small
+            # next to the gap being closed, which is weeks wide (a scratch file
+            # left over from an old run against an edit made today), and the
+            # sound fix is a version the writer carries, not a tighter clock.
+            body_ahead = (
+                body is not None and body != db_body
+                and (db_committed is None
+                     or blog.stat().st_mtime > db_committed.timestamp()))
+            if disk_lines > db_lines or body_ahead:
                 # A LIVE topic is skipped: its session owns the scratch and will
                 # commit at its own terminal line. Committing under it would
                 # push a mid-session half-state into the record.

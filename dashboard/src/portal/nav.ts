@@ -80,6 +80,24 @@ export function blogHref(
   return `${brandHref(orgSlug, brandSlug, singleBrand, "/blogs")}/${enc(topic)}`;
 }
 
+/**
+ * Where home is for THIS login, resolved from the caller's own orgs.
+ *
+ * "/" is not a wrong address, it is a slow and blank one: the site root is a signpost that
+ * reads /api/me and then /api/overview before it can decide where a caller belongs, so a
+ * link to it from inside the portal spends two requests and a spinner reaching a page whose
+ * address the shell is already holding. The org list here is the very list the signpost
+ * would fetch. A login spanning several orgs has no single home to name, so it keeps the
+ * signpost and lets that page choose, rather than this function guessing at one.
+ */
+export function homeHref(orgs: OrgLite[]): string {
+  if (orgs.length !== 1) {
+    return "/";
+  }
+  const org = orgs[0];
+  return isSingle(org) ? brandHref(org.slug, org.brands[0].slug, true) : orgHref(org.slug);
+}
+
 // ---------------------------------------------------------------------------
 // The resolver
 // ---------------------------------------------------------------------------

@@ -71,12 +71,29 @@ export type PortalAnswerView = {
 
 /**
  * One suggestion the client filed against a sent article, in the record's own states. The
- * UI folds them to plain language (with the team / addressed / reviewed) because how a
+ * UI folds them to plain language (with the team / resolved / reviewed) because how a
  * change gets applied is the team's machinery, never the client's concern. Deliberately no
  * error field: a failed apply is the team's problem, and the wire not carrying the error
  * is what guarantees no view can ever show it.
  */
 export type PortalCommentState = "open" | "applying" | "resolved" | "failed" | "dismissed";
+
+/**
+ * Who wrote a line in a thread, already translated. The record says 'client' or 'operator';
+ * the client reads "you" or "the team", so the translation happens at the wire boundary
+ * (app/api/blog/[brand]/[topic]/route.ts) and the operator's vocabulary never arrives in a
+ * client browser at all. There is no third value: a thread has exactly two sides.
+ */
+export type PortalReplyAuthor = "you" | "team";
+
+/** One line of the conversation under a suggestion. Replies are flat by construction: the
+ *  record refuses a reply to a reply, so nothing here nests. */
+export type PortalReply = {
+  id: string;
+  author: PortalReplyAuthor;
+  body: string;
+  created: string;
+};
 
 export type PortalComment = {
   id: string;
@@ -84,6 +101,8 @@ export type PortalComment = {
   instruction: string;
   state: PortalCommentState;
   created: string;
+  /** Oldest first, both sides' lines in one list. Empty until somebody answers. */
+  replies: PortalReply[];
 };
 
 export type PortalBlogDetail = {
@@ -100,8 +119,16 @@ export type PortalBlogDetail = {
   asked: string | null;
   answers: PortalAnswerView[] | null;
   answered_at: string | null;
-  /** ready and approved only: the client's own suggestions, oldest first. */
+  /** ready and approved only: the client's own suggestions, oldest first, with their threads. */
   comments: PortalComment[] | null;
+  /**
+   * ready and approved only: the id of the version these bytes came from, carried back on
+   * approve. It is what closes the race where the team re-sends while an approval is in
+   * flight: without it the stamp lands on an article the client never read, and the record
+   * would say they signed off on bytes that appeared after they pressed the button. Null on
+   * a legacy send that predates the stamp, which the record accepts as the matching value.
+   */
+  version: string | null;
   /** ready and approved only: when the team sent the article for review. UTC ISO. */
   sent: string | null;
   /** approved only: when the client approved. UTC ISO. */
@@ -119,6 +146,17 @@ export type SuggestBody = {
   context_before: string;
   context_after: string;
   instruction: string;
+};
+
+/** What one reply carries: which suggestion it answers, and the line itself. */
+export type ReplyBody = {
+  parent_id: string;
+  body: string;
+};
+
+/** What an approval carries: the version the client actually read. */
+export type ApproveBody = {
+  version: string | null;
 };
 
 export type PortalRoadmapRow = {

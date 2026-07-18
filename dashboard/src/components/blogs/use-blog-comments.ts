@@ -5,10 +5,10 @@ import { ApiError, api } from "@/lib/api";
 import type { BlogComment } from "@/types";
 
 /**
- * On the same machine as the engine, which serves this from one small file read. Four
- * seconds keeps an applying comment's spinner honest without hammering the loop.
+ * On the same machine as the engine, which serves this from one small read. Four seconds
+ * keeps an applying comment's spinner honest without hammering the loop.
  */
-const POLL_MS = 4000;
+const APPLY_POLL_MS = 4000;
 
 export type BlogCommentsState = {
   comments: BlogComment[];
@@ -20,13 +20,26 @@ export type BlogCommentsState = {
 };
 
 /**
- * One blog's selection comments, polled only while one is applying.
+ * One blog's comment threads, watched ONLY while an apply this machine started is settling.
+ *
+ * THE CLIENT'S SIDE IS NOT POLLED, deliberately. A blog out with the client has a second
+ * author with no channel into this app, and this hook did poll for them every ten seconds.
+ * The operator's call is that live cross-person updates are worth nothing here: a client's
+ * suggestion is minutes to days of human work away, everyone refreshes anyway, and a timer in
+ * every open stage tab buys seconds of freshness for traffic nobody asked for. What survives
+ * that decision is the NOTIFICATION: the blogs library rings the bell for whatever it finds at
+ * its own next read, so a refresh is what tells an operator a client wrote something.
+ *
+ * An applying comment is a different thing entirely and keeps its loop. It is not another
+ * person's work arriving, it is THIS operator's own click finishing seconds later, and a
+ * spinner that never resolves until someone hits refresh reads as a broken button rather than
+ * as a page that does not live-update.
  *
  * The house polling shape (use-facts-gen): a self-scheduling setTimeout after each read
- * settles, never setInterval, so a slow engine can never stack requests that all land at
- * once on recovery. Hidden tabs stop the loop and a visibilitychange poll restarts it,
- * which also recovers a loop a failed request stopped. A failure never clears the last
- * read value: it was true when read, and the loop keeps trying.
+ * settles, never setInterval, so a slow engine can never stack requests that all land at once
+ * on recovery. Hidden tabs stop the loop and a visibilitychange poll restarts it, which also
+ * recovers a loop a failed request stopped. A failure never clears the last read value: it
+ * was true when read, and the loop keeps trying.
  *
  * `enabled` false keeps the hook entirely idle: the hosted build and a demo brand have no
  * comment flow, and an idle hook is how the page says so without a second code path.
@@ -58,13 +71,13 @@ export function useBlogComments(
 
     function schedule(comments: BlogComment[] | null) {
       window.clearTimeout(timer);
-      if (comments === null || !comments.some((comment) => comment.state === "applying")) {
-        return;
-      }
       if (document.visibilityState === "hidden") {
         return;
       }
-      timer = window.setTimeout(poll, POLL_MS);
+      if (comments === null || !comments.some((comment) => comment.state === "applying")) {
+        return;
+      }
+      timer = window.setTimeout(poll, APPLY_POLL_MS);
     }
 
     function onVisible() {

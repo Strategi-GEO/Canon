@@ -33,6 +33,14 @@ CLIENT_ROOTS = [
     DASH / "app" / "api" / "blog",            # client API: blog detail + answers
     DASH / "app" / "api" / "roadmap",         # client API: read-only roadmap
     DASH / "lib" / "server" / "portal-data.ts",  # client-safe builders
+    # The shared comment rail. It lives outside portal/ because BOTH surfaces import it:
+    # the client portal renders its own comments in it, and the admin dashboard renders
+    # the same rail so an operator can see which passage each client comment annotates.
+    # Shared code that reaches a client browser is client surface, and a rule that only
+    # scanned portal/ would grade this directory by which folder it happens to sit in
+    # rather than by who reads it. It is client-safe BY CONSTRUCTION: zero product
+    # vocabulary, and every string it renders arrives as a prop or a child.
+    DASH / "components" / "comments",
 ]
 
 failures: list[str] = []
@@ -163,12 +171,14 @@ else:
     fail("dashboard/src/app/api/roadmap/[brand]/route.ts is missing")
 
 # ---------------------------------------------------------------------------
-# 7. The client write surface: exactly the three SECURITY DEFINER functions, one per act a
-#    client may perform (answer the evaluator, suggest a change, approve the article). A
-#    fourth RPC appearing means the client write surface grew without this file hearing
-#    about it, and a missing one means a client act silently lost its door.
+# 7. The client write surface: exactly the four SECURITY DEFINER functions, one per act a
+#    client may perform (answer the evaluator, suggest a change, reply in a comment thread,
+#    approve the article). A fifth RPC appearing means the client write surface grew
+#    without this file hearing about it, and a missing one means a client act silently lost
+#    its door.
 # ---------------------------------------------------------------------------
-CLIENT_WRITES = {"portal_submit_answers", "portal_suggest_change", "portal_approve_blog"}
+CLIENT_WRITES = {"portal_submit_answers", "portal_suggest_change", "portal_reply_comment",
+                 "portal_approve_blog"}
 rpc_calls = []
 for path in FILES:
     body = code_only(path.read_text(encoding="utf-8"))
@@ -208,6 +218,6 @@ print("  ok  dangerouslySetInnerHTML confined to the markdown sink; renderer esc
 print("  ok  no localStorage on the client surface")
 print("  ok  no em or en dashes")
 print("  ok  no create/repurpose/resources/settings routes; roadmap is GET-only")
-print("  ok  write surface is exactly the three portal definer functions")
+print("  ok  write surface is exactly the four portal definer functions")
 print("  ok  author_email never crosses the client wire")
 print("\nall portal checks passed")

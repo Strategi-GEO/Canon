@@ -8,23 +8,25 @@ import { PostgrestError, rpc } from "@/lib/server/postgrest";
  *
  * All authority lives in the database function portal_suggest_change
  * (supabase/migrations/005_client_review.sql): it verifies the caller's role and brand
- * scope, that the article was sent and not already approved, that the suggestion carries
- * real text, and the per-topic open-suggestion cap, then inserts the comment anchored to
- * the SENT version with the caller's identity. No Claude runs from here: the row lands
- * state 'open' and waits for the team's Resolve on the admin stage page. This handler
- * only shapes HTTP: it validates the body's SHAPE (never its content), forwards the
- * caller's own JWT, and maps the function's PORTAL:<CODE>:<detail> error protocol onto
- * statuses.
+ * scope, that the article was sent, that the suggestion carries real text, and the
+ * per-topic open-suggestion cap, then inserts the comment anchored to the SENT version
+ * with the caller's identity. No Claude runs from here: the row lands state 'open' and
+ * waits for the team's Resolve on the admin stage page. This handler only shapes HTTP: it
+ * validates the body's SHAPE (never its content), forwards the caller's own JWT, and maps
+ * the function's PORTAL:<CODE>:<detail> error protocol onto statuses.
+ *
+ * AN APPROVED ARTICLE IS STILL OPEN TO A SUGGESTION, so there is no APPROVED code in the
+ * map: a client who signed off and then spots a wrong figure must be able to say so, and
+ * the team decides what that means. The map carries exactly the codes the function raises,
+ * because a code listed here that nothing raises reads as a refusal this route handles when
+ * it handles nothing, and one the function raises but the map lacks lands as a bare 400.
  */
 
 const STATUS_FOR: Record<string, number> = {
   AUTH: 401,
   ROLE: 403,
   NOTFOUND: 404,
-  DEMO: 409,
   NOTSENT: 409,
-  APPROVED: 409,
-  BLANK: 422,
   BADBODY: 422,
   LIMIT: 429,
 };

@@ -629,6 +629,29 @@ export type PublishResult = {
  */
 export type BlogCommentState = "open" | "applying" | "resolved" | "failed" | "dismissed";
 
+/**
+ * One reply under a comment: a sentence somebody wrote in the thread, and nothing else.
+ *
+ * A reply carries no selection, no state and no apply verdict, because it ASKS FOR NOTHING.
+ * The whole point of the door is that an operator can say "we cut that line, it was a
+ * duplicate" without a Claude session deciding the request on the client's behalf and
+ * without the comment vanishing from the client's rail as though it had been handled.
+ *
+ * The text travels as `body` rather than `instruction`, which is the name the record's own
+ * column carries, so that no consumer can talk itself into feeding a reply to the apply
+ * session. Replies are never top-level entries in a comments read, and they are counted by
+ * nothing: a polite "thanks, looks good" must never hold a re-send.
+ */
+export type BlogCommentReply = {
+  id: string;
+  /** UTC ISO, from the engine. */
+  created: string;
+  author: "operator" | "client";
+  /** Who wrote it, by email. "" when the engine could not say. */
+  author_email: string;
+  body: string;
+};
+
 export type BlogComment = {
   id: string;
   /** UTC ISO, from the engine. */
@@ -653,6 +676,21 @@ export type BlogComment = {
   error: string | null;
   /** The replacements actually made, present exactly when state is "resolved". */
   edits: { old: string; new: string }[] | null;
+  /**
+   * When this comment last ENTERED state "applying", UTC ISO, or null while it never has.
+   *
+   * THE CLOCK FOR "applying since", and `created` is the wrong one: a comment filed an hour
+   * ago and retried a minute ago is one minute into its apply, so created there tells the
+   * operator an apply has hung when nothing has. The engine ages its stranded-apply sweep on
+   * this same field, for the same reason, so the two agree about what "since" means.
+   */
+  applying_since: string | null;
+  /**
+   * The thread under this comment, oldest first, and empty for most comments. ALWAYS
+   * present, even empty: a surface that has to test for the key renders "undefined replies"
+   * the first time one arrives.
+   */
+  replies: BlogCommentReply[];
 };
 
 export type BlogCommentsResponse = {

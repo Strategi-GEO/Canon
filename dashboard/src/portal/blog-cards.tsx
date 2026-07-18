@@ -16,7 +16,8 @@ import { cn } from "@/lib/utils";
  *   action    -- loud. Amber ground, a question count, a full-card link. The portal asks a
  *                client for answers rarely, so this card is allowed to shout.
  *   ready     -- inviting, on the brand's own accent. The happy ask: the article is
- *                finished, read it and approve it or suggest changes.
+ *                finished, read it and approve it, or say what should change by leaving a
+ *                note on the text itself.
  *   frozen    -- quiet rows with a lock. Nothing to do here; saying so calmly is the job.
  *   approved  -- a clean reading library. White cards, dates, reading time, a quiet
  *                approved mark. This replaced the old "delivered" register: delivery is no

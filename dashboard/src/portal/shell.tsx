@@ -27,6 +27,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   BRAND_NAV,
   brandHref,
+  homeHref,
   isActiveSection,
   orgHref,
   pageTitle,
@@ -272,7 +273,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
  * would only teach the client to stop looking at it.
  */
 function AttentionStrip({ onNavigate }: { onNavigate?: () => void }) {
-  const { blogs, loading } = usePortal();
+  const { blogs, loading, orgs } = usePortal();
   if (loading) {
     return null;
   }
@@ -281,6 +282,10 @@ function AttentionStrip({ onNavigate }: { onNavigate?: () => void }) {
   if (action === 0 && ready === 0) {
     return null;
   }
+  // The caller's actual home, not the root signpost: the org list is already in hand here,
+  // so sending a client through two requests and a spinner to arrive at the page this
+  // shell could name is a round trip for nothing.
+  const home = homeHref(orgs);
   const row =
     "flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium transition-colors " +
     "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
@@ -288,7 +293,7 @@ function AttentionStrip({ onNavigate }: { onNavigate?: () => void }) {
     <div className="flex flex-col gap-1.5 border-t px-2.5 pt-3 pb-4" aria-label="Needs your attention">
       {action > 0 ? (
         <Link
-          href="/"
+          href={home}
           onClick={onNavigate}
           className={cn(row, "bg-review-bg text-review hover:bg-review/15")}
         >
@@ -298,7 +303,7 @@ function AttentionStrip({ onNavigate }: { onNavigate?: () => void }) {
       ) : null}
       {ready > 0 ? (
         <Link
-          href="/"
+          href={home}
           onClick={onNavigate}
           className={cn(row, "bg-primary/8 text-primary hover:bg-primary/15")}
         >

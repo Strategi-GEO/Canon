@@ -19,6 +19,13 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError, api } from "@/lib/api";
 import { brandHref } from "@/lib/orgs-context";
 import { formatCount } from "@/lib/format";
+import {
+  loadObservedReview,
+  observeReview,
+  reviewEdges,
+  saveObservedReview,
+  type ReviewSighting,
+} from "@/lib/notifications";
 import { useNotifications } from "@/lib/notifications-context";
 import { useBlogQuestions } from "@/lib/use-blog-questions";
 import { useHotkey } from "@/lib/use-hotkey";
@@ -159,7 +166,11 @@ function Library({
    * signal has to be in the LIST, so the list reads the questions.
    */
   const topicSlugs = React.useMemo(() => (blogs ?? []).map((blog) => blog.topic_slug), [blogs]);
-  const { byTopic, reload: reloadQuestions } = useBlogQuestions(brandSlug, topicSlugs);
+  const {
+    byTopic,
+    checking: questionsChecking,
+    reload: reloadQuestions,
+  } = useBlogQuestions(brandSlug, topicSlugs);
 
   const waiting = React.useMemo(() => {
     const signals = new Map<string, WaitingSignal>();
@@ -177,59 +188,66 @@ function Library({
    * has no channel into this app: a client answers a form, suggests changes, or approves a
    * sent article on their side, and the first this dashboard can know is its own next read.
    * Answered forms come off the questions read; the review loop's two edges, changes
-   * requested and approved, come off the summaries' own fields. One notification per event:
-   * the ref dedups re-reads within this mount, and the bell's log dedups across remounts so
-   * the count never double-rises; the toast is skipped for events the log already carries,
-   * since re-announcing old news on every visit to the tab is how a bell gets ignored.
+   * requested and approved, come off the summaries' own fields.
+   *
+   * WHAT IS ANNOUNCED IS THE CHANGE BETWEEN TWO READS, never what a read found, and
+   * lib/notifications carries the rule plus the two bugs that shape it. Nothing is persisted,
+   * so announcing on what a read FOUND rang every approval the brand had ever collected on
+   * every fresh tab, and keying a round of suggestions on the send stamp meant a second round
+   * inside one send rang nothing at all.
+   *
+   * BOTH SOURCES HAVE TO BE IN before a comparison means anything. The questions read settles
+   * after the summaries do, so a sighting taken while it is still in flight records "no form
+   * answered" for every topic, and the real answer landing a moment later then reads as the
+   * client having just answered twelve of them.
    */
   const { log, notify } = useNotifications();
-  const announcedRef = React.useRef(new Set<string>());
+  const observedRef = React.useRef<{ brand: string; seen: ReadonlyMap<string, ReviewSighting> }>({
+    brand: brandSlug,
+    seen: new Map(),
+  });
   React.useEffect(() => {
-    // The full bell id, so the ref and the log can never disagree about which event a key
-    // names: two kinds are allowed to build the same-looking key without colliding.
-    function announce(
-      kind: "answers" | "changes_requested" | "client_approved",
-      key: string,
-      topicCount: number | null,
-    ) {
-      const id = `${kind}:${key}`;
-      if (announcedRef.current.has(id) || log.some((note) => note.id === id)) {
-        announcedRef.current.add(id);
-        return;
-      }
-      announcedRef.current.add(id);
-      notify({ kind, brandSlug, key, topicCount });
+    if (blogs === null || questionsChecking) {
+      return;
     }
+    const sightings: ReviewSighting[] = blogs.map((blog) => {
+      const questions = byTopic.get(blog.topic_slug)?.payload ?? null;
+      const answered =
+        questions !== null && questions.answered && questions.answered_by === "client";
+      return {
+        topicSlug: blog.topic_slug,
+        answeredIter: answered ? questions.iter : null,
+        answeredCount: answered ? questions.questions.length : 0,
+        changes: blog.changes_requested ?? 0,
+        approved: blog.client_approved ?? null,
+      };
+    });
 
-    for (const [slug, entry] of byTopic) {
-      const questions = entry.payload;
-      if (!questions || !questions.answered || questions.answered_by !== "client") {
+    // A brand switch without a remount would otherwise diff this brand's topics against
+    // another brand's, and a slug that exists under both would announce one brand's approval
+    // under the other's name. A brand this tab has not read yet falls back to the STORED
+    // baseline rather than to nothing: with the client's half of the loop no longer polled,
+    // the first read after a page load is the read that has to report what the client did,
+    // and diffing against nothing reports nothing. See loadObservedReview.
+    const before =
+      observedRef.current.brand === brandSlug
+        ? observedRef.current.seen
+        : loadObservedReview(brandSlug);
+    const seen = observeReview(sightings);
+    observedRef.current = { brand: brandSlug, seen };
+    saveObservedReview(brandSlug, seen);
+
+    for (const edge of reviewEdges(before, sightings, new Date().toISOString())) {
+      const key = `${brandSlug}/${edge.topicSlug}/${edge.stamp}`;
+      // The edge is the dedup, and this is the guard behind it: notify() drops a repeat id
+      // from the LIST but still toasts it, so an event the log already carries would flash a
+      // line with no row behind it.
+      if (log.some((note) => note.id === `${edge.kind}:${key}`)) {
         continue;
       }
-      announce("answers", `${brandSlug}/${slug}/${questions.iter}`, questions.questions.length);
+      notify({ kind: edge.kind, brandSlug, key, topicCount: edge.topicCount });
     }
-
-    for (const blog of blogs ?? []) {
-      if (blog.status !== "done" || !blog.sent_to_client) {
-        continue;
-      }
-      if ((blog.changes_requested ?? 0) > 0) {
-        // Keyed by the SEND stamp, not any comment id: one round of suggestions rings once
-        // however many comments it holds, and a fresh round after a re-send rings again,
-        // exactly as the answers kind rings once per asking round.
-        announce(
-          "changes_requested",
-          `${brandSlug}/${blog.topic_slug}/${blog.sent_to_client}`,
-          blog.changes_requested ?? 0,
-        );
-      }
-      if (blog.client_approved) {
-        // Keyed by the approval stamp itself: a re-send clears the approval, so a fresh
-        // one carries a fresh timestamp and is genuinely new news.
-        announce("client_approved", `${brandSlug}/${blog.topic_slug}/${blog.client_approved}`, null);
-      }
-    }
-  }, [byTopic, blogs, brandSlug, log, notify]);
+  }, [byTopic, blogs, questionsChecking, brandSlug, log, notify]);
 
   async function refresh() {
     setRefreshing(true);

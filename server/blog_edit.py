@@ -25,6 +25,13 @@ the record follows it): every accepted edit writes blog.md and then sync.commit_
 blog_versions gains a version and the hosted view, portal, and CMS push all see exactly
 what the operator approved.
 
+Comments are THREADS, not a flat list. A row with parent_id set is a REPLY: it carries its
+text in `instruction`, has no selection, and is never applied, never counted, never
+resolved. read_comments nests replies under their parent and every other query in this
+module filters `parent_id is null`, because a reply is someone talking about the change
+rather than asking for one: count "thanks, looks good" as an open suggestion and it blocks
+Send again forever.
+
 Applies are serialised by one lock. Two sessions editing one article race each other's
 read-modify-write; two editing different articles could run together, but one operator files
 three comments in a burst and correctness beats ten seconds of latency here.
@@ -60,6 +67,14 @@ _APPLY_TASKS = {}
 STRANDED_ERROR = ("the engine restarted while this change was being applied, "
                   "so it never landed; file it again")
 
+# The lost-update refusal, shared by both write paths. APPLY_LOCK serialises this PROCESS
+# and nothing more, so the second engine editing one article is unlocked by construction:
+# both read the record's body, both run a session, and the later write silently discards
+# the earlier operator's change with no trace that it happened. Refusing beats a lost edit,
+# because the operator can see the refusal and cannot see the loss.
+CONFLICT_ERROR = ("the article changed while this change was being applied; "
+                  "try it again")
+
 
 class EditError(Exception):
     """A comment apply that cannot proceed, with the reason the operator reads."""
@@ -69,16 +84,21 @@ class EditError(Exception):
 # column cannot be added to one query and forgotten in another.
 _COMMENT_COLS = """id, created_at, author, author_email, selected_text,
                    context_before, context_after, instruction, state,
-                   finished_at, error, edits"""
+                   finished_at, error, edits, applying_since"""
+
+# A reply's columns, and they are fewer on purpose: a reply has no selection, no state the
+# UI branches on, and no apply verdict, so serving those keys would invite a surface to
+# render a reply as though it were a change request.
+_REPLY_COLS = """id, created_at, author, author_email, instruction"""
 
 
-def _wire(row):
-    """One blog_comments row as the wire dict every surface reads: the phase-1
+def _wire(row, replies=()):
+    """One TOP-LEVEL blog_comments row as the wire dict every surface reads: the phase-1
     comments.json entry with author split into author ('operator' | 'client') and
-    author_email. Timestamps flatten to isoformat; edits arrives already decoded,
-    because psycopg maps jsonb to Python."""
+    author_email, plus applying_since and its thread. Timestamps flatten to isoformat;
+    edits arrives already decoded, because psycopg maps jsonb to Python."""
     (comment_id, created_at, author, author_email, selected_text, context_before,
-     context_after, instruction, state, finished_at, error, edits) = row
+     context_after, instruction, state, finished_at, error, edits, applying_since) = row
     return {
         "id": str(comment_id),
         "created": created_at.isoformat(),
@@ -92,7 +112,50 @@ def _wire(row):
         "finished": finished_at.isoformat() if finished_at else None,
         "error": error,
         "edits": edits,
+        "applying_since": applying_since.isoformat() if applying_since else None,
+        # Oldest first inside the thread, which is the order a conversation is read in.
+        # Always present, even empty: a surface that has to test for the key would print
+        # "undefined replies" the first time one arrives.
+        "replies": list(replies),
     }
+
+
+def _wire_reply(row):
+    """One reply row as its wire dict. The reply's text lives in `instruction` on the
+    record (one table, one insert path) and travels as `body`, because nothing about a
+    reply instructs anything: naming it `instruction` on the wire is how a consumer talks
+    itself into feeding one to the apply session."""
+    reply_id, created_at, author, author_email, instruction = row
+    return {
+        "id": str(reply_id),
+        "created": created_at.isoformat(),
+        "author": author,
+        "author_email": author_email,
+        "body": instruction,
+    }
+
+
+def _replies_for(parent_ids):
+    """Every reply to the given parents, keyed by parent id, oldest first. ONE query for a
+    whole page of threads: a per-comment fetch would cost twenty round trips on a busy
+    article, ten seconds apart, for the rest of the review.
+
+    The ids become uuid.UUID objects before they travel, so psycopg sends a real uuid[]
+    and the `= any` compares against the column's own type. A list of plain strings dumps
+    as an array of psycopg's unknown, which leaves the element type to inference: it
+    happens to resolve here, and it is not something a query on the read path should be
+    resting on."""
+    ids = [uuid.UUID(str(pid)) for pid in parent_ids]
+    if not ids:
+        return {}
+    rows = db.q(
+        f"""select parent_id, {_REPLY_COLS} from blog_comments
+            where parent_id = any(%s) order by created_at""",
+        (ids,))
+    threads = {}
+    for row in rows:
+        threads.setdefault(str(row[0]), []).append(_wire_reply(row[1:]))
+    return threads
 
 
 def _is_uuid(value):
@@ -106,39 +169,51 @@ def _is_uuid(value):
 
 
 def read_comments(client_slug, topic_slug):
-    """Every comment for one topic, oldest first, DISMISSED INCLUDED: the UI decides what
-    to hide, and a read that pre-filtered would make a dismissal invisible to the very
-    page that audits it. An unknown topic is the empty state, exactly as a missing
-    comments.json was."""
+    """Every THREAD for one topic, oldest first, DISMISSED AND RESOLVED INCLUDED: the UI
+    decides what to hide, and a read that pre-filtered would make a dismissal invisible to
+    the very page that audits it. Each entry carries its replies, oldest first; a reply is
+    never a top-level entry, because it annotates a change request rather than being one.
+    An unknown topic is the empty state, exactly as a missing comments.json was."""
     tid = db.topic_id(client_slug, topic_slug)
     if tid is None:
         return []
     rows = db.q(
         f"""select {_COMMENT_COLS} from blog_comments
-            where topic_id = %s order by created_at""",
+            where topic_id = %s and parent_id is null order by created_at""",
         (tid,))
-    return [_wire(row) for row in rows]
+    threads = _replies_for([row[0] for row in rows])
+    return [_wire(row, threads.get(str(row[0]), ())) for row in rows]
 
 
 def get_comment(client_slug, topic_slug, comment_id):
-    """One comment as its wire dict, or None when the topic or the comment is unknown."""
+    """One TOP-LEVEL comment as its wire dict, or None when the topic or the comment is
+    unknown. A reply's id answers None too, and that is the point: a reply is not
+    addressable as a comment anywhere in this module, so the resolve, dismiss and apply
+    doors all refuse one by looking it up and finding nothing, rather than each carrying
+    its own parent check for someone to forget."""
     tid = db.topic_id(client_slug, topic_slug)
     if tid is None or not _is_uuid(comment_id):
         return None
     row = db.q(
-        f"select {_COMMENT_COLS} from blog_comments where id = %s and topic_id = %s",
+        f"""select {_COMMENT_COLS} from blog_comments
+            where id = %s and topic_id = %s and parent_id is null""",
         (comment_id, tid), fetch="one")
-    return _wire(row) if row else None
+    if not row:
+        return None
+    return _wire(row, _replies_for([row[0]]).get(str(row[0]), ()))
 
 
 def in_flight_count(client_slug, topic_slug):
     """How many applies are live for one topic, counted on the RECORD: two engines share
-    it, so a count over one machine's memory would let each spend the whole cap alone."""
+    it, so a count over one machine's memory would let each spend the whole cap alone.
+    Top-level only, like every count in this module: the row constraint already keeps a
+    reply in 'open', and this filter is what keeps that true if the constraint ever moves."""
     tid = db.topic_id(client_slug, topic_slug)
     if tid is None:
         return 0
     return db.q(
-        "select count(*) from blog_comments where topic_id = %s and state = 'applying'",
+        """select count(*) from blog_comments
+           where topic_id = %s and parent_id is null and state = 'applying'""",
         (tid,), fetch="val") or 0
 
 
@@ -153,12 +228,19 @@ def reconcile_stranded():
     this engine must not declare dead just because it booted. Fifteen minutes is the
     bound; an apply is one tool-less session capped at MAX_TURNS turns plus a commit,
     and nothing legitimate runs a quarter hour. Failed-with-a-reason is the honest
-    state, and the operator resolves or files the change again."""
+    state, and the operator resolves or files the change again.
+
+    THE CLOCK IS applying_since, NEVER created_at. A comment filed an hour ago and
+    resolved a minute ago is a LIVE apply on some engine, and created_at said it was an
+    hour old: every retry of an older comment died at the next boot of any machine, which
+    is the exact opposite of what the age guard is for. The coalesce covers a row that
+    entered 'applying' before this column existed, because a null comparison is never
+    true and such a row would hold the in-flight cap forever."""
     failed = db.q(
         """update blog_comments
              set state = 'failed', finished_at = now(), error = %s
            where state = 'applying'
-             and created_at < now() - interval '15 minutes'""",
+             and coalesce(applying_since, created_at) < now() - interval '15 minutes'""",
         (STRANDED_ERROR,), fetch="none")
     if failed:
         log.warning("failed %d stranded applying comment(s) older than 15 minutes", failed)
@@ -176,36 +258,83 @@ def add_comment(client_slug, topic_slug, *, selected_text, instruction,
     if tid is None:
         raise EditError(f"no topic {topic_slug!r} for client {client_slug!r}")
     state = "applying" if author == "operator" else "open"
+    # applying_since is stamped by the same expression that sets the state, so the two can
+    # never disagree: an 'applying' row with no stamp is a row the stranded sweep cannot
+    # age, and an 'open' row with one would age a comment nobody is applying.
     # insert..select so client_id rides in from the topic row: a comment whose client_id
     # disagreed with its topic's would be the composite FK's refusal anyway.
     row = db.q(
         f"""insert into blog_comments
               (topic_id, client_id, author, author_email, selected_text,
-               context_before, context_after, instruction, state)
-            select id, client_id, %s, %s, %s, %s, %s, %s, %s
+               context_before, context_after, instruction, state, applying_since)
+            select id, client_id, %s, %s, %s, %s, %s, %s, %s,
+                   case when %s = 'applying' then now() end
             from topics where id = %s
             returning {_COMMENT_COLS}""",
         (author, author_email, selected_text, context_before, context_after,
-         instruction, state, tid), fetch="one")
+         instruction, state, state, tid), fetch="one")
     return _wire(row)
+
+
+def reply_comment(client_slug, topic_slug, comment_id, *, body,
+                  author="operator", author_email=""):
+    """Add one reply to an existing top-level comment and return its reply wire dict, or
+    None when the parent is unknown, another topic's, or itself a reply (get_comment
+    refuses all three by construction).
+
+    Replying is NOT resolving: the parent's state is untouched, nothing is applied, and no
+    count moves. An operator answering "we cut that line, it was a duplicate" is telling
+    the client something, and turning that sentence into a Claude session or into a
+    dismissal would silently decide the request on their behalf. The client's own replies
+    arrive through portal_reply_comment, which enforces the same one-level rule at the
+    database."""
+    tid = db.topic_id(client_slug, topic_slug)
+    # get_comment carries the uuid check and the top-level filter, so the id is a real
+    # comment on THIS topic by the time it reaches the insert's explicit ::uuid cast.
+    if tid is None or get_comment(client_slug, topic_slug, comment_id) is None:
+        return None
+    row = db.q(
+        f"""insert into blog_comments
+              (topic_id, client_id, parent_id, author, author_email, selected_text,
+               context_before, context_after, instruction, state)
+            select id, client_id, %s::uuid, %s, %s, '', '', '', %s, 'open'
+            from topics where id = %s
+            returning {_REPLY_COLS}""",
+        (comment_id, author, author_email, body, tid), fetch="one")
+    return _wire_reply(row)
 
 
 def resolve_comment(client_slug, topic_slug, comment_id):
     """Atomically flip one 'open' or 'failed' comment to 'applying' and return its wire
-    dict, or None when the state refuses. The WHERE is the whole race guard: two admins
-    pressing Resolve together get one flip and one None, never two apply sessions.
-    'failed' is flippable so the same door retries a failed operator apply and a failed
-    client resolve alike. finished/error/edits reset with the flip, because they
-    describe the attempt this one supersedes."""
+    dict, or None when the state or the in-flight cap refuses. The WHERE is the whole race
+    guard: two admins pressing Resolve together get one flip and one None, never two apply
+    sessions. 'failed' is flippable so the same door retries a failed operator apply and a
+    failed client resolve alike. finished/error/edits reset with the flip, because they
+    describe the attempt this one supersedes.
+
+    THE CAP IS IN THIS STATEMENT, not in a count the route ran first. Read-then-flip spans
+    two transactions with an HTTP handler's await inside, and two admins resolving
+    different comments in that window each read two-of-three and each started a session, so
+    four Claude runs raced one article against a cap of three. Folding the count into the
+    WHERE closes the window the app opened. It does not close the database's own: under
+    READ COMMITTED both statements can still read the same snapshot, so a simultaneous pair
+    can land one over the cap. That residue is bounded at one extra session and is worth
+    naming rather than papering over, because a lock big enough to close it would serialise
+    every resolve on every topic."""
     tid = db.topic_id(client_slug, topic_slug)
     if tid is None or not _is_uuid(comment_id):
         return None
     row = db.q(
         f"""update blog_comments
-              set state = 'applying', finished_at = null, error = null, edits = null
-            where id = %s and topic_id = %s and state in ('open', 'failed')
+              set state = 'applying', applying_since = now(),
+                  finished_at = null, error = null, edits = null
+            where id = %s and topic_id = %s and parent_id is null
+              and state in ('open', 'failed')
+              and (select count(*) from blog_comments f
+                    where f.topic_id = %s and f.parent_id is null
+                      and f.state = 'applying') < %s
             returning {_COMMENT_COLS}""",
-        (comment_id, tid), fetch="one")
+        (comment_id, tid, tid, MAX_IN_FLIGHT), fetch="one")
     return _wire(row) if row else None
 
 
@@ -222,20 +351,25 @@ def dismiss_comment(client_slug, topic_slug, comment_id):
     row = db.q(
         f"""update blog_comments
               set state = 'dismissed', finished_at = now()
-            where id = %s and topic_id = %s and state <> 'applying'
+            where id = %s and topic_id = %s and parent_id is null
+              and state <> 'applying'
             returning {_COMMENT_COLS}""",
         (comment_id, tid), fetch="one")
     return _wire(row) if row else None
 
 
 def _finish_comment(comment_id, *, state, error=None, edits=None):
-    """Land one apply's verdict ('resolved' | 'failed') on the record. edits travels as
-    dumped JSON with an explicit cast, because psycopg adapts a bare Python list as an
-    array, not as jsonb."""
+    """Land one apply's verdict ('resolved' | 'failed') on the record, ONLY while the row
+    still reads 'applying'. Without that clause a superseded task overwrites whatever
+    happened since: the stranded sweep fails a comment, the operator dismisses it, the old
+    task finally returns and stamps 'resolved' on a dismissed row with edits nobody
+    applied. A verdict is about the attempt that produced it, so it lands only where that
+    attempt is still the live one. edits travels as dumped JSON with an explicit cast,
+    because psycopg adapts a bare Python list as an array, not as jsonb."""
     db.q(
         """update blog_comments
              set state = %s, finished_at = now(), error = %s, edits = %s::jsonb
-           where id = %s""",
+           where id = %s and state = 'applying'""",
         (state, error, json.dumps(edits) if edits is not None else None, comment_id),
         fetch="none")
 
@@ -284,7 +418,7 @@ async def _apply_locked(client_slug, topic_slug, comment_id):
     # a teammate's committed edit would otherwise be silently reverted by an apply built
     # on this machine's stale copy. The selection was made against the record (both
     # surfaces serve settled topics from it), so the record is also what its author meant.
-    body = await asyncio.to_thread(_record_body, client_slug, topic_slug)
+    body, base_version = await asyncio.to_thread(_record_body, client_slug, topic_slug)
     if body is None:
         if not blog_path.is_file():
             raise EditError("this topic has no blog.md to edit")
@@ -300,6 +434,13 @@ async def _apply_locked(client_slug, topic_slug, comment_id):
 
     # The session ran for tens of seconds; a run registered meanwhile owns these files now.
     _refuse_live_run(client_slug, "applied")
+
+    # And the OTHER engine may have committed in that same window. The edits below were
+    # computed against base_version's bytes, so landing them on a newer article writes a
+    # body that never contained the teammate's change: a silent revert of work nobody was
+    # told about. Checked immediately before the write, so the window it leaves is the
+    # write itself rather than the session.
+    await asyncio.to_thread(_refuse_moved_record, client_slug, topic_slug, base_version)
 
     new_body = apply_edits(body, edits)
     prev_bytes = blog_path.read_bytes() if blog_path.is_file() else None
@@ -328,15 +469,36 @@ def _refuse_live_run(client_slug, verb):
 
 
 def _record_body(client_slug, topic_slug):
-    """The latest committed blog body, or None when the record holds no version."""
+    """The latest committed blog body AND the version_no it came from, or (None, None)
+    when the record holds no version. The number is what makes the read checkable later:
+    bytes alone cannot tell a caller whether the article moved underneath it."""
+    tid = db.topic_id(client_slug, topic_slug)
+    if tid is None:
+        return None, None
+    row = db.q(
+        """select body, version_no from blog_versions
+           where topic_id = %s order by version_no desc limit 1""",
+        (tid,), fetch="one")
+    return (row[0], row[1]) if row else (None, None)
+
+
+def _record_version_no(client_slug, topic_slug):
+    """The latest committed version_no, or None when the record holds no version."""
     tid = db.topic_id(client_slug, topic_slug)
     if tid is None:
         return None
-    row = db.q(
-        """select body from blog_versions
+    return db.q(
+        """select version_no from blog_versions
            where topic_id = %s order by version_no desc limit 1""",
-        (tid,), fetch="one")
-    return row[0] if row else None
+        (tid,), fetch="val")
+
+
+def _refuse_moved_record(client_slug, topic_slug, base_version):
+    """Refuse when the record's latest version is no longer the one this write was built
+    on. base_version None means the record held nothing when the write began, so a version
+    appearing since is a move exactly like any other."""
+    if _record_version_no(client_slug, topic_slug) != base_version:
+        raise EditError(CONFLICT_ERROR)
 
 
 def apply_edits(body, edits):
@@ -513,11 +675,18 @@ def save_content(client_slug, topic_slug, body):
     Materialize first, for the same status.jsonl reason _apply_locked names; the
     operator's body then overwrites whatever blog.md was laid down. Returns the committed
     word count, measured the way commit_topic measures it."""
+    base_version = _record_version_no(client_slug, topic_slug)
     sync.materialize_topic(client_slug, topic_slug)
     tdir = runner.output_dir(client_slug, topic_slug)
     tdir.mkdir(parents=True, exist_ok=True)
     blog_path = tdir / "blog.md"
     prev_bytes = blog_path.read_bytes() if blog_path.is_file() else None
+    # The apply path's guard, for the same reason: APPLY_LOCK holds this process only, so
+    # a teammate's engine can commit between the materialize above and the write below,
+    # and these bytes would bury it. What this cannot see is an editor opened BEFORE that
+    # commit, because the browser sends no version to compare; closing that needs a version
+    # on the wire, and this closes the half the engine can prove.
+    _refuse_moved_record(client_slug, topic_slug, base_version)
     blog_path.write_text(body, encoding="utf-8")
     try:
         sync.commit_topic(client_slug, topic_slug)
@@ -534,7 +703,9 @@ def sent_state(client_slug, topic_slug):
     """The delivery state for one topic: the send stamp, the client's approval, and how
     many client suggestions are still open. changes_requested counts 'applying' with
     'open', because a suggestion mid-apply is not yet resolved and Send again while one
-    is in flight would release bytes the apply is about to change."""
+    is in flight would release bytes the apply is about to change. TOP-LEVEL rows only: a
+    client's reply asks for nothing, and counting one would leave "thanks, looks good"
+    blocking the re-send it was thanking the team for."""
     empty = {"sent_to_client": None, "sent_to_client_by": None,
              "client_approved": None, "client_approved_by": None,
              "changes_requested": 0}
@@ -546,6 +717,7 @@ def sent_state(client_slug, topic_slug):
                   t.client_approved_at, t.client_approved_by,
                   (select count(*) from blog_comments c
                     where c.topic_id = t.id and c.author = 'client'
+                      and c.parent_id is null
                       and c.state in ('open', 'applying'))
            from topics t where t.id = %s""",
         (tid,), fetch="one")
@@ -570,11 +742,21 @@ def mark_sent(client_slug, topic_slug, email):
     renders it, and a client suggestion anchors to it), and the client's approval is
     CLEARED with the stamp, because an approval describes the exact bytes the client
     read and must not survive a re-send of different ones as though they approved those
-    too. The route owns the one refusal (open suggestions block a re-send)."""
+    too.
+
+    RETURNS None WHEN THE SEND IS REFUSED, which is the one refusal this act has: an open
+    or applying client suggestion means the client is still waiting to see something
+    change, and re-sending over it releases an article that does not answer them yet. The
+    refusal lives in this statement's WHERE rather than in a count the route ran first,
+    because check-then-act across two transactions is exactly wide enough for a suggestion
+    filed from the portal to land in between: the route reads zero, the client files one,
+    the send goes out over it, and the suggestion now sits open against bytes the client
+    has already been sent. Zero rows updated IS the refusal, and the route turns it into a
+    409. Replies are excluded from the count for the reason sent_state excludes them."""
     tid = db.topic_id(client_slug, topic_slug)
     if tid is None:
         return sent_state(client_slug, topic_slug)
-    db.q(
+    sent = db.q(
         """update topics
              set sent_to_client_at = now(),
                  sent_to_client_by = %s,
@@ -584,6 +766,13 @@ def mark_sent(client_slug, topic_slug, email):
                    order by v.version_no desc limit 1),
                  client_approved_at = null,
                  client_approved_by = null
-           where id = %s""",
+           where id = %s
+             and not exists (
+               select 1 from blog_comments c
+               where c.topic_id = topics.id and c.author = 'client'
+                 and c.parent_id is null
+                 and c.state in ('open', 'applying'))""",
         (email or None, tid), fetch="none")
+    if not sent:
+        return None
     return sent_state(client_slug, topic_slug)

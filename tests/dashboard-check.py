@@ -121,6 +121,18 @@ def main() -> None:
         # allowlist exists to admit. theme.ts owns the store; the login page and
         # use-theme read through it, never localStorage directly.
         "src/lib/theme.ts",
+        # WHICH CLIENT EVENTS THIS OPERATOR HAS ALREADY BEEN SHOWN, per brand, and nothing
+        # else: no comment, no article, no run. It is admissible on this rule's own test,
+        # because no truth on disk can contradict it. A stale copy costs one missed ring or
+        # one repeated one, and the blog rows carry the same news permanently in their
+        # delivery chips, read from the server on every load.
+        #
+        # It is here because the client half of the review loop is deliberately NOT polled:
+        # a suggestion arrives while the tab is closed, so the first read after a page load
+        # is the read that has to report it, and an in-memory baseline starts empty and
+        # reports nothing. Storing the BASELINE rather than the announcements is what keeps
+        # the log itself unpersisted, so an approval stamped last week still rings nothing.
+        "src/lib/notifications.ts",
     }
     storage_files = [
         f for f, t in joined.items() if "localStorage" in t and f not in STORAGE_ALLOWED

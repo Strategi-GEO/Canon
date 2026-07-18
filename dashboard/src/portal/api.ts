@@ -1,9 +1,11 @@
 import { clearSession, ensureFreshToken } from "@/lib/session";
 import type {
   AnswersBody,
+  ApproveBody,
   Overview,
   PortalBlogDetail,
   PortalRoadmap,
+  ReplyBody,
   SuggestBody,
 } from "@/portal/types";
 
@@ -107,17 +109,28 @@ export const api = {
     ),
   /**
    * The review-loop writes, POSTs to the portal's own Route Handlers, which call the
-   * database's definer functions with the caller's JWT exactly as answers does. Approve
-   * carries no body: the URL names the topic and the record supplies everything else.
+   * database's definer functions with the caller's JWT exactly as answers does.
+   *
+   * Approve carries the VERSION the client read, taken from the detail payload they are
+   * looking at. It is not decoration: the record compares it with the version currently on
+   * offer and refuses a mismatch, so a team re-send that lands while somebody is reading
+   * cannot collect an approval for bytes nobody saw.
    */
-  approveBlog: (brand: string, topic: string) =>
+  approveBlog: (brand: string, topic: string, body: ApproveBody) =>
     request<unknown>(
       `/api/blog/${encodeURIComponent(brand)}/${encodeURIComponent(topic)}/approve`,
-      { method: "POST" },
+      { method: "POST", body },
     ),
   suggestChange: (brand: string, topic: string, body: SuggestBody) =>
     request<unknown>(
       `/api/blog/${encodeURIComponent(brand)}/${encodeURIComponent(topic)}/suggest`,
+      { method: "POST", body },
+    ),
+  /** One line added to an existing suggestion's thread. Never changes that suggestion's
+   *  state: answering the team is not withdrawing the request. */
+  replyComment: (brand: string, topic: string, body: ReplyBody) =>
+    request<unknown>(
+      `/api/blog/${encodeURIComponent(brand)}/${encodeURIComponent(topic)}/reply`,
       { method: "POST", body },
     ),
   roadmap: (brand: string, signal?: AbortSignal) =>
@@ -138,4 +151,24 @@ export function detailText(error: ApiError): string {
     return (error.detail as { detail: string }).detail;
   }
   return error.message;
+}
+
+/**
+ * True when the approve route refused because the article on offer moved while the client
+ * was reading it.
+ *
+ * The flag travels as a FIELD on the error body rather than as words in the message, and
+ * that is the whole reason it exists: every other refusal the approve route can give is
+ * also a 409, and the one branch that must not be silent is this one. The others mean the
+ * record has already moved past the button, so re-reading the page answers them; this one
+ * means the client's approval did not land and they have a different article in front of
+ * them than the one they signed off. Matching on the message text would put that
+ * distinction one copy edit away from vanishing.
+ */
+export function isStaleVersion(error: ApiError): boolean {
+  return (
+    typeof error.detail === "object" &&
+    error.detail !== null &&
+    (error.detail as { stale?: unknown }).stale === true
+  );
 }

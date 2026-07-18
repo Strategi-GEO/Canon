@@ -96,10 +96,14 @@ export function NotificationsBell() {
       <SheetContent side="right" className="gap-0">
         <SheetHeader className="border-b border-border">
           <SheetTitle>Notifications</SheetTitle>
+          {/* The kinds are named because the list now holds two different sorts of thing, and
+              a description that says only "Claude Code query" makes a client's approval look
+              like it landed in the wrong place. */}
           <SheetDescription>
-            Every Claude Code query that finished while this tab was open: a blog run, a drafted
-            description. Anything that finished before you got here lives on the brand it belongs
-            to, not here.
+            What happened while this tab was open: a blog run or a drafted description
+            finishing, and the client acting in their portal, answering review questions,
+            requesting changes, or approving a sent article. Anything from before you got here
+            lives on the brand it belongs to, not here.
           </SheetDescription>
         </SheetHeader>
 

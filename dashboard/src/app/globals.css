@@ -282,3 +282,69 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* Commented passages, marked inside a rendered article by src/components/comments/anchor.ts.
+
+   The paint hangs off the ATTRIBUTE rather than a class because the attribute is the thing
+   that cannot be forgotten: it is already what unwrapping searches for and what the rail
+   reads back to link a passage to its card, so a mark that exists is always a mark that is
+   styled. A class would be one prop away from a highlight nobody can see.
+
+   The review amber, not the accent: a marked passage is a thing somebody is waiting on, and
+   the orange in this product means "press me". Kept as a wash rather than a solid fill so a
+   sentence with four citations in it is still readable underneath. */
+mark[data-comment-id] {
+  /* mark carries a UA background and colour of its own, and the colour is the one that
+     matters: left alone it paints black text on this app's dark card. */
+  color: inherit;
+  background-color: color-mix(in oklch, var(--review) 22%, transparent);
+  border-radius: calc(var(--radius) * 0.3);
+  padding-block: 0.08em;
+  cursor: pointer;
+  /* A highlight that wraps across two lines gets its rounding on both fragments instead of
+     one long box with square inner corners. */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  transition: background-color 150ms ease;
+}
+
+/* Two comments on overlapping passages nest rather than fight, so the shared run really is
+   marked twice and the extra depth is the honest reading: more than one person wants
+   something here. */
+mark[data-comment-id] mark[data-comment-id] {
+  background-color: color-mix(in oklch, var(--review) 16%, transparent);
+}
+
+/* The active pair. Set by the rail on hover and on focus, on exactly one comment at a time,
+   which is what makes pointing at a card in the rail say which sentence it means. */
+mark[data-comment-id][data-active] {
+  background-color: color-mix(in oklch, var(--review) 46%, transparent);
+  box-shadow: inset 0 -0.1em 0 color-mix(in oklch, var(--review) 75%, transparent);
+}
+
+/* Dark theme, in lockstep with the light one as the two blocks at the top of this file are.
+   The same percentages read as almost nothing against a dark card, because the wash is
+   mixing toward the surface rather than toward white. */
+.dark mark[data-comment-id] {
+  background-color: color-mix(in oklch, var(--review) 30%, transparent);
+}
+.dark mark[data-comment-id] mark[data-comment-id] {
+  background-color: color-mix(in oklch, var(--review) 22%, transparent);
+}
+.dark mark[data-comment-id][data-active] {
+  background-color: color-mix(in oklch, var(--review) 55%, transparent);
+}
+
+/* Comment cards slide to their new position when the stack reflows around whichever one is
+   active, which is what makes the rail read as a set of cards attached to sentences rather
+   than a list that redraws.
+
+   The rail marks its column placed once it has measured the article, and the transition
+   hangs off that: the FIRST placement is a jump from nowhere to the passage, and animating
+   it drags every card down the screen on load. Reduced motion is already handled globally,
+   at the top of this file. */
+[data-comment-rail][data-placed] [data-comment-card] {
+  transition:
+    top 200ms ease-out,
+    box-shadow 200ms ease-out;
+}

@@ -44,6 +44,12 @@ drop function if exists auth_can_read_client(uuid) cascade;
 drop function if exists auth_org_slugs()           cascade;
 drop function if exists auth_is_admin()            cascade;
 drop function if exists portal_suggest_change(text, text, text, text, text, text) cascade;
+drop function if exists portal_reply_comment(text, text, uuid, text) cascade;
+-- BOTH approve signatures. An earlier build of this file created the two-argument form,
+-- and `create or replace` cannot change a signature: it adds an overload. Dropping only
+-- the current one would leave a second, version-blind approve door callable forever, which
+-- is exactly the stale-approval race the p_version argument exists to close.
+drop function if exists portal_approve_blog(text, text, uuid) cascade;
 drop function if exists portal_approve_blog(text, text) cascade;
 
 drop type   if exists topic_status cascade;
@@ -568,15 +574,15 @@ create index review_notes_topic on review_notes (topic_id, created_at);
 -- blog_comments (005): selection comments, one table for both surfaces
 -- ---------------------------------------------------------------------------
 
--- One row per selection comment, operator-authored and client-authored both. This is the
--- record, not a working file: the client files suggestions from the hosted portal with no
--- engine behind it, and two engines share one record, so a comment teammate A resolves
--- must read as resolved on teammate B's machine. The state machine: 'open' (filed,
--- nothing running; every client suggestion starts here), 'applying' (a Claude apply
--- session is live on some engine), 'resolved' (the edit landed and committed), 'failed'
--- (the apply refused or died; error says why, and Resolve retries it), 'dismissed'
--- (closed without an edit). Operator comments skip 'open': the engine auto-applies them
--- at filing.
+-- One row per selection comment, operator-authored and client-authored both, PLUS the
+-- replies that hang off one. This is the record, not a working file: the client files
+-- suggestions from the hosted portal with no engine behind it, and two engines share one
+-- record, so a comment teammate A resolves must read as resolved on teammate B's machine.
+-- The state machine: 'open' (filed, nothing running; every client suggestion starts here),
+-- 'applying' (a Claude apply session is live on some engine), 'resolved' (the edit landed
+-- and committed), 'failed' (the apply refused or died; error says why, and Resolve retries
+-- it), 'dismissed' (closed without an edit). Operator comments skip 'open': the engine
+-- auto-applies them at filing.
 create table blog_comments (
   id              uuid primary key default gen_random_uuid(),
   topic_id        uuid not null,
@@ -587,6 +593,13 @@ create table blog_comments (
   -- FK: a comment must outlive the version it quotes, the way ledger_entries outlive
   -- the topics they record, or pruning history silently deletes a client's request.
   blog_version_id uuid,
+  -- The thread pointer (005): null on a top-level comment, the parent's id on a REPLY. A
+  -- reply carries its text in `instruction`, leaves selected_text and both context columns
+  -- empty, and is never applied, never counted, never resolved: it is someone TALKING
+  -- ABOUT the change, not a second change request. Every count and every apply path
+  -- therefore filters `parent_id is null`, and getting that wrong makes a client's
+  -- "thanks, looks good" reply read as an open suggestion that blocks Send again forever.
+  parent_id       uuid references blog_comments(id) on delete cascade,
   author          text not null check (author in ('operator','client')),
   author_email    text not null default '',
   selected_text   text not null,
@@ -598,11 +611,26 @@ create table blog_comments (
   error           text,
   edits           jsonb,
   created_at      timestamptz not null default now(),
+  -- When this row last entered state 'applying', stamped on EVERY transition into it (the
+  -- insert of an operator comment, and every Resolve). created_at is the WRONG clock for
+  -- the stranded-apply sweep and this column exists to say so: a comment filed an hour ago
+  -- and retried a minute ago is a LIVE apply, and an age guard reading created_at fails it
+  -- the moment any engine boots, killing a session that is still working.
+  applying_since  timestamptz,
   finished_at     timestamptz,
-  foreign key (topic_id, client_id) references topics(id, client_id) on delete cascade
+  foreign key (topic_id, client_id) references topics(id, client_id) on delete cascade,
+  -- ONE level of nesting, exactly like a document comment thread: a reply is 'open' and
+  -- stays there, so nothing can resolve, apply, or dismiss it. This constraint cannot see
+  -- the parent's own parent_id, so portal_reply_comment refuses a parent that is itself a
+  -- reply; the two rules together are what keep a thread flat, and neither is redundant
+  -- (a function check cannot stop a later UPDATE, and a row check cannot read the parent).
+  constraint blog_comments_reply_open check (parent_id is null or state = 'open')
 );
 
 create index blog_comments_topic on blog_comments (topic_id, created_at);
+-- Replies are read BY PARENT, one query for a whole page of threads. Without this index
+-- that read is a sequential scan of the table on every stage-page poll, ten seconds apart.
+create index blog_comments_parent on blog_comments (parent_id);
 
 -- ---------------------------------------------------------------------------
 -- Views: the derived reads
@@ -767,28 +795,122 @@ create policy self_or_admin on org_members for select to authenticated
 -- Table privilege behind the row filter. SELECT only; every write stays on the
 -- service path. client_members is deliberately NOT granted: its per-brand
 -- overlay is resolved in Python, never over the browser-direct path.
-grant select on clients, orgs, client_resources, roadmap_uploads, roadmap_sheets,
-  roadmap_rows, topics, blog_versions, status_events, ledger_entries, review_notes,
-  org_membership, topic_rollup, topics_live, v_review_notes,
-  app_admins, org_members
+--
+-- Only the tables with NO sensitive column get a table-wide grant. Everything else is
+-- column-scoped below.
+grant select on orgs, client_resources, roadmap_rows,
+  org_membership, app_admins, org_members
   to authenticated;
 
--- blog_comments is deliberately NOT in the table-wide grant above: it postdates 003's
--- column-scoping, which never covers it, so the safe-columns-only grant lives here.
--- Everything except author_email, which is a person's email address, operator material
--- on operator rows and another user's PII on client rows. No INSERT or UPDATE grant
--- exists on purpose: client writes pass through portal_suggest_change below, operator
--- writes ride the engine's owner connection, and a third path would be a write the
--- comment state machine never sees.
-grant select (id, topic_id, client_id, blog_version_id, author, selected_text,
+-- ---------------------------------------------------------------------------
+-- The client-safe column boundary (003, folded in here where fresh builds read it)
+-- ---------------------------------------------------------------------------
+-- RLS scopes ROWS to the caller's org and never COLUMNS, so a table-wide SELECT grant
+-- hands every client login every column of every row it can see. seed_org_users.py mints
+-- one authenticated login per client org and that JWT lives in the client's own browser: a
+-- client could take it straight to `${SUPABASE_URL}/rest/v1/blog_versions?select=score,
+-- eval_body` and read every score, hostile-audit eval body, research dossier, do-not-claim
+-- fact base and status internal for their own brands. The portal's SELECT lists never ask
+-- for those columns, but a SELECT LIST IS NOT A SECURITY CONTROL: a hand-crafted PostgREST
+-- call ignores it. Migration 003 closed this on the live database and its header recorded
+-- that it was never folded back here, so every fresh build reopened it, and phase 2 added
+-- two operator emails (topics.sent_to_client_by, client_approved_by) to what leaked.
+--
+-- THE MODEL: revoke table-wide SELECT, then re-grant SELECT on the SAFE columns only.
+-- PostgreSQL column privileges make a `select=score` by an authenticated JWT fail outright.
+-- The revokes are load-bearing rather than decorative even on a virgin database: Supabase's
+-- default privileges GRANT every newly created table in `public` to `authenticated`, so a
+-- table this file creates arrives already open and has to be closed explicitly.
+--
+-- WHO IS UNAFFECTED: the local engine and the local admin dashboard reach Postgres as the
+-- table OWNER over the service connection, which bypasses RLS and column grants entirely.
+-- The hosted admin dashboard reads the admin-only views 003 provides for exactly that.
+
+-- clients: the fact base (canonical_facts, which carries the do-not-claim list), the
+-- internal brief (client_md) and the gate config (gates) are operator material. A client
+-- sees only identity + flags.
+revoke select on clients from authenticated;
+grant select (id, org_id, slug, name, domain, industry, description,
+              demo_mode, created_at, deleted_at, preflight_ok, is_fixture, canonical_facts_at)
+  on clients to authenticated;
+
+-- topics: the dossier, the links-verified working log, and the NEEDS_REVIEW marker text are
+-- internal. Identity, title, ship pointer and timestamps are safe. The review-loop columns
+-- (004, 005) join them: sent_to_client_at says when a blog was released, sent_version_id
+-- names WHICH body the client reviews (and blog_versions.body is already theirs to read),
+-- and client_approved_at records the client's own act. The two _by columns are person
+-- emails, operator material, and stay off this list.
+revoke select on topics from authenticated;
+grant select (id, client_id, slug, title, shipped_version_id, created_at, deleted_at,
+              sent_to_client_at, sent_version_id, client_approved_at)
+  on topics to authenticated;
+
+-- blog_versions: score and eval_body are the whole hostile-audit surface; iteration and
+-- superseded_reason are pipeline internals. The article body and its metadata are the
+-- client's own content and stay readable.
+revoke select on blog_versions from authenticated;
+grant select (id, topic_id, client_id, version_no, body, h1_title, word_count,
+              shipped, committed_at)
+  on blog_versions to authenticated;
+
+-- status_events: score, note, stage, event, ts (run timing) are internals the contract
+-- forbids. The portal folds client state from status + iter + line_no only, so those three
+-- (plus the keys) are all it may read.
+revoke select on status_events from authenticated;
+grant select (id, topic_id, client_id, line_no, iter, status)
+  on status_events to authenticated;
+
+-- ledger_entries: the score column is the one internal; everything else is the ship record
+-- the client's delivered library is built from.
+revoke select on ledger_entries from authenticated;
+grant select (id, client_id, topic_slug, topic, covers, prompts, generated_at, run_id)
+  on ledger_entries to authenticated;
+
+-- review_notes: asked_score is the score at asking time, an internal. The question text,
+-- area, why, iteration and the reply rows are what the portal shows and records.
+revoke select on review_notes from authenticated;
+grant select (id, topic_id, client_id, blog_version_id, parent_id, author, author_id,
+              ref, area, body, why, anchor, created_at, asked_iter)
+  on review_notes to authenticated;
+
+-- roadmap_sheets: raw_csv (the uploaded bytes) and report (the generation account) are
+-- operator material. The portal reads roadmap_rows, not sheets, so grant only the harmless
+-- identity columns for any incidental read.
+revoke select on roadmap_sheets from authenticated;
+grant select (id, client_id, filename, columns, modified, created_at)
+  on roadmap_sheets to authenticated;
+
+-- roadmap_uploads: the raw upload bytes. The portal never reads this table; revoke outright.
+revoke select on roadmap_uploads from authenticated;
+
+-- blog_comments (005). TWO columns stay out. author_email is a person's email address,
+-- operator material on operator rows and another user's PII on client rows; a client
+-- surface renders "you" or "the team" from author alone. applying_since is engine timing on
+-- an operator's Claude session, which no client surface has any business reading: the
+-- portal says "with the team" from state, and a visible apply clock would turn an internal
+-- retry into something the client watches. parent_id IS granted, because the portal cannot
+-- draw a thread without knowing which comment a reply hangs off. No INSERT or UPDATE grant
+-- exists on purpose: client writes pass through the definer functions below, operator
+-- writes ride the engine's owner connection, and a third path would be a write the comment
+-- state machine never sees.
+revoke select on blog_comments from authenticated;
+grant select (id, topic_id, client_id, blog_version_id, parent_id, author, selected_text,
               context_before, context_after, instruction, state, error, edits,
               created_at, finished_at)
   on blog_comments to authenticated;
 
+-- Views that re-expose sensitive base columns. The portal reads none of them (it reads base
+-- tables with safe selects) and the hosted admin reads 003's admin-only views instead.
+-- Revoke so an authenticated JWT cannot reach score/eval_body/dossier/asked_score through a
+-- view either, which a view granted table-wide would hand over whole.
+revoke select on topic_rollup   from authenticated;   -- score, iterations
+revoke select on topics_live    from authenticated;   -- topics.* incl dossier/review_note
+revoke select on v_review_notes from authenticated;   -- review_notes.* incl asked_score
+
 -- ---------------------------------------------------------------------------
--- The client review writes (005): two SECURITY DEFINER gates
+-- The client review writes (005): three SECURITY DEFINER gates
 -- ---------------------------------------------------------------------------
--- The portal's suggest-changes and approve actions, gated exactly as
+-- The portal's suggest-changes, reply and approve actions, gated exactly as
 -- portal_submit_answers (002/003) is: caller, body, membership parity, role, then the
 -- topic's own state. SECURITY DEFINER because authenticated holds zero write grants, and
 -- these functions are the doors a client write may pass through. Every error leaves as
@@ -798,6 +920,13 @@ grant select (id, topic_id, client_id, blog_version_id, author, selected_text,
 -- Unlike a comment the admin files, NOTHING runs on insert here: the suggestion lands in
 -- state 'open' and waits for an operator's Resolve, because an apply is a real Claude
 -- session on an engine the client does not have.
+--
+-- AN APPROVED TOPIC IS NOT REFUSED. Approving is the client saying the article reads
+-- right, not signing away their voice: someone who approves and then spots a wrong figure
+-- must still be able to say so, and the alternative is a client emailing the team a
+-- correction the record never sees. The admin gets a changes-requested chip on an approved
+-- blog and decides. Only the send stamp gates: an article nobody released has nothing to
+-- comment on.
 create or replace function portal_suggest_change(
   p_brand       text,
   p_topic       text,
@@ -819,7 +948,6 @@ declare
   v_tid       uuid;
   v_sent_at   timestamptz;
   v_sent_ver  uuid;
-  v_approved  timestamptz;
   v_open      int;
   v_id        uuid;
 begin
@@ -859,8 +987,8 @@ begin
     raise exception 'PORTAL:ROLE:this account is not allowed to suggest changes for this brand';
   end if;
 
-  select t.id, t.sent_to_client_at, t.sent_version_id, t.client_approved_at
-    into v_tid, v_sent_at, v_sent_ver, v_approved
+  select t.id, t.sent_to_client_at, t.sent_version_id
+    into v_tid, v_sent_at, v_sent_ver
   from topics t
   where t.client_id = v_cid and t.slug = p_topic and t.deleted_at is null;
   if v_tid is null then
@@ -870,20 +998,20 @@ begin
   if v_sent_at is null then
     raise exception 'PORTAL:NOTSENT:this article is not with you for review yet';
   end if;
-  if v_approved is not null then
-    raise exception 'PORTAL:APPROVED:this article is already approved; the team takes it from here';
-  end if;
 
   -- Serialize concurrent suggests on the topic row: two racing submits would otherwise
   -- both count nine open suggestions and both insert past the guard below.
   perform 1 from topics t where t.id = v_tid for update;
 
-  -- The spam guard. Ten unresolved suggestions on one article is not a review, it is a
-  -- rewrite request, and every open row blocks Send again on the admin side: without a
-  -- cap, one client could wedge an article's delivery indefinitely at zero cost.
+  -- The spam guard, counting TOP-LEVEL suggestions only. Ten unresolved suggestions on
+  -- one article is not a review, it is a rewrite request, and every open row blocks Send
+  -- again on the admin side: without a cap, one client could wedge an article's delivery
+  -- indefinitely at zero cost. Replies are excluded because they ask for nothing: a thread
+  -- of ten "thank you" notes must never spend the suggestion budget.
   select count(*) into v_open
   from blog_comments c
-  where c.topic_id = v_tid and c.author = 'client' and c.state in ('open', 'applying');
+  where c.topic_id = v_tid and c.author = 'client'
+    and c.parent_id is null and c.state in ('open', 'applying');
   if v_open >= 10 then
     raise exception 'PORTAL:LIMIT:ten suggestions are already with the team; they will follow up once those are addressed';
   end if;
@@ -905,15 +1033,144 @@ revoke all on function portal_suggest_change(text, text, text, text, text, text)
 grant execute on function portal_suggest_change(text, text, text, text, text, text)
   to authenticated;
 
+-- A suggestion is not a one-shot form, it is the start of a thread: the admin resolves or
+-- dismisses it and the client answers that, the admin answers back, and both sides read the
+-- same rows. Same gate stack, with three refusals of its own.
+--
+-- A reply is DELIBERATELY NOT a change request. It inserts with parent_id set, state
+-- 'open', its text in `instruction`, and empty selected_text, so no apply path can ever
+-- pick it up and no count can ever see it. The reply-of-a-reply refusal is what keeps the
+-- thread one level deep: the row constraint on blog_comments cannot read the parent's
+-- parent_id, so the check lives here, and a client who somehow held a reply's id would
+-- otherwise nest a conversation the rail has no way to draw.
+create or replace function portal_reply_comment(
+  p_brand  text,
+  p_topic  text,
+  p_parent uuid,
+  p_body   text
+) returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid          uuid := auth.uid();
+  v_email        text := coalesce(auth.jwt() ->> 'email', '');
+  v_is_admin     boolean;
+  v_is_member    boolean;
+  v_cid          uuid;
+  v_tid          uuid;
+  v_sent_at      timestamptz;
+  v_parent_topic uuid;
+  v_parent_of    uuid;
+  v_replies      int;
+  v_id           uuid;
+begin
+  if v_uid is null then
+    raise exception 'PORTAL:AUTH:not authenticated';
+  end if;
+  if btrim(coalesce(p_body, '')) = '' then
+    raise exception 'PORTAL:BLANK:a reply needs something in it';
+  end if;
+
+  select c.id into v_cid
+  from clients c
+  where c.slug = p_brand and c.deleted_at is null;
+
+  v_is_admin := exists (select 1 from app_admins a where a.user_id = v_uid);
+  v_is_member := v_cid is not null and (
+      v_is_admin
+      or exists (
+          select 1
+          from org_membership m
+          join org_members om on om.org_slug = m.org_slug
+          where m.client_id = v_cid and om.user_id = v_uid));
+
+  -- The 003 parity rule: a non-member learns nothing, because a brand that does not
+  -- exist and a brand in someone else's org answer identically.
+  if not v_is_member then
+    raise exception 'PORTAL:NOTFOUND:no blog to review for this account';
+  end if;
+
+  if not (v_is_admin or exists (
+      select 1 from org_membership m
+      join org_members om on om.org_slug = m.org_slug
+      where m.client_id = v_cid and om.user_id = v_uid
+        and om.role in ('admin', 'commenter'))) then
+    raise exception 'PORTAL:ROLE:this account is not allowed to reply for this brand';
+  end if;
+
+  select t.id, t.sent_to_client_at
+    into v_tid, v_sent_at
+  from topics t
+  where t.client_id = v_cid and t.slug = p_topic and t.deleted_at is null;
+  if v_tid is null then
+    raise exception 'PORTAL:NOTFOUND:no blog to review for this account';
+  end if;
+
+  -- An unsent article has no conversation to join. It refuses here rather than at the
+  -- parent lookup so the client reads why, not "that comment does not exist".
+  if v_sent_at is null then
+    raise exception 'PORTAL:NOTSENT:this article is not with you for review yet';
+  end if;
+
+  -- Serialize on the parent row, for the reason suggest serializes on the topic: two
+  -- racing replies would otherwise both count nineteen and both insert past the cap.
+  select c.topic_id, c.parent_id into v_parent_topic, v_parent_of
+  from blog_comments c
+  where c.id = p_parent
+  for update;
+
+  -- An unknown comment, another topic's comment, and a REPLY all answer identically. The
+  -- last one is not a lookup failure, it is the flat-thread rule: distinguishing it would
+  -- also hand a caller a probe for which ids are replies.
+  if v_parent_topic is null or v_parent_topic <> v_tid or v_parent_of is not null then
+    raise exception 'PORTAL:NOTFOUND:no comment to reply to on this article';
+  end if;
+
+  -- Twenty replies on one comment is not a conversation any more. The suggestion cap
+  -- above does not bind here (replies are excluded from it on purpose), so without this
+  -- one the thread is an unbounded write channel behind an authenticated login.
+  select count(*) into v_replies
+  from blog_comments c
+  where c.parent_id = p_parent;
+  if v_replies >= 20 then
+    raise exception 'PORTAL:LIMIT:this conversation is long enough; the team will follow up directly';
+  end if;
+
+  insert into blog_comments
+    (topic_id, client_id, parent_id, author, author_email,
+     selected_text, context_before, context_after, instruction, state)
+  values
+    (v_tid, v_cid, p_parent, 'client', v_email,
+     '', '', '', p_body, 'open')
+  returning id into v_id;
+
+  return v_id;
+end
+$$;
+
+revoke all on function portal_reply_comment(text, text, uuid, text) from public, anon;
+grant execute on function portal_reply_comment(text, text, uuid, text) to authenticated;
+
 -- Same gates as portal_suggest_change, then the stamp. Approval stays available while
 -- the client's own suggestions are open (the portal keeps Approve live in the 'ready'
 -- state), so there is deliberately no open-comment refusal here: approving over an open
 -- suggestion is the client saying it no longer matters, and the admin dismisses it with
 -- that context. Already-approved refuses rather than re-stamps, because the stamp
 -- records WHEN the client accepted the release and a moving date falsifies that.
+--
+-- p_version IS THE VERSION THE CLIENT ACTUALLY READ, and it closes a real race: the team
+-- presses Send again while the client's approval is in flight, mark_sent moves
+-- sent_version_id to bytes nobody has seen, and the approval lands on them as though the
+-- client had read them. An approval is a statement about specific text, so it refuses
+-- (PORTAL:STALE) when the version it names is no longer the one on offer, and the portal
+-- reloads and asks again. The client sees a refresh; the alternative is a signature on a
+-- document that changed underneath it.
 create or replace function portal_approve_blog(
-  p_brand text,
-  p_topic text
+  p_brand   text,
+  p_topic   text,
+  p_version uuid
 ) returns void
 language plpgsql
 security definer
@@ -927,6 +1184,7 @@ declare
   v_cid       uuid;
   v_tid       uuid;
   v_sent_at   timestamptz;
+  v_sent_ver  uuid;
   v_approved  timestamptz;
 begin
   if v_uid is null then
@@ -958,8 +1216,8 @@ begin
     raise exception 'PORTAL:ROLE:this account is not allowed to approve for this brand';
   end if;
 
-  select t.id, t.sent_to_client_at, t.client_approved_at
-    into v_tid, v_sent_at, v_approved
+  select t.id, t.sent_to_client_at, t.sent_version_id, t.client_approved_at
+    into v_tid, v_sent_at, v_sent_ver, v_approved
   from topics t
   where t.client_id = v_cid and t.slug = p_topic and t.deleted_at is null;
   if v_tid is null then
@@ -972,6 +1230,12 @@ begin
   if v_approved is not null then
     raise exception 'PORTAL:APPROVED:this article is already approved';
   end if;
+  -- `is distinct from` and not `<>`, because either side can be null: a pre-005 send has
+  -- no sent_version_id, and a portal that failed to read one sends null. Both are the
+  -- same refusal, since neither can prove which bytes the client approved.
+  if p_version is distinct from v_sent_ver then
+    raise exception 'PORTAL:STALE:the team sent a newer version while you were reading; reload and take another look';
+  end if;
 
   update topics
      set client_approved_at = now(),
@@ -980,8 +1244,8 @@ begin
 end
 $$;
 
-revoke all on function portal_approve_blog(text, text) from public, anon;
-grant execute on function portal_approve_blog(text, text) to authenticated;
+revoke all on function portal_approve_blog(text, text, uuid) from public, anon;
+grant execute on function portal_approve_blog(text, text, uuid) to authenticated;
 
 -- A one-time REVOKE is point-in-time, and Supabase ships default privileges that
 -- GRANT every LATER-created table to anon. Without this, the next migration

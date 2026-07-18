@@ -16,11 +16,7 @@ import { BlogEditor } from "@/components/blogs/blog-editor";
 import { MarkdownView } from "@/components/blogs/markdown-view";
 import { PublishAction } from "@/components/blogs/publish-action";
 import { SendToClient } from "@/components/blogs/send-to-client";
-import {
-  CommentableArticle,
-  CommentsPanel,
-  type SelectionDraft,
-} from "@/components/blogs/selection-comments";
+import { CommentableArticle, type SelectionDraft } from "@/components/blogs/selection-comments";
 import { isKnownStatus } from "@/components/blogs/blogs-filter";
 import { extractScore } from "@/components/blogs/markdown";
 import { countSources, countWords } from "@/components/blogs/metrics";
@@ -46,8 +42,11 @@ const TABS: { name: OutputFile; label: string }[] = [
  * One blog's own page: the admin-review stage.
  *
  * A shipped blog lands here for a person to polish before the client receives it. The Blog
- * tab renders the article and, on a done blog, lets the operator edit it two ways: select
- * text and describe a change for Claude to apply, or open the raw markdown and type. Eval
+ * tab renders the article inside the shared comment rail, so every change request sits level
+ * with the passage it annotates, the client's and this side's alike, and lets the operator
+ * edit it two ways: select text and describe a change for Claude to apply, or open the raw
+ * markdown and type. The rail is where a client suggestion is resolved, replied to, or
+ * dismissed, which is why it renders here rather than only in the portal. Eval
  * and Dossier are read-only by design, because they are the pipeline's own record of how
  * the article earned its score, and editing the record would be editing history. The exit
  * is Send to client, which is what finally makes the article visible in the portal.
@@ -181,12 +180,12 @@ function StageBody({
   const editable =
     !HOSTED_READONLY && !demoMode && blog.status === "done";
 
-  const comments = useBlogComments(brandSlug, topicSlug, editable);
-  const applying = comments.comments.filter((comment) => comment.state === "applying").length;
-
   // Where this blog sits with the client: sent, approved, and how many suggestions are
   // still open. Read beside the summary rather than derived from it, because a resolve or
   // a dismiss moves this state and refetching the whole blogs list for one chip is noise.
+  //
+  // Read BEFORE the comments hook, because it is what decides whether the comments poll runs
+  // at all: a sent blog has a second author filing things from a portal this app cannot hear.
   const [review, setReview] = React.useState<BlogReviewState | null>(null);
   const loadReview = React.useCallback(
     (signal?: AbortSignal) =>
@@ -216,6 +215,12 @@ function StageBody({
     client_approved_by: null,
     changes_requested: blog.changes_requested ?? 0,
   };
+
+  // Read once per visit, then watched only while an apply this operator started is settling.
+  // A client's suggestion arriving is NOT watched for: it lands in the bell at the next read
+  // of the blogs library, which is what a refresh is for.
+  const comments = useBlogComments(brandSlug, topicSlug, editable);
+  const applying = comments.comments.filter((comment) => comment.state === "applying").length;
 
   // Announce each comment that settles, once, and re-read the article it changed. The ref
   // carries the states already seen, so a poll that returns the same settled comment twice
@@ -270,6 +275,23 @@ function StageBody({
         });
       },
     );
+  }
+
+  /**
+   * Answers one comment in its thread. Nothing else moves: the parent keeps its state, so a
+   * reply is how an operator says "we cut that line, it was a duplicate" without spending a
+   * session on the request or making it disappear from the client's rail.
+   *
+   * The refusal is RETHROWN rather than toasted, because the reply box is a form and the
+   * engine's sentence belongs beside the words that caused it.
+   */
+  async function replyToComment(comment: BlogComment, body: string) {
+    try {
+      await api.replyToBlogComment(brandSlug, topicSlug, comment.id, body);
+    } catch (cause) {
+      throw new Error(cause instanceof ApiError ? cause.message : String(cause));
+    }
+    comments.refresh();
   }
 
   function resolveComment(comment: BlogComment) {
@@ -422,30 +444,27 @@ function StageBody({
                     onCancel={() => setEditDraft(null)}
                   />
                 ) : (
-                  <BlogArticle
-                    loaded={article.loaded}
-                    editable={editable}
-                    remaining={3 - applying}
-                    onSubmit={submitComment}
-                  />
-                )}
-
-                {item.name === "blog.md" && !editing ? (
                   <>
                     {editable && comments.error !== null ? (
-                      // The change log could not be read; an empty panel would claim
-                      // nothing was ever filed. The engine's own words, inline.
-                      <p className="mt-8 text-xs wrap-anywhere text-fail">
-                        Could not read the changes for this blog: {comments.error.message}
+                      // The rail could not be read, and an article with an empty margin
+                      // beside it would claim nobody has asked for anything. The engine's
+                      // own words, above the piece they are about.
+                      <p className="mb-4 text-xs wrap-anywhere text-fail">
+                        Could not read the comments on this blog: {comments.error.message}
                       </p>
                     ) : null}
-                    <CommentsPanel
+                    <BlogArticle
+                      loaded={article.loaded}
+                      editable={editable}
+                      remaining={3 - applying}
                       comments={comments.comments}
+                      onSubmit={submitComment}
                       onDismiss={dismissComment}
                       onResolve={resolveComment}
+                      onReply={replyToComment}
                     />
                   </>
-                ) : null}
+                )}
 
                 {/* The real path on disk, so an operator can open the file in Finder. */}
                 <p className="machine mx-auto mt-10 max-w-[68ch] border-t pt-3 text-xs wrap-anywhere text-muted-foreground">
@@ -488,17 +507,26 @@ function EditButton({
   );
 }
 
-/** The article view: commentable on a done blog, a plain read everywhere else. */
+/** The article view: commentable on a done blog, with the review rail beside it, and a plain
+ *  read everywhere else. */
 function BlogArticle({
   loaded,
   editable,
   remaining,
+  comments,
   onSubmit,
+  onDismiss,
+  onResolve,
+  onReply,
 }: {
   loaded: LoadedArtifact | undefined;
   editable: boolean;
   remaining: number;
+  comments: BlogComment[];
   onSubmit: (draft: SelectionDraft) => Promise<void>;
+  onDismiss: (comment: BlogComment) => void;
+  onResolve: (comment: BlogComment) => void;
+  onReply: (comment: BlogComment, body: string) => Promise<void>;
 }) {
   if (!loaded) {
     return <ArtifactSkeleton name="blog.md" />;
@@ -512,15 +540,24 @@ function BlogArticle({
   return (
     <>
       {editable ? (
-        <p className="mx-auto mb-4 max-w-[68ch] text-xs text-muted-foreground">
+        // Above BOTH columns and no longer centred on the article's measure: it describes
+        // the whole surface now, rail included. It also stays OUTSIDE the rail's container
+        // deliberately, because everything inside that container is selectable text a
+        // comment can be filed against, and a hint sentence is not part of the article.
+        <p className="mb-4 text-xs text-muted-foreground">
           Select any passage to ask Claude for a change, or open Edit for the raw markdown.
+          Comments from the client sit beside the passage each one is about.
         </p>
       ) : null}
       <CommentableArticle
         source={loaded.text}
+        comments={comments}
         disabled={!editable}
         remaining={remaining}
         onSubmit={onSubmit}
+        onDismiss={onDismiss}
+        onResolve={onResolve}
+        onReply={onReply}
       />
     </>
   );

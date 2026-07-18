@@ -4,6 +4,7 @@ import type {
   AddCommentBody,
   AnswersBody,
   BlogComment,
+  BlogCommentReply,
   BlogCommentsResponse,
   BlogQuestions,
   BlogReviewState,
@@ -476,8 +477,10 @@ export const api = {
     }),
 
   /**
-   * One blog's selection comments, with their apply states. Engine-only: the hosted
-   * build never calls this, because comments are the local engine's working file.
+   * One blog's selection comments as THREADS: every top-level comment with its replies
+   * nested under it, oldest first, dismissed ones included so the caller decides what to
+   * show. Engine-only: the hosted build never calls this, because an apply is a session
+   * only the local engine can run.
    */
   blogComments: (slug: string, topicSlug: string, signal?: AbortSignal) =>
     request<BlogCommentsResponse>(
@@ -520,6 +523,23 @@ export const api = {
     request<BlogComment>(
       `/api/clients/${slug}/blogs/${topicSlug}/comments/${encodeURIComponent(commentId)}/resolve`,
       { method: "POST" },
+    ),
+
+  /**
+   * Answers one comment in its thread, as the operator. 201 with the new reply, because
+   * nothing runs: REPLYING IS NOT RESOLVING, and the parent's state is exactly where it
+   * was afterwards. That separation is the whole reason this door exists beside Resolve
+   * with Claude: an operator who wants to say "we cut that line, it was a duplicate" says
+   * it without spending a session on the client's behalf, and without the suggestion
+   * disappearing from the client's rail as though it had been handled.
+   *
+   * 422 refuses a blank body. 404 covers an unknown comment AND a reply's own id, because
+   * a reply is not addressable as a comment: threads are one level deep, like Docs.
+   */
+  replyToBlogComment: (slug: string, topicSlug: string, commentId: string, body: string) =>
+    request<BlogCommentReply>(
+      `/api/clients/${slug}/blogs/${topicSlug}/comments/${encodeURIComponent(commentId)}/reply`,
+      { method: "POST", body: { body } },
     ),
 
   /**

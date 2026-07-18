@@ -11,12 +11,11 @@ import {
   Clock,
   Inbox,
   Loader2,
-  MessageSquarePlus,
 } from "lucide-react";
 import { ActionCard, ApprovedCard, FrozenRow, ReadyCard, SectionHeading } from "@/portal/blog-cards";
 import { AnswerForm } from "@/portal/answer-form";
 import { MarkdownView } from "@/portal/markdown-view";
-import { SuggestableArticle, SuggestionsList } from "@/portal/suggest-changes";
+import { CommentedArticle } from "@/portal/comments-rail";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,11 +29,12 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ApiError, api, detailText } from "@/portal/api";
+import { ApiError, api, detailText, isStaleVersion } from "@/portal/api";
 import { formatDate, formatRelative, readingTime } from "@/portal/format";
 import { brandHref } from "@/portal/nav";
 import { usePortal } from "@/portal/portal-context";
-import type { PortalBlogDetail, SuggestBody } from "@/portal/types";
+import { useBlogDetail } from "@/portal/use-blog-detail";
+import type { PortalBlogDetail, ReplyBody, SuggestBody } from "@/portal/types";
 
 /**
  * The client portal's views, one per resolved route. The (client) layout provides the
@@ -342,8 +342,8 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
         <section className="space-y-3" aria-label="Ready to post">
           <SectionHeading count={ready.length}>Ready to post</SectionHeading>
           <p className="text-xs text-muted-foreground">
-            Our team has finished these articles. Read each one, then approve it or
-            suggest changes.
+            Our team has finished these articles. Read each one, then approve it, or select
+            any text in it to leave a note for the team.
           </p>
           <div className="space-y-3">
             {ready.map((blog) => (
@@ -402,67 +402,37 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
 export function BlogDetail({ org, brand, topic }: { org: string; brand: string; topic: string }) {
   const portal = usePortal();
   const blogsHref = brandHref(org, brand, portal.isSingleBrand(org), "/blogs");
-  const [blog, setBlog] = React.useState<PortalBlogDetail | null>(null);
-  const [error, setError] = React.useState<ApiError | null>(null);
-  const [attempt, setAttempt] = React.useState(0);
-  // Suggest mode belongs to one article, so it is stored WITH the article it belongs to
-  // and derived below: navigating to another blog simply stops matching, which is the
-  // reset an effect would otherwise perform synchronously (the lint forbids that).
-  const suggestKey = `${brand}/${topic}`;
-  const [suggest, setSuggest] = React.useState({ key: suggestKey, on: false });
-  const suggesting = suggest.key === suggestKey && suggest.on;
-  const setSuggesting = React.useCallback(
-    (on: boolean) => setSuggest({ key: suggestKey, on }),
-    [suggestKey],
-  );
+  // The read, and the 15 second watch while the article is with the client. The hook owns
+  // the loop and the hidden-tab pause; this view owns what the page does with what lands.
+  const { blog, error, refetch, reload: hardReload } = useBlogDetail(brand, topic);
 
-  React.useEffect(() => {
-    const controller = new AbortController();
-    api
-      .blog(brand, topic, controller.signal)
-      .then((data) => {
-        if (!controller.signal.aborted) {
-          setBlog(data);
-          // Cleared on the async settle, never synchronously in the effect body: a
-          // fresh read either replaces the error with the article or with a newer error.
-          setError(null);
-        }
-      })
-      .catch((cause) => {
-        if (controller.signal.aborted) {
-          return;
-        }
-        if (cause instanceof ApiError) {
-          setError(cause);
-        } else if (!(cause instanceof DOMException && cause.name === "AbortError")) {
-          setError(new ApiError(0, String(cause)));
-        }
-      });
-    return () => controller.abort();
-  }, [brand, topic, attempt]);
+  // Every re-read here also refreshes the overview, because the shell's own counts (waiting
+  // on you, ready to post) are derived from it: acting on an article and watching the
+  // sidebar keep the old number is the two surfaces disagreeing about the same record.
+  const refresh = React.useCallback(() => {
+    refetch();
+    portal.refresh();
+  }, [refetch, portal]);
 
   const reload = React.useCallback(() => {
-    setBlog(null);
-    setError(null);
-    setAttempt((n) => n + 1);
+    hardReload();
     portal.refresh();
-  }, [portal]);
-
-  // Re-read the record WITHOUT clearing the page: after an approve or a suggestion the
-  // article on screen is still the article, so swapping in a skeleton would make a small
-  // act feel like a navigation. The fetch effect above swaps state in place when the
-  // fresh read lands; reload() stays the hard reset for error retries.
-  const refetch = React.useCallback(() => {
-    setAttempt((n) => n + 1);
-    portal.refresh();
-  }, [portal]);
+  }, [hardReload, portal]);
 
   const submitSuggestion = React.useCallback(
     async (draft: SuggestBody) => {
       await api.suggestChange(brand, topic, draft);
-      refetch();
+      refresh();
     },
-    [brand, topic, refetch],
+    [brand, topic, refresh],
+  );
+
+  const submitReply = React.useCallback(
+    async (draft: ReplyBody) => {
+      await api.replyComment(brand, topic, draft);
+      refresh();
+    },
+    [brand, topic, refresh],
   );
 
   if (error !== null) {
@@ -540,53 +510,46 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
         <div className="space-y-6">
           <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 sm:flex sm:items-center sm:justify-between sm:gap-4">
             <p className="text-sm leading-relaxed">
-              This article is ready for you. Approve it and our team takes it live, or
-              suggest changes and the team takes them from here.
+              This article is ready for you. Approve it and our team takes it live. To ask
+              for a change, select any text in the article and leave a note beside it.
             </p>
             <div className="mt-3 flex shrink-0 items-center gap-2 sm:mt-0">
-              <Button
-                size="sm"
-                variant="outline"
-                aria-pressed={suggesting}
-                onClick={() => setSuggesting(!suggesting)}
-              >
-                <MessageSquarePlus data-icon="inline-start" aria-hidden />
-                {suggesting ? "Done suggesting" : "Suggest changes"}
-              </Button>
-              <ApproveAction brand={blog.brand} topic={blog.topic_slug} onApproved={refetch} />
+              {/* Approve stands alone. Nothing beside it offers a mode, because there is
+                  no mode: a selection is always an invitation to comment. */}
+              <ApproveAction
+                brand={blog.brand}
+                topic={blog.topic_slug}
+                version={blog.version}
+                onSettled={refresh}
+              />
             </div>
           </div>
 
-          {suggesting ? (
-            <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
-              Select any text in the article below, and a small card appears to take your
-              note. Send as many as you need; each one goes straight to our team.
-            </p>
-          ) : null}
-
-          <article className="rounded-xl bg-card p-6 ring-1 ring-foreground/10 sm:p-10">
-            <SuggestableArticle
-              source={blog.body}
-              active={suggesting}
-              onSubmit={submitSuggestion}
-            />
-          </article>
-
-          {blog.comments !== null ? <SuggestionsList comments={blog.comments} /> : null}
+          <CommentedArticle
+            source={blog.body}
+            comments={blog.comments ?? []}
+            onSuggest={submitSuggestion}
+            onReply={submitReply}
+          />
         </div>
       ) : null}
 
       {blog.state === "approved" && blog.body !== null ? (
         <div className="space-y-6">
-          <div className="flex items-center gap-2 rounded-lg border border-ship/20 bg-ship-bg px-4 py-3 text-sm text-ship">
-            <CheckCircle2 className="size-4 shrink-0" aria-hidden />
-            You approved this article {formatRelative(blog.approved ?? blog.date)}. Our
-            team takes it live from here.
+          <div className="flex items-start gap-2 rounded-lg border border-ship/20 bg-ship-bg px-4 py-3 text-sm text-ship">
+            <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden />
+            <span>
+              You approved this article {formatRelative(blog.approved ?? blog.date)}. Our
+              team takes it live from here. If something still needs changing, select the
+              text and leave a note: an approval is not the end of the conversation.
+            </span>
           </div>
-          <article className="rounded-xl bg-card p-6 ring-1 ring-foreground/10 sm:p-10">
-            <MarkdownView source={blog.body} />
-          </article>
-          {blog.comments !== null ? <SuggestionsList comments={blog.comments} /> : null}
+          <CommentedArticle
+            source={blog.body}
+            comments={blog.comments ?? []}
+            onSuggest={submitSuggestion}
+            onReply={submitReply}
+          />
         </div>
       ) : null}
 
@@ -706,35 +669,55 @@ function StateBadge({ blog }: { blog: PortalBlogDetail }) {
  * the other side: the team reads an approval as the signal to take the article live.
  * The dialog stays open until the request settles, so a refusal lands in front of the
  * client instead of behind a closed dialog.
+ *
+ * THE APPROVAL NAMES THE VERSION IT IS FOR. The team can send a newer article while
+ * somebody is halfway down this one, and an approval carrying no version would stamp bytes
+ * the client never read: the record would say they signed off on an article that arrived
+ * after they pressed the button. The record refuses that, and this dialog is where the
+ * refusal has to be readable, because it is the ONE case where the client's act did not
+ * land and the page around them changed underneath it. Every other refusal here means the
+ * record simply moved past the button, so re-reading the page answers it without a word.
  */
 function ApproveAction({
   brand,
   topic,
-  onApproved,
+  version,
+  onSettled,
 }: {
   brand: string;
   topic: string;
-  /** The page re-reads the record here, so the view flips to approved from what is true. */
-  onApproved: () => void;
+  /** The version the client is reading, straight off the detail payload. */
+  version: string | null;
+  /** The page re-reads the record here, so the view renders from what is true. */
+  onSettled: () => void;
 }) {
   const [open, setOpen] = React.useState(false);
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [stale, setStale] = React.useState(false);
 
   async function approve() {
     setPending(true);
     setError(null);
     try {
-      await api.approveBlog(brand, topic);
+      await api.approveBlog(brand, topic, { version });
       setOpen(false);
-      onApproved();
+      onSettled();
     } catch (cause) {
+      if (cause instanceof ApiError && isStaleVersion(cause)) {
+        // The article changed while it was being read. The dialog STAYS OPEN and says so:
+        // closing it here would leave a client who pressed Approve looking at a page that
+        // quietly swapped its article and never took their approval.
+        setStale(true);
+        onSettled();
+        return;
+      }
       if (cause instanceof ApiError && cause.status === 409) {
-        // 409 means the record has moved past this button: approved in another tab, or
-        // the team re-sent a fresh revision. Either way the page re-reads and renders
-        // what is actually true, so an error message would only argue with it.
+        // Already approved, in another tab or by another person on the account. The record
+        // has moved past this button, so the page re-reads and renders what is actually
+        // true; an error message would only argue with it.
         setOpen(false);
-        onApproved();
+        onSettled();
         return;
       }
       setError(cause instanceof ApiError ? detailText(cause) : String(cause));
@@ -750,6 +733,7 @@ function ApproveAction({
         setOpen(next);
         if (!next) {
           setError(null);
+          setStale(false);
         }
       }}
     >
@@ -762,9 +746,13 @@ function ApproveAction({
 
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Approve this article?</AlertDialogTitle>
+          <AlertDialogTitle>
+            {stale ? "This article changed" : "Approve this article?"}
+          </AlertDialogTitle>
           <AlertDialogDescription>
-            The team takes it live after your approval.
+            {stale
+              ? "Our team sent a newer version while you were reading. Your approval has not been recorded. The page now shows the new article: please read it again, then approve it."
+              : "The team takes it live after your approval."}
           </AlertDialogDescription>
         </AlertDialogHeader>
 
@@ -778,22 +766,28 @@ function ApproveAction({
         ) : null}
 
         <AlertDialogFooter>
-          <AlertDialogCancel size="sm" disabled={pending}>
-            Cancel
-          </AlertDialogCancel>
-          <AlertDialogAction
-            size="sm"
-            disabled={pending}
-            onClick={(event) => {
-              event.preventDefault();
-              void approve();
-            }}
-          >
-            {pending ? (
-              <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
-            ) : null}
-            Approve
-          </AlertDialogAction>
+          {stale ? (
+            <AlertDialogAction size="sm">Read the new version</AlertDialogAction>
+          ) : (
+            <>
+              <AlertDialogCancel size="sm" disabled={pending}>
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                size="sm"
+                disabled={pending}
+                onClick={(event) => {
+                  event.preventDefault();
+                  void approve();
+                }}
+              >
+                {pending ? (
+                  <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
+                ) : null}
+                Approve
+              </AlertDialogAction>
+            </>
+          )}
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
