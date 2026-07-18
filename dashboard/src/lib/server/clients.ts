@@ -111,22 +111,38 @@ export type ListedClient = { shape: ClientShape; preflightOk: boolean };
  * the engine's correlated subqueries, because PostgREST cannot express those in one select.
  */
 export async function listClients(token: string): Promise<ListedClient[]> {
-  const [rows, factRows, sheetRows, resourceRows, blogRows] = await Promise.all([
+  const [rows, factRows, sheetRows, resourceRows, liveTopics, versionRows] = await Promise.all([
     pg<ClientRow[]>(token, `clients?select=${CLIENT_SELECT}&deleted_at=is.null`),
-    // has_canonical_facts without pulling every fact base over the wire: just the slugs
-    // whose canonical_facts is non-null. This is the same "is not null" the engine computes.
-    pg<{ slug: string }[]>(token, "clients?select=slug&deleted_at=is.null&canonical_facts=not.is.null"),
+    // has_canonical_facts without pulling every fact base over the wire: just the slugs whose
+    // canonical_facts is non-null. This is the same "is not null" the engine computes.
+    //
+    // admin_clients, NOT clients, and the difference is the whole reason this route used to
+    // 502. Postgres requires SELECT on any column a query FILTERS by, migration 003 revoked
+    // canonical_facts from `authenticated` because it is the do-not-claim fact base, so this
+    // probe against the base table is refused for every caller who is not the table owner.
+    // The admin view carries the full column set behind auth_is_admin(); listClients is only
+    // ever called on the is_admin branch of /api/me, so an admin gets the real answer and
+    // nobody else can reach the view at all.
+    pg<{ slug: string }[]>(
+      token,
+      "admin_clients?select=slug&deleted_at=is.null&canonical_facts=not.is.null",
+    ),
     pg<{ client_id: string }[]>(token, "roadmap_sheets?select=client_id"),
     pg<{ client_id: string }[]>(token, "client_resources?select=client_id"),
-    // blog_count counts live topics that carry at least one committed version, which is what
-    // the topics_live view's has_blog derives.
-    pg<{ client_id: string }[]>(token, "topics_live?select=client_id&has_blog=is.true"),
+    // blog_count counts LIVE topics carrying at least one committed version, which is what
+    // topics_live.has_blog derives. That view is revoked from `authenticated` outright (it
+    // re-exposes topics.dossier and topics.review_note), so the count is assembled from the
+    // two reads it was doing internally: live topics, and the topics that have a version.
+    // Both columns used here are granted, so this half needs no admin view.
+    pg<{ id: string; client_id: string }[]>(token, "topics?select=id,client_id&deleted_at=is.null"),
+    pg<{ topic_id: string }[]>(token, "blog_versions?select=topic_id"),
   ]);
 
   const hasFacts = new Set(factRows.map((row) => row.slug));
   const hasSheet = new Set(sheetRows.map((row) => row.client_id));
   const resources = countBy(resourceRows);
-  const blogs = countBy(blogRows);
+  const withVersion = new Set(versionRows.map((row) => row.topic_id));
+  const blogs = countBy(liveTopics.filter((topic) => withVersion.has(topic.id)));
 
   return rows
     .slice()

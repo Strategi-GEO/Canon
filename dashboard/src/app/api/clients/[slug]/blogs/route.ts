@@ -20,7 +20,20 @@ type VersionRow = {
   h1_title: string | null;
   committed_at: string;
   version_no: number;
-  /** Null on a version no evaluator ever scored, which is half of what marks an upload. */
+};
+
+/**
+ * The scored half of a version, read separately through the admin view.
+ *
+ * Split from VersionRow because the score is an ADMIN-ONLY column: a client's JWT must never
+ * read scores (migration 003), so it cannot ride along on the base-table select without
+ * failing the request outright. admin_blog_versions answers this for an admin and answers
+ * ZERO ROWS for anyone else, which is a graceful degrade rather than an error: a non-admin
+ * simply gets no `uploaded` flags, exactly as they got before the flag existed.
+ */
+type ScoreRow = {
+  topic_id: string;
+  version_no: number;
   score: number | null;
 };
 type RollupRow = {
@@ -53,7 +66,7 @@ export async function GET(
       return detail(404, `unknown client '${slug}'`);
     }
 
-    const [topics, versions, led, roadmapRows, comments] = await Promise.all([
+    const [topics, versions, led, roadmapRows, comments, scores] = await Promise.all([
       pg<TopicRow[]>(
         user.token,
         `topics?select=id,slug,title,sent_to_client_at,client_approved_at` +
@@ -61,10 +74,11 @@ export async function GET(
       ),
       pg<VersionRow[]>(
         user.token,
-        // score rides along for the `uploaded` inference below. eval_body deliberately does
-        // NOT: it is the whole evaluator report, on every version of every topic, and this
-        // read already pulls them all to pick the latest per topic.
-        `blog_versions?select=topic_id,h1_title,committed_at,version_no,score` +
+        // NO score in this select, deliberately. Migration 003 revoked it from `authenticated`
+        // along with eval_body, so asking the base table for it makes PostgREST refuse the
+        // whole request and this route answers 502 for every caller. The score arrives instead
+        // through admin_blog_versions below, which is allowed to carry it.
+        `blog_versions?select=topic_id,h1_title,committed_at,version_no` +
           `&client_id=eq.${cid}&order=topic_id.asc,version_no.desc`,
       ),
       // The RAW ledger, exactly as _blog_history reads it: `shipped` is "ever recorded",
@@ -80,7 +94,23 @@ export async function GET(
         user.token,
         `blog_comments?select=topic_id,author,state&client_id=eq.${cid}`,
       ),
+      // Admin-only, and empty rather than fatal for anyone else. See ScoreRow.
+      pg<ScoreRow[]>(
+        user.token,
+        `admin_blog_versions?select=topic_id,version_no,score` +
+          `&client_id=eq.${cid}&order=topic_id.asc,version_no.desc`,
+      ),
     ]);
+
+    // The latest version's score per topic, same first-wins walk as `latest` below. A topic
+    // absent from this map means the caller could not read scores at all, which is different
+    // from a topic whose latest version genuinely has none.
+    const latestScore = new Map<string, number | null>();
+    for (const row of scores) {
+      if (!latestScore.has(row.topic_id)) {
+        latestScore.set(row.topic_id, row.score);
+      }
+    }
 
     // Latest version per topic: rows arrive version_no.desc within each topic, first wins.
     const latest = new Map<string, VersionRow>();
@@ -146,11 +176,18 @@ export async function GET(
         status: folded.status,
         iterations: folded.iterations,
         shipped: entry !== undefined,
-        // The engine's inference, character for character: done, with no score on the
-        // latest version, means no evaluator ever saw it, and an upload is the only door
-        // into done that no evaluator opened. See _blog_history in server/app.py for why
-        // both halves are needed and why eval_body is not a third condition.
-        uploaded: folded.status === "done" && version.score === null,
+        // The engine's inference, character for character: done, with no score on the latest
+        // version, means no evaluator ever saw it, and an upload is the only door into done
+        // that no evaluator opened. See _blog_history in server/app.py for why both halves
+        // are needed and why eval_body is not a third condition.
+        //
+        // `latestScore.has(...)` is what keeps a non-admin honest. They get no rows from the
+        // admin view, so every version looks scoreless, and reading that as "uploaded" would
+        // label the brand's whole library uploaded. Absent means UNKNOWN here, not null.
+        uploaded:
+          folded.status === "done" &&
+          latestScore.has(topic.id) &&
+          latestScore.get(topic.id) === null,
         roadmap_index: rowIndex.get(topic.slug) ?? null,
         sent_to_client: topic.sent_to_client_at,
         client_approved: topic.client_approved_at,
