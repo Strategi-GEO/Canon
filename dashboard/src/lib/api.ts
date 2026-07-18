@@ -32,6 +32,7 @@ import type {
   SaveContentResult,
   StopRunsResult,
   UpdateClientBody,
+  UploadBlogResult,
   Client,
 } from "@/types";
 
@@ -559,6 +560,30 @@ export const api = {
     request<SaveContentResult>(`/api/clients/${slug}/blogs/${topicSlug}/content`, {
       method: "POST",
       body: { body: blogBody },
+    }),
+
+  /**
+   * Puts an article the operator already has into admin review, in place of generating one.
+   *
+   * The article travels as TEXT IN JSON, not as multipart, even though the operator picked
+   * a file: the browser reads the file and sends its contents, which is what every other
+   * body-carrying route here does and what saveBlogContent above already does with the very
+   * same field. A markdown article is text by definition, so the multipart machinery would
+   * buy nothing and cost a second content type on the engine.
+   *
+   * The topic slug is the whole of what identifies the piece. The engine re-reads the title,
+   * scope and target prompts from this brand's roadmap itself, so a stale tab cannot file an
+   * article against a topic that no longer exists or relabel one that does.
+   *
+   * 404 when no roadmap row matches the slug, 409 when the topic already has a blog and
+   * `replace` was not set, 409 while a run is live or the client has open suggestions, 422 on
+   * an empty file, 413 over 1 MB. The gate report in the result is ADVISORY: a failing gate
+   * does not refuse the upload, so read it and show it rather than treating it as an error.
+   */
+  uploadBlog: (slug: string, topicSlug: string, blogBody: string, replace: boolean) =>
+    request<UploadBlogResult>(`/api/clients/${slug}/blogs/${topicSlug}/upload`, {
+      method: "POST",
+      body: { body: blogBody, replace },
     }),
 
   /**

@@ -474,6 +474,22 @@ export type BlogSummary = {
   iterations: number | null;
   shipped: boolean;
   /**
+   * Whether an operator handed this article to the app instead of the engine writing it.
+   *
+   * WHAT IT CHANGES FOR A READER: an uploaded blog has no evaluator score, no eval.md and no
+   * dossier.md, and that is correct rather than broken. Without this flag the Eval and
+   * Dossier tabs render their 404 as a red failure panel reading "a blog that stopped before
+   * this stage never wrote the file", which is alarming and, for an upload, false. Surfaces
+   * that mention a score or an artifact check this first.
+   *
+   * It does NOT change what the blog can do. An uploaded blog is `done`, so it edits,
+   * comments, sends and publishes exactly like a generated one.
+   *
+   * Optional on the wire so a summary from an engine build predating the field reads as
+   * generated rather than breaking, matching sent_to_client below.
+   */
+  uploaded?: boolean;
+  /**
    * This blog's row on the CURRENT roadmap, or null when it sits on no row: the sheet was
    * deleted, or re-uploaded without this topic, or the blog was dropped into outputs/ by hand.
    *
@@ -708,6 +724,40 @@ export type AddCommentBody = {
 /** What POST /content answers: the committed word count, measured as the record measures it. */
 export type SaveContentResult = {
   word_count: number;
+};
+
+/**
+ * What the mechanical gates said about an uploaded article.
+ *
+ * ADVISORY, and the shape says so: `ran` is separate from `passed` because "we did not
+ * check" and "we checked and it was clean" must never look the same to the operator. A
+ * missing gates.json, a timeout, or a crashed run reports ran:false with a reason, and the
+ * dialog says the gates could not run rather than implying the article is fine.
+ *
+ * The engine does NOT block an upload on a failure here. See the engine's blog_upload
+ * module docstring: an uploaded article was written under a different process by someone
+ * taking responsibility for it, and refusing it would leave them with a file they cannot
+ * get into the app and no editor to fix it in.
+ */
+export type UploadGateReport = {
+  ran: boolean;
+  /** Only meaningful when ran is true. */
+  passed?: boolean;
+  /** Why the gates could not run. Empty when they did. */
+  reason?: string;
+  /** One line per failing rule, shaped "[FAIL] rule-name  detail". */
+  failures: string[];
+};
+
+/** What POST /blogs/{topic}/upload answers once the article is committed and in review. */
+export type UploadBlogResult = {
+  topic_slug: string;
+  word_count: number;
+  /** The version this upload created. 1 on a first upload, higher on a replace. */
+  version_no: number | null;
+  /** Whether this overwrote an article that was already there. */
+  replaced: boolean;
+  gates: UploadGateReport;
 };
 
 /**

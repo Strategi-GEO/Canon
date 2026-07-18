@@ -189,7 +189,7 @@ function Row({
         </Tooltip>
       </TableCell>
       <TableCell>
-        <Score score={blog.score} shipped={blog.shipped} />
+        <Score score={blog.score} shipped={blog.shipped} uploaded={blog.uploaded === true} />
       </TableCell>
       <TableCell>
         <span className="inline-flex items-center gap-1.5">
@@ -345,7 +345,19 @@ function RoadmapNumber({ index }: { index: number | null }) {
 }
 
 /** No eval, no number. Not a zero, and not a dash dressed up as one. */
-function Score({ score, shipped }: { score: number | null; shipped: boolean }) {
+function Score({
+  score,
+  shipped,
+  uploaded,
+}: {
+  score: number | null;
+  shipped: boolean;
+  /** Uploaded blogs have no score BY DESIGN, so this column says why rather than "no score". */
+  uploaded: boolean;
+}) {
+  if (uploaded) {
+    return <span className="text-xs text-muted-foreground">uploaded</span>;
+  }
   if (typeof score !== "number") {
     return <span className="text-xs text-muted-foreground">no score</span>;
   }

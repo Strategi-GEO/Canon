@@ -54,6 +54,7 @@ export function SelectState({
   runsUnavailable,
   liveRunId,
   preselectSlugs,
+  onUploaded,
   onWatch,
   onStarted,
 }: {
@@ -89,6 +90,8 @@ export function SelectState({
   liveRunId: string | null;
   /** Topics arriving from a retry, ticked on mount so retrying stays one click. */
   preselectSlugs?: readonly string[];
+  /** An article was uploaded against one row: the caller refetches the roadmap and the blogs. */
+  onUploaded: () => void;
   onWatch: () => void;
   onStarted: (runId: string, seeds: Seed[]) => void;
 }) {
@@ -452,6 +455,7 @@ export function SelectState({
             incomplete={incomplete}
             onToggle={toggle}
             onToggleAll={toggleAll}
+            upload={{ brandSlug, demoMode, onUploaded }}
             rowRefs={rowRefs}
           />
         )}

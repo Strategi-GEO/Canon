@@ -336,6 +336,14 @@ export function CreateForBrand({
       runsUnavailable={runsError !== null}
       liveRunId={run && !finished ? run.runId : null}
       preselectSlugs={retry?.slugs}
+      // An uploaded article changes BOTH reads this view folds together: the roadmap row gains
+      // a ledger entry and turns green, and the blogs list gains a done blog. Refetching only
+      // one would leave a row an operator could tick to generate over an article they just
+      // uploaded, which is the exact duplicate spend the ledger interlock exists to stop.
+      onUploaded={() => {
+        void reloadRoadmap();
+        void loadBlogs();
+      }}
       onWatch={() => setWatching(true)}
       onStarted={(runId, seeds) => {
         // QUEUED, not running, and that is not a guess: runner.py's register_run marks every

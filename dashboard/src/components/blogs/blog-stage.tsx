@@ -2,7 +2,16 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowLeft, Check, Copy, Download, FlaskConical, Pencil, TriangleAlert } from "lucide-react";
+import {
+  ArrowLeft,
+  Check,
+  Copy,
+  Download,
+  FileUp,
+  FlaskConical,
+  Pencil,
+  TriangleAlert,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -335,7 +344,15 @@ function StageBody({
           </h2>
           <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
             {isKnownStatus(blog.status) ? <StatusBadge status={blog.status} /> : null}
-            <ScoreTrail score={blog.score} trail={trail} />
+            {/* An uploaded blog gets the provenance chip INSTEAD of a score trail. A bare
+                "no score" beside a shipped article reads as a missing number, which invites
+                the operator to go looking for the evaluation that failed to run. There was
+                none to run, and saying so is the more useful sentence. */}
+            {blog.uploaded === true ? (
+              <UploadedChip />
+            ) : (
+              <ScoreTrail score={blog.score} trail={trail} />
+            )}
             <Meta text={articleText} />
             <Tooltip>
               <TooltipTrigger asChild>
@@ -428,7 +445,11 @@ function StageBody({
             <TabsContent key={item.name} value={item.name}>
               <div className="px-4 py-6 sm:px-6">
                 {item.name !== "blog.md" ? (
-                  <Artifact name={item.name} loaded={item.name === tab ? loaded : undefined} />
+                  <Artifact
+                    name={item.name}
+                    loaded={item.name === tab ? loaded : undefined}
+                    uploaded={blog.uploaded === true}
+                  />
                 ) : editDraft !== null ? (
                   <BlogEditor
                     brandSlug={brandSlug}
@@ -564,9 +585,26 @@ function BlogArticle({
 }
 
 /** eval.md and dossier.md: read-only documents, exactly as the drawer showed them. */
-function Artifact({ name, loaded }: { name: OutputFile; loaded: LoadedArtifact | undefined }) {
+function Artifact({
+  name,
+  loaded,
+  uploaded,
+}: {
+  name: OutputFile;
+  loaded: LoadedArtifact | undefined;
+  /** An uploaded article has neither of these files, and that is not a fault. */
+  uploaded: boolean;
+}) {
   if (!loaded) {
     return <ArtifactSkeleton name={name} />;
+  }
+  // BEFORE the error branch, because for an uploaded blog this 404 is the expected answer
+  // and not a failure. ArtifactError would paint a red panel reading "a blog that stopped
+  // before this stage never wrote the file", which is alarming and, here, untrue: nothing
+  // stopped, the factory simply never ran. A non-404 still falls through and is reported,
+  // since "the engine is unreachable" is a real fault whatever wrote the blog.
+  if (uploaded && "error" in loaded && loaded.error.status === 404) {
+    return <NoFactoryArtifact name={name} />;
   }
   if ("error" in loaded) {
     return <ArtifactError name={name} error={loaded.error} />;
@@ -582,6 +620,36 @@ function Artifact({ name, loaded }: { name: OutputFile; loaded: LoadedArtifact |
   );
 }
 
+/**
+ * What the Eval and Dossier tabs say for an article nobody generated.
+ *
+ * Muted, not red. The absence is the honest consequence of how this blog arrived: an
+ * operator wrote it elsewhere and handed it over, so no researcher built a dossier and no
+ * evaluator scored it. Styling that as a failure would tell the operator something is wrong
+ * with a blog that is doing exactly what they asked, and the red panel beside it is reserved
+ * for a file that genuinely should exist.
+ *
+ * It names what is missing rather than hiding the tab. An operator who opens Eval on this
+ * blog is asking a real question, "what did the auditor say", and the answer is that nothing
+ * audited it, which is worth stating plainly before they trust the article on that basis.
+ */
+function NoFactoryArtifact({ name }: { name: OutputFile }) {
+  const isEval = name === "eval.md";
+  return (
+    <div className="rounded-md border border-border bg-muted/40 p-4">
+      <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+        <FileUp className="size-4 shrink-0" aria-hidden />
+        {isEval ? "This blog was not scored" : "This blog has no dossier"}
+      </p>
+      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+        {isEval
+          ? "It was uploaded rather than generated, so no evaluator audited it and there is no score to read. Whoever uploaded it vouched for it."
+          : "It was uploaded rather than generated, so no researcher built a source dossier for it. The article's own sources are in the blog itself."}
+      </p>
+    </div>
+  );
+}
+
 function ArtifactSkeleton({ name }: { name: string }) {
   return (
     <div className="mx-auto max-w-[68ch] space-y-3">
@@ -594,6 +662,31 @@ function ArtifactSkeleton({ name }: { name: string }) {
         Loading {name}
       </span>
     </div>
+  );
+}
+
+/**
+ * The provenance chip an uploaded blog wears where a generated one wears its score.
+ *
+ * It states the warrant. A generated blog is trusted because an evaluator scored it at or
+ * above the ship band; an uploaded one is trusted because a person handed it over and said
+ * so. Both are legitimate ways to reach admin review, and an operator deciding whether to
+ * send this article to a client deserves to know which one they are looking at.
+ */
+function UploadedChip() {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex cursor-default items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+          <FileUp className="size-3.5" aria-hidden />
+          Uploaded
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">
+        This article was uploaded rather than generated, so the factory never researched,
+        gated or scored it. It edits, comments and sends exactly like any other blog.
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

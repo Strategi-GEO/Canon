@@ -20,6 +20,8 @@ type VersionRow = {
   h1_title: string | null;
   committed_at: string;
   version_no: number;
+  /** Null on a version no evaluator ever scored, which is half of what marks an upload. */
+  score: number | null;
 };
 type RollupRow = {
   topic_id: string;
@@ -59,7 +61,10 @@ export async function GET(
       ),
       pg<VersionRow[]>(
         user.token,
-        `blog_versions?select=topic_id,h1_title,committed_at,version_no` +
+        // score rides along for the `uploaded` inference below. eval_body deliberately does
+        // NOT: it is the whole evaluator report, on every version of every topic, and this
+        // read already pulls them all to pick the latest per topic.
+        `blog_versions?select=topic_id,h1_title,committed_at,version_no,score` +
           `&client_id=eq.${cid}&order=topic_id.asc,version_no.desc`,
       ),
       // The RAW ledger, exactly as _blog_history reads it: `shipped` is "ever recorded",
@@ -141,6 +146,11 @@ export async function GET(
         status: folded.status,
         iterations: folded.iterations,
         shipped: entry !== undefined,
+        // The engine's inference, character for character: done, with no score on the
+        // latest version, means no evaluator ever saw it, and an upload is the only door
+        // into done that no evaluator opened. See _blog_history in server/app.py for why
+        // both halves are needed and why eval_body is not a third condition.
+        uploaded: folded.status === "done" && version.score === null,
         roadmap_index: rowIndex.get(topic.slug) ?? null,
         sent_to_client: topic.sent_to_client_at,
         client_approved: topic.client_approved_at,

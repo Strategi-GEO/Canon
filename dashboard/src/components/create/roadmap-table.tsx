@@ -22,6 +22,7 @@ import {
 // The colours and the state labels are shared with the roadmap tab's read mode rather than
 // owned here, so the two modes cannot come to describe the same row differently.
 import { ROW_STYLES, RowNote, StateChip } from "@/components/create/row-presentation";
+import { UploadBlog } from "@/components/blogs/upload-blog";
 import type { RoadmapRow } from "@/types";
 
 /**
@@ -47,6 +48,20 @@ type PickMode = {
   /** `extend` is a shift-click: select every selectable row between the anchor and this one. */
   onToggle: (index: number, extend: boolean) => void;
   onToggleAll: (checked: boolean) => void;
+  /**
+   * Per-row upload, the other way a topic gets a blog.
+   *
+   * It belongs in PICK mode specifically, because this is the page where an operator stands
+   * looking at topics deciding what to do with each one, and "upload the article I already
+   * have" is an answer to that same question. Generate is one button over the whole checked
+   * set; upload is inherently per row, since it carries one file for one topic.
+   */
+  upload: {
+    brandSlug: string;
+    demoMode: boolean;
+    /** Fires after an article lands, so the caller refetches rows and blogs. */
+    onUploaded: () => void;
+  };
 };
 
 type ReadMode = {
@@ -101,6 +116,10 @@ export function RoadmapTable(
     (index: number) => onToggle?.(index, extending.current),
     [onToggle],
   );
+
+  // Narrowed once here, like onToggle above, so the row actions cell and its header agree on
+  // whether there is a column at all without re-narrowing the union in two places.
+  const upload = props.mode === "pick" ? props.upload : null;
 
   return (
     // The scroll container lives here rather than in ui/table, because `position: sticky`
@@ -171,7 +190,7 @@ export function RoadmapTable(
             {props.mode === "read" ? (
               <TableHead className="machine align-middle text-xs font-medium">target prompts</TableHead>
             ) : null}
-            {props.mode === "read" ? (
+            {props.mode === "read" || upload ? (
               // Unlabelled on screen and named for a screen reader. A column of one icon button
               // needs no title, and "actions" over a 25 row sheet is a word that earns nothing.
               <TableHead className="w-12 align-middle">
@@ -201,6 +220,7 @@ export function RoadmapTable(
                   ? { onDelete: props.onDelete, locked: props.editingLocked }
                   : null
               }
+              upload={upload}
               rowRefs={rowRefs}
             />
           ))}
@@ -222,12 +242,19 @@ type Remove = {
   locked: boolean;
 };
 
+type Upload = {
+  brandSlug: string;
+  demoMode: boolean;
+  onUploaded: () => void;
+};
+
 function Row({
   row,
   state,
   missing,
   selection,
   remove,
+  upload,
   rowRefs,
 }: {
   row: RoadmapRow;
@@ -237,6 +264,8 @@ function Row({
   selection: Selection | null;
   /** Read mode's Delete record, or null in pick mode where the roadmap is not edited. */
   remove: Remove | null;
+  /** Pick mode's per-row upload, or null in read mode. */
+  upload: Upload | null;
   // HTMLElement, not HTMLTableRowElement: only scrollIntoView reads this map, which every
   // element has.
   rowRefs: React.RefObject<Map<number, HTMLElement>>;
@@ -322,24 +351,35 @@ function Row({
         </TableCell>
       ) : null}
 
-      {remove ? (
+      {remove || upload ? (
         <TableCell className="pt-3 align-top">
-          {/* Ghost, never destructive. This button opens a confirm; it does not delete, and a
-              red button on all 25 rows would paint the sheet as a hazard. The colour belongs on
-              the confirm's action, where something is actually about to be destroyed. */}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="size-8 text-muted-foreground hover:text-fail"
-            disabled={remove.locked}
-            onClick={() => remove.onDelete(row)}
-          >
-            <Trash2 aria-hidden />
-            {/* Named, not "delete": 25 buttons all called "Delete record" are 25 identical
-                announcements, and the topic is the only thing that tells them apart. */}
-            <span className="sr-only">Delete the record {row.topic}</span>
-          </Button>
+          {remove ? (
+            /* Ghost, never destructive. This button opens a confirm; it does not delete, and a
+               red button on all 25 rows would paint the sheet as a hazard. The colour belongs on
+               the confirm's action, where something is actually about to be destroyed. */
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 text-muted-foreground hover:text-fail"
+              disabled={remove.locked}
+              onClick={() => remove.onDelete(row)}
+            >
+              <Trash2 aria-hidden />
+              {/* Named, not "delete": 25 buttons all called "Delete record" are 25 identical
+                  announcements, and the topic is the only thing that tells them apart. */}
+              <span className="sr-only">Delete the record {row.topic}</span>
+            </Button>
+          ) : null}
+          {upload ? (
+            <UploadBlog
+              brandSlug={upload.brandSlug}
+              row={row}
+              state={state}
+              demoMode={upload.demoMode}
+              onUploaded={upload.onUploaded}
+            />
+          ) : null}
         </TableCell>
       ) : null}
     </TableRow>

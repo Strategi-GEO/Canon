@@ -32,7 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
-from . import auth, blog_edit, client_answers, db, describe, facts_gen, ledger, roadmap, roadmap_gen, runner, sync
+from . import auth, blog_edit, blog_upload, client_answers, db, describe, facts_gen, ledger, roadmap, roadmap_gen, runner, sync
 # Aliased for the same reason clients is: "questions" is the natural name for the list of
 # questions inside a handler, and the shadowing bug that causes is silent.
 from . import questions as questions_mod
@@ -1055,6 +1055,12 @@ def _scratch_entry(slug, topic_slug, led, row_index):
         "status": summary.get("status") or "unknown",
         "iterations": summary.get("iterations"),
         "shipped": topic_slug in led,
+        # Always False on this path and not an oversight: this entry describes a topic in a
+        # LIVE RUN, and an upload is refused while any run for the client is live. The key is
+        # present because the two builders answer one response shape, and a field that
+        # appears on some entries and not others is a field every consumer has to defend
+        # against.
+        "uploaded": False,
         "roadmap_index": row_index.get(topic_slug),
     }
 
@@ -1084,10 +1090,10 @@ def _blog_history(slug):
     # with the latest version's title and commit time standing in for the old
     # H1 scan and mtime fallback.
     rows = db.q(
-        """select t.slug, t.title, v.h1_title, v.committed_at
+        """select t.slug, t.title, v.h1_title, v.committed_at, v.score is null
            from topics t
            join lateral (
-             select h1_title, committed_at from blog_versions v
+             select h1_title, committed_at, score from blog_versions v
              where v.topic_id = t.id
              order by v.version_no desc limit 1
            ) v on true
@@ -1095,7 +1101,7 @@ def _blog_history(slug):
         (client_id,))
 
     entries = {}
-    for topic_slug, topic_title, h1_title, committed_at in rows:
+    for topic_slug, topic_title, h1_title, committed_at, unscored in rows:
         summary = summaries.get(topic_slug) or {}
         entry = led.get(topic_slug) or {}
         # The ledger holds the operator's own topic text, which beats a slug or a
@@ -1113,6 +1119,25 @@ def _blog_history(slug):
             "status": summary.get("status") or "unknown",
             "iterations": summary.get("iterations"),
             "shipped": topic_slug in led,
+            # WHERE THIS BLOG CAME FROM, INFERRED rather than stored, and the inference is
+            # exactly this: a blog that reached `done` with no score on its latest version
+            # was never evaluated, and blog_upload is the only door into `done` that no
+            # evaluator opened. runner._resolve_needs_review returns done ONLY at
+            # score >= SHIP_SCORE, so a generated blog standing at done always carries a
+            # number. Both halves are load bearing: `done` alone would catch a stopped or
+            # failed run, and a null score alone would catch a run still mid-flight.
+            #
+            # BOTH CONDITIONS, AND NO THIRD. An earlier draft also required eval_body to be
+            # null, which is true of an upload and harmlessly stricter here, but the hosted
+            # Next route answers the same field over PostgREST where it cannot compute a
+            # pair without dragging every eval body across the wire. Two surfaces answering
+            # one field must not use two definitions, so the cheaper one wins and it is
+            # sound on its own.
+            #
+            # Derived HERE, once, rather than in the browser, so this reasoning lives beside
+            # the query it rests on. If a generated blog ever legitimately ships unscored,
+            # this becomes a stored column and every caller keeps working unchanged.
+            "uploaded": bool(unscored) and (summary.get("status") == "done"),
             # Which row of the CURRENT sheet this blog is, or None when it is on no row. Titles are
             # long, near identical to each other, and nobody holds twenty of them in their head:
             # "change blog six" is the question operators and their clients actually ask, and until
@@ -1682,6 +1707,75 @@ async def api_blog_review(slug: str, topic: str,
     _client_or_404(slug, user)
     _topic_or_404(slug, topic)
     return await asyncio.to_thread(blog_edit.sent_state, slug, topic)
+
+
+class UploadBlogRequest(BaseModel):
+    body: str
+    replace: bool = False
+
+
+@app.post("/api/clients/{slug}/blogs/{topic}/upload")
+async def api_upload_blog(slug: str, topic: str, payload: UploadBlogRequest,
+                          user: auth.Identity = Depends(auth.require_admin)):
+    """Ingest an article the operator already has, in place of generating one.
+
+    The other door into admin review. Everything downstream of this point is identical to
+    a generated blog's path: the same stage page, the same comment rail, the same Send to
+    client. What differs is the warrant, and blog_upload keeps that difference visible
+    rather than smoothing it over: no score is invented, no eval body is written, and the
+    status line names the person who uploaded it.
+
+    NO _topic_or_404 AND NO _require_done, deliberately, and they are the two guards a
+    reader will expect. Both ask the record about a topic that, on the common path, does
+    not exist yet: the whole point is a roadmap row that was never generated, so
+    _topic_or_404 would 404 every first upload and _require_done would 409 it as
+    "unknown, not done". The topic row is created by the upload itself.
+
+    THE ROADMAP IS THE AUTHORITY ON WHAT MAY BE UPLOADED, which is what replaces them. The
+    slug has to match a row in this client's roadmap, and the title, scope and prompts
+    recorded against the blog are read from that row server-side. The browser sends an
+    article and a slug; it never gets to tell the engine what topic it is, exactly as
+    api_generate re-reads its rows rather than trusting the posted ones.
+    """
+    _client_or_404(slug, user)
+    # Same first refusal as generate: a demo brand has no real fact base, and letting one
+    # take a real article would put genuine copy behind a fixture whose blogs are marked
+    # not for publication.
+    if runner.is_demo_client(slug):
+        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
+    if runner.slugify(topic) != topic:
+        raise HTTPException(status_code=404, detail="not found")
+
+    rows = _load_roadmap_or_404(slug, user)["rows"]
+    row = next((r for r in rows if r.get("topic_slug") == topic), None)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no roadmap row for {topic!r}; a blog can only be uploaded against a "
+                   f"topic this brand's roadmap plans")
+
+    # The live-run refusal /content already makes, for the same reason and at the same
+    # breadth: while a session is open the engine owns the scratch tree, and an upload
+    # landing beside it races materialize and commit for a file both are writing.
+    if _client_has_live_run(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"a run for {slug!r} is live; upload once it finishes so the engine's "
+                   f"own writes are not raced",
+        )
+
+    # Under the comment-apply lock, exactly as a manual save is: a replace landing inside
+    # an apply's read-session-write window would be overwritten by the apply's stale base.
+    async with blog_edit.APPLY_LOCK:
+        try:
+            return await asyncio.to_thread(
+                blog_upload.upload_blog, slug, topic,
+                row.get("topic") or topic, row.get("covers") or "",
+                row.get("prompts") or [], payload.body,
+                getattr(user, "email", "") or "", bool(payload.replace),
+            )
+        except blog_upload.UploadError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.detail)
 
 
 @app.get("/api/pending-reruns")
