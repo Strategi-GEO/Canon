@@ -32,6 +32,10 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...except the template, which is the one env file that carries NAMES and no values. It was
+# swept up by .env* above, so it never reached the repository and anyone importing the project
+# had no record of which variables to set. Keeping it tracked is the point of having it.
+!.env.example
 
 # vercel
 .vercel

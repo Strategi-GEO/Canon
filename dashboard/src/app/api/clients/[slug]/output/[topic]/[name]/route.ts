@@ -64,7 +64,9 @@ export async function GET(
       const column = name === "dossier.md" ? "dossier" : "links_verified";
       const rows = await pg<Record<string, string | null>[]>(
         user.token,
-        `topics?select=${column}&id=eq.${tid}`,
+        // admin_topics: dossier and links_verified are both revoked from `authenticated` (003),
+        // so the base table refuses this select outright.
+        `admin_topics?select=${column}&id=eq.${tid}`,
       );
       const value = rows[0]?.[column] ?? null;
       return value === null ? detail(404, "not found") : text(value);
@@ -73,7 +75,8 @@ export async function GET(
     if (name === "blog.md" || name === "eval.md") {
       const rows = await pg<{ body: string | null; eval_body: string | null }[]>(
         user.token,
-        `blog_versions?select=body,eval_body&topic_id=eq.${tid}&order=version_no.desc&limit=1`,
+        // admin_blog_versions: eval_body is the hostile audit report, revoked from `authenticated`.
+        `admin_blog_versions?select=body,eval_body&topic_id=eq.${tid}&order=version_no.desc&limit=1`,
       );
       const row = rows[0];
       if (row === undefined) {
@@ -87,7 +90,8 @@ export async function GET(
     // plus a trailing newline, as _record_artifact rebuilds it.
     const events = await pg<EventRow[]>(
       user.token,
-      `status_events?select=ts,slug_reported,stage,event,iter,score,status,note` +
+      // admin_status_events: score and note are status internals, revoked from `authenticated`.
+      `admin_status_events?select=ts,slug_reported,stage,event,iter,score,status,note` +
         `&topic_id=eq.${tid}&order=line_no.asc`,
     );
     if (events.length === 0) {

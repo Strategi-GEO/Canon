@@ -32,7 +32,9 @@ export async function GET(
     }
     const sheets = await pg<SheetRow[]>(
       user.token,
-      `roadmap_sheets?select=filename,raw_csv,modified,created_at&client_id=eq.${cid}`,
+      // admin_roadmap_sheets: raw_csv is the operator's whole uploaded sheet and is not granted
+      // to `authenticated`. See migration 008.
+      `admin_roadmap_sheets?select=filename,raw_csv,modified,created_at&client_id=eq.${cid}`,
     );
     const sheet = sheets[0];
     if (sheet === undefined) {

@@ -23,7 +23,8 @@ export async function GET(
     }
     const rows = await pg<{ canonical_facts: string | null }[]>(
       user.token,
-      `clients?select=canonical_facts&slug=eq.${slug}&deleted_at=is.null`,
+      // admin_clients: canonical_facts is the do-not-claim fact base, revoked from `authenticated`.
+      `admin_clients?select=canonical_facts&slug=eq.${slug}&deleted_at=is.null`,
     );
     const row = rows[0];
     if (row === undefined) {

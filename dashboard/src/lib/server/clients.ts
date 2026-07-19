@@ -174,13 +174,15 @@ export async function readClient(token: string, slug: string): Promise<ClientSha
   const [factRows, sheetRows, resourceRows, blogRows] = await Promise.all([
     pg<{ slug: string }[]>(
       token,
-      `clients?select=slug&slug=eq.${slug}&deleted_at=is.null&canonical_facts=not.is.null`,
+      // admin_clients, for the reason listClients gives: canonical_facts is revoked, and a
+      // query is refused for FILTERING on a column it may not read, not only for selecting it.
+      `admin_clients?select=slug&slug=eq.${slug}&deleted_at=is.null&canonical_facts=not.is.null`,
     ),
     pg<{ client_id: string }[]>(token, `roadmap_sheets?select=client_id&client_id=eq.${row.id}`),
     pg<{ client_id: string }[]>(token, `client_resources?select=client_id&client_id=eq.${row.id}`),
     pg<{ client_id: string }[]>(
       token,
-      `topics_live?select=client_id&client_id=eq.${row.id}&has_blog=is.true`,
+      `admin_topics_live?select=client_id&client_id=eq.${row.id}&has_blog=is.true`,
     ),
   ]);
   return shapeClient(row, {
@@ -269,7 +271,8 @@ function shapeLedger(record: LedgerRecord): LedgerRow {
 export async function readLedger(token: string, cid: string): Promise<LedgerRow[]> {
   const records = await pg<LedgerRecord[]>(
     token,
-    `ledger_entries?select=topic,topic_slug,covers,prompts,score,generated_at,run_id` +
+    // admin_ledger_entries: the ledger's score column is revoked from `authenticated`.
+    `admin_ledger_entries?select=topic,topic_slug,covers,prompts,score,generated_at,run_id` +
       `&client_id=eq.${cid}&order=generated_at.asc`,
   );
   return records.map(shapeLedger);
@@ -299,7 +302,7 @@ export async function ledgerSlugs(token: string, cid: string): Promise<Map<strin
 export async function liveSlugs(token: string, cid: string): Promise<Map<string, LedgerRow>> {
   const [rows, liveTopics] = await Promise.all([
     readLedger(token, cid),
-    pg<{ slug: string }[]>(token, `topics_live?select=slug&client_id=eq.${cid}&has_blog=is.true`),
+    pg<{ slug: string }[]>(token, `admin_topics_live?select=slug&client_id=eq.${cid}&has_blog=is.true`),
   ]);
   const live = new Set(liveTopics.map((topic) => topic.slug));
   return keyed(rows.filter((row) => live.has(row.topic_slug)));

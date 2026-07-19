@@ -52,12 +52,14 @@ export async function GET(
     const [notes, children, iterRows] = await Promise.all([
       pg<NoteRow[]>(
         user.token,
-        `review_notes?select=id,blog_version_id,ref,area,body,why,asked_score,asked_iter,created_at` +
+        // admin_review_notes: asked_score is revoked from `authenticated` (003), and a query is
+        // refused outright for filtering on or selecting a column it cannot read.
+        `admin_review_notes?select=id,blog_version_id,ref,area,body,why,asked_score,asked_iter,created_at` +
           `&topic_id=eq.${tid}&author=eq.evaluator&parent_id=is.null&order=created_at.desc`,
       ),
       pg<{ parent_id: string; author: string; body: string }[]>(
         user.token,
-        `review_notes?select=parent_id,author,body&topic_id=eq.${tid}&parent_id=not.is.null`,
+        `admin_review_notes?select=parent_id,author,body&topic_id=eq.${tid}&parent_id=not.is.null`,
       ),
       // current_iteration: the high-water iter over status_events, the same fold
       // topic_rollup runs. Zero when no events exist.

@@ -30,7 +30,8 @@ export async function GET(
     }
     const sheets = await pg<{ report: string | null }[]>(
       user.token,
-      `roadmap_sheets?select=report&client_id=eq.${cid}`,
+      // admin_roadmap_sheets: `report` is not granted to `authenticated`. See migration 008.
+      `admin_roadmap_sheets?select=report&client_id=eq.${cid}`,
     );
     const text = sheets[0]?.report ?? null;
     if (text === null) {

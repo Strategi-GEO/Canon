@@ -21,21 +21,6 @@ type VersionRow = {
   committed_at: string;
   version_no: number;
 };
-
-/**
- * The scored half of a version, read separately through the admin view.
- *
- * Split from VersionRow because the score is an ADMIN-ONLY column: a client's JWT must never
- * read scores (migration 003), so it cannot ride along on the base-table select without
- * failing the request outright. admin_blog_versions answers this for an admin and answers
- * ZERO ROWS for anyone else, which is a graceful degrade rather than an error: a non-admin
- * simply gets no `uploaded` flags, exactly as they got before the flag existed.
- */
-type ScoreRow = {
-  topic_id: string;
-  version_no: number;
-  score: number | null;
-};
 type RollupRow = {
   topic_id: string;
   status: string;
@@ -66,7 +51,7 @@ export async function GET(
       return detail(404, `unknown client '${slug}'`);
     }
 
-    const [topics, versions, led, roadmapRows, comments, scores] = await Promise.all([
+    const [topics, versions, led, roadmapRows, comments] = await Promise.all([
       pg<TopicRow[]>(
         user.token,
         `topics?select=id,slug,title,sent_to_client_at,client_approved_at` +
@@ -76,8 +61,9 @@ export async function GET(
         user.token,
         // NO score in this select, deliberately. Migration 003 revoked it from `authenticated`
         // along with eval_body, so asking the base table for it makes PostgREST refuse the
-        // whole request and this route answers 502 for every caller. The score arrives instead
-        // through admin_blog_versions below, which is allowed to carry it.
+        // WHOLE request and this route answers 502 for every caller. The score comes from
+        // admin_topic_rollup below, which is the same number by a different road: the fold
+        // reads it off status_events, and sync.commit_topic copies that fold onto the version.
         `blog_versions?select=topic_id,h1_title,committed_at,version_no` +
           `&client_id=eq.${cid}&order=topic_id.asc,version_no.desc`,
       ),
@@ -94,23 +80,7 @@ export async function GET(
         user.token,
         `blog_comments?select=topic_id,author,state&client_id=eq.${cid}`,
       ),
-      // Admin-only, and empty rather than fatal for anyone else. See ScoreRow.
-      pg<ScoreRow[]>(
-        user.token,
-        `admin_blog_versions?select=topic_id,version_no,score` +
-          `&client_id=eq.${cid}&order=topic_id.asc,version_no.desc`,
-      ),
     ]);
-
-    // The latest version's score per topic, same first-wins walk as `latest` below. A topic
-    // absent from this map means the caller could not read scores at all, which is different
-    // from a topic whose latest version genuinely has none.
-    const latestScore = new Map<string, number | null>();
-    for (const row of scores) {
-      if (!latestScore.has(row.topic_id)) {
-        latestScore.set(row.topic_id, row.score);
-      }
-    }
 
     // Latest version per topic: rows arrive version_no.desc within each topic, first wins.
     const latest = new Map<string, VersionRow>();
@@ -147,9 +117,14 @@ export async function GET(
     const withVersions = topics.filter((topic) => latest.has(topic.id));
     const rollups = new Map<string, RollupRow>();
     if (withVersions.length > 0) {
+      // admin_topic_rollup, not topic_rollup: 003 revoked the plain view from `authenticated`
+      // because it re-exposes score and iterations, so reading it here answered 502 for every
+      // caller. The admin view is the same fold behind auth_is_admin(), and it answers zero
+      // rows rather than an error for anyone else, which the event_count branch below already
+      // treats as "unknown".
       const rows = await pg<RollupRow[]>(
         user.token,
-        `topic_rollup?select=topic_id,status,score,iterations,event_count` +
+        `admin_topic_rollup?select=topic_id,status,score,iterations,event_count` +
           `&topic_id=${inList(withVersions.map((topic) => topic.id))}`,
       );
       for (const row of rows) {
@@ -176,18 +151,16 @@ export async function GET(
         status: folded.status,
         iterations: folded.iterations,
         shipped: entry !== undefined,
-        // The engine's inference, character for character: done, with no score on the latest
-        // version, means no evaluator ever saw it, and an upload is the only door into done
-        // that no evaluator opened. See _blog_history in server/app.py for why both halves
-        // are needed and why eval_body is not a third condition.
+        // The engine's inference: done, with no score, means no evaluator ever saw it, and an
+        // upload is the only door into done that no evaluator opened. Read off the SAME fold
+        // that produced `score` above rather than a second query against blog_versions.score,
+        // which is the column 003 revoked. Both halves are load bearing: `done` alone catches
+        // a stopped run, a null score alone catches one mid-flight.
         //
-        // `latestScore.has(...)` is what keeps a non-admin honest. They get no rows from the
-        // admin view, so every version looks scoreless, and reading that as "uploaded" would
-        // label the brand's whole library uploaded. Absent means UNKNOWN here, not null.
-        uploaded:
-          folded.status === "done" &&
-          latestScore.has(topic.id) &&
-          latestScore.get(topic.id) === null,
+        // A non-admin gets no rollup rows, so folded.status is "unknown" and this is false.
+        // That is the honest answer for a caller who cannot see scores at all: unknown, not
+        // uploaded.
+        uploaded: folded.status === "done" && folded.score === null,
         roadmap_index: rowIndex.get(topic.slug) ?? null,
         sent_to_client: topic.sent_to_client_at,
         client_approved: topic.client_approved_at,
