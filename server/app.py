@@ -434,6 +434,13 @@ class UpdateClientRequest(BaseModel):
     description: Optional[str] = None
     name: Optional[str] = None
     organisation_name: Optional[str] = None
+    # domain and industry were MISSING here while the settings page sent both of them and
+    # toasted "Saved". Pydantic drops an unmodelled key silently, so the operator changed a
+    # brand's domain, saw a success toast, and the record never moved. The engine then
+    # researched against the old site. Added to the model AND to update_client together,
+    # because either half alone reproduces the same silent success one level down.
+    domain: Optional[str] = None
+    industry: Optional[str] = None
 
 
 def _read_client_or_404(slug, user=None):
@@ -486,6 +493,8 @@ async def api_update_client(slug: str, body: UpdateClientRequest,
             description=body.description,
             name=body.name,
             organisation_name=body.organisation_name,
+            domain=body.domain,
+            industry=body.industry,
         )
     except clients_mod.UnknownClient as exc:
         raise HTTPException(status_code=404, detail=str(exc))

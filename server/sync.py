@@ -111,6 +111,35 @@ def materialize_client(slug):
     elif disk_facts is None and facts is not None:
         facts_path.write_text(facts, encoding="utf-8")
 
+    # A ROADMAP DELETED FROM THE RECORD TAKES ITS DISK COPY WITH IT, on every machine and
+    # not only the one that pressed delete.
+    #
+    # roadmap.delete_roadmap unlinks clients/<slug>/roadmap.csv itself, and states why: a
+    # stale copy left behind "would be picked up by the NEXT generation's validate step as
+    # though that session had written it, silently resurrecting the sheet the operator just
+    # deleted". That unlink reaches exactly one filesystem. A teammate's laptop, or a delete
+    # performed from the hosted dashboard where there is no filesystem at all, leaves the
+    # stale sheet sitting there waiting to be resurrected.
+    #
+    # So the check moves to where every session already passes: the record is asked whether a
+    # sheet exists, and a disk copy with no sheet behind it is removed before any agent can
+    # read it. roadmap_gen.py is the reader that matters (it validates the file at
+    # roadmap_path after a generation), and load_roadmap/has_roadmap already read the record,
+    # so nothing legitimate depends on the orphan.
+    #
+    # Deliberately NOT symmetric with canonical-facts.md above: a roadmap.csv is generation
+    # scratch that the app writes, never a human editing surface, so there is nothing here to
+    # commit up and losing the orphan costs nothing.
+    if not db.q("select 1 from roadmap_sheets where client_id = %s", (cid,), fetch="val"):
+        stale_sheet = cdir / "roadmap.csv"
+        if stale_sheet.is_file():
+            stale_sheet.unlink()
+            log.info("materialize_client: %s has no roadmap in the record; removed the "
+                     "orphaned roadmap.csv so it cannot resurrect the deleted sheet", slug)
+        stale_report = cdir / "roadmap-report.md"
+        if stale_report.is_file():
+            stale_report.unlink()
+
     rdir = cdir / "Resources"
     rdir.mkdir(exist_ok=True)
     import hashlib

@@ -369,7 +369,8 @@ def create_client(name, domain, industry, description="", demo_mode=False,
     return read_client(slug)
 
 
-def update_client(slug, description=None, name=None, organisation_name=None):
+def update_client(slug, description=None, name=None, organisation_name=None,
+                  domain=None, industry=None):
     """Update only what was passed. A None field is untouched, so a PATCH carrying one key
     cannot blank the others, and gates keys this function was not given survive."""
     cid = db.client_id(slug)
@@ -392,6 +393,16 @@ def update_client(slug, description=None, name=None, organisation_name=None):
         params.append(new_name)
         sets.append("gates = jsonb_set(gates, '{name}', %s::jsonb)")
         params.append(json.dumps(new_name))
+    # domain and industry: the two fields the settings page has always sent and this function
+    # has always dropped. They are written to the column only, never into the gates blob: the
+    # name is mirrored there because gates.py prints it, and nothing in gates reads either of
+    # these.
+    if domain is not None:
+        sets.append("domain = %s")
+        params.append(str(domain).strip())
+    if industry is not None:
+        sets.append("industry = %s")
+        params.append(str(industry).strip())
     if organisation_name is not None:
         # Moving a brand between orgs rewrites ONE column and renames NO slug. Blank
         # clears back to its own single-brand org, which is what a null org_id means.
