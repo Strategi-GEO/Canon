@@ -22,6 +22,7 @@ export function BlogEditor({
   brandSlug,
   topicSlug,
   initial,
+  baseVersion,
   value,
   onChange,
   onSaved,
@@ -29,6 +30,12 @@ export function BlogEditor({
 }: {
   brandSlug: string;
   topicSlug: string;
+  /**
+   * The version this edit started from, sent back so the hosted save can refuse a stale
+   * one. Null when the summary predates the field, which the hosted route answers 422 for
+   * rather than guessing.
+   */
+  baseVersion: number | null;
   /** The article as the engine last served it, for the nothing-changed Save guard. */
   initial: string;
   /**
@@ -49,7 +56,7 @@ export function BlogEditor({
     setSaving(true);
     setError(null);
     try {
-      const result = await api.saveBlogContent(brandSlug, topicSlug, value);
+      const result = await api.saveBlogContent(brandSlug, topicSlug, value, baseVersion);
       toast.success("Blog saved", {
         description: `${formatCount(result.word_count)} words committed to the record.`,
       });

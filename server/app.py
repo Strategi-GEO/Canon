@@ -1064,6 +1064,9 @@ def _scratch_entry(slug, topic_slug, led, row_index):
         "status": summary.get("status") or "unknown",
         "iterations": summary.get("iterations"),
         "shipped": topic_slug in led,
+        # No committed version yet on this path: a topic in a live run is being written now,
+        # and the hosted editor is refused for it anyway (its fold is not `done`).
+        "version_no": None,
         # Always False on this path and not an oversight: this entry describes a topic in a
         # LIVE RUN, and an upload is refused while any run for the client is live. The key is
         # present because the two builders answer one response shape, and a field that
@@ -1099,10 +1102,11 @@ def _blog_history(slug):
     # with the latest version's title and commit time standing in for the old
     # H1 scan and mtime fallback.
     rows = db.q(
-        """select t.slug, t.title, v.h1_title, v.committed_at, v.score is null
+        """select t.slug, t.title, v.h1_title, v.committed_at, v.score is null,
+                  v.version_no
            from topics t
            join lateral (
-             select h1_title, committed_at, score from blog_versions v
+             select h1_title, committed_at, score, version_no from blog_versions v
              where v.topic_id = t.id
              order by v.version_no desc limit 1
            ) v on true
@@ -1110,7 +1114,7 @@ def _blog_history(slug):
         (client_id,))
 
     entries = {}
-    for topic_slug, topic_title, h1_title, committed_at, unscored in rows:
+    for topic_slug, topic_title, h1_title, committed_at, unscored, version_no in rows:
         summary = summaries.get(topic_slug) or {}
         entry = led.get(topic_slug) or {}
         # The ledger holds the operator's own topic text, which beats a slug or a
@@ -1147,6 +1151,11 @@ def _blog_history(slug):
             # the query it rests on. If a generated blog ever legitimately ships unscored,
             # this becomes a stored column and every caller keeps working unchanged.
             "uploaded": bool(unscored) and (summary.get("status") == "done"),
+            # The latest COMMITTED version number, which the hosted editor sends back as
+            # its optimistic lock: admin_save_blog_content refuses a save whose base does
+            # not match, so two operators editing one article cannot silently bury each
+            # other. The local engine holds APPLY_LOCK instead and ignores this.
+            "version_no": version_no,
             # Which row of the CURRENT sheet this blog is, or None when it is on no row. Titles are
             # long, near identical to each other, and nobody holds twenty of them in their head:
             # "change blog six" is the question operators and their clients actually ask, and until

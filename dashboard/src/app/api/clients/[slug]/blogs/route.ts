@@ -161,6 +161,8 @@ export async function GET(
         // That is the honest answer for a caller who cannot see scores at all: unknown, not
         // uploaded.
         uploaded: folded.status === "done" && folded.score === null,
+        // The optimistic lock the hosted editor sends back. See the engine's _blog_history.
+        version_no: version.version_no,
         roadmap_index: rowIndex.get(topic.slug) ?? null,
         sent_to_client: topic.sent_to_client_at,
         client_approved: topic.client_approved_at,

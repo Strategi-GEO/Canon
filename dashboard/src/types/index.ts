@@ -490,6 +490,19 @@ export type BlogSummary = {
    */
   uploaded?: boolean;
   /**
+   * The latest COMMITTED version number, or null for a topic with no version yet.
+   *
+   * It exists for one job: the hosted editor sends it back as `base_version`, and
+   * admin_save_blog_content refuses the save when it no longer matches. That is the whole
+   * of what stops two operators on the hosted build from silently burying each other's
+   * edits, because nothing there holds the APPLY_LOCK the local engine relies on.
+   *
+   * Optional on the wire for the same engine-age reason as sent_to_client: a summary from
+   * a build predating the field reads as absent, and the editor refuses rather than
+   * guessing a base version.
+   */
+  version_no?: number | null;
+  /**
    * This blog's row on the CURRENT roadmap, or null when it sits on no row: the sheet was
    * deleted, or re-uploaded without this topic, or the blog was dropped into outputs/ by hand.
    *

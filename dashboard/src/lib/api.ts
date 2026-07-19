@@ -556,10 +556,24 @@ export const api = {
    * record commit is subsecond, and Save should not release until the edit is durable.
    * The engine 409s anything not done, a demo brand, and a live run.
    */
-  saveBlogContent: (slug: string, topicSlug: string, blogBody: string) =>
+  /**
+   * Saves the operator's own edit as a new committed version.
+   *
+   * `baseVersion` is the version number the editor was opened on, and it travels because the
+   * HOSTED build has no APPLY_LOCK and no engine holding anything: admin_save_blog_content
+   * refuses a save whose base no longer matches, so two operators editing one article get a
+   * refusal instead of one of them silently burying the other. The local engine ignores it and
+   * relies on the lock, so sending it costs nothing there and is the whole guard here.
+   */
+  saveBlogContent: (
+    slug: string,
+    topicSlug: string,
+    blogBody: string,
+    baseVersion: number | null,
+  ) =>
     request<SaveContentResult>(`/api/clients/${slug}/blogs/${topicSlug}/content`, {
       method: "POST",
-      body: { body: blogBody },
+      body: { body: blogBody, base_version: baseVersion },
     }),
 
   /**

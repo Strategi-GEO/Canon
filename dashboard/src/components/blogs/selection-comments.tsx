@@ -57,6 +57,7 @@ export function CommentableArticle({
   source,
   comments,
   disabled,
+  canResolve,
   remaining,
   onSubmit,
   onDismiss,
@@ -68,6 +69,13 @@ export function CommentableArticle({
    *  is a decision this file makes, not one the caller should have to remember. */
   comments: BlogComment[];
   disabled: boolean;
+  /** Whether Resolve may be offered at all. A SEPARATE QUESTION FROM `disabled`, and the
+   *  two are not degrees of the same permission: `disabled` asks whether this article takes
+   *  comments, this asks whether anything exists to spend a Claude session on one. Filing,
+   *  replying and dismissing are database writes the hosted build performs for real, while
+   *  resolving is an Agent SDK session that only the local engine can run, so Resolve is the
+   *  single act that has to go when the article is otherwise fully commentable. */
+  canResolve: boolean;
   /** How many more changes may be filed right now (the 3-in-flight cap minus in flight). */
   remaining: number;
   onSubmit: (draft: SelectionDraft) => Promise<void>;
@@ -189,13 +197,14 @@ export function CommentableArticle({
             comment={comment}
             unanchored={lost.has(comment.id)}
             capped={full}
+            canResolve={canResolve}
             onDismiss={onDismiss}
             onResolve={onResolve}
             onReply={onReply}
           />
         ),
       })),
-    [shown, lost, full, onDismiss, onResolve, onReply],
+    [shown, lost, full, canResolve, onDismiss, onResolve, onReply],
   );
 
   const composer: RailComment | null =
@@ -316,11 +325,16 @@ function Composer({
  * spends a Claude session on the request. Reply says "we cut that line, it was a duplicate"
  * and leaves the request exactly where it was, so an operator can answer a client without
  * either deciding the request on their behalf or making it vanish from the client's rail.
+ *
+ * THREE DOORS, AND ONLY ONE OF THEM NEEDS AN ENGINE. Dismiss and Reply are database writes,
+ * so they are offered wherever the article is commentable. Resolve is a Claude session, so
+ * where there is nothing to run it the card drops the button and says where it runs instead.
  */
 function CommentCard({
   comment,
   unanchored,
   capped,
+  canResolve,
   onDismiss,
   onResolve,
   onReply,
@@ -330,6 +344,10 @@ function CommentCard({
   unanchored: boolean;
   /** Three applies are already live, so Resolve would be refused. */
   capped: boolean;
+  /** An engine is behind this page, so a Claude session can actually run. False replaces the
+   *  button with the reason: a card owed an act, offering neither the act nor an explanation
+   *  for its absence, reads as a broken card rather than a deliberate one. */
+  canResolve: boolean;
   onDismiss: (comment: BlogComment) => void;
   onResolve: (comment: BlogComment) => void;
   onReply: (comment: BlogComment, body: string) => Promise<void>;
@@ -404,8 +422,29 @@ function CommentCard({
         </ul>
       ) : null}
 
+      {resolvable && !canResolve ? (
+        // HIDDEN RATHER THAN DISABLED, and the sentence is what makes the hiding legible. A
+        // greyed-out Resolve sends the operator hunting for the state that ungreys it, and on
+        // this build there is none to find: no engine will ever sit behind this page, so the
+        // wait is forever. Naming where the act does run turns a dead control into a
+        // direction, and naming that dismiss still works keeps a card with a live door from
+        // reading as an inert one.
+        //
+        // It promises DISMISS and nothing else, deliberately. Dismiss is the one act here
+        // with a definer function behind it, so it is the one act this sentence can vouch
+        // for without sending the operator at a control that answers 404. Reply IS offered:
+        // migration 011 added admin_reply_comment and its route, because the control was
+        // already on screen and answering a client was the one thing an operator most needed
+        // to do from here.
+        <p className="mt-1.5 flex gap-1.5 text-xs leading-relaxed text-muted-foreground">
+          <Sparkles className="mt-0.5 size-3 shrink-0" aria-hidden />
+          Resolve with Claude runs in the local app. You can still reply to this change here,
+          or dismiss it.
+        </p>
+      ) : null}
+
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        {resolvable ? (
+        {resolvable && canResolve ? (
           <Button
             size="xs"
             variant="outline"

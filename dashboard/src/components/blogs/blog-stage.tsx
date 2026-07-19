@@ -184,10 +184,20 @@ function StageBody({
     reloadQuestions();
   }, [onChanged, reloadQuestions]);
 
-  // What this page may change. The engine enforces every bit of this; the flags only
-  // decide which affordances exist on screen.
-  const editable =
-    !HOSTED_READONLY && !demoMode && blog.status === "done";
+  // What this page may change. The engine, or the admin_* definer functions on the hosted
+  // build, enforce every bit of this; the flags only decide which affordances exist on screen.
+  //
+  // NO LONGER GATED ON HOSTED_READONLY, and that is the point of migration 009: editing,
+  // commenting, dismissing and sending are all plain database writes, so an operator on the
+  // hosted build can do them. They used to be hidden there for the honest reason that nothing
+  // could perform them; now something can.
+  const editable = !demoMode && blog.status === "done";
+
+  // WHAT STILL NEEDS AN ENGINE, and the one thing this page cannot do hosted. Resolving a
+  // comment with Claude is an Agent SDK session, not a row: a definer function can file the
+  // request and cannot run it. The comment rail therefore offers Resolve only where an engine
+  // is behind it, and the hosted build shows the comment as a queued request instead.
+  const canRunClaude = !HOSTED_READONLY && editable;
 
   // Where this blog sits with the client: sent, approved, and how many suggestions are
   // still open. Read beside the summary rather than derived from it, because a resolve or
@@ -454,6 +464,7 @@ function StageBody({
                   <BlogEditor
                     brandSlug={brandSlug}
                     topicSlug={topicSlug}
+                    baseVersion={blog.version_no ?? null}
                     initial={articleText ?? ""}
                     value={editDraft}
                     onChange={setEditDraft}
@@ -477,6 +488,7 @@ function StageBody({
                     <BlogArticle
                       loaded={article.loaded}
                       editable={editable}
+                      canResolve={canRunClaude}
                       remaining={3 - applying}
                       comments={comments.comments}
                       onSubmit={submitComment}
@@ -533,6 +545,7 @@ function EditButton({
 function BlogArticle({
   loaded,
   editable,
+  canResolve,
   remaining,
   comments,
   onSubmit,
@@ -542,6 +555,10 @@ function BlogArticle({
 }: {
   loaded: LoadedArtifact | undefined;
   editable: boolean;
+  /** Whether an engine is behind this page, so a Claude session can actually run. Threaded
+   *  from StageBody rather than read off HOSTED_READONLY down here, so the one flag that
+   *  already knows the answer is the only thing the rail can disagree with. */
+  canResolve: boolean;
   remaining: number;
   comments: BlogComment[];
   onSubmit: (draft: SelectionDraft) => Promise<void>;
@@ -574,6 +591,7 @@ function BlogArticle({
         source={loaded.text}
         comments={comments}
         disabled={!editable}
+        canResolve={canResolve}
         remaining={remaining}
         onSubmit={onSubmit}
         onDismiss={onDismiss}

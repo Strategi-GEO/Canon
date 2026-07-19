@@ -1,7 +1,8 @@
+import { adminRpcError } from "@/lib/server/admin-rpc";
 import { unauthenticated, verifyRequest } from "@/lib/server/auth";
 import { clientId, ledgerStamp, liveSlugs } from "@/lib/server/clients";
 import { detail, failure, json } from "@/lib/server/http";
-import { pg } from "@/lib/server/postgrest";
+import { pg, rpc } from "@/lib/server/postgrest";
 
 type SheetRow = { id: string; columns: string[] };
 
@@ -72,5 +73,44 @@ export async function GET(
     return json({ columns: sheet.columns, rows, warnings: [] });
   } catch (cause) {
     return failure(cause);
+  }
+}
+
+/**
+ * The operator's replace: drop this brand's roadmap so a new sheet can be uploaded.
+ *
+ * All authority lives in the database function admin_delete_roadmap
+ * (supabase/migrations/009_admin_write_tier.sql). It gates on auth_is_admin() and nothing
+ * else, resolves the brand from this text slug, archives the sheet's raw CSV and its parse
+ * report into roadmap_uploads under a timestamped name, then deletes the sheet and lets the
+ * cascade take roadmap_rows with it. roadmap_sheets.client_id is unique, so the whole thing is
+ * one atomic statement and the engine's check-then-act is closed for free: a brand with no
+ * sheet is the function's own NOSHEET refusal, never a silent success.
+ *
+ * THE DISK HALF OF THIS ACTION CANNOT CROSS, AND IT IS HANDLED IN THE ENGINE. The local
+ * delete also unlinks clients/<slug>/roadmap.csv, because a stale copy left on disk gets
+ * picked up by the next generation's validate step as though that session had written it,
+ * resurrecting the sheet the operator just deleted. A hosted delete cannot unlink a file on
+ * somebody's laptop, so the engine drops a roadmap.csv whose sheet is gone from the record and
+ * the record stays authoritative.
+ *
+ * This handler only shapes HTTP. There is no body, it forwards the caller's own JWT, and the
+ * answer is the flat acknowledgement the engine's own DELETE gives.
+ */
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ slug: string }> },
+) {
+  const user = await verifyRequest(request);
+  if (user === null) {
+    return unauthenticated();
+  }
+  const { slug } = await params;
+
+  try {
+    await rpc(user.token, "admin_delete_roadmap", { p_brand: slug });
+    return json({ deleted: true });
+  } catch (cause) {
+    return adminRpcError(cause);
   }
 }
