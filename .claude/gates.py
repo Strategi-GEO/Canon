@@ -57,6 +57,47 @@ HOUSE_SUPERLATIVES = [
 # from active voice is client vocabulary, so it belongs in gates.json passive_whitelist.
 HOUSE_PASSIVE_WHITELIST = []
 
+# --- Competitor silence (OFF unless the client opts in) ------------------------
+# A client sets "competitor_policy": "never_name" to turn this on, and lists the rival
+# names it knows in "competitor_terms". It is off by default because the house rule
+# elsewhere REQUIRES honest negatives, and for most clients conceding where a rival
+# option wins is the thing that earns the citation. A client that opts in is choosing
+# the opposite trade, and its honest negatives must then be made against options
+# (asset type, location, price band, ownership model) instead of companies.
+#
+# The frames below are the unnamed forms, and they are the ones drafts actually reach
+# for: a sentence about "most builders" talks about the competition without naming it,
+# and a client that opted in banned talking about them, not merely naming them.
+# NEITHER THE FRAMES NOR THE CLIENT LIST IS THE RULE. The rule is that no sentence may
+# make a reader think of a specific competing company; the evaluator judges the rest.
+HOUSE_COMPETITOR_FRAMES = [
+    r"\bcompetitors?\b",
+    r"\brivals?\b",
+    r"\bthe competition\b",
+    r"\bindustry peers\b",
+    r"\b(other|most|many|some|several|rival|competing)\s+"
+    r"(developers?|builders?|projects?|brands?|players?|operators?|promoters?|"
+    r"companies|firms|vendors?|providers?|agencies|resorts?|platforms?|communities)\b",
+    r"\bunlike\s+(other|most|many|some)\b",
+    r"\bcompared\s+(?:to|with)\s+(other|most|many|rival|competing)\b",
+    r"\bversus\s+other\b",
+]
+
+# --- Brand voice register (OFF unless the client configures it) ----------------
+# "voice": {"second_person": true, "first_person_plural": true} in gates.json. The
+# pronoun is only half the rule: a pronoun carries no entity, so a section written
+# entirely in "we" is invisible to a knowledge graph and useless once an AI engine
+# lifts it away from its surroundings. That is why the anchoring gate rides along
+# with the pronoun gates and cannot be enabled separately.
+HOUSE_FIRST_PERSON_PLURAL = r"\b(we|us|our|ours)\b"
+HOUSE_SECOND_PERSON = r"\b(you|your|yours)\b"
+# "We" means the client and nothing else. These are the readings that dissolve the
+# entity by stretching "we" over the reader, the industry, or people in general.
+HOUSE_GENERIC_WE = [
+    r"\bwe all\b", r"\ball of us\b", r"\bmany of us\b", r"\bwe humans\b",
+    r"\bwe as (?:a|an|the) \w+", r"\bwe live in\b", r"\bmost of us\b",
+]
+
 IRREGULAR_PARTICIPLES = (
     "built|sold|held|kept|set|put|made|given|taken|known|shown|drawn|grown|"
     "written|driven|seen|done|left|lost|found|told|paid|sent|meant|felt|run"
@@ -127,6 +168,20 @@ def split_sentences(text: str) -> list:
     protected = re.sub(r"(\d)\.(\d)", "\\1\x00\\2", protected)
     parts = re.split(r"(?<=[.!?])\s+", protected)
     return [p.replace("\x00", ".").strip() for p in parts if p.strip()]
+
+
+def sections(md: str) -> list:
+    """Return (heading, body, lineno) split on H2 AND H3.
+
+    H3 is included so each FAQ pair is its own unit: an FAQ answer is the block an AI
+    engine most often extracts alone, so it has to name the entity on its own.
+    """
+    heads = list(re.finditer(r"^(#{2,3})\s+(.+)$", md, re.M))
+    out = []
+    for i, h in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(md)
+        out.append((h.group(2).strip(), md[h.end():end], md[:h.start()].count("\n") + 1))
+    return out
 
 
 def content_blocks(md: str) -> list:
@@ -209,10 +264,21 @@ def load_config(client_slug: str) -> dict:
     band = dict(DEFAULT_WORD_BAND)
     band.update(raw.get("word_band") or {})
 
+    voice = raw.get("voice") or {}
+    if not isinstance(voice, dict):
+        _die(2, f"'voice' must be an object in {cfg_path}")
+    policy = raw.get("competitor_policy", "") or ""
+    if policy not in ("", "never_name"):
+        _die(2, f"unknown competitor_policy {policy!r} in {cfg_path}: "
+                f"the only value is 'never_name' (omit the key to leave it off)")
+
     return {
         "path": cfg_path,
         "name": raw.get("name", client_slug),
         "word_band": band,
+        "voice": voice,
+        "competitor_policy": policy,
+        "competitor_terms": raw.get("competitor_terms", []) or [],
         "banned_phrases": raw.get("banned_phrases", []) or [],
         "entity_names": raw.get("entity_names", []) or [],
         "generic_entity_terms": raw.get("generic_entity_terms", []) or [],
@@ -335,6 +401,73 @@ def run_gates(md: str, cfg: dict) -> list:
         else:
             gate("client-entity-named", "WARN",
                  "no client entity named: name one of " + ", ".join(names))
+
+    # --- competitor silence (client opt-in) -------------------------------------
+    # Read on `stripped`, NOT `unquoted`: a competitor named inside a quotation is
+    # still named, and no verbatim-permitted claim needs a rival's name in it, so a
+    # quote exemption here would protect nothing legitimate.
+    if cfg["competitor_policy"] == "never_name":
+        hits = []
+        for pat in HOUSE_COMPETITOR_FRAMES:
+            for m in re.finditer(pat, stripped, re.I):
+                hits.append(f"'{m.group(0)}' @line {lineno(stripped, m.start())}")
+        for term in cfg["competitor_terms"]:
+            for m in re.finditer(rf"\b{re.escape(term)}\b", stripped, re.I):
+                hits.append(f"competitor '{m.group(0)}' @line {lineno(stripped, m.start())}")
+        gate("no-competitors", "FAIL" if hits else "PASS",
+             "; ".join(hits) + "  ->  compare OPTIONS (asset type, location, price band, "
+             "ownership model), never companies" if hits
+             else "no competitor named, no competitor framing")
+
+    # --- brand voice register (client opt-in) -----------------------------------
+    voice = cfg["voice"]
+    if voice.get("second_person"):
+        n_you = len(re.findall(HOUSE_SECOND_PERSON, unquoted, re.I))
+        gate("second-person-voice", "PASS" if n_you else "FAIL",
+             f"{n_you} second-person references" if n_you
+             else "zero 'you' anywhere: the reader is addressed directly, not as "
+                  "'buyers' or 'one'")
+
+    if voice.get("first_person_plural"):
+        n_we = len(re.findall(HOUSE_FIRST_PERSON_PLURAL, unquoted, re.I))
+        generic = []
+        for pat in HOUSE_GENERIC_WE:
+            for m in re.finditer(pat, unquoted, re.I):
+                generic.append(f"'{m.group(0)}' @line {lineno(unquoted, m.start())}")
+        label = cfg["entity_names"][0] if cfg["entity_names"] else cfg["name"]
+        if generic:
+            gate("first-person-voice", "FAIL",
+                 "; ".join(generic) + f"  ->  'we' means {label} and nothing else: use "
+                 "'you' for the reader and name the group where a group is meant")
+        elif not n_we:
+            gate("first-person-voice", "FAIL",
+                 f"zero 'we/us/our': {label} speaks in first person plural, not about "
+                 "itself in the third person")
+        else:
+            gate("first-person-voice", "PASS",
+                 f"{n_we} first-person-plural references, none generic")
+
+        # --- entity anchoring under a pronoun voice -----------------------------
+        # The cost of "we" is that a pronoun carries no entity. Every block that gets
+        # extracted alone (the opening, each H2 section, each FAQ pair) must name the
+        # client in full somewhere inside itself. Without this, first person plural
+        # trades away the entity mentions the whole engine exists to produce.
+        if cfg["entity_names"]:
+            named = re.compile("|".join(re.escape(n) for n in cfg["entity_names"]), re.I)
+            fp = re.compile(HOUSE_FIRST_PERSON_PLURAL, re.I)
+            hits = []
+            first_h2 = re.search(r"^##\s+", stripped, re.M)
+            opening = stripped[:first_h2.start()] if first_h2 else stripped
+            if not named.search(opening):
+                hits.append("the opening and TL;DR never name the client in full")
+            for head, body, ln in sections(stripped):
+                if "source" in head.lower():
+                    continue
+                if fp.search(body) and not named.search(head + " " + body):
+                    hits.append(f"line {ln}: '{head[:44]}' says 'we' without naming "
+                                "the entity")
+            flag("entity-anchored-sections", hits,
+                 "the opening and every section using 'we' also name the entity in full")
 
     # --- superlatives (WARN, skip quoted spans) ---------------------------------
     hits = []

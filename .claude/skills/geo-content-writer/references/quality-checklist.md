@@ -31,6 +31,32 @@ Run through this checklist before delivering any piece. Every item must pass. If
 - [ ] At least 3 standalone quotable statements appear in the piece
 - [ ] No invented statistics, no false precision, no made-up percentages
 
+## Topic discipline checks
+
+- [ ] Every H2 traces to a named target prompt, and the mapping was written out in the outline
+- [ ] No section covers an adjacent subject the brief did not ask for
+- [ ] Category-level background runs no longer than two sentences before the piece returns to its subject
+- [ ] No paragraph survives that a reader who typed the primary target prompt does not need
+- [ ] Nothing was added to reach the word band, the length came from answering the prompts more completely
+
+## Competitor silence checks (only where the client set `"competitor_policy": "never_name"`)
+
+- [ ] No rival company, developer, project, brand, platform, agency, or operator is named anywhere, including tables, FAQ answers, and the Sources list
+- [ ] No unnamed competitor framing: "other developers", "most vendors", "unlike other projects", "compared with the competition", "industry peers", "rivals"
+- [ ] Every comparison in the piece is between options (asset type, location, price band, ownership model, buyer situation), never between companies
+- [ ] Honest negatives are still present, made against the option rather than against a rival. The policy rescopes them, it does not cancel them
+
+## Brand voice checks (only where the client configured a `voice` block)
+
+- [ ] The reader is addressed as "you" throughout, not as "buyers" and not as "one"
+- [ ] The client speaks as "we", "us", and "our", not about itself in the third person in every sentence
+- [ ] "We" never means the reader, the industry, or people in general
+- [ ] The TL;DR and the answer-first opening both name the entity in full
+- [ ] Every H2 section that uses "we" also names the entity in full inside that same section
+- [ ] Every FAQ answer about the client names it in the answer's first sentence
+- [ ] Every standalone quotable statement names the entity in full, none rely on "we"
+- [ ] Table cells name the entity in full, no row reads "we"
+
 ## Entity clarity checks
 
 - [ ] Every company, product, person, framework, and technology is named explicitly

@@ -339,6 +339,40 @@ script is the authority on these rules:
 - Entity clarity: never generic references like "the company", "the brand", "the developer",
   "the product". Always the specific entity names listed in the client's `gates.json`. Quoted
   verbatim claims are exempt where `canonical-facts.md` requires exact wording.
+- Competitor silence, where the client sets `"competitor_policy": "never_name"`: zero rival
+  names from its `competitor_terms` and zero competitor framing ("other developers", "most
+  vendors", "unlike other projects", "the competition", "industry peers"). Quoted spans are NOT
+  exempt: a rival named inside a quotation is still named.
+- Brand voice, where the client configures a `voice` block: the reader addressed as "you", the
+  client speaking as "we/us/our", no generic "we", and every block that uses "we" also naming
+  the entity in full. See Voice and topic discipline below.
+
+## Voice and topic discipline (every article)
+The register is per-client and the engine stays brand-agnostic: `clients/<slug>/gates.json`
+carries the `voice` block and `client.md` describes it in prose. Where a client configures none,
+the piece is written in neutral third person exactly as before. Where one is configured:
+
+- **Second person to the reader.** The reader is "you", never "buyers" and never "one".
+- **First person plural for the client.** The client speaks as "we", "us", and "our", not about
+  itself in the third person in every sentence. "We" means the client and never the reader, the
+  industry, or people in general.
+- **Entity anchoring is the price of the pronoun.** A pronoun carries no entity, and AI engines
+  extract per block, so every block that can be lifted alone names the entity in full inside
+  itself: the opening, the TL;DR, each H2 section, each FAQ answer, each table, each quotable.
+  Inside a block already anchored by the full name, "we" and "our" carry the rest. A section
+  that says only "we" is unattributable, which is worse than a generic. `gates.py` enforces
+  this alongside the pronoun checks and it cannot be enabled separately, because the register
+  without the anchoring trades away the entity mentions the whole engine exists to produce.
+
+Topic discipline is a HOUSE rule and applies to every client, configured or not:
+
+- **Every H2 traces to a target prompt.** Write the mapping in the outline. An H2 that maps to
+  no prompt is cut, not softened, because it gets extracted for a query this piece was never
+  meant to win, competing with the roadmap row that should have answered it.
+- **Stay on subject.** Category-level background gets at most two sentences before the piece
+  returns to its own topic. An adjacent subject gets one sentence, never a section, a table
+  row, or an FAQ pair. Never widen the topic to reach the word band: length is earned by
+  answering the target prompts more completely.
 
 ## Structural requirements (every article)
 - **Answer-first opening.** The first 100-150 words contain a standalone citeable answer to
@@ -381,16 +415,25 @@ script is the authority on these rules:
   vendor writing on its own category's demand. Flag vendor research's commercial interest in
   the caveats line.
 - No cited source may contradict `canonical-facts.md`.
-- **Honest negatives are required, not optional.** Where a competitor or rival option
-  genuinely wins, concede it plainly and earn the client's mention on documented ground
-  instead. A puff piece scores lower, not higher. A revise pass must NEVER cut an honest
-  negative to save words.
+- **Honest negatives are required, not optional.** Where another option genuinely wins,
+  concede it plainly and earn the client's mention on documented ground instead. A puff piece
+  scores lower, not higher. A revise pass must NEVER cut an honest negative to save words.
+  Where the client sets `"competitor_policy": "never_name"`, this rule is RESCOPED and not
+  cancelled: the concession is made against the option (the location, the asset class, the
+  price band, the buyer fit) rather than against a named company, and it is still made. A
+  client's competitor policy never buys it a puff piece.
 
 ## Do not claim
 The binding list is `clients/<slug>/canonical-facts.md`. Never publish a claim that
 contradicts it, including in FAQ answers and tables. Beyond the client's own list, these
 house rules always hold:
 - No unsubstantiated superlatives: best, first, only, number one, leading.
+- Where the client set `"competitor_policy": "never_name"`, no competitor appears anywhere,
+  named or implied, including in tables, FAQ answers, and the Sources list. Comparisons under
+  that policy are between OPTIONS (asset type, location, price band, ownership model, buyer
+  situation), never between COMPANIES. The client's `competitor_terms` list is a backstop and
+  not the rule: if a sentence would make a reader think of a specific competing company, it
+  does not ship.
 - Frame every client projection as the client's own guidance, never as independent fact.
 - Source any market-growth claim from an independent third party specific to the client's
   market, never from the client's own marketing or press releases.

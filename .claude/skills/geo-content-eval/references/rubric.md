@@ -22,6 +22,7 @@ Any single gate failure rejects the piece regardless of graded score. If the cli
 | G6 | Source fidelity | No claim contradicts the source it cites. No source overstated to manufacture agreement with the client's positioning |
 | G7 | Client alignment | Nothing contradicts the client's positioning, product, or prohibited-framing rules. UNVERIFIED if no brief |
 | G8 | Unverified credential claims | No membership, certification, ranking, award, or "best / largest / only / first" claim stated as fact unless verifiable and confirmed in the KB. UNVERIFIED if no KB |
+| G9 | Competitor silence | Applies ONLY where the client's `gates.json` sets `"competitor_policy": "never_name"`; mark it N/A and pass otherwise. Where it applies: no rival company, developer, project, brand, platform, agency, or operator named ANYWHERE, including tables, FAQ answers, and the Sources list. No unnamed competitor framing either: "other developers", "most vendors", "unlike other projects", "compared with the competition", "industry peers", "rivals". Comparisons are between OPTIONS (asset type, location, price band, ownership model, buyer situation), never between COMPANIES |
 
 ### Banned phrase list for G2
 
@@ -96,10 +97,12 @@ Where the topic warrants it, data specific to the client's market or micro-marke
 ### Bucket C: Entity and voice
 
 **C1. Entity explicitness** (weight 2)
-Every company, person, product, and framework named explicitly every time, no "the company" or "this approach." Key terms defined with standalone definitional sentences on first use.
-- 0: vague references, terms undefined
-- 1: inconsistent naming, some definitions missing
-- 2: explicit naming throughout, key terms defined
+Every company, person, product, and framework named explicitly, no "the company" or "this approach." Key terms defined with standalone definitional sentences on first use.
+
+**Where the client configures a first-person-plural register, "we" for the client is CORRECT and is not an entity failure.** Do not score such a draft down for using it. What you score is ANCHORING: whether each independently extractable block (the opening and TL;DR, each H2 section, each FAQ pair, each table, each quotable) names the entity in full somewhere inside ITSELF. A pronoun carries no entity, so a section that says only "we" is exactly the failure this dimension exists to catch. A section that says "we" three times after naming the client in full in its first sentence is the register working as specified.
+- 0: vague references, terms undefined, or blocks that reference the client only by pronoun
+- 1: inconsistent naming, some definitions missing, or some extractable blocks unanchored
+- 2: every extractable block anchored by the full entity name, key terms defined
 - 3: above, with each definition independently extractable as a quotable sentence
 
 **C2. Voice** (weight 2)
@@ -108,6 +111,13 @@ Plain, direct, knowledgeable. No corporate or AI-generic register. Varied senten
 - 1: readable but formulaic rhythm or frequent hedging
 - 2: sounds like a knowledgeable person, varied, active
 - 3: above, and the generic-brand test passes cleanly (could not have been written about any other firm)
+
+**C4. Voice register** (weight 2)
+The register is whatever `clients/<slug>/gates.json` configures, and this dimension scores how consistently the draft holds it. Where the client sets `second_person` and `first_person_plural`: the reader is addressed as "you", the client speaks as "we", "us", "our", and "we" means the client and never the reader, the industry, or people in general. Where the client configures no `voice` block, the register is neutral third person and this dimension scores that instead.
+- 0: the configured register is absent, or "we" is used generically ("we all want a place to escape")
+- 1: register applied unevenly, the piece slips between "you" and "buyers", or between "we" and the client narrating itself by name
+- 2: the configured register held consistently across body, table, and FAQ
+- 3: above, and the register earns its keep: the answers read as a person answering the question asked, with every extractable block still anchored by the full entity name
 
 **C3. Concision** (weight 1)
 No repetition beyond useful entity reinforcement. A fact stated once with weight beats the same fact stated four times.
@@ -125,14 +135,23 @@ Covers the target topic and prompt fully, addresses the right audience, applies 
 - 2: on-brief, right audience, industry signals applied
 - 3: above, and the piece would need no structural change from the brief owner
 
+**D2. Topic discipline** (weight 3)
+Every section serves the piece's own subject and traces to a target prompt. No adjacent-subject excursions, no category-level runway beyond two sentences, no padding that widened the topic to reach the word band. Test it by reading each paragraph and asking whether a reader who typed the primary target prompt needs it.
+- 0: whole sections about an adjacent subject, or the piece never settles on its topic
+- 1: on topic overall, with a drifting section, a long runway, or paragraphs that serve no prompt
+- 2: every section traces to a target prompt, no drift, background kept short
+- 3: above, and every paragraph earns its place against the primary prompt with nothing cuttable
+
 ---
 
 ## Scoring math
 
 ```
-weighted_total = sum(dimension_score * dimension_weight)   # weights total 25, max 75
-normalised     = round(weighted_total / 75 * 100)
+weighted_total = sum(dimension_score * dimension_weight)   # weights total 30, max 90
+normalised     = round(weighted_total / 90 * 100)
 ```
+
+The two dimensions added here (C4 voice register, D2 topic discipline) raise the weight total from 25 to 30 and the max from 75 to 90. The 95 threshold is a PERCENTAGE, so the bar is proportionally identical to what it was: a draft still has to earn about 95% of the available weight. What changed is what counts toward it, not how hard it is to clear.
 
 The house band is binary. There is no middle band.
 
@@ -155,6 +174,10 @@ Each gate and dimension belongs to one fix area, one of exactly four: Sourcing, 
 | Area | Routes to | Gates and dimensions |
 |------|-----------|----------------------|
 | Sourcing | Agent R (research top-up) | G3, G4, G8, B2, B3 |
-| Structure | Agent W (revise) | A2, A3 (plan), A4 (plan), D1 |
-| Draft | Agent W (revise) | A1, A3 (execution), B1, C1, C2, D1 |
-| Mechanics | Agent W (revise) | G1, G2, G5, A5, C3 |
+| Structure | Agent W (revise) | A2, A3 (plan), A4 (plan), D1, D2 (plan) |
+| Draft | Agent W (revise) | A1, A3 (execution), B1, C1, C2, C4, D1, D2 (execution) |
+| Mechanics | Agent W (revise) | G1, G2, G5, G9, A5, C3 |
+
+G9, C4 and D2 route to the writer and NEVER to Sourcing. A competitor mention, a voice slip, and
+a drifting section are all fixed by rewriting what is already on the page, so none of them needs
+a new source, none justifies a Sourcing question, and none ends the loop.

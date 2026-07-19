@@ -25,6 +25,21 @@ Strong headings (use patterns like these):
 
 The rule: if the heading could be a standalone question a user might type into ChatGPT, it is a strong heading. If it is a generic label, rewrite it.
 
+### Every H2 traces to a target prompt
+
+Answer-shaped is necessary and not sufficient. A heading also has to be about THIS piece's
+subject. Before drafting, write the mapping out: each H2 against the target prompt it answers.
+
+An H2 that maps to no target prompt is drift, however good it reads, and drift is expensive in a
+way that is easy to miss. The section still gets extracted; it just gets extracted for a query
+this piece was never meant to win, competing with the page that should have answered it. Cut it,
+and leave the material for the piece that is actually about it.
+
+The same test governs the body. Category-level background gets at most two sentences before the
+piece returns to its own subject, and an adjacent topic gets one sentence rather than a section
+of its own. Length is earned by answering the target prompts more completely, never by widening
+the topic until the word count is met.
+
 ## The answer-first opening
 
 The first paragraph must directly answer the core question. Not set it up. Not introduce it. Answer it.
@@ -184,9 +199,38 @@ Schema is not optional for GEO. Claude should flag in the delivered piece where 
 Name every entity explicitly and consistently across the piece. An entity is any: company, product, person, place, technology, framework, or concept that matters to the topic.
 
 Rules:
-- Pick one canonical name for each entity and use it every time. If a product is called "Acme Analytics Platform" on the homepage, do not call it "our platform" or "the Acme tool" later. Always "Acme Analytics Platform."
+- Pick one canonical name for each entity and use it every time it is named. If a product is called "Acme Analytics Platform" on the homepage, never rename it "the Acme tool" later. Always "Acme Analytics Platform."
 - Define every proprietary framework or methodology with a named page. AI engines cite named entities, not generic descriptions.
-- Do not substitute pronouns or vague references. "The company" or "this approach" kills the entity mention that AI engines use to build knowledge graphs.
+- Do not substitute vague references. "The company" or "this approach" kills the entity mention that AI engines use to build knowledge graphs.
+
+### The one permitted pronoun, and the anchoring it costs
+
+Where the client writes in a first-person-plural register, "we", "us", and "our" are the ONE
+permitted substitution for the client's own name. Nothing else is: the generic stand-ins above
+stay banned, and no other entity in the piece gets a pronoun.
+
+That substitution has a price, and the price is anchoring. **Extraction is per block, not per
+page.** An AI engine lifts one section, one FAQ pair, or one table and answers with it alone,
+carrying none of the surrounding page. A block that refers to the client only as "we" therefore
+arrives at the engine with no entity in it at all, which is worse than a generic: there is
+nothing to attribute and nothing to add to the knowledge graph.
+
+So every independently extractable block names the entity in full inside ITSELF:
+
+- The answer-first opening and the TL;DR.
+- Each H2 section that talks about the client, in that section, not the one before it.
+- Each FAQ answer that talks about the client, in the answer's first sentence. FAQ pairs are
+  extracted alone more than any other block.
+- Each table. A row that reads "we" is meaningless the moment the table is extracted.
+- Each standalone quotable statement. A quotable that says "we" is not quotable.
+
+Inside a block already anchored by the full name, "we" and "our" carry the rest of it. That is
+the trade: the register buys prose that reads like a person answering the question, and the
+anchoring keeps every extracted fragment attributable.
+
+**"We" means the client and nothing else.** Never stretch it over the reader, the industry, or
+people in general. "We all want somewhere to escape to" is a different "we", and it dissolves the
+entity the piece exists to build.
 
 ## Source attribution
 

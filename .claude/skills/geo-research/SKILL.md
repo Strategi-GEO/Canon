@@ -212,7 +212,9 @@ Paywalled sources. If the full text cannot be fetched, the source cannot be full
 
 Aggregators and "X statistics 2026" listicles. These are leads only. Never cite them. Use them to find the primary reports they pulled from, then cite those.
 
-Vendor and competitor research. A vendor's own report can be Tier B for an industry benchmark if the methodology is disclosed, but flag the commercial interest in the caveats line so the writer frames it honestly.
+Vendor research. A vendor's own report can be Tier B for an industry benchmark if the methodology is disclosed, but flag the commercial interest in the caveats line so the writer frames it honestly.
+
+Competitor research, where the client sets `"competitor_policy": "never_name"` in `gates.json`, is a DEAD END rather than a Tier B source. Such a client never names a rival, and a citation names its author, so a claim sourced to a competitor cannot be used no matter how good the number is. Do not carry one into the dossier expecting the writer to find a way: it arrives as an unusable claim and costs an iteration to discover. Find the same fact in an independent source, or record it as a coverage gap. Where the client sets no such policy, the vendor rule above applies to competitor research unchanged.
 
 Thin evidence. If a topic genuinely lacks good sources, say so in the summary, the coverage gaps, and the end note. A short, honest dossier beats a padded one. Do not manufacture support to fill the template.
 

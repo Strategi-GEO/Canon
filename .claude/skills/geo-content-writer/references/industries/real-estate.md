@@ -60,7 +60,7 @@ A property listing page must function as a completely self-contained information
 Map content to every stage:
 
 - **Discovery:** "Best neighborhoods in Bangalore for young families in 2026"
-- **Evaluation:** "2BHK apartments in Whitefield: price range, amenities, builder comparison"
+- **Evaluation:** "2BHK apartments in Whitefield: price range, carpet area, amenities, and what the ownership model actually covers"
 - **Due diligence:** "How to verify RERA registration before buying a property in Karnataka"
 - **Decision:** "What to expect during a property site visit at [project name]"
 - **Post-purchase:** "How to register your new apartment in Bangalore: step-by-step"
@@ -70,7 +70,7 @@ Map content to every stage:
 Every property listing and guide should use:
 - Answer-first opening with specific micro-market, configuration, and price range in first 100 words
 - H2/H3 hierarchy with question-shaped headings
-- Comparison tables for builder-vs-builder, project-vs-project, neighborhood-vs-neighborhood
+- Comparison tables for option-vs-option: neighborhood, configuration, asset type, price band, ownership model
 - FAQ section addressing real buyer questions
 
 ### Layer 5: Freshness Signals
@@ -87,7 +87,9 @@ Real estate pricing and availability change constantly. Every page needs:
 
 Weak: "Properties in Bangalore"
 
-Strong: "2BHK apartments in HSR Layout Sector 7: average price ₹1.4-1.8 crore as of March 2025, with projects from Prestige Group, Sobha, and Brigade"
+Strong: "2BHK apartments in HSR Layout Sector 7: average price ₹1.4-1.8 crore as of March 2025, 1,150 to 1,320 sq ft carpet, most stock ready to move"
+
+Name the micro-market, the configuration, the price band, and the date. Do NOT name the developers active there: see the competitor rule below.
 
 Build a page for every micro-market × configuration combination the brand operates in.
 
@@ -101,7 +103,7 @@ Every Indian real estate piece must mention RERA where relevant:
 
 ### Comparison pieces
 
-Real estate buyers compare constantly. Every major decision needs a comparison piece:
+Real estate buyers compare constantly, so every major decision needs a comparison piece. Compare OPTIONS, never COMPANIES:
 - "Ready-to-move vs under-construction: which to buy in Bangalore 2026"
 - "Apartment vs villa for a family of 4: cost, convenience, resale comparison"
 - "Bangalore East vs Bangalore South: price, connectivity, lifestyle compared"
@@ -114,6 +116,30 @@ For every major process, create a structured how-to page:
 - "How to buy your first apartment in India: a 10-step guide"
 - "Home loan application in India: documents, timeline, and approval process"
 - "How to verify a builder before booking: a 7-point checklist"
+
+## Competitor silence (where the client sets `"competitor_policy": "never_name"`)
+
+Some clients forbid any mention of a rival. Where that policy is set, it overrides every
+comparison instruction in this file.
+
+**Never name a rival developer, builder, project, brand, platform, agency, or operator.** Not in
+the body, not in a table, not in an FAQ answer, not in the Sources list, and not to praise one.
+
+**Never use the unnamed forms either.** "Other developers", "most builders", "unlike other
+projects", "compared with the competition", "industry peers". These talk about the competition
+without naming it, which the policy bans just as hard.
+
+**Comparison pieces still get written, and they still compare.** The axis moves from companies to
+options: location vs location, configuration vs configuration, asset type vs asset type, price
+band vs price band, ownership model vs ownership model, buyer situation vs buyer situation. A
+plot-vs-apartment table is a real comparison and it names no rival. A builder-vs-builder table is
+not available under this policy.
+
+**Honest negatives survive the policy and are still required.** Concede plainly where the
+location, the category, the price band, or the buyer fit genuinely loses. A region producing more
+coffee, an asset class needing construction before anyone can stay in it, a drive too long for a
+Friday evening: all fair, all sourced, none of them a competitor. A puff piece scores lower, not
+higher, so the concession is made against the option instead of against a company.
 
 ## Schema requirements
 
@@ -147,7 +173,7 @@ Before delivering a real estate piece, verify:
 - Developer/builder name is accurate and consistent across the piece
 - Possession or availability status is stated (Ready / Under Construction / Sold Out)
 - Agent or agency credentials visible
-- Comparison pieces include 3+ realistic options, not just the client's property
+- Comparison pieces include 3+ realistic options, not just the client's property, and every option is a location, configuration, asset type, price band, or ownership model rather than a named rival
 - "Last updated" date is current
 - Disclaimers on price indicativity and area measurement are included
 - Buyer journey stage is clear (is this for discovery, evaluation, due diligence, or decision)

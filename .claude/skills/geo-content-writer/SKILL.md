@@ -126,7 +126,7 @@ Return only when the draft is gate-clean AND link-clean. Do not run the evaluato
 
 When the lead supplies a fix list, you are revising, not rewriting. Apply ONLY the listed fixes to the existing draft. Do not restructure the article, do not re-open the dossier for new research, and do not rewrite sections the fix list does not name.
 
-A revise pass must never cut an honest negative to save words. A conceded weak point, a place where a rival option genuinely wins, is required content, not filler. After applying the fixes, re-run the quality checklist, re-run the gates until they exit 0, and run the link pass on new or changed links only. Then return.
+A revise pass must never cut an honest negative to save words. A conceded weak point, a place where another option genuinely wins, is required content, not filler. Under a `never_name` competitor policy that concession is made against the option (the location, the asset class, the price band, the buyer fit) and never against a named company, but it is still made. After applying the fixes, re-run the quality checklist, re-run the gates until they exit 0, and run the link pass on new or changed links only. Then return.
 
 ## Core writing principles (non-negotiable)
 
@@ -158,9 +158,44 @@ Target one sourced statistic every 150-200 words, drawn from the dossier's verif
 
 When citing data, always include: the specific figure, the source name, and the date or time period the figure applies to. Example: "According to the Conductor 2025 AI Referral Traffic Report, legal queries trigger AI Overviews 77.67% of the time, the highest rate of any industry."
 
+### Topic discipline: the piece stays on its own subject
+
+The brief names one subject and a set of target prompts. Everything in the draft serves that subject. Drift is the most common quality failure in this pipeline, and it is not a style complaint: a section about an adjacent subject gets extracted and cited for the wrong query, or it gets extracted for nothing at all.
+
+**Every H2 traces to a target prompt.** In the Step 4 outline, write the mapping out: each H2 against the prompt it answers. An H2 that maps to no prompt gets cut, not softened. If the material is genuinely interesting and maps to nothing, it belongs to a different row of the roadmap, so leave it for that row.
+
+**Cap the runway.** Category-level background gets at most two sentences before the piece returns to its specific subject. A piece on one micro-market does not open with three paragraphs on the national market.
+
+**An adjacent subject gets one sentence, never a section.** Where a related topic genuinely helps the reader, state it in a sentence and move on. Never let it grow an H2, a table row, or an FAQ pair.
+
+**Never widen the topic to reach the word band.** A short draft is fixed by answering the target prompts more completely: more specifics, more sourced figures, more of the decision the reader is actually making. It is never fixed by adding a section about something else. Padding with adjacent material is a topic-discipline failure and the evaluator scores it as one.
+
+**The drift test, before you return.** Read the draft one paragraph at a time and ask of each: does a reader who typed the primary target prompt need this to get their answer? Cut every paragraph where the answer is no, including the ones you like.
+
+### Brand voice register (where the client configures one)
+
+`clients/<slug>/gates.json` may carry a `voice` block, described in prose in `client.md`. Where it does, that register is binding on every piece and `gates.py` enforces the mechanical half of it. Where it does not, write in the neutral third person as before.
+
+**`second_person: true` means you address the reader as "you".** Write "you are choosing between two options", not "buyers are choosing between two options" and not "one might choose". Second person is the register of a person answering the question that was actually asked, and an extracted paragraph in second person reads as an answer rather than as a report.
+
+**`first_person_plural: true` means the client speaks as "we", "us", and "our".** The client is not a third party in its own article, so it does not narrate itself by name in every sentence.
+
+**Entity anchoring is the price of the pronoun, and it is not optional.** A pronoun carries no entity, so a section written entirely in "we" is invisible to the knowledge graph and useless the moment an AI engine lifts it away from its surroundings. Under a first-person-plural register:
+
+- The full entity name appears in the TL;DR and in the answer-first opening.
+- Every H2 section that talks about the client names it in full, in that section, not in the one before it.
+- Every FAQ answer that talks about the client names it in the answer's first sentence. An FAQ pair is extracted alone more often than any other block, so a pair that says only "we" is a pair no engine can attribute.
+- Every standalone quotable statement names the entity in full. A quotable that says "we" is not quotable.
+- Table cells name the entity in full. A table row reading "we" means nothing once the table is extracted on its own.
+- Inside a paragraph already anchored by the full name, "we" and "our" carry the rest of it.
+
+**"We" means the client and nothing else.** Never stretch it over the reader, the industry, or people in general. "We all want somewhere to escape to" is a different "we", and it dissolves the entity the piece exists to build. Use "you" for the reader, and name the group where a group is meant.
+
+**First person plural is not a licence for a generic.** "The company", "the brand", and the client's own `generic_entity_terms` stay banned. In any sentence the choice is the full entity name or "we", never a generic stand-in.
+
 ### Entity clarity rules
 
-Name things explicitly. Use the actual name of the company, product, person, or technology every time, not "the company" or "this approach" or "the product." AI systems build knowledge graphs from entity mentions. Consistent naming is what creates the knowledge graph entry.
+Name things explicitly. Use the actual name of the company, product, person, or technology every time, not "the company" or "this approach" or "the product." AI systems build knowledge graphs from entity mentions. Consistent naming is what creates the knowledge graph entry. Under a configured first-person-plural register, "we" and "our" are the one permitted substitution for the client's own name, and only in a block that already names it in full.
 
 Define key terms the first time they appear. Use standalone definition sentences that can be extracted and quoted: "Generative Engine Optimization (GEO) is the practice of structuring content to increase its citation rate in AI-generated responses."
 
@@ -183,6 +218,8 @@ The following language and patterns must not appear in any piece. `gates.py` is 
 **No em dashes and no en dashes anywhere.** Use commas, colons, periods, or split into separate sentences. Em dashes and en dashes are a signature of AI-generated content and reduce citation trust signals.
 
 **No generic AI phrases.** Ban list: "in today's digital landscape," "leveraging cutting-edge," "robust solution," "game-changer," "unlock potential," "seamless integration," "transformative," "revolutionary," "paradigm shift," "synergy," "best-in-class," "world-class," "next-generation," "at the forefront of," "cutting-edge," "bleeding-edge." The client's `gates.json` can add more banned phrases, including words that appear in the client's own site copy. Never lift a banned phrase; paraphrase. `gates.py` merges the house list with the client's list and is the authority.
+
+**No competitors, where the client set `"competitor_policy": "never_name"`.** Never name a rival company, developer, project, brand, platform, agency, or operator, and never gesture at one. This covers praise, neutral mention, comparison tables, honest concessions, FAQ answers, captions, and the Sources list alike. It also covers the unnamed forms, which are the ones a draft actually reaches for: "other developers", "most vendors", "unlike other projects", "compared with the competition", "industry peers". Under this policy a comparison is between OPTIONS, never between COMPANIES: asset types, locations, price bands, ownership models, and buyer situations are all fair game, and a named rival is not. It also rescopes the honest-negative rule rather than cancelling it, so concede where the location, the category, the price band, or the buyer fit genuinely loses, and never buy that honesty by naming a rival. `gates.py` carries the client blocklist and enforces the frames, but the list is a backstop and not the rule: if a sentence would make a reader think of a specific competing company, it does not ship.
 
 **No false precision.** Never invent statistics. Never attribute claims to unnamed "studies" or "experts." Every statistic must trace to a verified claim in the research dossier, cited with its named primary source. If it is not in the dossier, it does not go in the piece.
 
