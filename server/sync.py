@@ -173,15 +173,46 @@ def materialize_topic(client_slug, topic_slug):
         (tdir / "links-verified.txt").write_text(links, encoding="utf-8")
 
     latest = db.q(
-        """select body, eval_body from blog_versions
+        """select body, eval_body, committed_at from blog_versions
            where topic_id = %s order by version_no desc limit 1""",
         (tid,), fetch="one")
     if latest:
-        body, eval_body = latest
-        if not (tdir / "blog.md").is_file():
-            (tdir / "blog.md").write_text(body, encoding="utf-8")
-        if eval_body is not None and not (tdir / "eval.md").is_file():
-            (tdir / "eval.md").write_text(eval_body, encoding="utf-8")
+        body, eval_body, committed_at = latest
+        blog = tdir / "blog.md"
+        # THE MIRROR OF reconcile_all's MTIME GUARD, and it closes the other half of the
+        # same hole. That sweep refuses to commit scratch that is OLDER than the record, so
+        # a stale disk cannot revert a teammate. Nothing, until this, refreshed a stale disk
+        # FROM the record, and "leave an existing blog.md alone" is only correct while scratch
+        # is the newer copy.
+        #
+        # What it costs when it is missing: a version committed by any writer that does not
+        # touch THIS machine's scratch (the hosted dashboard's admin edit, or another
+        # teammate's engine) leaves this disk holding an older article. The next revise here
+        # materializes, finds blog.md present, keeps the stale bytes, and Agent W edits the
+        # wrong draft. The newer version is never read and the edit that produced it is
+        # silently discarded, with no error anywhere.
+        #
+        # The original intent is preserved exactly: scratch that is AHEAD of the record (a
+        # mid-run crash) is still left alone for the reconciler to resolve in that direction.
+        # Only scratch strictly OLDER than the latest committed version is replaced.
+        stale = (
+            blog.is_file()
+            and committed_at is not None
+            and blog.stat().st_mtime < committed_at.timestamp()
+            and blog.read_text(encoding="utf-8") != body
+        )
+        if not blog.is_file() or stale:
+            blog.write_text(body, encoding="utf-8")
+            if stale:
+                log.info("materialize: refreshed stale blog.md for %s/%s from the record",
+                         client_slug, topic_slug)
+        # eval.md rides the same rule. It is the artifact the score describes, so leaving a
+        # stale one beside a refreshed blog.md would pair an article with another draft's
+        # audit, which is the exact mismatch the stop contract's artifact-set restore exists
+        # to prevent.
+        ev = tdir / "eval.md"
+        if eval_body is not None and (not ev.is_file() or stale):
+            ev.write_text(eval_body, encoding="utf-8")
 
 
 def materialize_answers(client_slug, topic_slug):
