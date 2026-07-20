@@ -14,12 +14,14 @@ failed", not "has a blog", not "scored >= 95 somewhere in its history".
 needs_review is the amber path and it is never pushed, which is the whole point.
 
 WHERE THE BYTES COME FROM since the Supabase rewire: the RECORD, always. The
-gate reads the latest committed blog_versions body and the status_events feed,
-never the scratch tree, because a publish is an act on a SETTLED blog: the
-runner commits scratch at the terminal line, so a topic still mid-run has not
-committed its new lines yet and the fold answers with the last settled state,
-which is exactly the draft that shipped. Tests inject their fixtures through
-the runner parameter's fetch seams below, so they never touch the live record.
+gate reads a committed blog_versions body and the status_events feed, never the
+scratch tree, because a publish is an act on a SETTLED blog: the runner commits
+scratch at the terminal line, so a topic still mid-run has not committed its new
+lines yet and the fold answers with the last settled state, which is exactly the
+draft that shipped. WHICH committed version is not always the latest one: an
+approved article is anchored to the version the client actually read, for the
+reason _record_blog states at length. Tests inject their fixtures through the
+runner parameter's fetch seams below, so they never touch the live record.
 """
 from .. import db
 from . import payload as payload_mod
@@ -60,20 +62,107 @@ def _record_status_lines(client_slug, topic_slug):
 
 
 def _record_blog(client_slug, topic_slug):
-    """The latest committed draft body, or None when the record holds no version.
+    """The committed draft body this push must ship, or None when there is none.
 
-    The LATEST version and deliberately not the shipped_version_id pointer,
-    because the disk-era gate read blog.md, which is always the newest draft;
-    the status check is what guarantees that newest draft is the one that
-    shipped, and re-anchoring here would let the two disagree.
+    TWO ANCHORS, and which one applies is decided by topics.client_approved_at.
+
+    UNAPPROVED: the LATEST version, and deliberately not the shipped_version_id
+    pointer, because the disk-era gate read blog.md, which is always the newest
+    draft; the status check is what guarantees that newest draft is the one that
+    shipped, and re-anchoring here would let the two disagree. Nothing about
+    that path changes, and every blog that has never been near the portal takes
+    it.
+
+    APPROVED: topics.sent_version_id, which pins the exact bytes the client read
+    and signed off on. Migration 013 locks an approved article for one stated
+    reason, that every write after the approval "makes the record assert
+    something the client never did: they approved v4, the article is now v6, and
+    nothing on the page distinguishes the two". That same migration names
+    posting to the CMS as the ONE act the lock leaves open, on the ground that
+    it "changes nothing about the article". THAT GROUND ONLY HOLDS WHILE THE
+    PUSH SHIPS THE APPROVED BYTES. A push anchored to the latest version would
+    carry v6 out through the single door the lock deliberately left unlocked,
+    and it would arrive at the CMS under an approval describing v4, which is the
+    precise assertion migration 013 exists to make impossible. So the
+    latest-version rule is not merely unhelpful here, it is inverted, and the
+    send pointer wins.
+
+    A DIVERGENCE IS REFUSED, NOT SILENTLY RESOLVED. If an approved topic's
+    sent_version_id is not the latest version, then some path wrote a version
+    after the send that the approval does not describe, and this gate has no way
+    to know which of the two the operator means. Shipping the sent version
+    publishes an article the record no longer holds as current; shipping the
+    latest publishes bytes the client never saw. Both are wrong in a way nobody
+    downstream would ever notice, because the CMS receives a draft either way and
+    an editor cannot tell one from the other. So the refusal names both versions
+    and hands the decision to a person, which is the only correct owner of it.
+    The same reasoning covers an approved topic with NO sent_version_id: nothing
+    then proves which bytes the approval describes, and a guess is exactly what
+    must not happen.
     """
     tid = db.topic_id(client_slug, topic_slug)
     if not tid:
         return None
-    return db.q(
-        """select body from blog_versions where topic_id = %s
-           order by version_no desc limit 1""",
-        (tid,), fetch="val")
+    # ONE round trip for both anchors and the divergence test. The lateral is
+    # the same "highest version_no wins" ordering commit_topic and materialize
+    # already use, kept identical so the three cannot drift into disagreeing
+    # about what "latest" means. The plain left join on sent_version_id carries
+    # `sent.topic_id = t.id` as well as the id match: the composite FK from
+    # migration 005 already forbids a cross-topic pointer, and restating it here
+    # means this query answers with THIS topic's bytes even if that FK is ever
+    # dropped.
+    row = db.q(
+        """select t.client_approved_at, t.sent_version_id,
+                  latest.id, latest.version_no, latest.body,
+                  sent.version_no, sent.body
+             from topics t
+             left join lateral (
+                    select v.id, v.version_no, v.body
+                      from blog_versions v
+                     where v.topic_id = t.id
+                     order by v.version_no desc limit 1) latest on true
+             left join blog_versions sent
+                    on sent.id = t.sent_version_id and sent.topic_id = t.id
+            where t.id = %s""",
+        (tid,), fetch="one")
+    if row is None:
+        return None
+    (approved, sent_id, latest_id, latest_no, latest_body,
+     sent_no, sent_body) = row
+
+    if approved is None:
+        # The unapproved path, byte for byte what this function has always done.
+        # A None here means the record holds no version at all, and
+        # assert_publishable turns that into its own refusal.
+        return latest_body
+
+    if sent_id is None or sent_body is None:
+        # An approval with no version behind it. Migration 005 backfilled
+        # sent_version_id from shipped_version_id for every pre-005 send, so a
+        # null at this point is not the old-data case: it is an approval whose
+        # subject cannot be identified, and there is no safe byte to ship for it.
+        raise PublishRefused(
+            f"'{topic_slug}' is approved, but the record does not say which "
+            f"version the client approved, so there are no confirmed bytes to "
+            f"push. Send the article again and have the client re-approve it.",
+            status="approved_version_unknown",
+        )
+
+    if latest_id is not None and str(sent_id) != str(latest_id):
+        raise PublishRefused(
+            f"'{topic_slug}' is approved at version {sent_no}, but version "
+            f"{latest_no} is the latest in the record, so the approval and the "
+            f"article have come apart. Posting either one would misrepresent "
+            f"what the client agreed to, so this push is refused until a human "
+            f"decides which version is the real article.",
+            status="approved_version_mismatch",
+        )
+
+    # Approval and record agree. Return the SENT version's bytes rather than the
+    # latest row's, even though the two are the same row here: the returned
+    # value is then anchored to the approval by construction, not by a
+    # comparison that a later edit to this function could quietly drop.
+    return sent_body
 
 
 def _status_lines_for(runner, client_slug, topic_slug):

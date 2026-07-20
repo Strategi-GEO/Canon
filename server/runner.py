@@ -461,6 +461,49 @@ def _stop_line_if_unterminated(out_dir, topic_slug, baseline, note):
     return True
 
 
+def _restate_verdict_line(out_dir, topic_slug, note):
+    """Append the verdict this topic ALREADY carries, again, so a refusal can close an open SSE
+    stream without changing a word of what the topic says.
+
+    THE PROBLEM THIS SOLVES HAS TWO WRONG ANSWERS AND THEY FAIL IN OPPOSITE DIRECTIONS. A refusal
+    raised outside a try that has no terminal-line arm leaves status.jsonl with no terminal line,
+    and _event_stream closes only once every tail has seen one, so the operator watches a topic
+    heartbeat at running forever. That is the hang. Appending "failed" instead closes the stream
+    and DEMOTES a blog that is on disk, in generated.csv and signed off by the client, which is
+    the harm _stop_line_if_unterminated above exists to prevent, reached by a different road.
+
+    Re-stating is the only line that is both terminal and true. The topic's own last terminal
+    status, its own score and its own iteration count go back on the feed with the refusal as the
+    note, so _terminal_line still reads the verdict it read a second ago and _summarize still
+    computes the same three fields, while the tail sees a terminal status and closes. Nothing is
+    demoted because nothing changed: only the reason is new.
+
+    NO TERMINAL LINE AT ALL FALLS TO "failed", and that is not a demotion because there is no
+    verdict to demote. A topic with nothing terminal on its feed never finished, and a run that
+    refused before it started is exactly what "failed" describes.
+
+    iter is the topic's EXISTING count, never one past it, for the reason revise_topic's
+    restored_iter gives at length: this line describes bytes the refusal did not touch, so
+    claiming a new iteration says the topic advanced to a draft that does not exist, and it would
+    push the feed past a questions.json the app then refuses as stale.
+
+    Stage "eval" matches every other terminal line the engine writes for itself, which is what
+    keeps _last_eval_score and _summarize reading the score off the same kind of line.
+    """
+    lines = _read_status(out_dir)
+    terminal = _terminal_line(lines)
+    summary = _summarize(topic_slug, lines)
+    _status_module().append_status(
+        str(out_dir), topic_slug,
+        stage="eval", event="end",
+        iter=summary["iterations"] or 1,
+        score=summary["score"],
+        status=terminal["status"] if terminal else "failed",
+        note=note,
+    )
+    return terminal
+
+
 def _summarize(topic_slug, lines):
     """What a topic's status.jsonl adds up to: its status, its score, its iteration count.
 
@@ -1330,12 +1373,25 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
     # in revise_topic's arms, where one word demoted a finished blog everywhere at once and left
     # the operator no door. A refusal must not do to the record what it exists to prevent.
     #
-    # The cost of staying outside is that no terminal line is appended here, which normally
-    # hangs an SSE watch view at running forever. It cannot hang one for this case, because a
-    # watch view only exists for a REGISTERED run and api_generate refuses an approved topic
-    # before register_run. What reaches this line is a caller that bypassed the route: the CLI,
-    # a test, or a direct call, none of which is watching an SSE stream. So the exception
-    # propagates to the caller and the topic's own verdict is left exactly as it stands.
+    # THE COST OF STAYING OUTSIDE IS AN SSE STREAM THAT NEVER CLOSES, AND IT IS PAID HERE RATHER
+    # THAN ARGUED AWAY. An earlier version of this block claimed no watch view could hang on this
+    # refusal, because a watch view exists only for a REGISTERED run and api_generate refuses an
+    # approved topic before register_run, so anything reaching this line had bypassed the route.
+    # THAT ARGUMENT IS WRONG. api_generate checks the approval, THEN registers the run, and the
+    # batch task only reaches this line later, so an approval landing in that window passes the
+    # route's check and arrives here with the run already registered and its stream already open.
+    # Two engines share one record and the portal is the other writer, so a client approving mid
+    # window is ordinary rather than exotic. With no terminal line appended, _event_stream's
+    # completion test never passes and the operator watches a topic heartbeat at running forever,
+    # on a run that refused before it spawned anything.
+    #
+    # SO THE VERDICT IS RE-STATED, NOT REPLACED. _restate_verdict_line appends the status this
+    # topic already carries, which for an approved topic is the done it earned, with its own score
+    # and iteration count and this refusal as the note. The tail reads the status field, so the
+    # stream closes; _terminal_line reads the last terminal line, so every surface still reads the
+    # verdict it read a second ago. Writing failed here is the demotion the paragraph above
+    # forbids and writing nothing is the hang, which leaves re-stating as the only terminal line
+    # that is also true.
     #
     # CALLED SYNCHRONOUSLY, NOT THROUGH asyncio.to_thread, AND THAT IS THE LOAD-BEARING HALF OF
     # STAYING OUTSIDE THE TRY. A coroutine can only be cancelled at an await, so an await here
@@ -1347,6 +1403,11 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
     # (mkdir and _status_baseline) already block the loop on disk for the same reason.
     refusal = _approved_refusal(client_slug, topic_slug, "a generate run")
     if refusal is not None:
+        _restate_verdict_line(
+            out_dir, topic_slug,
+            f"a generate run was refused before it started: {refusal} This topic keeps the "
+            f"verdict it already earned, re-stated here so a watching stream can close",
+        )
         raise PreflightError(refusal)
 
     append_status = _status_module().append_status
@@ -1763,15 +1824,30 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=Non
     # would be this module doing the exact thing its own comments spend pages preventing.
     #
     # A revise commits a version like any other write, so the trigger would refuse it at the
-    # end. Refusing here saves the session, and no watch view is stranded: api_answers and
-    # api_revise_answered both refuse an approved topic before register_revise_run, so anything
-    # reaching this line arrived from a CLI or a test with no SSE stream open on it.
+    # end. Refusing here saves the session.
+    #
+    # A WATCH VIEW CAN BE OPEN ON THIS REFUSAL, which an earlier version of this comment denied on
+    # the ground that api_answers and api_revise_answered both refuse an approved topic before
+    # register_revise_run. They check FIRST and register SECOND, and _revise_task reaches this line
+    # later still, so an approval landing in that window passes both routes and arrives here with
+    # the run registered and its stream open. The portal is the other writer against one shared
+    # record, so that ordering is ordinary. Left with no terminal line the stream heartbeats at
+    # running forever, exactly as run_topic describes.
+    #
+    # RE-STATED, NOT REPLACED, for the reason above: the done this topic already earned goes back
+    # on the feed with the refusal as its note, so the stream closes and the verdict does not move.
     #
     # SYNCHRONOUS, for the reason run_topic spells out: an await outside the try is a
     # cancellation point outside the arm that handles cancellation, and a stop landing on it
     # would leave this topic with no terminal line and its watch view heartbeating forever.
+    # _restate_verdict_line is synchronous for the same reason and reads only disk.
     refusal = _approved_refusal(client_slug, topic_slug, "a revise")
     if refusal is not None:
+        _restate_verdict_line(
+            out_dir, topic_slug,
+            f"a revise was refused before it started: {refusal} This topic keeps the verdict it "
+            f"already earned, re-stated here so a watching stream can close",
+        )
         raise PreflightError(refusal)
 
     # Callable on its own (a CLI, a test), so register if the caller has not. The endpoint always

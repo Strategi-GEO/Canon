@@ -15,6 +15,8 @@ type CommentRow = {
   topic_id: string;
   author: string;
   state: string;
+  /** Needed for the ROUND, which compares against the topic's send stamp. See the fold below. */
+  created_at: string;
 };
 type VersionRow = {
   topic_id: string;
@@ -84,9 +86,16 @@ export async function GET(
       ),
       // ONE brand-wide read folded to per-topic counts below, mirroring the engine's
       // _blog_history: one grouped count, never an N+1 per topic.
+      //
+      // `parent_id=is.null` IS THE MIRROR, and this route was the one of four counters that
+      // lacked it: blog_edit.sent_state, app.py _blog_history and portal-data.ts all filter it.
+      // A reply is someone talking about a change rather than asking for one, and the
+      // blog_comments_reply_open constraint pins replies at state 'open' forever, so counting
+      // one made "thanks, this reads well" a permanent change request: it blocked the re-send
+      // for good and left the admin holding edit rights during the client's review.
       pg<CommentRow[]>(
         user.token,
-        `blog_comments?select=topic_id,author,state&client_id=eq.${cid}`,
+        `blog_comments?select=topic_id,author,state,created_at&client_id=eq.${cid}&parent_id=is.null`,
       ),
     ]);
 
@@ -119,6 +128,24 @@ export async function GET(
         (comment.state === "open" || comment.state === "applying")
       ) {
         openByTopic.set(comment.topic_id, (openByTopic.get(comment.topic_id) ?? 0) + 1);
+      }
+    }
+
+    // THE ROUND, mirroring the engine's _blog_history: has the client asked for anything SINCE
+    // the last send. A different question from the count above, and the one that decides the
+    // STATE. It reads no comment state at all, so resolving, dismissing and a failed apply all
+    // leave the round standing, and only a re-send moving sent_to_client_at forward closes it.
+    //
+    // Keying the state off the open COUNT is what dead-ended the loop: resolving the last
+    // suggestion returned the article to client_review, where the admin has no Send button, so
+    // the fix they had just made could never be delivered and the client could approve the
+    // stale bytes they were still pinned to.
+    const sentAt = new Map(topics.map((t) => [t.id, t.sent_to_client_at]));
+    const roundOpen = new Set<string>();
+    for (const comment of comments) {
+      const sent = sentAt.get(comment.topic_id);
+      if (comment.author === "client" && sent && comment.created_at > sent) {
+        roundOpen.add(comment.topic_id);
       }
     }
 
@@ -175,6 +202,7 @@ export async function GET(
         sent_to_client: topic.sent_to_client_at,
         client_approved: topic.client_approved_at,
         changes_requested: openByTopic.get(topic.id) ?? 0,
+        change_round_open: roundOpen.has(topic.id),
         // Null is "no record of a push", never "not published": nothing recorded a publish
         // before 012. cms_status is always null on this build, see the select above.
         published: topic.published_at,

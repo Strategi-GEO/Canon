@@ -29,7 +29,8 @@ from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
+                               StreamingResponse)
 from pydantic import BaseModel
 
 from . import auth, blog_edit, blog_upload, client_answers, db, describe, facts_gen, ledger, roadmap, roadmap_gen, runner, sync
@@ -1178,10 +1179,16 @@ def _blog_history(slug):
             "roadmap_index": row_index.get(topic_slug),
         }
 
+    # Read ONCE and used TWICE below: the scratch overlay picks its topics from this set, and
+    # every entry's `live` flag is computed from it. One read so the overlay and the flag can
+    # never describe different moments, which would put a topic's scratch on the wire under an
+    # entry claiming no run holds it.
+    live_slugs = _live_run_slugs(slug)
+
     # The live overlay: scratch is authoritative for topics in a live run, so a
     # mid-run topic appears (and a mid-revise one reports) exactly as the disk
     # scan surfaced it, terminal line still unwritten.
-    for topic_slug in _live_run_slugs(slug):
+    for topic_slug in live_slugs:
         if not topic_slug:
             continue
         live_entry = _scratch_entry(slug, topic_slug, led, row_index)
@@ -1212,6 +1219,21 @@ def _blog_history(slug):
              and c.state in ('open', 'applying')
            group by t.slug""",
         (client_id,)))
+    # THE ROUND, which is a different question from the queue above and drives the STATE.
+    # "Has the client asked for anything since we last sent this?" It ignores comment state
+    # entirely, so it survives resolving, dismissing and a failed apply alike, and only
+    # mark_sent moving sent_to_client_at forward closes it. Keying the state off the open
+    # COUNT instead meant resolving the last suggestion returned the article to client_review,
+    # where the admin has no Send button, stranding the fix they had just made.
+    round_map = {row[0] for row in db.q(
+        """select distinct t.slug
+           from blog_comments c
+           join topics t on t.id = c.topic_id
+           where c.client_id = %s and c.author = 'client'
+             and c.parent_id is null
+             and t.sent_to_client_at is not null
+             and c.created_at > t.sent_to_client_at""",
+        (client_id,))}
 
     # Newest first stays the default, because the library's own question is "what happened lately".
     # Sorting by roadmap_index here would be wrong twice over: a blog on no row has none to sort by,
@@ -1224,9 +1246,31 @@ def _blog_history(slug):
         entry["sent_to_client"] = sent_at.isoformat() if sent_at else None
         entry["client_approved"] = approved_at.isoformat() if approved_at else None
         entry["changes_requested"] = int(changes_map.get(entry["topic_slug"], 0))
+        entry["change_round_open"] = entry["topic_slug"] in round_map
         # Null means "no record of a push", never "not published". See cms/record.py.
         entry["published"] = published_at.isoformat() if published_at else None
         entry["cms_status"] = cms_status
+        # IS A RUN HOLDING THIS TOPIC RIGHT NOW, from the run registry and from nothing else.
+        #
+        # THE STATUS FOLD CANNOT ANSWER THIS AND THE ATTEMPT WAS A SHIPPED BUG. status.jsonl is
+        # append-only and OUTLIVES the run that wrote it (runner._status_baseline says so at
+        # length), so runner._terminal_line scanning the whole file returns the PREVIOUS run's
+        # verdict for a topic a new run is working on this second. A re-run therefore reports
+        # `needs_review` or `done` while it is live, so a live answer-driven revise rendered as
+        # "Has questions" with the answer form still mounted, inviting a second submit against a
+        # revise already applying the first. Only the first run a topic ever has folds to
+        # "running", because only then is the file free of an older terminal line.
+        #
+        # The registry has no such history: a run is in RUNS from the operator's POST until its
+        # task settles, and nothing else. QUEUED COUNTS AS LIVE, deliberately: register_run
+        # publishes a run as live before it starts (CLIENT_LOCK can hold it for minutes), the
+        # scratch overlay above already treats those topics as the run's, and every write guard
+        # in this file refuses on the same flag. A topic the operator has committed to a run is
+        # not one to offer an edit or an answer form on.
+        #
+        # PRODUCED HERE, CONSUMED ON THE DASHBOARD. The state machine keys `generating` off this
+        # rather than off the fold; this side owes it the fact and nothing more.
+        entry["live"] = entry["topic_slug"] in live_slugs
     blogs.sort(key=lambda b: b["created"], reverse=True)
     return blogs
 
@@ -1468,6 +1512,38 @@ async def api_revise_answered(slug: str, topic: str,
 # credits, and a demo blog is templated placeholder text nobody should polish or deliver.
 # ---------------------------------------------------------------------------
 
+@app.exception_handler(blog_edit.EditError)
+async def _edit_error_handler(request: Request, exc: blog_edit.EditError):
+    """EditError is a 409, app wide, because every one of them is a refusal and none is a bug.
+
+    THE GUARD THAT PRODUCED THE 500 IT WAS WRITTEN TO PREVENT. blog_edit's approved lock exists
+    so an operator gets a sentence naming the approval instead of an unmapped PORTAL:LOCKED
+    exception from migration 013's trigger. It raises EditError, which is the shape the BACKGROUND
+    apply path already handles (_apply lands it on the comment as a failed verdict with its reason
+    attached). Nothing handled it on the REQUEST path, so the same refusal reaching a route came
+    back as a 500 with a stack trace: exactly the outcome the lock was added to remove, one layer
+    up from where it was removed.
+
+    REGISTERED ONCE HERE RATHER THAN WRAPPED AROUND EACH CALL, and the reason is that the set of
+    routes able to reach one is not stable. Two do today: filing a comment (blog_edit.add_comment)
+    and saving the operator's own bytes (blog_edit.save_content). Both already call
+    _require_not_approved first, so the approved EditError behind them is the TOCTOU remainder, an
+    approval landing between the route's SELECT and the write, which is ordinary here because the
+    portal is a second writer against one shared record. save_content also raises for a moved
+    record (CONFLICT_ERROR) and add_comment for a topic that vanished mid request. A per route
+    try/except would have to be remembered by the third route, and a refusal protocol enforced by
+    remembering is the one this module already learned does not hold.
+
+    409 FITS EVERY MEMBER, which is what makes one status honest rather than lazy. Each EditError
+    reports a request that cannot proceed against the article's CURRENT state, whether that state
+    is approved, moved under the caller, or gone. The messages are written for an operator to
+    read, so the exception's own text is the detail, exactly as the UploadError mapping does with
+    its own. The model-facing ones (a dead edit session, unparseable output) never reach a
+    request: _apply catches them in the background and attaches them to the comment.
+    """
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
 class CommentRequest(BaseModel):
     selected_text: str
     instruction: str
@@ -1525,6 +1601,90 @@ def _require_not_approved(slug, topic_slug, act):
             status_code=409, detail=blog_edit.locked_detail(approved, act))
 
 
+def _with_client_since(slug, topic_slug):
+    """When this article went out to the client, IF it is still with them unanswered, else None.
+
+    ONE DEFINITION OF "out with the client", because two callers refuse on it in two different
+    idioms: _require_not_with_client raises on the spot for a single-topic route, and api_generate
+    collects every offending row so it can refuse a whole submit and name them all. Two copies of
+    this condition is how one door comes to permit what the other refuses.
+
+    The condition is `sent_to_client_at is not null AND no round open`, which is exactly
+    blogState's `client_review` (a send stamp with the round test deciding between client_review
+    and changes_requested). The round predicate is copied from blog_edit.sent_state so the two
+    agree by construction: top-level client comments only, created after the last send, ignoring
+    comment state entirely so resolving one does not close the round.
+
+    A topic the record does not hold answers None. db.topic_id filters deleted_at, which is the
+    behaviour this wants rather than an accident: deleting the topic in the record is the
+    documented way to re-free it (ledger.live_slugs says so), and a deleted topic is not with
+    anybody.
+    """
+    tid = db.topic_id(slug, topic_slug)
+    if tid is None:
+        return None
+    row = db.q(
+        """select t.sent_to_client_at,
+                  exists (select 1 from blog_comments c
+                           where c.topic_id = t.id and c.author = 'client'
+                             and c.parent_id is null
+                             and t.sent_to_client_at is not null
+                             and c.created_at > t.sent_to_client_at)
+           from topics t where t.id = %s""",
+        (tid,), fetch="one")
+    if row is None:
+        return None
+    sent_at, round_open = row
+    # Never sent, so the article has never left the team. A round open means the client has asked
+    # for something and the article is back with the team to answer it, which is the state whose
+    # whole purpose is to permit the edit. Either way, not with the client.
+    if sent_at is None or round_open:
+        return None
+    return sent_at
+
+
+def _require_not_with_client(slug, topic_slug, act):
+    """409 while the article is OUT WITH THE CLIENT and they have asked for nothing back.
+
+    THE BUG THIS CLOSES DECOUPLES AN APPROVAL FROM THE BYTES IT DESCRIBES. mark_sent pins
+    topics.sent_version_id to the version it released, and the portal renders THAT version, so
+    the client is reading fixed bytes. An admin save between the send and the approval commits a
+    new version while the pin stays where it was, and the client then approves the version they
+    were sent. Migration 013 locks the article at that moment with the record permanently
+    asserting an approval over bytes that are not the current ones, and no later act can
+    reconcile the two, because approved is the state in which nobody edits anything.
+
+    REFUSING IS WHAT THE STATE MACHINE ALREADY PROMISES, so this adds no new rule. dashboard's
+    blog-state.ts gives `client_review` an EMPTY admin action list, and says why in the same
+    words: the client is reading the exact bytes pinned by sent_version_id, so an edit here
+    changes the article underneath someone mid review. The UI has hidden the control all along;
+    this is the API agreeing with it. The alternative, clearing the send on every save, was
+    rejected because it silently retracts an article a client may be halfway through reading and
+    turns a typo fix into an unsend nobody asked for.
+
+    THE ROUND IS WHAT MAKES THIS SAFE, and it is the difference between refusing and dead ending
+    the loop. A client change request opens a round, which moves the article to
+    `changes_requested`, whose admin actions include `edit` precisely so the team can make the
+    change that was asked for. So the refusal is scoped to sent AND no round open, matching
+    blogState exactly. A round is sticky until the next send (blog_edit.sent_state says why), so
+    resolving the last suggestion does not slam this door on the operator mid fix.
+
+    An approved article never reaches here: _require_not_approved runs first and its sentence is
+    the more useful one, naming the date and the one act left.
+    """
+    sent_at = _with_client_since(slug, topic_slug)
+    if sent_at is None:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=(f"{topic_slug!r} was sent to the client on {sent_at:%d %b %Y} and is with them "
+                f"now, so {act} is not available on it. They are reading the exact version that "
+                f"was sent, and changing it here would leave them approving bytes that are no "
+                f"longer the current ones. Wait for them to approve it or ask for a change; a "
+                f"change request reopens this for editing."),
+    )
+
+
 @app.get("/api/clients/{slug}/blogs/{topic}/comments")
 async def api_blog_comments(slug: str, topic: str,
                             user: auth.Identity = Depends(auth.require_user)):
@@ -1555,6 +1715,15 @@ async def api_add_blog_comment(slug: str, topic: str, body: CommentRequest,
     # be allowed. An operator comment is born 'applying' and runs Claude at once, which is
     # why filing one on an approved article is refused rather than merely left unapplied.
     _require_not_approved(slug, topic, "a Claude edit")
+    # THE SAME HOLE THE SAVE ROUTE HAD, through a different door. A Claude edit commits a new
+    # blog_versions row exactly as a manual save does, so filing one while the article is out
+    # with the client moves the bytes while topics.sent_version_id still points at the version
+    # they are reading. They then approve a version that is no longer current, and migration
+    # 013 locks that divergence in permanently. blog-state.ts grants `client_review` no
+    # `comments` action for this reason, so an operator reaching here is bypassing a refusal
+    # the product already makes; guarding the save alone would have enforced the state machine
+    # on one of the three doors that write a version.
+    _require_not_with_client(slug, topic, "a Claude edit")
     if _client_has_live_run(slug):
         raise HTTPException(
             status_code=409,
@@ -1612,6 +1781,16 @@ async def api_resolve_blog_comment(slug: str, topic: str, comment_id: str,
     # from the filing route because a suggestion filed BEFORE the approval is still sitting
     # there open afterwards, and this button is the one that would apply it.
     _require_not_approved(slug, topic, "a Claude edit")
+    # Same reasoning as the filing route: an apply commits a version, so doing it while the
+    # client is reading moves the bytes out from under sent_version_id.
+    #
+    # THIS GUARD IS A NO-OP FOR THE CASE THIS BUTTON EXISTS TO SERVE, which is why it is safe
+    # here. _with_client_since answers "sent AND no change round open", so a topic with a live
+    # client suggestion is `changes_requested`, not `client_review`, and passes straight
+    # through. Resolving is the whole point of that state. What it refuses is resolving a
+    # suggestion left over from a PREVIOUS round after the article went back out, where the
+    # apply would change bytes the client is reading right now.
+    _require_not_with_client(slug, topic, "a Claude edit")
     if _client_has_live_run(slug):
         raise HTTPException(
             status_code=409,
@@ -1725,6 +1904,12 @@ async def api_save_blog_content(slug: str, topic: str, body: ContentRequest,
     # is what turns the refusal into a 409 the Save button can render, rather than the 500 an
     # unmapped PORTAL:LOCKED exception from the trigger would produce.
     _require_not_approved(slug, topic, "editing")
+    # THE SEND, checked right after the approval and for the same family of reason: both say the
+    # article's bytes are no longer the team's alone to change. Approved says so permanently;
+    # this says so for as long as the client holds it unanswered. Without this line a save during
+    # client_review commits a version the send pin does not point at, and the approval that lands
+    # next describes bytes nobody is reading (see _require_not_with_client).
+    _require_not_with_client(slug, topic, "editing")
     if _client_has_live_run(slug):
         raise HTTPException(
             status_code=409,
@@ -2117,6 +2302,47 @@ async def api_generate(slug: str, body: GenerateRequest,
             detail=f"{len(locked)} selected row(s) are locked because the client approved "
                    f"them: {', '.join(locked)}. An approved article cannot be regenerated; "
                    f"posting it to the CMS is the only act left. Deselect them and resubmit.",
+        )
+
+    # THE SEND LOCK, and it is the approved lock's other half rather than a new kind of rule.
+    # Approved says the client accepted these bytes; sent says the client is READING these bytes
+    # and has not answered yet. A regenerate is the most complete rewrite there is, so doing it
+    # under either one changes the article beneath a person the app has told to go read it.
+    #
+    # WHAT THIS ADDS BEYOND THE DUPLICATE CHECK ABOVE, which catches most of these already: a
+    # send can only follow a ship and a shipped blog is in the ledger, so almost every sent topic
+    # is refused as already_generated before reaching this line. Almost is not always, and the gap
+    # is the one the approved block names for itself: blog_upload documents the
+    # generated-but-not-ledgered state a failed ledger write leaves behind, and in it the
+    # duplicate check passes while the topic is out with a client right now.
+    #
+    # WHAT IT PREVENTS IS WORSE THAN A WASTED RUN. The client is pinned to sent_version_id and
+    # reading it; a regenerate replaces the article underneath them. Worse, a regenerate that
+    # FAILS leaves the send stamp standing over a topic whose status is now failed, and the state
+    # machine reads the delivery stamp before the status, so the row reports "With client" with an
+    # empty admin action list and the failure is reported nowhere at all. Refusing removes that
+    # situation rather than relabelling it, which is why the fix is here and not in the ladder.
+    #
+    # THE STATE MACHINE ALREADY SAYS THIS: client_review grants the admin NO actions. A round
+    # open means the client asked for something and the article is back with the team, which is
+    # changes_requested, where regenerating is a legitimate way to answer them, so
+    # _with_client_since returns None there and this block stays quiet. A topic never sent
+    # returns None too, so a first generate is untouched.
+    #
+    # THE WHOLE SUBMIT IS REFUSED with the shape and vocabulary of the two blocks above it, so
+    # the browser gets a class of answer it already renders.
+    with_client = []
+    for row in selected:
+        sent_at = _with_client_since(slug, row["topic_slug"])
+        if sent_at is not None:
+            with_client.append(f"{row['topic']!r} (sent {sent_at:%d %b %Y})")
+    if with_client:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{len(with_client)} selected row(s) are with the client for review: "
+                   f"{', '.join(with_client)}. Regenerating would replace the article they are "
+                   f"reading, so it is refused until they approve it or ask for a change. "
+                   f"Deselect them and resubmit.",
         )
 
     ok, reason = _preflight(slug)

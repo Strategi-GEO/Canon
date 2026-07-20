@@ -800,7 +800,7 @@ def sent_state(client_slug, topic_slug):
     blocking the re-send it was thanking the team for."""
     empty = {"sent_to_client": None, "sent_to_client_by": None,
              "client_approved": None, "client_approved_by": None,
-             "changes_requested": 0,
+             "changes_requested": 0, "change_round_open": False,
              "published": None, "published_by": None, "cms_status": None}
     tid = db.topic_id(client_slug, topic_slug)
     if tid is None:
@@ -812,12 +812,21 @@ def sent_state(client_slug, topic_slug):
                     where c.topic_id = t.id and c.author = 'client'
                       and c.parent_id is null
                       and c.state in ('open', 'applying')),
+                  -- THE ROUND, a different question from the count above it: has the client
+                  -- asked for anything SINCE we last sent this. State, not queue. It ignores
+                  -- comment state, so resolving, dismissing and a failed apply all leave it
+                  -- standing, and only mark_sent moving sent_to_client_at forward closes it.
+                  exists (select 1 from blog_comments c
+                           where c.topic_id = t.id and c.author = 'client'
+                             and c.parent_id is null
+                             and t.sent_to_client_at is not null
+                             and c.created_at > t.sent_to_client_at),
                   t.published_at, t.published_by, t.cms_status
            from topics t where t.id = %s""",
         (tid,), fetch="one")
     if row is None:
         return empty
-    (sent_at, sent_by, approved_at, approved_by, changes,
+    (sent_at, sent_by, approved_at, approved_by, changes, round_open,
      published_at, published_by, cms_status) = row
     return {
         "sent_to_client": sent_at.isoformat() if sent_at else None,
@@ -825,6 +834,7 @@ def sent_state(client_slug, topic_slug):
         "client_approved": approved_at.isoformat() if approved_at else None,
         "client_approved_by": approved_by,
         "changes_requested": int(changes or 0),
+        "change_round_open": bool(round_open),
         # NULL here means "no record of a push", NEVER "not published": nothing recorded a
         # publish before 012, and a failed stamp after a successful push leaves the same
         # null (see cms/record.py). Every consumer renders the positive fact only.
@@ -884,6 +894,17 @@ def mark_sent(client_slug, topic_slug, email):
                  client_approved_at = null,
                  client_approved_by = null
            where id = %s
+             -- THE APPROVED REFUSAL BELONGS IN THIS WHERE, not only in the read above it.
+             -- The read is check-then-act across two statements, and this UPDATE is precisely
+             -- the thing that NULLS client_approved_at: an approval landing in the window
+             -- between them is destroyed by the statement guarding against it, leaving no
+             -- record that it ever existed. Migration 013's triggers cannot cover this,
+             -- because they are BEFORE INSERT and this is an UPDATE on topics.
+             --
+             -- Zero rows updated is already this function's refusal protocol, so the caller
+             -- needs no new error to understand it. The read stays: it is what lets the route
+             -- answer with the date and a sentence instead of a bare 409.
+             and client_approved_at is null
              and not exists (
                select 1 from blog_comments c
                where c.topic_id = topics.id and c.author = 'client'

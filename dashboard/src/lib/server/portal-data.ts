@@ -51,7 +51,9 @@ import { inList, pg } from "@/lib/server/postgrest";
  * That is a VISIBILITY rule over one state and never a second state machine, which is the same
  * distinction lib/blog-state.ts draws for the labels. Note what it does NOT do: it grants no
  * act (clientCan still answers no to everything in those states), it reveals no article (no body
- * is fetched for them), and it admits no row the client never touched.
+ * is fetched for them), and it admits no row the client never touched. What it DOES cost is one
+ * narrowing at the wire, because the widened rule can hand a client's JSON a state word their
+ * vocabulary was never meant to carry. See clientWireState below.
  */
 
 /**
@@ -66,6 +68,36 @@ export function clientReadsArticle(state: BlogState): boolean {
     state === "approved" ||
     state === "published"
   );
+}
+
+/**
+ * The state as a CLIENT may RECEIVE it, applied where a payload is built and nowhere else.
+ *
+ * VISIBILITY IS WIDER THAN clientCanSee, SO THE WIRE NEEDS A NARROWING. The addition
+ * documented at the top of this file keeps an article the client answered on their screen
+ * while the team works, and that window reads `generating`, `internal_review`, `failed`,
+ * `stopped` or `unknown` depending on where the answer-driven revise got to. The rendered UI
+ * is already right about all five, because clientTag folds every one of them to a busy "In
+ * progress". The JSON was not, and the JSON is the half a client can read in devtools: it
+ * shipped the team's own words about the client's article, and it contradicted
+ * portal/types.ts, which states that internal_review, failed and stopped never reach here.
+ *
+ * THE ANSWER IS AN EXISTING STATE, NEVER A PORTAL DIALECT. portal/types.ts records why the
+ * old private four-value vocabulary was deleted: every view speaks BlogState, so a dialect on
+ * the wire only means each view mapping back on arrival, forever. `generating` needs no such
+ * mapping. It is a state the client vocabulary genuinely describes, it is ALREADY on this
+ * wire (a spent hold folds to it through the status correction above), and it answers every
+ * question the portal asks of a state identically to the four it replaces: clientCanSee no,
+ * clientCan no to every act, clientReadsArticle no, clientTag "In progress". The payload
+ * narrows and not one view changes.
+ *
+ * This GRANTS NOTHING and REVEALS NOTHING. It is applied to the payload's state field alone,
+ * after `visible` has already decided the row belongs on the wire and after every branch that
+ * chooses a body, an answer list or a date has read the real state. A client receives one
+ * honest word for "with the team" instead of five, four of which were never theirs to read.
+ */
+function clientWireState(state: BlogState): BlogState {
+  return clientCanSee(state) ? state : "generating";
 }
 
 export type PortalQuestion = {
@@ -333,13 +365,32 @@ async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
       `review_notes?select=id,topic_id,blog_version_id,ref,area,body,why,asked_iter,created_at` +
         `&client_id=eq.${clientId}&author=eq.evaluator&parent_id=is.null&order=created_at.desc`,
     ),
+    // THE CLIENT'S OWN ANSWERS ONLY. `author=eq.client` is load-bearing and its absence was a
+    // client-facing leak, not a tidiness problem: this read decides `answered`, `answered`
+    // widens portal visibility, and an OPERATOR answering the same form satisfies an unfiltered
+    // read identically. An internal_review article the client must never see then appeared in
+    // their portal, captioned as their own answers, rendering the evaluator's questions and the
+    // operator's internal replies. The spentHold arm still covers the genuine window where a
+    // client has answered and the revise has not yet run.
     pg<ChildRow[]>(
       token,
-      `review_notes?select=parent_id,body,created_at&client_id=eq.${clientId}&parent_id=not.is.null`,
+      `review_notes?select=parent_id,body,created_at&client_id=eq.${clientId}` +
+        `&parent_id=not.is.null&author=eq.client`,
     ),
+    // ORDERED BY THE UNIQUE KEY, never by line_no alone. `line_no` is the ordinal WITHIN one
+    // topic (schema.sql declares `unique (topic_id, line_no)`), so across a brand it repeats
+    // once per topic and an ordering on it is thousands of ties deep. Offset paging over a
+    // tied sort is free to break those ties differently on each page, which drops or
+    // duplicates rows at a page boundary, and the row a drop costs here is a terminal line:
+    // the fold below would read a stale status, and a topic the admin is waiting on the
+    // client to approve would vanish from that client's portal instead. `(topic_id, line_no)`
+    // is the unique constraint itself, so the order is total by construction, and it is the
+    // order the fold already assumes within a topic. The status_events_topic_line index backs
+    // it exactly, so the total order costs nothing.
     pgPaged<EventRow>(
       token,
-      `status_events?select=topic_id,iter,line_no,status&client_id=eq.${clientId}&order=line_no.asc`,
+      `status_events?select=topic_id,iter,line_no,status&client_id=eq.${clientId}` +
+        `&order=topic_id.asc,line_no.asc`,
     ),
     // The client's OWN suggestions only (author=client), safe columns only. The author's
     // email column is never selected on this surface, and neither are error or edits:
@@ -363,9 +414,16 @@ async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
 /**
  * Read EVERY row of a query, page by page. status_events grows a few dozen rows per run
  * forever, so a busy brand walks past PostgREST's max-rows cap (Supabase defaults to 1000),
- * and because the query orders line_no.asc a silent cap drops the NEWEST lines, which are
+ * and because the query orders ascending a silent cap drops the NEWEST lines, which are
  * exactly the ones the state fold reads (max iter, last terminal status). Paging until a
  * short page is the whole fix; the other fetchBrand reads are bounded by editorial volume.
+ *
+ * EVERY PATH HANDED TO THIS FUNCTION MUST ORDER BY A GENUINELY UNIQUE KEY, and that is a
+ * precondition rather than a preference. Offset paging asks the database for the same sort
+ * once per page and trusts the two to agree; where the sort has ties, nothing obliges it to
+ * order them the same way twice, so a row can be skipped at one page boundary and repeated
+ * at the next. A per-parent ordinal reads as unique and is not: status_events.line_no is
+ * unique only per topic, which is exactly how this went wrong.
  */
 const PG_PAGE = 1000;
 
@@ -593,7 +651,9 @@ function cardOf(
     brand_name: brand.name,
     topic_slug: fold.topic.slug,
     title: fold.title,
-    state: fold.state,
+    // The narrowed state, because this object IS the wire. Every field around it is computed
+    // from `fold.state`, the real one, and only what leaves gets the client's vocabulary.
+    state: clientWireState(fold.state),
     date,
     question_count: fold.state === "has_questions" ? fold.form.length : null,
     word_count: released
@@ -803,7 +863,11 @@ export async function buildDetail(
     brand_name: brand.client_name,
     topic_slug: fold.topic.slug,
     title: fold.title,
-    state: fold.state,
+    // Narrowed exactly as the card is, and for the same reason: the detail payload is the
+    // other half of what a client can read. The blog route asks clientReadsArticle of this
+    // field, and it answers no for the real state and no for `generating` alike, so the
+    // narrowing cannot open a body the send never released.
+    state: clientWireState(fold.state),
     date: card?.date ?? fold.latest.committed_at,
     word_count: released
       ? ((fold.sentVersion ?? fold.shippedVersion ?? fold.latest).word_count ?? null)

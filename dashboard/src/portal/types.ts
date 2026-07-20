@@ -14,8 +14,17 @@ import type { BlogState } from "@/lib/blog-state";
  *
  * Carrying the canonical state is NOT carrying the admin's information. A client is shown a
  * different LABEL for the same state (clientTag), is offered different ACTS (clientActions),
- * and is shown only the states clientCanSee admits: internal_review, failed and stopped never
- * reach this wire at all, because portal-data.ts drops those rows before they become payload.
+ * and is shown only the states a client surface can legitimately describe: internal_review,
+ * failed and stopped never reach this wire.
+ *
+ * THEY ARE NARROWED, NOT DROPPED, and the difference is worth stating because the earlier
+ * version of this comment claimed the wrong mechanism and the wrong mechanism was reassuring.
+ * portal-data.ts does NOT drop those rows: the visibility rule deliberately keeps an article
+ * the client just answered, so it stays on the page instead of vanishing under the person who
+ * acted on it, and the revise that follows lands on internal_review or failed while it runs.
+ * What happens at the payload boundary is a NARROWING to a state the client vocabulary covers.
+ * Believing the drop story would have made the next reader treat this wire as safe by
+ * construction, when what makes it safe is one explicit mapping that has to keep being applied.
  */
 export type { BlogState };
 

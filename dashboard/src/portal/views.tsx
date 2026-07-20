@@ -692,16 +692,40 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
       {/* With the team: the form is answered or superseded, so the client is owed nothing here.
           These states reach the portal only through the visibility addition portal-data.ts
           documents, which exists so a client who just answered does not watch their article
-          disappear. Asking clientCanSee rather than naming the states keeps this branch true
-          however the run ended, which is the whole difficulty: the same article reads
-          `generating`, `internal_review` or `failed` at three points in one revise. */}
+          disappear. The RECORD reads `generating`, `internal_review` or `failed` at three
+          points in one revise, which is the whole difficulty; portal-data.ts narrows all of
+          them to `generating` before they become payload, because those are the team's words
+          about the client's own article. So this branch sees one state where the run has
+          several. Asking clientCanSee rather than naming that state keeps the branch true
+          however the run ended, which is what leaves the narrowing a wire concern instead of
+          something every view has to remember. */}
       {!clientCanSee(blog.state) ? (
         <div className="mx-auto max-w-2xl space-y-4">
           <div className="flex items-start gap-3 rounded-xl border bg-card p-5">
             <Clock className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+            {/* "WITH our team", never "being applied", and the difference is not a nicety.
+                The revise a client's answers are owed is dispatched by an engine, and the
+                sweep that would pick a PORTAL submission up ships DISABLED:
+                server/client_answers.py documents it as opt-in behind GEO_ANSWERS_PICKUP=1
+                for a billing reason, and server/app.py returns before starting it unless that
+                is set. So on default configuration the primary dispatch is an operator
+                clicking Rerun, and a client who answers on Friday evening has nothing running
+                on their article until Monday. The old copy told them work was under way for
+                the whole weekend, in the present tense, on a page whose entire job is to say
+                truthfully where their article sits.
+
+                THE WEAKER SENTENCE IS UNCONDITIONAL BECAUSE NO CLAIM SIGNAL REACHES HERE.
+                portal_revise_claims is what knows whether an engine has actually picked the
+                topic up, and it is service-path only: migration 002 revokes it from
+                authenticated outright, so this surface, which reads as the caller, cannot ask.
+                Rather than invent a mechanism to justify the stronger claim, the copy makes
+                the claim that holds either way. "With our team" is true while the form waits
+                for an operator AND true while a revise runs, so it never goes stale and never
+                overstates. What the client is owed here is the next event, and both sentences
+                below promise exactly that: this page updates when something changes. */}
             <div className="text-sm leading-relaxed text-muted-foreground">
               {blog.answers !== null
-                ? "Thank you. Your answers are with our editorial team and are being applied to the article. This page updates when the article is ready for your review, or if the review needs anything further from you."
+                ? "Thank you. Your answers are with our editorial team. This page updates when the article is ready for your review, or if the review needs anything further from you."
                 : "This article is with our editorial team. This page updates when it is ready for your review, or if the review needs anything from you."}
             </div>
           </div>

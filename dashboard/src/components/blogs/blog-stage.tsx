@@ -219,6 +219,11 @@ function StageBody({
     client_approved: blog.client_approved ?? null,
     client_approved_by: null,
     changes_requested: blog.changes_requested ?? 0,
+    // The ROUND, seeded like the rest, and it is the field that decides whether Send even
+    // renders on this page. Without it in the seed the stage would read `client_review` for
+    // the whole time the review fetch is in flight, so an operator arriving mid round would
+    // watch the Send button appear a beat late, or on the hosted build never at all.
+    change_round_open: blog.change_round_open ?? false,
     // Seeded from the list for the same reason as the fields above, and it matters more here:
     // the hosted build has no /review route at all, so this seed is the ONLY source of the
     // publish stamp there. Null is "no record of a push", which the chip renders as nothing.

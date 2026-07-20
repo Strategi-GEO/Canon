@@ -56,12 +56,53 @@ export type BlogState =
 /** Exactly the fields both backends already return for a blog. Nothing derived, nothing extra. */
 export type BlogStateFacts = {
   status: string;
+  /**
+   * Whether a run owns this topic RIGHT NOW, from the run registry rather than from the status
+   * feed. Absent means "this backend does not report it", which falls back to the status test.
+   *
+   * THE STATUS FEED CANNOT ANSWER THIS AND THAT WAS A REAL BUG. `status` comes from a fold that
+   * scans an append-only status.jsonl in reverse for the last TERMINAL line, and that file
+   * outlives the run that wrote it. So a second run on the same topic reports the PREVIOUS run's
+   * terminal status for its entire duration: an answer-driven revise rendered as "Has questions"
+   * with the answer form still mounted, at the very top of the operator's queue, while a session
+   * already owned the article. The `generating` state was reachable only on a topic's first ever
+   * run, which is precisely the case the state matters least.
+   */
+  live?: boolean;
   /** ISO stamp or null. Null means the client has never seen this article. */
   sent_to_client?: string | null;
   /** ISO stamp or null. Null means the client has not accepted these bytes. */
   client_approved?: string | null;
-  /** Top-level client suggestions still open or mid-apply. Replies are not counted. */
+  /**
+   * Top-level client suggestions still open or mid-apply. Replies are not counted.
+   *
+   * NOT WHAT DECIDES THE STATE, and that distinction was a shipped bug. See
+   * `change_round_open` below. This count is still the right input for "how many are
+   * outstanding right now", which is what the send control renders.
+   */
   changes_requested?: number;
+  /**
+   * Whether the client has filed a change request SINCE THE LAST SEND. The round, not the queue.
+   *
+   * THE STATE USED TO KEY OFF THE LIVE COUNT AND THAT DEAD-ENDED THE LOOP. Resolving the last
+   * suggestion took the count to zero, which dropped the article back to `client_review`, whose
+   * admin action list is empty. So the admin resolved the client's request, produced a new
+   * version, and had no button left to send it: the client stayed pinned to the pre-fix bytes by
+   * sent_version_id, was told the article was ready to review, and could approve a version that
+   * never received the change they asked for. A failed apply did the same thing by a different
+   * road, because a `failed` comment is neither open nor applying either.
+   *
+   * A ROUND IS STICKY AND ONLY A RE-SEND CLOSES IT. That is what makes the state survive the
+   * work done inside it: resolve, dismiss, retry a failed apply, edit by hand, all of it happens
+   * while the round stays open, and mark_sent moving sent_to_client_at forward is the single act
+   * that ends it. It also needs no comment-state list, so it cannot rot the next time one is
+   * added.
+   *
+   * Absent means false, which is the honest reading for a backend too old to send it: an engine
+   * that does not report rounds reports no round, and the article reads as `client_review`. That
+   * is the pre-existing behaviour rather than a new failure.
+   */
+  change_round_open?: boolean;
   /** ISO stamp or null. NULL IS "NO RECORD OF A PUSH", never "not published" (migration 012). */
   published?: string | null;
 };
@@ -89,17 +130,38 @@ export type BlogStateFacts = {
  * their position costs nothing and defends against the case where one somehow does.
  */
 export function blogState(facts: BlogStateFacts): BlogState {
-  if (facts.status === "running") {
+  // `live` FIRST and the status test only as a fallback. The registry knows a run is in flight;
+  // the status fold can only know that no terminal line has ever been written, which is true
+  // exactly once per topic. A backend that does not report `live` keeps the old behaviour rather
+  // than losing the state altogether.
+  if (facts.live ?? facts.status === "running") {
     return "generating";
   }
-  if (facts.published) {
+  // A SEND STAMP IS REQUIRED, and its absence used to be a client-facing exposure. `published`
+  // sat above every delivery check and clientCanSee grants it unconditionally, so a record with
+  // published_at set and sent_to_client_at null jumped straight from a state the client must
+  // never see to one where the portal renders the full body, captioned as live on their site.
+  // The publish gate itself required only that the status was done, with no send or approval
+  // test, so one CMS push on an internal draft was the whole exploit.
+  //
+  // The gate is being fixed to require a send as well, and this stays regardless: a state
+  // machine that depends on every caller upstream getting it right is not a guard. An article
+  // published without ever being sent now reads as whatever it actually is to the team, and the
+  // admin still sees the push itself through the PublishedChip, which reads published_at
+  // directly rather than through the state.
+  if (facts.published && facts.sent_to_client) {
     return "published";
   }
   if (facts.client_approved) {
     return "approved";
   }
   if (facts.sent_to_client) {
-    return (facts.changes_requested ?? 0) > 0 ? "changes_requested" : "client_review";
+    // THE ROUND, not the queue. `change_round_open` stays true from the client's first request
+    // until a re-send, so resolving the last one does not strip the admin of the Send button
+    // they need to deliver the fix. The live count falls back in only when a backend does not
+    // report rounds, which keeps an older engine behaving exactly as it did.
+    const round = facts.change_round_open ?? (facts.changes_requested ?? 0) > 0;
+    return round ? "changes_requested" : "client_review";
   }
   if (facts.status === "needs_review") {
     return "has_questions";

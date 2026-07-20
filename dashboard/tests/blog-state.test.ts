@@ -46,6 +46,24 @@ test("blogState: the record maps to exactly one state", () => {
   const cases: [string, Parameters<typeof blogState>[0], BlogState][] = [
     ["a live run", { status: "running" }, "generating"],
     [
+      // THE RE-RUN CASE. status.jsonl outlives its run, so a second run on a topic still folds
+      // to the FIRST run's terminal status. Only the registry knows, and without it `generating`
+      // was reachable only on a topic's very first run.
+      "a live re-run beats the stale terminal status underneath it",
+      { status: "needs_review", live: true },
+      "generating",
+    ],
+    [
+      "live wins over every delivery stamp too",
+      { status: "done", live: true, sent_to_client: "t", client_approved: "t", published: "t" },
+      "generating",
+    ],
+    [
+      "an explicit live:false is believed over a stale running status",
+      { status: "running", live: false, sent_to_client: "t" },
+      "client_review",
+    ],
+    [
       "a live run outranks every stamp under it",
       { status: "running", sent_to_client: "t", client_approved: "t", published: "t" },
       "generating",
@@ -55,13 +73,56 @@ test("blogState: the record maps to exactly one state", () => {
     ["sent", { status: "done", sent_to_client: "t" }, "client_review"],
     [
       "sent with a change request",
-      { status: "done", sent_to_client: "t", changes_requested: 1 },
+      {
+        status: "done",
+        sent_to_client: "t",
+        changes_requested: 1,
+        change_round_open: true,
+      },
       "changes_requested",
     ],
     [
-      "changes resolved returns it to the client",
-      { status: "done", sent_to_client: "t", changes_requested: 0 },
+      // THE BUG THIS TEST EXISTS FOR. Resolving the last suggestion takes the live count to
+      // zero, and the state must NOT fall back to client_review: that state has no admin
+      // actions, so the fix the admin just made could never be sent. The round stays open
+      // until a re-send.
+      "resolving the last suggestion keeps the round open, so Send again survives",
+      {
+        status: "done",
+        sent_to_client: "t",
+        changes_requested: 0,
+        change_round_open: true,
+      },
+      "changes_requested",
+    ],
+    [
+      // Same bug by a different road: a failed apply is neither open nor applying, so the
+      // count drops while the client's request is still outstanding.
+      "a failed apply does not end the round",
+      {
+        status: "done",
+        sent_to_client: "t",
+        changes_requested: 0,
+        change_round_open: true,
+      },
+      "changes_requested",
+    ],
+    [
+      "re-sending closes the round and returns the article to the client",
+      {
+        status: "done",
+        sent_to_client: "t",
+        changes_requested: 0,
+        change_round_open: false,
+      },
       "client_review",
+    ],
+    [
+      // A backend too old to report rounds falls back to the live count, which is exactly the
+      // behaviour it had before the field existed.
+      "an engine that does not report rounds falls back to the count",
+      { status: "done", sent_to_client: "t", changes_requested: 2 },
+      "changes_requested",
     ],
     [
       "approved outranks the send stamp",
@@ -77,6 +138,13 @@ test("blogState: the record maps to exactly one state", () => {
       "published outranks approved",
       { status: "done", sent_to_client: "t", client_approved: "t", published: "t" },
       "published",
+    ],
+    [
+      // A publish stamp with no send stamp must NOT reach `published`, because clientCanSee
+      // grants that state and the portal would then serve an article nobody released.
+      "a published article that was never sent is not client-visible",
+      { status: "done", published: "t" },
+      "internal_review",
     ],
     ["failed", { status: "failed" }, "failed"],
     ["stopped", { status: "stopped" }, "stopped"],

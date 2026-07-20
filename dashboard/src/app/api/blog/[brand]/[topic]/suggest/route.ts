@@ -15,9 +15,18 @@ import { PostgrestError, rpc } from "@/lib/server/postgrest";
  * validates the body's SHAPE (never its content), forwards the caller's own JWT, and maps
  * the function's PORTAL:<CODE>:<detail> error protocol onto statuses.
  *
- * AN APPROVED ARTICLE IS STILL OPEN TO A SUGGESTION, so there is no APPROVED code in the
- * map: a client who signed off and then spots a wrong figure must be able to say so, and
- * the team decides what that means. The map carries exactly the codes the function raises,
+ * AN APPROVED ARTICLE IS LOCKED AND TAKES NO SUGGESTION, which reverses what this comment
+ * said before migration 013 and is why LOCKED now sits in the map below. The old reasoning
+ * was that a client who signed off and then spots a wrong figure must be able to say so, and
+ * the team decides what that means. The team no longer can: an approval locks the article for
+ * everyone, the admin included, so a suggestion filed against one is a request nobody is
+ * permitted to apply, and offering it could only end in disappointing the person who made it.
+ * A client who spots a real problem after approving raises it with the team, who re-open the
+ * article deliberately rather than by silently editing what was signed off.
+ *
+ * The refusal comes from 013's blog_comments trigger rather than from portal_suggest_change
+ * itself, because five write paths in two languages reach that table. The map carries exactly
+ * the codes that reach this route, whoever raises them,
  * because a code listed here that nothing raises reads as a refusal this route handles when
  * it handles nothing, and one the function raises but the map lacks lands as a bare 400.
  */

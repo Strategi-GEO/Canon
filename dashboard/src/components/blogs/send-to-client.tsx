@@ -112,12 +112,17 @@ export function SendToClient({
     // anything until that finishes. A greyed button with a tooltip is an offer the operator
     // has to read and reject on every visit, so the state says what it is and shows nothing
     // to press. It comes back below, once a resolution has actually changed the article.
+    // THE COUNT, not the state word. BlogStateTag already prints "Changes requested" a few
+    // pixels away in this same row, so repeating it here put the identical phrase on screen
+    // twice and left a reader hunting for the difference between two chips that had none. The
+    // tag owns the vocabulary; this owns the number, which is the thing the tag cannot say and
+    // the thing an operator actually needs: how many are left to work through.
     return (
       <Tooltip>
         <TooltipTrigger asChild>
           <span className="inline-flex cursor-default items-center gap-1.5 rounded-md border border-review/25 bg-review-bg px-2.5 py-1 text-xs font-medium text-review">
             <MessageCircleQuestion className="size-3.5" aria-hidden />
-            Changes requested
+            {review.changes_requested} to resolve
           </span>
         </TooltipTrigger>
         <TooltipContent className="max-w-xs">

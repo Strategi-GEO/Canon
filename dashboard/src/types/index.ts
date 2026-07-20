@@ -536,6 +536,26 @@ export type BlogSummary = {
    */
   changes_requested?: number;
   /**
+   * Whether the client has asked for anything SINCE the last send. The round, not the queue.
+   *
+   * THE ROUND DECIDES THE STATE AND THE COUNT ABOVE DOES NOT, which is the opposite of how this
+   * started and the reason the loop dead-ended: resolving the last suggestion took the count to
+   * zero, dropped the article back to client_review, and took the admin's Send button with it,
+   * so the fix they had just made could never reach the client. The round survives resolving,
+   * dismissing and a failed apply, and only a re-send closes it. See lib/blog-state.ts.
+   */
+  change_round_open?: boolean;
+  /**
+   * Whether a run owns this topic right now, from the engine's run registry.
+   *
+   * NOT DERIVABLE FROM `status`, which is why it is on the wire at all. The status fold reads
+   * the last TERMINAL line of an append-only feed that outlives the run that wrote it, so a
+   * second run on a topic reports the first run's outcome for its whole duration. Absent on the
+   * hosted build, correctly: nothing runs there, so there is no registry to ask and the status
+   * fallback in blogState is the honest answer.
+   */
+  live?: boolean;
+  /**
    * When this article was last pushed to the CMS, UTC ISO, or null.
    *
    * NULL MEANS "NO RECORD OF A PUSH", NEVER "NOT PUBLISHED", and every surface reading this
@@ -821,6 +841,12 @@ export type BlogReviewState = {
    * every suggestion is resolved or dismissed before the client sees a new version.
    */
   changes_requested: number;
+  /**
+   * Whether a change-request round is open: the client asked for something since the last send.
+   * Drives the STATE, where changes_requested drives the outstanding COUNT. See BlogSummary's
+   * copy of this field and lib/blog-state.ts for why the two are separate.
+   */
+  change_round_open: boolean;
   /**
    * When this article was last pushed to the CMS, or null. NULL MEANS "NO RECORD OF A PUSH",
    * never "not published": migration 012 added the column with no backfill, so nothing pushed

@@ -323,7 +323,7 @@ def _summarize_lines(lines):
     return status, score, iters
 
 
-def commit_topic(client_slug, topic_slug):
+def commit_topic(client_slug, topic_slug, allow_new_version=True):
     """Push one topic's scratch to the record, in ONE transaction.
 
     Idempotent AND atomic, and both properties are load-bearing. Idempotent:
@@ -335,6 +335,17 @@ def commit_topic(client_slug, topic_slug):
     "ahead" test sound: a partial commit that landed the status lines but not
     the dossier would read as up-to-date forever, and the stop contract's
     promise that the frozen dossier is kept would die silently with it.
+
+    `allow_new_version` GATES ONE STATEMENT AND NOTHING ELSE: the INSERT of a
+    new blog_versions row. Every other write here still runs when it is False,
+    which is the whole point of it being a flag rather than an early return.
+    A caller passes False when it knows the scratch body is not entitled to
+    become the newest version, and the only such caller is reconcile_all, which
+    holds the mtime evidence for that decision and nothing in this function
+    does. Note carefully what it does NOT block: where the disk bytes already
+    EQUAL the latest committed version, the eval_body, score and shipped
+    bookkeeping below still lands, because that path writes no article bytes at
+    all and suppressing it would lose a score for no gain.
     """
     tdir = _topic_dir(client_slug, topic_slug)
     if not tdir.is_dir():
@@ -344,6 +355,36 @@ def commit_topic(client_slug, topic_slug):
         log.warning("commit_topic: unknown client %s, leaving scratch", client_slug)
         return
     tid = db.ensure_topic(client_slug, topic_slug)
+
+    # THE APPROVED CHECK RUNS BEFORE THE TRANSACTION, AND THAT ORDERING IS THE
+    # WHOLE FIX. Migration 013 put a BEFORE INSERT trigger on blog_versions that
+    # raises on an approved topic, and it stays exactly where it is: it is the
+    # backstop five write paths in two languages must all pass. But a trigger
+    # firing inside THIS transaction is a catastrophe out of proportion to the
+    # thing it refused. Everything below shares one tx, so the rollback that
+    # discards the refused version ALSO discards the status lines, the frozen
+    # dossier, links-verified.txt, the NEEDS_REVIEW marker and the question
+    # form, none of which the lock has any objection to. The topic then commits
+    # nothing at all, its scratch stays ahead of the record, and reconcile_all
+    # re-tries it on every single boot from here to forever, raising the same
+    # exception and logging the same traceback, because a rollback cannot change
+    # the condition that caused it.
+    #
+    # So the version insert is skipped HERE, in Python, before the transaction
+    # opens, and the rest of the commit proceeds normally. The article the client
+    # approved is still untouchable, which is what the lock is for; what changes
+    # is that a run against an approved topic now loses only the thing the lock
+    # forbids instead of losing the entire commit around it.
+    #
+    # A DIRECT QUERY RATHER THAN blog_edit.approved_at, AND NOT BY PREFERENCE.
+    # blog_edit imports sync at module scope (`from . import db, runner, sync`),
+    # so importing blog_edit from here at module scope is a hard cycle. This
+    # module already imports db at the top and reaches runner through a late
+    # import for exactly that reason. One SELECT against the column the trigger
+    # itself reads costs less than a third late import, and it cannot go stale
+    # relative to blog_edit because there is no logic in it to drift.
+    approved = db.q("select client_approved_at from topics where id = %s",
+                    (tid,), fetch="val")
 
     lines = []
     sj = tdir / "status.jsonl"
@@ -398,6 +439,12 @@ def commit_topic(client_slug, topic_slug):
         # 3. The blog version. Insert only when the bytes moved: retries,
         # stops, restores and reconciler re-runs then re-commit nothing,
         # because restored bytes ARE the previous version's bytes.
+        #
+        # TWO THINGS CAN VETO THE INSERT AND THEY ARE INDEPENDENT. `approved`
+        # says the client signed off on these bytes and migration 013 forbids a
+        # newer row; `allow_new_version` says the caller knows this scratch is
+        # not the newer copy. Either one alone suppresses the insert, and
+        # neither suppresses anything else in this transaction.
         vid = None
         if body:
             cur.execute(
@@ -406,7 +453,37 @@ def commit_topic(client_slug, topic_slug):
                 (tid,))
             latest = cur.fetchone()
             blog_mtime = (tdir / "blog.md").stat().st_mtime
-            if latest is None or latest[1] != body:
+            if latest is not None and latest[1] == body:
+                # Bytes unchanged: no new version exists to be forbidden, so
+                # neither veto applies. This is the branch a reconciler re-run
+                # lands on, and it is what makes re-commits free.
+                vid = latest[0]
+                cur.execute(
+                    """update blog_versions
+                       set eval_body = coalesce(%s, eval_body),
+                           score = coalesce(%s, score),
+                           shipped = shipped or %s
+                       where id = %s""",
+                    (eval_body, score, status == "done", vid))
+            elif approved is not None:
+                # ONE LINE AT WARNING, NEVER A TRACEBACK PER BOOT. The trigger's
+                # exception told an operator nothing they could act on and cost
+                # the whole commit; this says which topic diverged and stops.
+                # The scratch stays on disk untouched, so nothing is lost and a
+                # person can still read the divergent draft if they want it.
+                log.warning(
+                    "commit_topic: %s/%s was approved by the client on %s, so the "
+                    "scratch blog.md is NOT committed as a new version; the rest "
+                    "of the commit proceeds", client_slug, topic_slug, approved)
+            elif not allow_new_version:
+                # The caller's mtime evidence says this body is BEHIND the
+                # record, so committing it would revert whoever wrote the newer
+                # version. See reconcile_all for the full account of how a
+                # stranded scratch file gets here.
+                log.info(
+                    "commit_topic: %s/%s scratch blog.md is not ahead of the "
+                    "record, so no new version is committed", client_slug, topic_slug)
+            else:
                 h1 = next((l[2:].strip() for l in body.splitlines()
                            if l.startswith("# ")), None)
                 cur.execute(
@@ -422,16 +499,12 @@ def commit_topic(client_slug, topic_slug):
                      len(body.split()), score, eval_body, status == "done",
                      blog_mtime))
                 vid = cur.fetchone()[0]
-            else:
-                vid = latest[0]
-                cur.execute(
-                    """update blog_versions
-                       set eval_body = coalesce(%s, eval_body),
-                           score = coalesce(%s, score),
-                           shipped = shipped or %s
-                       where id = %s""",
-                    (eval_body, score, status == "done", vid))
-            if status == "done":
+            # `vid is not None` is REQUIRED here now that the branches above can
+            # leave it unset. Without it a suppressed insert would run this
+            # statement with a null and CLEAR shipped_version_id, so a guard
+            # against changing an approved article would be the thing that
+            # detached the topic from its shipped version.
+            if status == "done" and vid is not None:
                 cur.execute(
                     "update topics set shipped_version_id = %s where id = %s",
                     (vid, tid))
@@ -443,6 +516,14 @@ def commit_topic(client_slug, topic_slug):
         # before this transaction is seen and kept; an answer racing this
         # transaction hits the FK on a deleted parent and fails LOUDLY on the
         # operator's side, never silently.
+        #
+        # `vid` GATES THE INSERT AND STILL DOES, which now also covers the two
+        # suppressed-insert branches above: a review note is keyed to the
+        # blog_version it was asked about, so when no version was committed for
+        # these bytes there is no honest row to hang the form on. Attaching it to
+        # the previous version instead would file questions about a draft that
+        # version is not, which is the stale-form dead end the engine contract
+        # spends a section forbidding.
         qj = tdir / "questions.json"
         form = None
         if qj.is_file():
@@ -519,6 +600,14 @@ def reconcile_all():
     no-op commit. Returns the list of (client, topic) committed, for the startup
     log.
 
+    THE TWO HALVES OF 'AHEAD' ARE NOT INTERCHANGEABLE and this sweep never
+    treats them as one boolean. Either half is enough to COMMIT the topic, since
+    the dossier, the links file and the status feed all want pushing on either
+    signal. Only the blog half may create a VERSION, and it is handed to
+    commit_topic as allow_new_version so the decision travels with the evidence
+    instead of being re-derived from bytes at the far end. The call site carries
+    the full account of what an `or` cost here.
+
     THE MTIME GUARD IS NOT AN OPTIMISATION, it is what stops this sweep from
     reverting a teammate. Differing bytes were read as "scratch is ahead", which
     is only true when scratch is the NEWER copy. Two engines share one record:
@@ -586,7 +675,31 @@ def reconcile_all():
                 body is not None and body != db_body
                 and (db_committed is None
                      or blog.stat().st_mtime > db_committed.timestamp()))
-            if disk_lines > db_lines or body_ahead:
+            # THE TWO AHEAD-SIGNALS ARE SEPARATE FACTS AND THEY MUST STAY
+            # SEPARATE, because they are evidence about DIFFERENT artifacts.
+            # `lines_ahead` is evidence about status.jsonl and nothing else:
+            # the file is append-only, so more lines on disk than in the record
+            # can only mean this disk saw events the record has not. It says
+            # NOTHING about blog.md, which is not append-only and carries no
+            # ordinal to compare.
+            #
+            # Reading them as one condition is how a stale body committed. The
+            # mtime guard lives inside `body_ahead`, so an `or` let the
+            # status-line branch call a commit that wrote the body too, and
+            # commit_topic's own insert test compares BYTES ONLY: it asks
+            # whether the bytes moved, never in which direction or when. A
+            # machine holding a blog.md stranded from a run weeks ago, whose
+            # status.jsonl happened to carry one line the record lacked, would
+            # commit that ancient draft over an admin edit made today as the new
+            # latest version, silently, with the guard written to prevent
+            # exactly that sitting one operand away and never consulted.
+            #
+            # So the signals are passed through separately: `lines_ahead` gets
+            # the topic committed, `body_ahead` decides on its own whether that
+            # commit may create a version. Neither can now authorize the other's
+            # write.
+            lines_ahead = disk_lines > db_lines
+            if lines_ahead or body_ahead:
                 # A LIVE topic is skipped: its session owns the scratch and will
                 # commit at its own terminal line. Committing under it would
                 # push a mid-session half-state into the record.
@@ -609,7 +722,7 @@ def reconcile_all():
                 # sweep is the recovery path, and a recovery path that gives up
                 # on its first obstacle recovers nothing behind it.
                 try:
-                    commit_topic(slug, tdir.name)
+                    commit_topic(slug, tdir.name, allow_new_version=body_ahead)
                     committed.append((slug, tdir.name))
                 except Exception:
                     log.exception("reconcile: commit failed for %s/%s, continuing",

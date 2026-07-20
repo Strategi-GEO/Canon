@@ -41,6 +41,16 @@ CLIENT_ROOTS = [
     # rather than by who reads it. It is client-safe BY CONSTRUCTION: zero product
     # vocabulary, and every string it renders arrives as a prop or a child.
     DASH / "components" / "comments",
+    # The blog state machine and its tag, for exactly the reason the comment rail is here:
+    # BOTH surfaces import them as values, so both ship in the client bundle and both are
+    # client surface no matter which folder they live in. This is stricter than the rail,
+    # because unlike the rail these two DO carry product vocabulary: blog-state.ts holds
+    # ADMIN_TAGS as well as CLIENT_TAGS, so "Internal review" and "Has questions" are
+    # already in the client's JavaScript. That is not itself a leak, since no client code
+    # path renders them, but it is exactly the ground on which this file refuses to guess:
+    # a rule that never scanned the file could not have told anyone either way.
+    DASH / "lib" / "blog-state.ts",
+    DASH / "components" / "shell" / "blog-state-tag.tsx",
 ]
 
 failures: list[str] = []
