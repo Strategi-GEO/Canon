@@ -648,8 +648,9 @@ stop would make the operator press it five times while the queue raced them.
 blog, and it means nothing else.** It is not a failure: `failed` says the engine could not produce the blog, and
 conflating the two lies in the status tiles about work the engine did fine. It is not a
 summons either, in every ordinary case: no question was asked, and the operator is the one who
-acted. THE ONE EXCEPTION IS A FORM THE EVALUATOR HAD ALREADY WRITTEN BEFORE THE STOP LANDED,
-set out in full below, and it is an exception to the summons and to nothing else.
+acted. THE ONE EXCEPTION IS A FORM THE EVALUATOR HAD ALREADY WRITTEN THAT STILL READS `current`
+WHEN THE STOP LANDS, set out in full below, and it is an exception to the summons and to nothing
+else.
 
 What a stop does, per topic:
 - **Finished blogs are KEPT.** A topic that already wrote its terminal line keeps that line,

@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { FieldError } from "@/components/clients/engine-error";
 import { ApiError, api } from "@/lib/api";
+import { adminGateVerdict } from "@/lib/gate-contract";
 import { HOSTED_READONLY } from "@/lib/hosted";
 import type { BlogStatus, PublishResult } from "@/types";
 
@@ -182,32 +183,43 @@ export function PublishAction({
 /**
  * Why this blog cannot be posted, or null when it can.
  *
- * Mirrors the engine's rule rather than inventing a softer one: only a blog the engine marked
- * done is publishable. The wording names the state, because "unavailable" sends an operator
- * looking for a bug and "this blog is needs_review" sends them to resolve the review.
+ * IT USED TO ENUMERATE THE STATUSES AND THAT ENUMERATION WAS A PRIVATE RESTATEMENT. Three arms
+ * named `needs_review`, `failed` and `stopped`, each with its own sentence, and together they were
+ * one file's own copy of server/cms/gate.py's `if status != "done":`, which is now carried as the
+ * `publish_topic_is_done` clause with that source line recorded verbatim beside it. A restatement
+ * is silent when it is wrong, and this one was already wrong in the way every restatement of a
+ * closed list is wrong: a status nobody enumerated fell through all three arms and returned null,
+ * which reads as "nothing blocks this" and offers a Post to CMS the gate answers with a 409.
+ *
+ * A FOURTH ARM WOULD HAVE BEEN THE SAME BUG WITH A LONGER LIST. The list is not short by
+ * accident, it is short because it is a hand copy of a rule that is not a list at all: the gate
+ * admits exactly one status and refuses every other, including ones no enum here has heard of yet.
+ * So the decision is read off the clause and the refusal reported is the layer's own.
+ *
+ * PASSING A RECORD BUILT FROM THE STATUS ALONE IS SAFE HERE, AND IT IS SAFE FOR A REASON THAT
+ * DOES NOT TRAVEL. Every other field of BlogStateFacts is optional and absent reads as false, so a
+ * partial record silently answers `pass` for every clause reading a fact it does not carry. The
+ * publish door holds exactly one clause and that clause reads `status`, which is the whole of what
+ * is passed, so nothing is being answered by absence. Do NOT copy this shape to a gate that reads
+ * more: the send door reads the approval and the open-suggestion count as well, and
+ * send-to-client.tsx builds it a record carrying all three for precisely this reason. Should a
+ * clause reading anything but the status ever join the publish door, this call site owes it that
+ * fact rather than an omission.
  */
 function blockedReason(status: BlogStatus, demoMode: boolean): string | null {
   if (demoMode) {
     return "This brand is in demo mode. Demo blogs are placeholder text generated without research, so they never reach a CMS.";
   }
-  if (status === "needs_review") {
-    // Named as the act that is owed, not as a defect in the draft. This blog may well be a 96: the
-    // score is not what is missing, an answer is, and "needs review" sent an operator hunting the
-    // draft for a flaw that was never there.
-    return "This blog is held until you answer the evaluator's questions, whatever it scored. A CMS draft is directly approvable by an editor, so only a blog the engine shipped can be posted. Answer the questions and the revise settles it.";
+  // BOUND AND NARROWED RATHER THAN READ STRAIGHT OFF THE CALL. GateVerdict is a discriminated
+  // union and only its refusing arm carries `blocking`, so the allowed arm has to be answered
+  // before the clause can be reached. That shape is deliberate on the contract's side: it makes
+  // "the gate said yes" and "the gate said no and here is which clause" two different values a
+  // caller cannot confuse, and the cost here is one branch that reads as the sentence it is.
+  const verdict = adminGateVerdict("publish", { record: { status }, form: "unread" });
+  if (verdict.allowed) {
+    return null;
   }
-  if (status === "failed") {
-    return "This run failed, so there is no finished blog to post.";
-  }
-  if (status === "stopped") {
-    // Named as a stop rather than lumped in with the failure above, because the two send an
-    // operator to different places: a failure is the engine's problem to explain, and a stop is
-    // the operator's own decision with an obvious way forward. Without this arm a stopped blog
-    // fell through to `null` and was offered Post to CMS, which the engine refuses with a 409:
-    // a half-written draft, one dialog and one refusal later.
-    return "You stopped this brand's session before the evaluator scored this blog, so there is no finished draft to post. Nothing was deleted: generate the topic again to pick it up.";
-  }
-  return null;
+  return verdict.blocking?.refusal ?? null;
 }
 
 /** The CMS reports three outcomes and they are not the same event to an operator. */

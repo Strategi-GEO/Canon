@@ -10,3 +10,18 @@ httpx>=0.28.1
 # so a request costs one signature check instead of a GoTrue round trip. [crypto] pulls
 # cryptography, which PyJWT needs for EC keys and does not install on its own.
 PyJWT[crypto]>=2.13.0
+# server/db.py pool() imports psycopg_pool at pool creation time, so every path that reads or
+# writes the store walks through it. Neither package was listed here, and the only reason
+# anything worked is that a developer had installed both by hand into .venv: an out of band
+# install is not a dependency, it is a machine that happens to be lucky. A fresh clone plus the
+# documented `pip install -r requirements.txt` could not open the database at all, and it did
+# not fail in a way anyone could read, it failed with ModuleNotFoundError from an import buried
+# three call frames inside db.q(). CI hit exactly that.
+#
+# [binary] is not decoration. It ships a bundled libpq, so the install does not depend on a
+# system PostgreSQL client being present on the runner, which is precisely the assumption an
+# ubuntu-latest image is under no obligation to keep true. The floors are the versions proven to
+# work rather than the newest published: .venv runs psycopg 3.3.4 and psycopg-pool 3.3.1, and
+# resolving these two lines for the CI target (cp312, manylinux) lands on that same pair.
+psycopg[binary]>=3.2
+psycopg-pool>=3.2

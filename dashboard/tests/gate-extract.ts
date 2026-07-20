@@ -46,6 +46,30 @@
  *
  *   `readSourceLines` is exported so the accounting test can report a real file line for a
  *   refusal it found and nobody recorded.
+ *
+ * A FOURTH THING WAS ADDED AFTER THE SAME REVIEWER BROKE IT A THIRD TIME, AND IT IS THE CASE OF
+ * THE LETTERS. Both SQL lookups matched `create or replace function` in lower case with no `i`
+ * flag, and SQL DDL is case insensitive: `CREATE OR REPLACE FUNCTION admin_save_blog_content(...)`
+ * is the same statement to the database and was invisible here. The reviewer wrote exactly that
+ * migration with every guard stripped out, and the full suite stayed green, because
+ * `latestSqlDefinition` never saw the file and went on naming migration 010 as the live
+ * definition. The contract then fingerprinted a body the database had stopped running, which is
+ * the SAME defect `latestSqlDefinition` was written to close, arriving through the shift key.
+ * Both patterns now carry `i` and tolerate whitespace runs between the keywords, because
+ * `create   or replace  function` is also one statement.
+ *
+ * `create function` WITHOUT `or replace` IS A HARD ERROR AND NOT A MISS. A migration declaring a
+ * listed symbol that way either fails to apply, because the name is taken, or it is the first
+ * declaration and every earlier assumption about supersession is wrong. Reading it as "no
+ * definition here" and moving on is the one answer that is certainly incorrect, so it throws.
+ *
+ * THE FIFTH THING IS `dependsOn`, AND IT ANSWERS "THE FINGERPRINT DOES NOT FOLLOW THE CALL". A
+ * fingerprint covers the listed function's own body and nothing it calls, so every helper and
+ * constant behind a gate was unpinned. Three mutations proved it: `MAX_IN_FLIGHT = 3` to 10 and
+ * to 1, `_topic_status` forced to return "done", and `_with_client_since` inverted. Each left the
+ * gate's own text byte identical, each left the suite green, and the `= 1` direction FAILS OPEN,
+ * offering a comment control the engine refuses. `extractConstant` and `compositeFingerprint`
+ * below let a source name what it rests on, so a dependency's body joins the hash it protects.
  */
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
@@ -74,6 +98,36 @@ export function readSource(file: string): string[] {
 }
 
 /**
+ * The one pattern that recognises a SQL definition, built for a named symbol.
+ *
+ * IT LIVES HERE RATHER THAN BEING WRITTEN TWICE, which is the whole of why the casing hole
+ * survived. `extractSymbol` and `latestSqlDefinition` each carried their own copy of this regex,
+ * so the two agreed only by hand, and a fix applied to one would have left the other reading
+ * upper case DDL as absent. One builder means one answer about what a definition looks like.
+ *
+ * `\s+` between the keywords rather than a single space, because SQL treats any whitespace run as
+ * one separator and a reformatted migration is still the same statement. `i` because DDL keywords
+ * and identifiers are case insensitive to the database, so a migration shouting its keywords
+ * supersedes a lower case one and this file has to see it.
+ */
+function sqlDefinitionPattern(symbol: string, flags: string): RegExp {
+  return new RegExp(`^create\\s+or\\s+replace\\s+function\\s+${escapeRe(symbol)}\\s*\\(`, flags);
+}
+
+/**
+ * `create function` with no `or replace`, which is never a thing to pass over quietly.
+ *
+ * A migration declaring a symbol this contract lists gets exactly one honest reading, and it is
+ * not "no definition in this file". Either the name is already taken and the migration cannot
+ * apply, leaving the repo describing a database that refused it, or this is the first declaration
+ * and every later `create or replace` is patching something this file has misattributed. Both are
+ * conditions a person has to look at, so the extractor stops rather than choosing one.
+ */
+function sqlPlainCreatePattern(symbol: string): RegExp {
+  return new RegExp(`^create\\s+function\\s+${escapeRe(symbol)}\\s*\\(`, "mi");
+}
+
+/**
  * Pull one function out of a file by name.
  *
  * SQL ends at the dollar quote terminator, which this codebase writes as a line of exactly `$$;`,
@@ -91,7 +145,7 @@ export function extractSymbol(
   const lines = readSource(file);
   const signature =
     kind === "sql"
-      ? new RegExp(`^create or replace function ${escapeRe(symbol)}\\s*\\(`)
+      ? sqlDefinitionPattern(symbol, "i")
       : new RegExp(`^(async )?def ${escapeRe(symbol)}\\s*\\(`);
 
   const start = lines.findIndex((line) => signature.test(line));
@@ -159,6 +213,58 @@ function normalize(raw: string, kind: GateSourceKind): string {
 
 export function fingerprint(normalized: string): string {
   return createHash("sha256").update(normalized, "utf8").digest("hex").slice(0, 16);
+}
+
+/**
+ * A module level constant, extracted as its own assignment line.
+ *
+ * WHY A CONSTANT NEEDS EXTRACTING AT ALL. `blog_edit.MAX_IN_FLIGHT` is 3, the engine's comment
+ * route refuses at it, and the contract's COMMENT_CAP clause compares against the same 3. Nothing
+ * connected the two numbers: changing the Python to 10 left the route's own body byte identical,
+ * because the body names the CONSTANT and not the value, so every fingerprint held and the suite
+ * stayed green over a UI that now refuses at 3 while the engine allows up to 10. Changing it to 1
+ * is the same silence pointing the other way and it FAILS OPEN: the page offers a comment control
+ * for the second and third apply that the engine refuses outright.
+ *
+ * Only the assignment line is taken. A constant has no body, and the comment above it is prose
+ * this file strips everywhere else for the reason the header gives.
+ */
+export function extractConstant(file: string, name: string): ExtractedSymbol {
+  const lines = readSource(file);
+  const assignment = new RegExp(`^${escapeRe(name)}\\s*(:[^=]+)?=`);
+  const start = lines.findIndex((line) => assignment.test(line));
+  if (start === -1) {
+    throw new Error(
+      `gate contract: ${file} no longer defines the constant ${name}. A gate resting on a value ` +
+        `that has been renamed or deleted is drift of the loudest kind, so reconcile ` +
+        `dashboard/src/lib/gate-contract.ts with the new shape rather than editing this message.`,
+    );
+  }
+  const raw = lines[start];
+  return {
+    startLine: start + 1,
+    endLine: start + 1,
+    raw,
+    normalized: raw.trim().replace(/\s+/g, " "),
+  };
+}
+
+/**
+ * One hash over a gate's own body plus every body it depends on.
+ *
+ * THE DEPENDENCY BODIES JOIN THE HASH RATHER THAN GETTING HASHES OF THEIR OWN, and the reason is
+ * what a red build has to say. A separate hash per dependency would report "_topic_status moved"
+ * with no word about which gate rested on it, and the person reading that message has to
+ * reconstruct the link this table already knows. Joining them means the failure names the GATE,
+ * and the gate's `what` sentence and its clause list come with it.
+ *
+ * AN EMPTY DEPENDENCY LIST HASHES EXACTLY AS THE BODY ALONE, which is deliberate and is what let
+ * this land without re-recording a fingerprint for the twenty-odd sources that depend on nothing.
+ * `[own].join("\n")` is `own`, so the composition is the identity where there is nothing to
+ * compose.
+ */
+export function compositeFingerprint(own: string, dependencies: readonly string[]): string {
+  return fingerprint([own, ...dependencies].join("\n"));
 }
 
 /**
@@ -240,6 +346,14 @@ export function refusalSites(extracted: ExtractedSymbol, kind: GateSourceKind): 
  *
  * Files are ordered by their numeric prefix rather than by readdir order, because the numbers are
  * the apply order and the filesystem's order is not a fact about anything.
+ *
+ * THE MATCH IS CASE INSENSITIVE, and it was not, which made this function partly decorative in the
+ * same way the thing it fixed was. A reviewer added a migration declaring
+ * `CREATE OR REPLACE FUNCTION admin_save_blog_content(...)` in conventional upper case with every
+ * guard removed, and this returned migration 010 as though nothing had happened. The database
+ * would have been running the new body while the contract fingerprinted the old one and the
+ * supersession test certified the pin. Lower casing the same file turned the suite red, so the
+ * only thing standing between a stripped gate and a green build was the shift key.
  */
 export function latestSqlDefinition(symbol: string): string {
   const dir = path.join(REPO_ROOT, "supabase/migrations");
@@ -247,10 +361,26 @@ export function latestSqlDefinition(symbol: string): string {
     .filter((name) => name.endsWith(".sql"))
     .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
 
-  const signature = new RegExp(`^create or replace function ${escapeRe(symbol)}\\s*\\(`, "m");
+  const signature = sqlDefinitionPattern(symbol, "mi");
+  const plainCreate = sqlPlainCreatePattern(symbol);
   let latest: string | null = null;
   for (const name of files) {
     const body = readFileSync(path.join(dir, name), "utf8");
+    // Checked BEFORE the supersession match and never folded into it, because the two mean
+    // opposite things. A `create or replace` is the ordinary way this repo restates a function; a
+    // bare `create` on a name that already exists is a migration the database rejects, and
+    // treating it as "this file does not define the symbol" would hide a repo that no longer
+    // describes what ran.
+    if (plainCreate.test(body)) {
+      throw new Error(
+        `gate contract: supabase/migrations/${name} declares ${symbol} with 'create function' ` +
+          `rather than 'create or replace function'. Every other definition of a gated symbol in ` +
+          `this repo is a replacement, so this either fails to apply against a database that ` +
+          `already holds the name, or it is the first declaration and the supersession order ` +
+          `this contract records is wrong. Read the migration and decide which, rather than ` +
+          `relaxing this check.`,
+      );
+    }
     if (signature.test(body)) {
       latest = `supabase/migrations/${name}`;
     }

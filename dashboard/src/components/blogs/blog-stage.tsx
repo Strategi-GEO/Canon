@@ -40,6 +40,7 @@ import {
   adminCan,
   blogState,
   type BlogState,
+  type BlogStateFacts,
 } from "@/lib/blog-state";
 import {
   adminGateAllows,
@@ -306,15 +307,45 @@ function StageBody({
   };
 
   /**
-   * WHERE THIS ARTICLE IS, computed once, from the record and nothing else.
+   * THE ONE RECORD THIS PAGE REASONS ABOUT, and the single source for BOTH the state machine and
+   * the gate contract.
    *
    * The summary and the review read are merged because they carry the same delivery facts at
    * different ages: the summary is the blogs list's copy from page load, and the review read is
    * this page's own, re-read on every resolve, dismiss and send. reviewState spreads LAST so the
    * fresher one wins, and it already falls back to the summary's fields while its own request is
    * in flight, so the merge never opens a hole where a sent blog reads as unsent.
+   *
+   * IT IS A NAMED VALUE BECAUSE THE TWO CONSUMERS DRIFTED APART THE MOMENT THEY WERE WRITTEN
+   * SEPARATELY. `state` was computed from this merge and `gateInput` was built from `blog` alone,
+   * which meant the state machine and the gate were answering about DIFFERENT VERSIONS OF THE SAME
+   * BLOG. That difference is invisible in the UI, because both produce a button that is simply
+   * there or not there, and it surfaces only as a refused action: the gate passing on stale facts
+   * while the engine refuses on fresh ones is a 409 in the operator's face, and the gate refusing
+   * on stale facts while the engine would accept is the dead-end where an operator resolves every
+   * suggestion and has no send button left. Both were reachable, and both are the same defect this
+   * whole area keeps reproducing: two layers keyed differently, with nothing making them agree.
+   *
+   * DERIVING BOTH FROM ONE VALUE IS THE POINT, rather than fixing the one call site. A future edit
+   * that adds a third consumer, or changes what the merge contains, cannot update one reader and
+   * miss the other, because there is only one thing to read. Anything on this page that asks where
+   * the article is, or whether the record will take an act, asks THIS.
+   *
+   * WHY THE MERGE IS THE RIGHT RECORD AND NOT MERELY THE ONE ALREADY IN USE. Two things had to
+   * hold and both were checked rather than assumed. First, reviewState is the fresher read on
+   * every path that separates them: dismissComment and resolveComment call loadReview() and NOT
+   * onChanged(), and the comment-settle effect calls loadReview() unconditionally while calling
+   * onChanged() only for a resolve, so the summary's delivery fields go stale while this page is
+   * open and the review's do not. `status` is not on the review read at all and comes from the
+   * summary, which is why the merge and not the review alone is the answer. Second, the merge
+   * cannot make a fact ABSENT that was present, which matters because absent reads as false and
+   * would flip a refusal silently: BlogSummary declares all five delivery fields optional while
+   * BlogReviewState declares all five required, and the seed below fills every one of them, so
+   * the spread can only make a fact more present. A JSON body cannot carry an `undefined` value,
+   * so no key can arrive present-but-undefined and blank a field the summary had.
    */
-  const state = blogState({ ...blog, ...reviewState });
+  const record: BlogStateFacts = { ...blog, ...reviewState };
+  const state = blogState(record);
 
   /**
    * WHAT THE STATE PERMITS. This replaces a single `blog.status === "done"` flag that governed
@@ -360,19 +391,32 @@ function StageBody({
    * control is withheld until the read lands. A rail nobody is fetching, because this state has no
    * conversation to show, is a real zero: `commentsVisible` is false exactly where no client
    * suggestion can exist and no operator apply is in flight.
+   *
+   * COMPUTED PLAINLY, BECAUSE THE MEMO THAT USED TO WRAP IT COST THIS FILE EVERY OTHER MEMO. It
+   * listed `commentsVisible` among its dependencies, React Compiler could not prove that value
+   * stable across renders, and the rule it failed is preserve-manual-memoization, whose
+   * consequence is not a lost memo but a SKIPPED COMPILATION of the entire component. So the one
+   * memoization written by hand here was bought at the price of every memoization the compiler
+   * would have written for the rest of this file, while every sibling component kept theirs.
+   *
+   * THE TRADE IS NOT CLOSE. What this expression does is two comparisons and one filter over a
+   * list this page is already holding in memory, so recomputing it on every render costs nothing
+   * measurable, and the compiler memoizes it for us anyway once it is permitted to run over the
+   * component at all. A hand rolled memo is worth keeping where it guards real work; this one
+   * guarded a filter and disabled an optimiser.
    */
-  const applyingFact = React.useMemo<GateApplying>(() => {
-    if (!commentsVisible) {
-      return 0;
-    }
-    if (comments.error !== null || comments.checking) {
-      return "unread";
-    }
-    return comments.comments.filter((comment) => comment.state === "applying").length;
-  }, [commentsVisible, comments.error, comments.checking, comments.comments]);
+  const applyingFact: GateApplying = !commentsVisible
+    ? 0
+    : comments.error !== null || comments.checking
+      ? "unread"
+      : comments.comments.filter((comment) => comment.state === "applying").length;
   const applying = applyingFact === "unread" ? 0 : applyingFact;
 
-  const gateInput: GateInput = { record: blog, form: questionForm, applying: applyingFact };
+  // `record`, NEVER `blog`. See the comment on `record` above: handing the gate the summary while
+  // the state machine reads the merge is the seam that put a Send button over an article whose
+  // client had just filed a suggestion, and took one away from an article whose suggestions were
+  // all resolved. The two must be asked about the same version of the same blog.
+  const gateInput: GateInput = { record, form: questionForm, applying: applyingFact };
   /**
    * EDIT IS A STANDING RATHER THAN A BOOLEAN, and the difference is the greyed button.
    *

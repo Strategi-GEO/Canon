@@ -81,14 +81,78 @@ jobs:
       # containing only git-visible files, with no server/.env and no DATABASE_URL, and each
       # passed. They read source, they do not open sockets, and they need no credential.
       #
-      # tests/config_check.py IS DELIBERATELY ABSENT, and its absence is a known gap rather than
-      # an oversight. It reaches a live database: revise_topic calls _approved_refusal before its
-      # demo-client refusal fires, that walks db.topic_id into server/db.py pool(), and with no
-      # DATABASE_URL the check does not fail an assertion, it dies with a RuntimeError. Adding it
-      # here would make this workflow red on arrival on every runner, and a workflow that is
-      # always red teaches everyone to ignore it, which costs more than the one check it adds.
-      # It becomes CI-safe the moment that ordering is fixed in server/runner.py, and it should
-      # be added to this step on the same commit that fixes it.
+      # TWO SUITES ARE STILL ABSENT, tests/config_check.py and tests/stop_check.py, and the
+      # reason has NARROWED rather than gone away. An earlier version of this comment named ONE
+      # shared cause, server/runner.py calling _approved_refusal ahead of the refusals that need
+      # no database, and promised both suites would become CI-safe on the commit that fixed that
+      # ordering. THE ORDERING IS NOW FIXED AND THE PROMISE DID NOT HOLD, so the correction is
+      # recorded here rather than the old claim being repeated a second time.
+      #
+      # WHAT THE FIX WAS: revise_topic's demo refusal is hoisted ABOVE the approved lock, so a
+      # demo fixture is now refused from one flag in gates.json on disk instead of opening a
+      # connection to be told it is approved. The invariant it establishes is stated at both
+      # call sites in server/runner.py: nothing on a refusal path may touch the database until
+      # every refusal decidable without it has been evaluated. The fix is real and it is
+      # measurable. On a tree holding only git-visible files, config_check goes from 39 checks
+      # to 41 and its check [7] now passes end to end, where before it died inside it. A demo
+      # refusal proof with db.pool() replaced by a tripwire goes from 2 of 4 to 5 of 5.
+      #
+      # NEITHER SUITE REACHES EXIT 0 ON THAT TREE, because neither was blocked by that one call.
+      # Measured against a git-archive tree with no server/.env and no DATABASE_URL:
+      #
+      # config_check exits 1 after 41 checks. It clears every demo refusal, then dies further
+      # into check [7] at api_generate, which calls _client_or_404, which calls clients.exists,
+      # which calls db.client_id and opens a pool. That is a route's own existence check living
+      # in server/app.py and server/clients.py, a different root cause in different files, and
+      # it is not an ordering defect at all: the route has no cheaper way to answer whether a
+      # client exists while the record is the only thing that knows.
+      #
+      # stop_check exits 1 having scored no checks at all, exactly as before. It dies in its
+      # first test at run_topic's approved lock, and THAT call could not be reordered. Every
+      # refusal below it sits inside the try whose PreflightError arm appends the terminal
+      # FAILED line, so hoisting them out would delete that line for the real clients whose runs
+      # really did fail preflight, and pushing the approved lock down into the try would write
+      # "failed" over an approved topic's done. server/runner.py argues both at the call site.
+      # The lock is not stop_check's only database reach in any case: stub it out entirely and
+      # the suite dies two frames later in _materialize_topic_scratch, which calls db.client_id
+      # before every session. A suite driving run_topic against a fake brand needs that hook to
+      # answer without a pool, which is a separate change with its own reasoning to write.
+      #
+      # Check [8] and .env.portal-credentials remain unrelated to all of this, since that file
+      # is untracked and gitignored, so a fresh clone simply does not have one to find.
+      #
+      # STOP_CHECK LOOKS CI-READY ON A DEVELOPER MACHINE AND IS NOT, which is the trap worth
+      # naming here because it is how this gap nearly got closed wrong. It reports 44/44 and exit
+      # 0 locally, but only because a developer machine has a server/.env carrying a live
+      # DATABASE_URL, so the suite is quietly reaching the real database. Point it at a DSN that
+      # parses but does not answer and it does not skip and it does not fail fast: it hangs for
+      # the full 30 second pool timeout and dies on psycopg_pool.PoolTimeout. A green local run
+      # here is evidence about the machine, not about the suite.
+      #
+      # THE GAP IS REAL AND IT IS NOT COSMETIC, so it should be closed rather than tolerated.
+      # Mutating the stop carve-out at server/runner.py:504 to hold on ("current", "stale",
+      # "answered"), which widens it to exactly the refused forms the contract narrows it to
+      # exclude, turns stop_check red at 40/44 while everything this workflow actually runs stays
+      # green: npm test 43/43, portal_check, cms_check and env_check all exit 0. The 44 checks
+      # guarding the stop carve-out stay load-bearing locally and invisible here for as long as
+      # that is true, and the approved-lock fix above did not change it, which is precisely why
+      # this paragraph still stands.
+      #
+      # Adding either suite in this state would make this workflow red on arrival on every
+      # runner, and a workflow that is always red teaches everyone to ignore it, which costs more
+      # than the checks it adds. They no longer share one blocker, so they will not be unblocked
+      # by one commit either: config_check needs clients.exists to answer a route's existence
+      # check without a pool, and stop_check needs run_topic's materialize hook to skip the
+      # record when there is no record to reach. Add each one to this step on the commit that
+      # clears ITS blocker, and measure on a git-archive tree with no server/.env rather than
+      # locally, for the reason the paragraph above gives. Do not reach for a service container
+      # instead: these suites want no database, they only want to stop asking for one.
+      #
+      # IF YOU REINTRODUCE AN EARLY DATABASE CALL ON A REFUSAL PATH, this is what it costs. The
+      # ordering is not a test convenience: a refusal that reaches the network to say no fires
+      # later than the contract says it does, it opens a real connection for a client that was
+      # never allowed to spend anything, and against a DSN that parses but does not answer it
+      # does not fail, it hangs for the pool timeout first.
       - name: Python guard checks
         run: |
           set -euo pipefail

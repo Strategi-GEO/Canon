@@ -45,6 +45,7 @@ import assert from "node:assert/strict";
 import {
   ADMIN_GATE_DOORS,
   ALL_GATE_CLAUSES,
+  ENGINE_MAX_IN_FLIGHT,
   GATE_SOURCES,
   adminGateAllows,
   adminGateStanding,
@@ -61,8 +62,9 @@ import {
 } from "../src/lib/blog-state.ts";
 import {
   REPO_ROOT,
+  compositeFingerprint,
+  extractConstant,
   extractSymbol,
-  fingerprint,
   latestSqlDefinition,
   refusalSites,
 } from "./gate-extract.ts";
@@ -97,12 +99,37 @@ const APPROVED_AT = "2026-07-19T10:00:00Z";
 // 1. Drift. The half that reads the real files.
 // ---------------------------------------------------------------------------
 
+/**
+ * THE FINGERPRINT NOW FOLLOWS THE CALL, and until it did this test had a hole the width of every
+ * helper a gate delegates to.
+ *
+ * A hash over a function's own body says nothing about what that body CALLS, and a gate is
+ * typically one comparison over a decision made elsewhere. Three mutations demonstrated it and
+ * each one left the full suite green: `_topic_status` forced to return "done", so DONE_TOPIC_ENGINE
+ * described a gate that had stopped gating while `_require_done` stayed byte identical;
+ * `_with_client_since` inverted, so NOT_WITH_CLIENT refused exactly the articles it used to
+ * permit; and `blog_edit.MAX_IN_FLIGHT` moved off 3, which the comment route names rather than
+ * contains. Each source now declares what it rests on, and those bodies join its hash.
+ */
 test("every gate source still exists and its body still matches its recorded fingerprint", () => {
   for (const id of SOURCE_IDS) {
     const source = GATE_SOURCES[id];
     const extracted = extractSymbol(source.file, source.symbol, source.kind);
-    const actual = fingerprint(extracted.normalized);
+    const dependencies = (source.dependsOn ?? []).map((dependency) => {
+      const body = dependency.constant
+        ? extractConstant(dependency.file, dependency.constant)
+        : extractSymbol(dependency.file, dependency.symbol as string, source.kind);
+      return { dependency, normalized: body.normalized };
+    });
+    const actual = compositeFingerprint(
+      extracted.normalized,
+      dependencies.map((entry) => entry.normalized),
+    );
     const dependents = ALL_GATE_CLAUSES.filter((clause) => clause.source === id).map((c) => c.id);
+    const rests = dependencies.map((entry) => {
+      const { file, symbol, constant, why } = entry.dependency;
+      return `    ${file} :: ${symbol ?? constant}\n      ${why}\n`;
+    });
 
     assert.equal(
       actual,
@@ -111,8 +138,13 @@ test("every gate source still exists and its body still matches its recorded fin
         `  recorded ${source.fingerprint}, now ${actual}\n` +
         `  what it gates: ${source.what}\n` +
         `  acts it stands in front of: ${source.gates.join(", ")}\n` +
-        `  clauses resting on it: ${dependents.join(", ") || "none"}\n\n` +
-        `  DO NOT JUST UPDATE THE HASH. The fingerprint is not a version number: it moved ` +
+        `  clauses resting on it: ${dependents.join(", ") || "none"}\n` +
+        (rests.length > 0
+          ? `  AND THIS HASH COVERS WHAT IT CALLS, so the change may be in one of these rather\n` +
+            `  than in the function itself. Read them before reading the gate:\n` +
+            rests.join("")
+          : "") +
+        `\n  DO NOT JUST UPDATE THE HASH. The fingerprint is not a version number: it moved ` +
         `because the refusals in that function are no longer the refusals ` +
         `dashboard/src/lib/gate-contract.ts describes. Read the diff, decide whether a clause ` +
         `was changed, added or removed, reconcile the clauses above, and only then re-record ` +
@@ -120,6 +152,39 @@ test("every gate source still exists and its body still matches its recorded fin
         `times.\n`,
     );
   }
+});
+
+/**
+ * THE VALUE OF THE CAP, HELD AGAINST THE ENGINE'S OWN CONSTANT.
+ *
+ * The fingerprint test above already goes red when MAX_IN_FLIGHT moves, because api_add_blog_comment
+ * declares it as a dependency. This one exists because the two failures say different things and a
+ * person needs the second sentence. A moved fingerprint says "the cap this gate rests on is not the
+ * cap it rested on" and hands over a diff; this says "the engine caps at N and this page caps at
+ * M", which names the edit.
+ *
+ * IT IS ALSO THE ONLY THING THAT CATCHES THE DRIFT FROM THE OTHER SIDE. Someone editing
+ * gate-contract.ts alone, lowering ENGINE_MAX_IN_FLIGHT to match a cap they misremembered, moves no
+ * Python and no fingerprint. The contract would then refuse a comment the engine takes, with every
+ * drift test green, which is this defect running backwards.
+ */
+test("the contract's in-flight cap is the engine's own MAX_IN_FLIGHT", () => {
+  const declared = extractConstant("server/blog_edit.py", "MAX_IN_FLIGHT").normalized;
+  const match = declared.match(/=\s*(\d+)/);
+  assert.ok(match, `server/blog_edit.py: MAX_IN_FLIGHT is no longer a plain integer: ${declared}`);
+  assert.equal(
+    Number.parseInt(match[1], 10),
+    ENGINE_MAX_IN_FLIGHT,
+    `\n\nTHE CAP IN THE CONTRACT AND THE CAP IN THE ENGINE ARE DIFFERENT NUMBERS.\n` +
+      `  server/blog_edit.py: ${declared}\n` +
+      `  gate-contract.ts:    ENGINE_MAX_IN_FLIGHT = ${ENGINE_MAX_IN_FLIGHT}\n\n` +
+      `  COMMENT_CAP and RESOLVE_COMMENT_CAP both decide on the contract's number, so while ` +
+      `these disagree the page is answering a question about a cap the engine does not have. ` +
+      `LOWERING the engine's cap is the dangerous direction: the page then OFFERS a comment ` +
+      `control for an apply the engine refuses outright, which is the offered-but-refused ` +
+      `defect this whole contract exists to make impossible. Fix the mirror, then re-record ` +
+      `api_add_blog_comment's fingerprint, which covers this constant as a dependency.\n`,
+  );
 });
 
 /**
@@ -168,20 +233,71 @@ test("every clause's condition is still the verbatim text of its refusal", () =>
   }
 });
 
-test("every clause's recorded line still points at its condition", () => {
+/**
+ * THE LINE IS DERIVED AND REPORTED, AND IT IS NOT AN ASSERTION. Read this before making it one.
+ *
+ * It used to be one, comparing every clause's recorded ABSOLUTE line against the file, and the
+ * failure message it printed ended "Update the line number and move on." That message is the
+ * problem, not the wording of it. gate-extract.ts strips comments from the fingerprint for exactly
+ * one stated reason: this codebase writes very long prose, and a red build fired by a prose edit
+ * teaches people to bump numbers without reading, which is the failure mode that kills this whole
+ * mechanism inside a month. A test that pins absolute lines reintroduces that pressure through a
+ * second door and does it more often, because ANY line added above a clause fires it, in files
+ * where a single comment can run twenty lines.
+ *
+ * AND THE COST IS NOT THE NOISE. It is that the noise is indistinguishable, at a glance, from a
+ * REAL red. The four defects this round closed all surface as a red in this same file, and a person
+ * trained by a dozen benign line bumps to reach for the number and move on is a person who clears
+ * a stripped SQL guard the same way. Habitual number-bumping is the mechanism by which a mechanism
+ * stops working.
+ *
+ * SO THE SEARCH STAYS AND THE ASSERTION GOES. The line is re-derived from the condition text on
+ * every run and printed where it has drifted, which is the whole of what a person navigating to
+ * the gate actually needs, and the stored `line` on the clause stays as documentation that is
+ * allowed to be a little stale. Nothing about the RULE rests on it.
+ *
+ * THE THREE REAL ASSERTIONS ARE UNTOUCHED AND STAY HARD FAILURES: the source exists and its
+ * fingerprint matches, the condition text is still verbatim in the function, and every raise is
+ * claimed. Those three say the gate changed. A moved line says a comment got longer.
+ */
+test("every clause's condition is locatable, and a moved line is reported rather than failed", () => {
+  const drifted: string[] = [];
   for (const clause of ALL_GATE_CLAUSES) {
     const source = GATE_SOURCES[clause.source];
     const extracted = extractSymbol(source.file, source.symbol, source.kind);
     const offset = extracted.raw.split("\n").findIndex((line) => line.includes(clause.condition));
+
+    // THIS ONE IS STILL HARD, and it is a different claim from the line. An offset of -1 means the
+    // condition is not in the function at all, which the verbatim test above has already failed on
+    // for the same clause. Asserting it here keeps this test honest about what it just searched
+    // rather than quietly reporting a line of NaN.
+    assert.notEqual(
+      offset,
+      -1,
+      `\n\nCLAUSE ${clause.id} HAS NO CONDITION TO LOCATE.\n` +
+        `  looked for: ${clause.condition}\n` +
+        `  inside:     ${source.file} :: ${source.symbol}\n` +
+        `  The verbatim test above says the same thing and says it better. Fix that one first.\n`,
+    );
+
     const actualLine = extracted.startLine + offset;
-    assert.equal(
-      actualLine,
-      clause.line,
-      `\n\nCLAUSE ${clause.id} MOVED, and moving is not changing.\n` +
-        `  ${source.file}: recorded line ${clause.line}, now line ${actualLine}\n` +
-        `  The condition text is unchanged, so the gate still does what the contract says it ` +
-        `does and something above it simply grew. Update the line number and move on. This is ` +
-        `the benign failure; the two tests above are the ones that mean the rule changed.\n`,
+    if (actualLine !== clause.line) {
+      drifted.push(
+        `  ${clause.id}: ${source.file} records line ${clause.line}, condition now sits at ` +
+          `${actualLine}`,
+      );
+    }
+  }
+
+  if (drifted.length > 0) {
+    console.log(
+      `\nRECORDED LINE NUMBERS HAVE DRIFTED, which is bookkeeping and not a defect.\n` +
+        drifted.join("\n") +
+        `\n  Every condition above was FOUND, so each gate still does what the contract says it ` +
+        `does and something above it simply grew. Correct the numbers when you are next editing ` +
+        `these clauses for a reason of their own. This is printed rather than failed on purpose: ` +
+        `see the comment on this test for why a red build over a line number is worse than a ` +
+        `stale line number.\n`,
     );
   }
 });
@@ -576,13 +692,50 @@ test("an apply in flight greys the edit rather than removing it, and fills the c
   assert.equal(editStanding.mount, true, "an apply lands on its own, so the control stays and greys");
   assert.equal(editStanding.waitingOn?.id, "no_apply_in_flight");
 
-  // One apply does not fill the cap: the composer renders two remaining.
-  assert.equal(adminGateAllows("comments", oneApplying), true);
-  const full: GateInput = { ...CLEAN_INPUT, applying: 3 };
+  /**
+   * WHAT ONE APPLY DOES TO `comments` CHANGED WHEN THE DISMISS DOORS WERE ENUMERATED, and this
+   * block is the record of what it changed to. It used to assert `adminGateAllows("comments",
+   * oneApplying) === true`, on the reasoning that one apply does not fill a cap of three, and that
+   * was a true statement about FILING and the only route the contract had read.
+   *
+   * The act covers three routes. blog-stage.tsx threads `canComment` to the rail as whether this
+   * side may "file, resolve, dismiss or reply", and migration 010's admin_dismiss_comment plus
+   * server/app.py's api_delete_blog_comment both refuse to close a comment that is mid-apply. With
+   * one apply in flight there IS a row on this article the dismiss door says no to, so the act as
+   * a whole is not fully available and the gate now says so.
+   *
+   * MOUNT IS THE ASSERTION THAT MATTERS AND IT IS UNCHANGED, which is why this is a sharpening
+   * rather than a regression. Every clause involved is transient, `adminGateStanding` drops
+   * transient clauses when it computes `mount`, and `mount` is what blog-stage.tsx consumes. The
+   * composer stays on the page and greys; nothing is removed and no control the engine would have
+   * taken has gone missing.
+   */
+  const oneApplyingComments = adminGateStanding("comments", oneApplying);
+  assert.equal(
+    oneApplyingComments.mount,
+    true,
+    "one apply must never REMOVE the rail's write side: every clause over the count is transient",
+  );
+  assert.equal(
+    oneApplyingComments.act,
+    false,
+    "the dismiss doors refuse an applying comment, and one is applying",
+  );
+  assert.equal(oneApplyingComments.waitingOn?.id, "dismiss_not_applying_sql");
+
+  // AND THE CAP IS STILL THE SENTENCE AT THREE, which is what the clause ORDER in the comments
+  // door buys: `verdictOver` reports the first refusing clause, the cap sits ahead of the dismiss
+  // pair, and "three are already in flight" is the message an operator at three can act on.
+  const full: GateInput = { ...CLEAN_INPUT, applying: ENGINE_MAX_IN_FLIGHT };
   const commentStanding = adminGateStanding("comments", full);
   assert.equal(commentStanding.act, false);
   assert.equal(commentStanding.mount, true);
   assert.equal(commentStanding.waitingOn?.id, "comment_in_flight_cap");
+
+  // A quiet rail leaves every one of them alone, so the act is whole exactly when nothing is
+  // mid-apply. This is the half that would go red if a transient clause were ever mis-marked
+  // permanent, because `mount` would start following the count.
+  assert.equal(adminGateAllows("comments", { ...CLEAN_INPUT, applying: 0 }), true);
 
   // A PERMANENT refusal removes the control, which is the other half of the same rule.
   const notDone = adminGateStanding("edit", at({ status: "failed" }));
@@ -644,14 +797,47 @@ test("blog-stage composes EVERY write control from the gate contract, not from a
     );
   }
 
-  // All three facts have to actually reach the gate. A gateInput built from the record alone would
-  // pass every check above and reproduce round five exactly, and one without `applying` reproduces
-  // the hand written `applying > 0` that sat under a canEdit which knew nothing about it.
-  for (const fact of ["record: blog", "form: questionForm", "applying: applyingFact"]) {
+  /**
+   * ALL THREE FACTS HAVE TO ACTUALLY REACH THE GATE. A gateInput built from the record alone would
+   * pass every check above and reproduce round five exactly, and one without `applying` reproduces
+   * the hand written `applying > 0` that sat under a canEdit which knew nothing about it.
+   *
+   * THIS PINS THE THREE FIELDS AND NOT THE EXPRESSIONS FILLING THEM, and it used to do the
+   * opposite. It matched the literal strings "record: blog", "form: questionForm" and
+   * "applying: applyingFact", which named the component's local VARIABLES, and a local variable is
+   * the component's business rather than this contract's. It went red the moment blog-stage.tsx
+   * correctly changed one: `state` was being computed from a merge of the blogs read and the
+   * review read while `gateInput` was built from the blogs read ALONE, so the bench and the gate
+   * were answering about two different records. Fixing that meant passing a merged `record`, which
+   * is strictly more of the fact reaching the gate, and the assertion called it a regression.
+   *
+   * A test that fires on an improvement to the thing it guards is training its reader to route
+   * around it, which is the same failure the line-number test above was rewritten to stop. So the
+   * property is what gets asserted: the gate input names all three facts. What each is computed
+   * from is checked by blog-state's own suite and by the reviewer reading the diff.
+   */
+  // NO `s` FLAG, and it is not an oversight: this tsconfig targets below es2018, where tsc rejects
+  // it outright. Nothing here needs it either, because `s` governs what `.` matches and a negated
+  // class already spans newlines, so `[^}]*` reaches across the multi-line object on its own.
+  const construction = source.match(/const gateInput: GateInput = \{[^}]*\}/);
+  assert.ok(
+    construction,
+    `blog-stage.tsx no longer builds a "const gateInput: GateInput = { ... }". Every control on ` +
+      `the page is gated on that one value, so if it has been renamed or inlined, re-point this ` +
+      `assertion at whatever replaced it rather than deleting the check.`,
+  );
+  // SHORTHAND COUNTS, because `{ record }` and `{ record: record }` are the same object and a test
+  // that accepted only one of them would be pinning a style rather than a fact. The trailing class
+  // is what distinguishes the property from a mention of the same word inside a longer identifier.
+  for (const fact of ["record", "form", "applying"]) {
     assert.ok(
-      source.includes(fact),
-      `blog-stage.tsx must pass "${fact}" into the gate input. The whole of round five was a ` +
-        `gate asked to decide a question about a fact it was never given.`,
+      new RegExp(`\\b${fact}\\s*[:,}]`).test(construction[0]),
+      `\n\nblog-stage.tsx builds its gate input without "${fact}".\n` +
+        `  found: ${construction[0]}\n\n` +
+        `  The whole of round five was a gate asked to decide a question about a fact it was ` +
+        `never given. An omitted "applying" is the narrower version of the same thing: both ` +
+        `clauses over that count are transient, so the gate answers about the record and the ` +
+        `Edit control renders while an apply is in flight.\n`,
     );
   }
 });

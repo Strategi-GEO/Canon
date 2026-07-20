@@ -165,6 +165,7 @@ export type GateSourceId =
   | "admin_send_blog_to_client"
   | "admin_save_blog_content"
   | "admin_add_comment"
+  | "admin_dismiss_comment"
   | "admin_reply_comment"
   | "refuse_version_when_approved"
   | "refuse_comment_when_approved"
@@ -177,8 +178,11 @@ export type GateSourceId =
   | "api_revise_answered"
   | "api_save_blog_content"
   | "api_add_blog_comment"
+  | "api_resolve_blog_comment"
+  | "api_delete_blog_comment"
   | "api_send_blog_to_client"
   | "api_reply_blog_comment"
+  | "api_publish_blog"
   | "assert_publishable"
   | "cms_record_blog"
   | "edit_refuse_if_approved"
@@ -213,6 +217,45 @@ export type GateExemption = {
 };
 
 /**
+ * Something a gate's body NAMES rather than contains, whose text joins that gate's fingerprint.
+ *
+ * THE DEFECT THIS CLOSES IS THAT THE FINGERPRINT DID NOT FOLLOW THE CALL. A hash over a function's
+ * own body says nothing about the helpers and constants it calls, and a gate is usually one line
+ * of dispatch over a decision made somewhere else. Three mutations proved the gap, and every one
+ * of them left the listed function byte identical and the whole suite green:
+ *
+ *   `_topic_status` in server/app.py forced to return "done". `_require_done` still reads
+ *   `if status != "done":` and still raises, so its own text is untouched, and the DONE_TOPIC
+ *   clause becomes a statement about nothing while its fingerprint stays valid.
+ *
+ *   `_with_client_since` inverted from `if sent_at is None or round_open:` to
+ *   `if sent_at is not None and not round_open:`, which swaps exactly who gets refused.
+ *   `_require_not_with_client` is unchanged: it asks the helper a question and raises on the
+ *   answer, and the answer is now the opposite one.
+ *
+ *   `blog_edit.MAX_IN_FLIGHT` changed from 3. api_add_blog_comment compares against the NAME, so
+ *   no body moves, and the contract's cap clause goes on refusing at 3 whatever the engine does.
+ *   The `= 1` direction FAILS OPEN, which is the direction that matters: the page offers a comment
+ *   control for a second apply the engine refuses.
+ *
+ * A DEPENDENCY IS NOT A SOURCE, and the distinction is why this is a separate list rather than
+ * four more GATE_SOURCES rows. A source is a function that REFUSES, and it owes the accounting
+ * test a clause or a named exemption for every raise in it. `_topic_status` refuses nothing: it
+ * answers a question, and the raise belongs to its caller. Listing it as a source would demand an
+ * accounting of raises it does not have and would say the wrong thing about what it is.
+ */
+export type GateDependency = {
+  /** Repo relative, from the geo-factory root. Needs no `kind`: it inherits the source's. */
+  file: string;
+  /** A function, extracted as its whole body. Exactly one of `symbol` or `constant` is set. */
+  symbol?: string;
+  /** A module level constant, extracted as its assignment line. */
+  constant?: string;
+  /** What the gate above it actually rests on, for whoever the red build wakes up. */
+  why: string;
+};
+
+/**
  * A function in the SQL or the Python that refuses admin writes, and the fingerprint of its body
  * as it stood when this contract was last reconciled with it.
  *
@@ -220,6 +263,11 @@ export type GateExemption = {
  * hash of the normalized body, so a moved fingerprint means the refusals in that function are not
  * the refusals this table describes. The correct response is to read the diff and reconcile the
  * clauses; updating the hash alone re-creates the exact silence that let five rounds ship.
+ *
+ * WHERE `dependsOn` IS SET THE HASH COVERS THOSE BODIES TOO, joined into one fingerprint rather
+ * than recorded as several. One hash means a red build names the GATE and brings its `what`
+ * sentence and its clause list with it, instead of naming a helper and leaving the reader to
+ * rediscover which gate rested on it. An empty or absent list hashes exactly as the body alone.
  */
 export type GateSource = {
   /**
@@ -240,6 +288,8 @@ export type GateSource = {
   what: string;
   /** Refusals read and given no clause, each with its reason. */
   exemptions: readonly GateExemption[];
+  /** Helpers and constants this gate's decision actually rests on. See GateDependency. */
+  dependsOn?: readonly GateDependency[];
 };
 
 export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
@@ -392,6 +442,33 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
       },
     ],
   },
+  // THE DISMISS HALF OF `comments`, MISSING FROM THIS TABLE ON BOTH BUILDS UNTIL NOW. The contract
+  // enumerated filing a change request and nothing else, so the two functions that CLOSE one were
+  // unlisted, unfingerprinted and unaccounted, and a refusal added to either would have shipped
+  // green. blog-stage.tsx has always passed `canComment` to the rail as the flag that lets this
+  // side "file, resolve, dismiss or reply", in its own words, so all three doors were riding on a
+  // gate that had read exactly one of them.
+  admin_dismiss_comment: {
+    file: "supabase/migrations/010_admin_write_tier_fixes.sql",
+    symbol: "admin_dismiss_comment",
+    kind: "sql",
+    fingerprint: "766a700b529030ae",
+    gates: ["comments"],
+    what:
+      "The hosted dismiss: a comment is CLOSED rather than deleted, because the client can see " +
+      "their own suggestion and a row that vanished reads as lost while a dismissed one reads as " +
+      "reviewed. It refuses an applying comment, whose background task would otherwise land a " +
+      "verdict on a row that already reads closed.",
+    exemptions: [
+      {
+        id: "dismiss_topic_not_found",
+        raises: "PORTAL:NOTFOUND:no such blog for this account",
+        why:
+          "Resolution rather than a gate, exactly as admin_done_topic's own NOTFOUND is. The " +
+          "stage page is rendering this topic's article.",
+      },
+    ],
+  },
   admin_reply_comment: {
     file: "supabase/migrations/011_admin_reply_comment.sql",
     symbol: "admin_reply_comment",
@@ -490,14 +567,26 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/app.py",
     symbol: "_require_done",
     kind: "python",
-    fingerprint: "59d42c81d38f2dca",
+    fingerprint: "ea22e7feea82b739",
     gates: ["edit", "comments", "send"],
     what:
       "The local engine's admin_done_topic: a 409 unless the topic's terminal verdict is done. " +
-      "api_save_blog_content, api_add_blog_comment and api_send_blog_to_client each call it, so " +
-      "it is the single gate under `edit`, `comments` and `send` on the build that does the " +
-      "actual writing.",
+      "api_save_blog_content, api_add_blog_comment, api_resolve_blog_comment and " +
+      "api_send_blog_to_client each call it, so it is the single gate under `edit`, `comments` " +
+      "and `send` on the build that does the actual writing.",
     exemptions: [],
+    dependsOn: [
+      {
+        file: "server/app.py",
+        symbol: "_topic_status",
+        why:
+          "THE WHOLE OF WHAT `done` MEANS HERE. _require_done contributes one comparison and one " +
+          "raise; the status it compares is folded by this helper out of the record. Forcing it " +
+          "to return \"done\" leaves _require_done's own text byte identical, so its fingerprint " +
+          "held and the DONE_TOPIC_ENGINE clause went on describing a gate that had stopped " +
+          "gating. That mutation ran green against the whole suite.",
+      },
+    ],
   },
   require_not_approved: {
     file: "server/app.py",
@@ -515,13 +604,26 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/app.py",
     symbol: "_require_not_with_client",
     kind: "python",
-    fingerprint: "1d2bd5cccc74298e",
+    fingerprint: "ac5fcc04bd6f174e",
     gates: ["edit", "comments"],
     what:
       "409 while the article is out with the client and they have asked for nothing back. Writing " +
       "then commits a version that topics.sent_version_id does not point at, so the approval " +
       "landing next describes bytes nobody is reading.",
     exemptions: [],
+    dependsOn: [
+      {
+        file: "server/app.py",
+        symbol: "_with_client_since",
+        why:
+          "THE CONDITION ITSELF, and this function is only the raise on top of it. " +
+          "_require_not_with_client asks for a date and refuses if it gets one, so inverting the " +
+          "helper's `if sent_at is None or round_open:` to `if sent_at is not None and not " +
+          "round_open:` swaps exactly which articles are refused while leaving every byte of the " +
+          "caller alone. The helper is also the ONE definition of out-with-the-client that " +
+          "api_generate reads, so a change here moves two doors at once.",
+      },
+    ],
   },
   api_answers: {
     file: "server/app.py",
@@ -637,7 +739,7 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/app.py",
     symbol: "api_add_blog_comment",
     kind: "python",
-    fingerprint: "e7d127e84dc3db9b",
+    fingerprint: "b50dc00b44e46ed5",
     gates: ["comments"],
     what:
       "The engine's change request route, which files the comment AND starts the Claude session, " +
@@ -657,6 +759,97 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
         id: "comment_route_blank",
         raises: 'detail="a comment needs both the selected text and an instruction"',
         why: "The payload.",
+      },
+    ],
+    dependsOn: [
+      {
+        file: "server/blog_edit.py",
+        constant: "MAX_IN_FLIGHT",
+        why:
+          "THE NUMBER THE CAP IS, which this route names and does not contain. The comparison " +
+          "reads `>= blog_edit.MAX_IN_FLIGHT`, so the route's body is identical whether the " +
+          "constant is 1, 3 or 10, and COMMENT_CAP's ENGINE_MAX_IN_FLIGHT would go on refusing " +
+          "at 3 regardless. Both directions were demonstrated green: 10 makes the page refuse " +
+          "what the engine allows, and 1 makes it OFFER what the engine refuses, which is the " +
+          "fail-open half and the one this whole file exists to stop.",
+      },
+    ],
+  },
+  // THE RESOLVE HALF OF `comments`, and it was the largest unlisted surface in the engine: seven
+  // refusals, four of them the same shared helpers the filing route runs, and none of it
+  // enumerated. The four shared arms are NOT restated here. They are calls to _require_done,
+  // _require_not_approved and _require_not_with_client, which are sources of their own with
+  // clauses of their own, and the extractor sees raises INSIDE a body rather than raises reachable
+  // from it. Restating them would put the same rule in the table twice and let the two copies
+  // drift, which is the defect this file was written to remove.
+  api_resolve_blog_comment: {
+    file: "server/app.py",
+    symbol: "api_resolve_blog_comment",
+    kind: "python",
+    fingerprint: "9eb9e58a676265d5",
+    gates: ["comments"],
+    what:
+      "Spends a Claude session on ONE waiting comment. The client's suggestions arrive 'open' " +
+      "with no apply behind them because the portal runs no engine, so this is the door that " +
+      "starts one, and a committed version comes out of it. That is why it carries the same done, " +
+      "approved and with-client gates as filing, plus the in-flight cap riding inside its flip.",
+    exemptions: [
+      {
+        id: "resolve_route_demo",
+        raises: "detail=runner.demo_refusal_detail(slug)",
+        why: "Subsumed by the demoMode term, as every other demo refusal on these routes is.",
+      },
+      {
+        id: "resolve_route_live_run",
+        raises: "resolve once it finishes so the engine's",
+        why: "Subsumed by `generating`, whose bench is empty.",
+      },
+      {
+        id: "resolve_route_comment_unknown",
+        raises: 'detail=f"no comment {comment_id!r} on {topic!r}")',
+        why:
+          "A property of ONE comment rather than of the article, and this contract is keyed by " +
+          "article. The rail cannot offer a resolve on a row it does not hold.",
+      },
+      {
+        id: "resolve_route_comment_state",
+        raises: "this change is {state}; only an open or failed one can",
+        why:
+          "The other arm of the same flip, and a property of one comment again: 'resolved', " +
+          "'dismissed' and 'applying' each refuse here. The card carries its own state and " +
+          "withholds its own button, so an article-level clause would decide nothing it does not.",
+      },
+    ],
+  },
+  // THE DISMISS HALF ON THE BUILD THAT DOES THE WRITING, twin of admin_dismiss_comment above.
+  // Neither was listed, so the whole act was invisible to the fingerprint on both builds at once.
+  api_delete_blog_comment: {
+    file: "server/app.py",
+    symbol: "api_delete_blog_comment",
+    kind: "python",
+    fingerprint: "255f25f6cdf3c773",
+    gates: ["comments"],
+    what:
+      "The engine's dismiss: any author's comment closed without an edit, never deleted, for the " +
+      "reason migration 010 gives at length. It carries NO done, approved or with-client gate, " +
+      "because closing a suggestion commits no version and spends no session, and it refuses an " +
+      "applying comment twice over, once as a pre-check and once inside the atomic close.",
+    exemptions: [
+      {
+        id: "dismiss_route_comment_unknown",
+        raises: 'detail=f"no comment {comment_id!r} on {topic!r}")',
+        why: "A property of one comment rather than of the article, as the resolve route's is.",
+      },
+      {
+        id: "dismiss_route_applying_at_write",
+        raises: 'it can be dismissed once it lands", ) return Response(status_code=204)',
+        why:
+          "The SAME refusal as the clause below it, re-raised after the atomic close came back " +
+          "empty because a resolve flipped the row between the read and the write. It is the " +
+          "TOCTOU remainder of a check the clause already makes, so a second clause over the " +
+          "same fact would decide nothing new. The fragment recorded here reaches past the " +
+          "identical detail string to the line that follows it, because the two raises are " +
+          "otherwise word for word the same and a shorter fragment would match both.",
       },
     ],
   },
@@ -696,6 +889,77 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
         id: "reply_route_parent_unknown",
         raises: 'detail=f"no comment {comment_id!r} on {topic!r}"',
         why: "A property of one comment rather than of the article, as the hosted twin's is.",
+      },
+    ],
+  },
+  // THE ONLY DOOR THE PUBLISH ACT PASSES THROUGH ON THE LOCAL BUILD, and it was not listed while
+  // the gate module it calls was. That is the wrong way round to leave a surface: assert_publishable
+  // decides, but this route is what an operator's press actually reaches, and it adds five refusals
+  // of its own on top of the one it delegates. None of them was fingerprinted.
+  api_publish_blog: {
+    file: "server/cms/routes.py",
+    symbol: "api_publish_blog",
+    kind: "python",
+    fingerprint: "5103b7a3fae66786",
+    gates: ["publish"],
+    what:
+      "Pushes one shipped blog to the CMS as a draft, synchronously, because the operator is " +
+      "watching. It resolves the brand and the topic, delegates the real gate to " +
+      "server/cms/gate.py, resolves the org's write key, and maps the CMS's own failure back to " +
+      "a status that blames the right party.",
+    exemptions: [
+      {
+        id: "publish_route_client_unknown",
+        raises: "detail=f\"No client '{slug}'\"",
+        why:
+          "Existence and identity rather than the record, and answered the same way " +
+          "_client_or_404's own 404 is. A page rendering this brand's article is not in this " +
+          "condition.",
+      },
+      {
+        id: "publish_route_topic_unknown",
+        raises: "detail=f\"No blog '{topic_slug}'\"",
+        why:
+          "Resolution and the traversal guard together, exactly as _topic_or_404's is: a " +
+          "topic_slug that does not survive slugify is a smuggled path, and it answers 404 " +
+          "rather than naming what it found.",
+      },
+      {
+        id: "publish_route_gate_refused",
+        raises: "status_code=409, detail=str(refused))",
+        why:
+          "The HTTP mapping of gate.PublishRefused, which is assert_publishable's refusal " +
+          "arriving one frame up. PUBLISH_TOPIC_IS_DONE already carries the one arm of it that " +
+          "is on this page's wire, and the other three are exempt against the gate module " +
+          "itself. A clause here would restate that decision in a second place and let the two " +
+          "drift, which is the shape of this whole defect.",
+      },
+      {
+        id: "publish_route_payload",
+        raises: "status_code=422, detail=str(bad))",
+        why:
+          "The payload the gate built, rejected for its own shape. Decided from artifacts on " +
+          "disk at the moment of pushing and not predictable from any fact this page holds.",
+      },
+      {
+        id: "publish_route_no_cms_key",
+        raises: "detail=cms_client.missing_key_detail(org_slug)",
+        why:
+          "THE ENGINE'S CONFIGURATION, not the article. Whether an organisation has a CMS write " +
+          "key is resolved from the process environment and server/.env at the moment of the " +
+          "push, and no read this page makes reports it. A clause would answer `unknowable` for " +
+          "every article on every brand and, failing closed, would remove the Publish control " +
+          "from a correctly configured machine because the page cannot see a file it has no " +
+          "business reading. The 503 names the file and the resolution order, which is the " +
+          "sentence an operator can act on.",
+      },
+      {
+        id: "publish_route_cms_upstream",
+        raises: "status_code=_status_for(cause.status)",
+        why:
+          "The CMS's own failure, mapped rather than flattened: a revoked key answers 503 and an " +
+          "unreachable host answers 502. It is a fact about another service at one instant and " +
+          "not a condition the record can be in, so nothing here could withhold a control on it.",
       },
     ],
   },
@@ -1120,9 +1384,35 @@ const NO_APPLY_IN_FLIGHT: GateClause = {
 };
 
 /**
+ * blog_edit.MAX_IN_FLIGHT, MIRRORED, and the mirroring is checked rather than trusted.
+ *
+ * THIS FILE CANNOT READ THE PYTHON AND MUST NOT TRY. It ships to the browser, where node:fs does
+ * not exist and a bundle that reached for the repo working tree would be a build error at best. So
+ * the value is carried here as an inert number, exactly as the fingerprints are inert strings, and
+ * gate-extract.ts reads the real constant in the TEST process and holds this one against it.
+ *
+ * WHAT THAT BUYS OVER THE LITERAL 3 THAT USED TO SIT IN THE decide() BELOW. Nothing at runtime:
+ * the number is the same number. The whole of the difference is that a bare 3 inside a lambda is
+ * invisible to every mechanism in this file, and a named export with a test behind it is not.
+ * Changing MAX_IN_FLIGHT to 10 or to 1 in server/blog_edit.py left the entire suite green, because
+ * api_add_blog_comment names the constant rather than containing it, so no body moved and no
+ * fingerprint noticed. TWO mechanisms close that now and they fail differently on purpose: the
+ * `dependsOn` entry on api_add_blog_comment moves that source's fingerprint, which says "the cap
+ * this gate rests on is not the cap it rested on", and the parity test on this constant says
+ * "the engine caps at N and this page caps at 3", which is the sentence that names the fix.
+ *
+ * THE `= 1` DIRECTION IS THE ONE THAT MATTERS. Raising the engine's cap makes this page refuse
+ * something the engine would take, which costs an operator a control they could have had. Lowering
+ * it makes this page OFFER a comment the engine refuses outright, which is the offered-but-refused
+ * defect this entire contract exists to make impossible, arriving through a number nobody hashed.
+ */
+export const ENGINE_MAX_IN_FLIGHT = 3;
+
+/**
  * THREE APPLIES AT ONCE IS THE CAP, and the composer already renders the remainder beside itself.
- * blog_edit.MAX_IN_FLIGHT is 3, and the count is taken on the RECORD rather than in one machine's
- * memory, because two engines share it.
+ * The count is taken on the RECORD rather than in one machine's memory, because two engines share
+ * it, and the ceiling comes from ENGINE_MAX_IN_FLIGHT above rather than from a literal written out
+ * here, so this clause and server/blog_edit.py cannot quietly come to hold different numbers.
  */
 const COMMENT_CAP: GateClause = {
   id: "comment_in_flight_cap",
@@ -1133,8 +1423,83 @@ const COMMENT_CAP: GateClause = {
   raises: "changes are already in flight for",
   refusal: "409 the engine's three-apply cap is full; wait for one to land",
   transient: true,
-  decide: ({ applying }) => applyingCount(applying, (count) => count < 3),
-  witness: { passes: CLEAN, refuses: { ...CLEAN, applying: 3 } },
+  decide: ({ applying }) => applyingCount(applying, (count) => count < ENGINE_MAX_IN_FLIGHT),
+  witness: { passes: CLEAN, refuses: { ...CLEAN, applying: ENGINE_MAX_IN_FLIGHT } },
+};
+
+/**
+ * THE SAME CAP ON THE OTHER DOOR INTO A CLAUDE SESSION, and it is a separate clause for the reason
+ * DONE_TOPIC and DONE_TOPIC_ENGINE are separate: it is a different function, and either can change
+ * without the other. Folding the two into one clause would name one route and go quiet about the
+ * second, which is how api_resolve_blog_comment came to be unlisted in the first place.
+ *
+ * THE CONDITION RECORDED IS THE RE-READ RATHER THAN A COUNT, because this route no longer runs a
+ * count of its own. The cap moved INSIDE blog_edit.resolve_comment's flip statement, so the route
+ * learns it was refused by getting nothing back, then re-reads the comment to say WHICH of the two
+ * possible refusals it was: a row that still reads open or failed was refused by the cap, and
+ * anything else was refused by its own state. That re-read is where the cap is distinguished, so
+ * that is the line this clause pins.
+ */
+const RESOLVE_COMMENT_CAP: GateClause = {
+  id: "resolve_in_flight_cap",
+  source: "api_resolve_blog_comment",
+  line: 1883,
+  condition: 'if state in ("open", "failed"):',
+  raises: "changes are already in flight for",
+  refusal: "409 the engine's three-apply cap is full; wait for one to land before resolving",
+  transient: true,
+  decide: ({ applying }) => applyingCount(applying, (count) => count < ENGINE_MAX_IN_FLIGHT),
+  witness: { passes: CLEAN, refuses: { ...CLEAN, applying: ENGINE_MAX_IN_FLIGHT } },
+};
+
+/**
+ * A DISMISS WAITS FOR AN APPLY, ON BOTH BUILDS, and these two clauses are why the `comments` act
+ * now answers about more than filing.
+ *
+ * WHAT THE LAYER REFUSES. Migration 010's UPDATE carries `and state <> 'applying'` in its own
+ * WHERE and raises PORTAL:APPLYING when it matches nothing; server/app.py checks the same state
+ * first and raises the same sentence. Both exist for one reason, stated in the engine route's own
+ * docstring: an applying comment has a background task behind it that will land its verdict, and
+ * closing the row underneath that task leaves the verdict written onto something already dismissed.
+ *
+ * WHY THE ARTICLE-LEVEL COUNT IS THE RIGHT FACT TO READ, given the refusal is about ONE comment.
+ * `applying` is the number of top-level comments mid-apply on THIS article, which blog-stage.tsx
+ * already computes off the rail it already fetches. At zero, no comment on the article is applying
+ * and no dismiss can be refused for this reason. Above zero, at least one row would be, and the
+ * contract fails closed rather than guessing which row the operator is about to press. That is the
+ * same shape as NO_APPLY_IN_FLIGHT on the save door, over the identical fact.
+ *
+ * THE HONEST COST, WRITTEN DOWN RATHER THAN DISCOVERED. `comments` is ONE act covering a rail that
+ * files, resolves and dismisses, so a clause true of dismissing now speaks for filing too, and
+ * `adminGateAllows("comments", ...)` answers false with one apply in flight even though the
+ * composer itself would be taken. TRANSIENT IS WHAT KEEPS THAT FROM COSTING ANYTHING VISIBLE:
+ * `adminGateStanding` skips transient clauses when it computes `mount`, so the control stays on
+ * the page and greys with the layer's own reason on it, which is exactly what an operator wants
+ * while an apply lands. Splitting filing and dismissing apart properly means a seventh verb in
+ * AdminAction, which is blog-state.ts's to give and not this file's to invent.
+ */
+const DISMISS_NOT_APPLYING_SQL: GateClause = {
+  id: "dismiss_not_applying_sql",
+  source: "admin_dismiss_comment",
+  line: 51,
+  condition: "and state <> 'applying'",
+  raises: "PORTAL:APPLYING:this change is still being applied",
+  refusal: "PORTAL:APPLYING, so the dismiss waits for the apply to land",
+  transient: true,
+  decide: ({ applying }) => applyingCount(applying, (count) => count === 0),
+  witness: { passes: CLEAN, refuses: { ...CLEAN, applying: 1 } },
+};
+
+const DISMISS_NOT_APPLYING_ENGINE: GateClause = {
+  id: "dismiss_not_applying_engine",
+  source: "api_delete_blog_comment",
+  line: 1946,
+  condition: 'if found.get("state") == "applying":',
+  raises: 'it can be dismissed once it lands", ) if await asyncio.to_thread(blog_edit.dismiss_comment',
+  refusal: "409 this change is still being applied; it can be dismissed once it lands",
+  transient: true,
+  decide: ({ applying }) => applyingCount(applying, (count) => count === 0),
+  witness: { passes: CLEAN, refuses: { ...CLEAN, applying: 1 } },
 };
 
 /**
@@ -1233,6 +1598,9 @@ export const ALL_GATE_CLAUSES: readonly GateClause[] = [
   SEND_NO_OPEN_SUGGESTIONS_ENGINE,
   NO_APPLY_IN_FLIGHT,
   COMMENT_CAP,
+  RESOLVE_COMMENT_CAP,
+  DISMISS_NOT_APPLYING_SQL,
+  DISMISS_NOT_APPLYING_ENGINE,
   PUBLISH_TOPIC_IS_DONE,
   FORM_EXISTS_FOR_ANSWERS,
   FORM_NOT_STALE_FOR_ANSWERS,
@@ -1294,9 +1662,30 @@ export const ADMIN_GATE_DOORS: Record<AdminAction, readonly GateDoor[]> = {
     },
   ],
   comments: [
+    /**
+     * ONE DOOR SPANNING THE RAIL'S WHOLE WRITE SIDE, which is what blog-stage.tsx has always meant
+     * by this act: `canComment` is documented there as whether the state lets this side "file,
+     * resolve, dismiss or reply to a change", and it is threaded to the rail as one flag. The
+     * contract used to describe only the filing route, so the resolve and the dismiss rode on a
+     * gate that had never read them.
+     *
+     * THE THREE ROUTES ARE ANDed RATHER THAN ORed, and the choice is deliberate even though doors
+     * exist precisely to express OR. A door per route would make `comments` allowed whenever ANY
+     * route passes, and the dismiss route carries no done gate, no approved gate and no
+     * with-client gate at all: migration 013's triggers are `before insert` and a dismiss is an
+     * UPDATE, and server/app.py's delete route calls only the two resolvers. So an OR would grant
+     * `comments` on an approved article, which is true of dismissing and false of the act the
+     * bench hands out. blog-state.ts gives `approved` a bench of publish and reply, and this table
+     * composes with that bench rather than arguing with it.
+     *
+     * THE ORDER IS THE MESSAGE ORDER. Permanent clauses first, then the cap, then the dismiss
+     * pair, because `verdictOver` reports the FIRST refusing clause and the cap's sentence is the
+     * one an operator at three applies needs. All three transient clauses leave `mount` true, so
+     * none of them removes a control.
+     */
     {
       id: "add_comment",
-      what: "file a change request",
+      what: "file, resolve or dismiss a change request",
       clauses: [
         DONE_TOPIC,
         DONE_TOPIC_ENGINE,
@@ -1306,6 +1695,9 @@ export const ADMIN_GATE_DOORS: Record<AdminAction, readonly GateDoor[]> = {
         NOT_APPROVED_COMMENT_TRIGGER,
         NOT_WITH_CLIENT,
         COMMENT_CAP,
+        RESOLVE_COMMENT_CAP,
+        DISMISS_NOT_APPLYING_SQL,
+        DISMISS_NOT_APPLYING_ENGINE,
       ],
     },
   ],

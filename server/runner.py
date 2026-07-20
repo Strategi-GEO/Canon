@@ -1538,6 +1538,28 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
     # blocking cost is one indexed SELECT on a pooled connection, in a function that is about
     # to hold a Claude session open for minutes, and the two calls immediately above it
     # (mkdir and _status_baseline) already block the loop on disk for the same reason.
+    #
+    # THE INVARIANT, stated here as it is stated at revise_topic's copy: NOTHING ON A REFUSAL
+    # PATH MAY TOUCH THE DATABASE UNTIL EVERY REFUSAL THAT CAN BE DECIDED WITHOUT IT HAS ALREADY
+    # BEEN EVALUATED. This call is the expensive one, because blog_edit.approved_at walks
+    # db.topic_id into server/db.py pool() and therefore needs a DATABASE_URL and a database
+    # that answers.
+    #
+    # RUN_TOPIC ALREADY SATISFIES IT, AND THAT IS WORTH SAYING RATHER THAN LEAVING TO BE
+    # REDISCOVERED. The only refusal above this line is the empty-slug ValueError, which reads
+    # the row and nothing else, and it is correctly first. Everything below is INSIDE the try:
+    # precheck_error, the missing canonical-facts.md and the PLACEHOLDER check. Those three are
+    # cheap, so the invariant appears to ask for them to be hoisted above this call, and they
+    # must NOT be. Their PreflightError arm is what appends the terminal FAILED line a real
+    # client reads, and hoisting them out of the try would delete that line for exactly the
+    # clients whose runs really did fail preflight. Pulling this call down into the try instead
+    # is the same harm from the other side: an approved topic would then get "failed" written
+    # over the done it already earned, which is the demotion the paragraphs above spend their
+    # length preventing. So run_topic keeps this order, and a demo client never arrives here at
+    # all, because run_batch refuses one before it dispatches a single topic.
+    #
+    # A NEW GUARD GOES ABOVE THIS LINE ONLY IF IT READS DISK OR ARGUMENTS AND NEEDS NO TERMINAL
+    # LINE. Anything that reads the record belongs at or below this call.
     refusal = _approved_refusal(client_slug, topic_slug, "a generate run")
     if refusal is not None:
         _restate_verdict_line(
@@ -1954,6 +1976,42 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=Non
     clients_root = REPO_ROOT / "clients"
     append_status = _status_module().append_status
 
+    # THE DEMO REFUSAL, AND IT RUNS FIRST BECAUSE IT COSTS NOTHING TO ANSWER. It used to sit
+    # below, inside the try and inside CLIENT_LOCK, which put it BELOW the approved lock, and
+    # that ordering was the defect this block exists to state rather than merely to fix.
+    #
+    # THE INVARIANT: NOTHING ON A REFUSAL PATH MAY TOUCH THE DATABASE UNTIL EVERY REFUSAL THAT
+    # CAN BE DECIDED WITHOUT IT HAS ALREADY BEEN EVALUATED. is_demo_client reads one flag out of
+    # the client's gates.json on disk, so it is decidable from arguments and the filesystem
+    # alone. The approved lock below it is not: it walks blog_edit.approved_at into db.topic_id,
+    # db.client_id and server/db.py pool(), so it needs a DATABASE_URL and a database that
+    # answers. Checking the expensive one first meant a demo fixture opened a real connection
+    # before anything refused it, which is the opposite of what the demo contract promises, and
+    # against an unreachable DSN it did not fail fast either: it hung the full pool timeout and
+    # died on psycopg_pool.PoolTimeout. A refusal that has to reach the network to say no is not
+    # a cheap refusal. If you add another guard here, put it above this line only when it reads
+    # disk or arguments, and below the approved lock when it reads the record.
+    #
+    # HOISTING THIS ONE CHANGES NOTHING FOR A REAL CLIENT, which is why it is the one that moved.
+    # is_demo_client is False for every real client, so for them this line is a no-op and the
+    # approved lock still fires exactly where and when it did. The only caller whose answer moves
+    # is a demo fixture, which used to be told the topic was approved and is now told it is a
+    # demo fixture, and that is the correct sentence for it.
+    #
+    # OUTSIDE THE TRY, deliberately, for the same reason the approved lock below is: the
+    # PreflightError arm appends a terminal FAILED line, and a demo fixture refused before it
+    # started has no session to fail. It is also above register_revise_run, so no run is
+    # registered and no watch view can be open on it, which is why this one needs no re-stated
+    # verdict line to close a stream the way the approved lock does.
+    #
+    # The two refusals still below, the missing blog.md and the canonical-facts preflight, read
+    # only disk and by that measure could move up here too. They stay where they are on purpose:
+    # a real client hitting either of them today gets a terminal FAILED line out of the try, and
+    # hoisting them above it would silently take that line away. Their reason is unchanged, so
+    # moving them would trade a documented defect for an undocumented one.
+    if is_demo_client(client_slug, clients_root):
+        raise PreflightError(demo_refusal_detail(client_slug))
+
     # THE APPROVED LOCK, BEFORE THE RUN IS EVEN REGISTERED, and outside the try for the reason
     # run_topic states at length: this function's PreflightError arm appends a terminal FAILED
     # line, and an approved topic already carries a done line that is still true. A revise is
@@ -2028,12 +2086,6 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=Non
             mark_running(run_id)
             mark_phase(run_id, "topics")
 
-            # THE DEMO REFUSAL, belt and braces under the API's own 409. A demo fixture never
-            # runs a session: the route already refuses it, and this line is what holds when
-            # something bypasses the route, because a revise is a real SDK session and a demo
-            # fixture must never spend real API credits.
-            if is_demo_client(client_slug, clients_root):
-                raise PreflightError(demo_refusal_detail(client_slug))
             if not blog.is_file():
                 raise PreflightError(
                     f"cannot revise {client_slug}/{topic_slug}: {blog} does not exist, and a "
