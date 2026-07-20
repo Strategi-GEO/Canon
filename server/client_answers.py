@@ -55,7 +55,7 @@ MAX_SWEEP_ATTEMPTS = 3
 # and two sweeps cannot disagree. Mirrors, piece for piece, the reads the route path makes:
 #   * the current form = the latest asking round (questions._db_form_rows)
 #   * answered = every form row has a reply child (describe_questions)
-#   * stale = the form's asked_iter vs the status_events high-water iter (is_stale's twin)
+#   * stale = the form's version anchor OR its asked_iter has moved (describe_questions' twin)
 #   * needs_review = the last non-running status line by ordinal (topic_rollup's fold)
 # Demo brands are excluded here AND refused again inside revise_topic, belt and braces.
 _PENDING_SQL = """
@@ -78,6 +78,24 @@ where not exists (
         where q.topic_id = f.topic_id and q.author = 'evaluator'
           and q.parent_id is null and q.blog_version_id = f.version_id
           and not exists (select 1 from review_notes r where r.parent_id = q.id))
+  -- NOT STALE, and staleness is VERSION **AND** ITERATION here because this predicate asks the
+  -- negative: the other three twins raise stale on "version moved OR iteration moved", so the
+  -- pending set is its complement, "version still matches AND iteration still matches". The two
+  -- arms below are that De Morgan flip and not a different rule, which is the only way this
+  -- predicate and portal_submit_answers can agree about one form.
+  --
+  -- The anchor arm is the one this gained. Without it the sweep kept rating a form pending after a
+  -- version landed under it, and pending means DISPATCH: it would spend real quota feeding answers
+  -- about the old draft into a surgical revise of the new one, which is worse than not revising,
+  -- because the answers read as authoritative. The iteration arm alone misses that whenever the
+  -- new version lands on the same iteration number.
+  --
+  -- The iteration arm stays for the restore case: a stop mid-revise puts the artifact set back
+  -- byte for byte and commits NO new version, so the anchor still matches while the iteration has
+  -- moved. Version-only would keep dispatching there.
+  and f.version_id = (select v.id from blog_versions v
+                       where v.topic_id = f.topic_id
+                       order by v.version_no desc limit 1)
   and (select q.asked_iter from review_notes q
         where q.topic_id = f.topic_id and q.author = 'evaluator'
           and q.parent_id is null and q.blog_version_id = f.version_id

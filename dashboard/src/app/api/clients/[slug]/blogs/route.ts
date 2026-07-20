@@ -24,6 +24,17 @@ type VersionRow = {
   committed_at: string;
   version_no: number;
 };
+/**
+ * The evaluator's questions, parents only. `blog_version_id` IS the round identity: the current
+ * form is every parent sharing the NEWEST note's anchor, exactly as portal-data.ts folds it and
+ * as client_answers._PENDING_SQL selects it. Migration 003 grants id, topic_id, blog_version_id,
+ * parent_id, author and created_at on this table to `authenticated`, so this select is inside the
+ * grant; asked_score is NOT granted and must never join it, because an ungranted column makes
+ * PostgREST refuse the WHOLE request and this route would answer 502 for every caller.
+ */
+type NoteRow = { id: string; topic_id: string; blog_version_id: string; created_at: string };
+/** A reply, which is a note WITH a parent. Its created_at is the stamp the fact reports. */
+type ReplyRow = { parent_id: string; created_at: string };
 type RollupRow = {
   topic_id: string;
   status: string;
@@ -54,7 +65,7 @@ export async function GET(
       return detail(404, `unknown client '${slug}'`);
     }
 
-    const [topics, versions, led, roadmapRows, comments] = await Promise.all([
+    const [topics, versions, led, roadmapRows, comments, notes, replies] = await Promise.all([
       pg<TopicRow[]>(
         user.token,
         // published_at and NOT cms_status, deliberately. 012 granted only the timestamp on
@@ -96,6 +107,26 @@ export async function GET(
       pg<CommentRow[]>(
         user.token,
         `blog_comments?select=topic_id,author,state,created_at&client_id=eq.${cid}&parent_id=is.null`,
+      ),
+      // THE ANSWERS-SUBMITTED PAIR, two brand-wide reads folded per topic below, never a probe
+      // per topic. Ordered created_at.desc so the first note of any topic is the newest, which is
+      // how the fold names the current round without a second query. Same shape and same order as
+      // portal-data.ts's own notes read, deliberately: two surfaces answering one field must not
+      // use two definitions of which round is current.
+      pg<NoteRow[]>(
+        user.token,
+        `review_notes?select=id,topic_id,blog_version_id,created_at&client_id=eq.${cid}` +
+          `&author=eq.evaluator&parent_id=is.null&order=created_at.desc`,
+      ),
+      // `author=eq.client` on the REPLIES is load-bearing, not tidiness. client_answers._PENDING_SQL
+      // counts any reply because it asks a dispatch question, which an operator-answered form owes
+      // identically. This asks a visibility question: `answers_submitted` widens what a client sees,
+      // and portal-data.ts records what an unfiltered read cost there, an internal_review article
+      // surfacing in a client's portal captioned as their own answers.
+      pg<ReplyRow[]>(
+        user.token,
+        `review_notes?select=parent_id,created_at&client_id=eq.${cid}` +
+          `&parent_id=not.is.null&author=eq.client`,
       ),
     ]);
 
@@ -146,6 +177,45 @@ export async function GET(
       const sent = sentAt.get(comment.topic_id);
       if (comment.author === "client" && sent && comment.created_at > sent) {
         roundOpen.add(comment.topic_id);
+      }
+    }
+
+    // ANSWERS SUBMITTED: has the client fully answered the form standing on this blog RIGHT NOW.
+    // blogState() derives a state from it so an article does not vanish from under a client the
+    // instant they press submit. Between the submit and the rerun's terminal line the topic still
+    // folds to needs_review, and after a clean rerun it folds to internal_review, which is not
+    // theirs to see; without this fact the card they just acted on disappears with no receipt.
+    //
+    // SCOPED TO THE CURRENT FORM AND NOTHING ELSE. review_notes keeps answered rounds forever, so
+    // "this topic has any answered question" would be true from the first submit onward: the blog
+    // would pin here, internal_review would be masked, client_review would be unreachable, and the
+    // article would never ship. A new round of questions carries a new anchor and no replies, so
+    // the fact clears itself rather than needing an expiry rule that can be got wrong.
+    const replyAt = new Map<string, string>();
+    for (const reply of replies) {
+      // One reply per question by construction; keep the newest defensively, as portal-data.ts does.
+      const seen = replyAt.get(reply.parent_id);
+      if (seen === undefined || reply.created_at > seen) {
+        replyAt.set(reply.parent_id, reply.created_at);
+      }
+    }
+    const formByTopic = new Map<string, NoteRow[]>();
+    for (const note of notes) {
+      const list = formByTopic.get(note.topic_id) ?? [];
+      list.push(note);
+      formByTopic.set(note.topic_id, list);
+    }
+    const answeredAt = new Map<string, string>();
+    for (const [topicId, topicNotes] of formByTopic) {
+      // Notes arrive created_at.desc, so the first one names the newest round.
+      const formVersionId = topicNotes[0].blog_version_id;
+      const form = topicNotes.filter((note) => note.blog_version_id === formVersionId);
+      // Fully answered means EVERY question of THIS round has a reply. One unanswered question
+      // leaves the form open, and an open form is has_questions, never answers_submitted.
+      const stamps = form.map((note) => replyAt.get(note.id));
+      if (stamps.every((stamp) => stamp !== undefined)) {
+        // The newest reply within the form, so the stamp dates the moment the client finished.
+        answeredAt.set(topicId, (stamps as string[]).reduce((a, b) => (a > b ? a : b)));
       }
     }
 
@@ -203,10 +273,49 @@ export async function GET(
         client_approved: topic.client_approved_at,
         changes_requested: openByTopic.get(topic.id) ?? 0,
         change_round_open: roundOpen.has(topic.id),
+        // An ISO stamp rather than a boolean, matching the engine's field and every other
+        // human-act date here, so a card can show the receipt without a second call.
+        answers_submitted: answeredAt.get(topic.id) ?? null,
         // Null is "no record of a push", never "not published": nothing recorded a publish
         // before 012. cms_status is always null on this build, see the select above.
         published: topic.published_at,
         cms_status: null,
+        // `live` IS DELIBERATELY ABSENT FROM THIS OBJECT, and it is the one fact the engine's
+        // twin emits that this route does not. server/app.py _blog_history sets it from
+        // runner.RUNS, an in-memory registry of the runs that uvicorn process owns right now.
+        // Nothing equivalent is reachable from here: there is no liveness table in the schema,
+        // migration 009 states that in its own header and names topic_rollup.status as the only
+        // DB-visible stand-in, and this route reads the record over PostgREST and nothing else.
+        // Emitting `live: false` would be worse than omitting it, because false is an assertion
+        // this build cannot make: a teammate's local engine can own this topic at this moment
+        // and no query here can tell.
+        //
+        // WHAT THE ABSENCE COSTS, written out so the next reader does not have to derive it.
+        // blogState reads `facts.live ?? facts.status === "running"`, so on this build the
+        // status fallback carries the whole weight, and that fallback CANNOT FIRE FOR A LIVE RUN
+        // here. status_events reach the record only through sync.commit_topic, every runner.py
+        // caller schedules that strictly after the terminal line, and sync.py's reconcile sweep
+        // skips any topic a live run holds. So a topic in its first run has zero committed events
+        // and folds to "unknown" through the event_count branch above, and a topic in a rerun
+        // reports the PREVIOUS run's terminal status for the rerun's whole duration. The one road
+        // by which 'running' reaches this route is the sweep committing a run that died without a
+        // terminal line, which is a DEAD run: the fallback fires where it should not and stays
+        // silent where it should speak.
+        //
+        // THE CONSEQUENCE IS A SAFETY ARGUMENT THAT DOES NOT HOLD ON THIS BUILD, so it is named
+        // here rather than left to be rediscovered. lib/blog-state.ts grants edit, comments and
+        // send in `answers_submitted` on the ground that `generating` is derived above every
+        // stamp, so a live run can never be in flight in that state. That reasoning is sound
+        // wherever `live` reaches blogState and unsound wherever it does not: an answer-driven
+        // revise running on someone's local engine leaves this route reporting the previous
+        // terminal status with the client's replies already in the record, which derives
+        // `answers_submitted` and opens the full bench under a session that owns the draft.
+        // HOSTED_READONLY suppresses those controls today, and it is a build-time NEXT_PUBLIC_
+        // inline, so a mis-built deploy ships without the mask and nothing else stands behind it.
+        // Closing this properly needs a liveness fact in the record: a table the engine writes on
+        // register_run and clears when the run settles, granted to `authenticated`, joined here
+        // and emitted as `live`. That is a new migration plus an engine writer, and neither is
+        // this route's to add.
       };
     });
 

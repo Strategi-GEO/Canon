@@ -1,12 +1,28 @@
-# Builds the Strategi Canon tray app for macOS and Windows.
+# Builds a SELF-SUFFICIENT Strategi Canon package for macOS and Windows.
 #
 # - workflow_dispatch: build both, upload the zips as workflow artifacts.
 # - tag v*: same, plus a GitHub release carrying both zips.
 #
-# The build scripts own the whole recipe (throwaway .buildvenv, Pillow-made
-# icons, PyInstaller); this workflow only provides the OS, Python 3.12, and
-# the zipping. setup-python's 3.12 lands first on PATH, so build-mac.sh's
-# `python3` and build-windows.bat's `python` both resolve to it.
+# WHAT CHANGED AND WHY. This workflow used to ship only "Strategi Canon.app".
+# That app is a LAUNCHER: it starts the engine and the dashboard that live beside
+# it, and tray.py's discover_repo() walks up from the executable looking for
+# launcher.py and server/app.py. Shipped on its own it found neither, so a
+# teammate who downloaded the release got a folder picker and a dead end. The
+# release now carries the whole tree, the bundled runtimes, and the launcher
+# together, so unzip-and-run is the entire setup.
+#
+# THE SOURCE COMES FROM `git archive`, NOT FROM THE WORKING TREE. Two reasons,
+# and the first one is the important one:
+#   1. SECRETS. git archive emits only TRACKED files. server/.env is gitignored
+#      and therefore cannot be in the package, no matter what a runner leaves on
+#      disk. A copy-the-directory step would need an exclude list that is correct
+#      forever, and the first time it is not, a release ships the service key.
+#   2. It also drops .venv, node_modules, .next, outputs/ and build scratch for
+#      free, which is the difference between a 280 MB package and a 1.7 GB one.
+#
+# The runtimes (~262 MB of Node and CPython) are fetched here rather than
+# committed, and they are what let the package run on a machine with neither
+# installed. First launch still builds .venv and runs npm install once.
 name: Build Canon app
 
 on:
@@ -33,27 +49,80 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build (macOS)
+      # Downloads Node and CPython into canon_app/build_assets/runtimes, with
+      # checksum verification and a smoke test. Both build scripts also call
+      # this, but it runs here explicitly so the package step can rely on it
+      # having happened even if a build script is changed later.
+      - name: Fetch bundled runtimes
+        run: python canon_app/fetch_runtimes.py
+
+      - name: Build launcher (macOS)
         if: runner.os == 'macOS'
         run: ./canon_app/build-mac.sh
 
-      - name: Build (Windows)
+      - name: Build launcher (Windows)
         if: runner.os == 'Windows'
         shell: cmd
         run: canon_app\build-windows.bat
 
-      # ditto keeps the .app's symlinks and executable bits; a plain zip of a
-      # Mac .app arrives broken on the other end.
-      - name: Zip (macOS)
+      # ditto, not cp or zip, at every step that moves the .app or the runtimes:
+      # both contain symlinks (node -> ../lib/node_modules/..., python3 ->
+      # python3.12) and executable bits that a naive copy flattens, producing a
+      # tree that looks right and fails on first use.
+      # THE RUNTIMES ARE SHIPPED ONCE, INSIDE THE LAUNCHER, and this is the whole
+      # reason build_assets/runtimes is not copied in beside them. build-mac.sh
+      # already embeds them at Contents/Resources/runtimes, and tray.py resolves
+      # that path first when frozen, so a second copy at canon_app/build_assets
+      # would be 262 MB of bytes nothing reads. Shipping both took the package
+      # from 367 MB to 594 MB, measured. Stripping them from the .app instead
+      # would be worse: it breaks the code signature that seals its Resources.
+      - name: Assemble package (macOS)
         if: runner.os == 'macOS'
         run: |
-          cd canon_app/dist
-          ditto -c -k --sequesterRsrc --keepParent "Strategi Canon.app" "${{ github.workspace }}/${{ matrix.artifact }}.zip"
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/stage/Strategi Canon"
+          mkdir -p "$STAGE"
+          git archive --format=tar HEAD | tar -x -C "$STAGE"
+          ditto "canon_app/dist/Strategi Canon.app" "$STAGE/Strategi Canon.app"
+          RT="$STAGE/Strategi Canon.app/Contents/Resources/runtimes"
+          test -f "$STAGE/launcher.py" || { echo "package is missing launcher.py"; exit 1; }
+          test -x "$RT/node/bin/node" || { echo "bundled node missing from the app"; exit 1; }
+          test -x "$RT/python/bin/python3" || { echo "bundled python missing from the app"; exit 1; }
+          # The launcher must sit INSIDE the tree or discover_repo() walks up from
+          # it and finds nothing, which is exactly the dead end this package fixes.
+          test -f "$STAGE/server/app.py" || { echo "package is missing server/app.py"; exit 1; }
+          # A release carrying server/.env would leak the Supabase service key to
+          # everyone with repo access. git archive cannot include it, and this
+          # asserts that rather than trusting it.
+          test ! -e "$STAGE/server/.env" || { echo "REFUSING: server/.env is in the package"; exit 1; }
+          cd "$RUNNER_TEMP/stage"
+          ditto -c -k --sequesterRsrc --keepParent "Strategi Canon" "$GITHUB_WORKSPACE/${{ matrix.artifact }}.zip"
 
-      - name: Zip (Windows)
+      - name: Assemble package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path "canon_app/dist/Strategi Canon" -DestinationPath "${{ github.workspace }}/${{ matrix.artifact }}.zip"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stage = Join-Path $env:RUNNER_TEMP "stage\Strategi Canon"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          $tar = Join-Path $env:RUNNER_TEMP "source.tar"
+          git archive --format=tar -o $tar HEAD
+          tar -x -f $tar -C $stage
+          # As on macOS: the runtimes ship ONCE, inside the launcher folder that
+          # build-windows.bat already populated. tray.py resolves exe_dir/runtimes
+          # for this onedir layout, so a second copy would be dead weight.
+          Copy-Item -Recurse -Force "canon_app\dist\Strategi Canon" (Join-Path $stage "Strategi Canon")
+          $rt = Join-Path $stage "Strategi Canon\runtimes"
+          if (!(Test-Path (Join-Path $stage "launcher.py"))) { throw "package is missing launcher.py" }
+          if (!(Test-Path (Join-Path $stage "server\app.py"))) { throw "package is missing server/app.py" }
+          if (!(Test-Path (Join-Path $rt "node\node.exe"))) { throw "bundled node missing from the app" }
+          if (!(Test-Path (Join-Path $rt "python\python.exe"))) { throw "bundled python missing from the app" }
+          if (Test-Path (Join-Path $stage "server\.env")) { throw "REFUSING: server/.env is in the package" }
+          Compress-Archive -Path $stage -DestinationPath "$env:GITHUB_WORKSPACE\${{ matrix.artifact }}.zip"
+
+      - name: Report package size
+        shell: bash
+        run: ls -lh "${{ matrix.artifact }}.zip"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -77,3 +146,22 @@ jobs:
           files: |
             Strategi-Canon-macos.zip
             Strategi-Canon-windows.zip
+          body: |
+            Download the zip for your platform, unzip it anywhere, and open the
+            launcher inside. Everything the engine needs is in the package:
+            you do NOT need to install Node or Python.
+
+            **macOS:** the app is unsigned, so the first launch needs
+            right-click (or Control-click) > Open > Open. Once only.
+            **Windows:** SmartScreen shows "Windows protected your PC" the first
+            time. More info > Run anyway. Once only.
+
+            You still need, one time:
+            - **Claude Code, logged in with your own account.** This is what pays
+              for generation, out of your own subscription. Install it from
+              https://claude.com/claude-code, run `claude`, log in, type `/exit`.
+            - **`server/.env` from your admin**, placed in the `server/` folder.
+
+            First start takes a few minutes while it builds its Python
+            environment and installs dashboard dependencies. Later starts are
+            seconds.

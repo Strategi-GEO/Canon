@@ -1,5 +1,6 @@
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { unauthenticated, verifyRequest } from "@/lib/server/auth";
-import { detail, json } from "@/lib/server/http";
+import { detail, hostedWriteRefused, json } from "@/lib/server/http";
 import { rpc } from "@/lib/server/postgrest";
 import { adminRpcError } from "@/lib/server/admin-rpc";
 
@@ -29,6 +30,15 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ slug: string; topic: string }> },
 ) {
+  // The hosted site performs no admin write, and hostedWriteRefused carries the whole reasoning.
+  // HOSTED_READONLY is false in the local app, so the save below is unchanged there. Refusing
+  // before the body is parsed is deliberate: an operator who typed an edit into a hosted tab
+  // should be told where to go rather than told their base_version was the wrong shape, which is
+  // a sentence about a request nobody wanted.
+  if (HOSTED_READONLY) {
+    return hostedWriteRefused("save an edit to this article");
+  }
+
   const user = await verifyRequest(request);
   if (user === null) {
     return unauthenticated();

@@ -1,6 +1,7 @@
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { adminRpcError } from "@/lib/server/admin-rpc";
 import { unauthenticated, verifyRequest } from "@/lib/server/auth";
-import { detail, json } from "@/lib/server/http";
+import { detail, hostedWriteRefused, json } from "@/lib/server/http";
 import { rpc } from "@/lib/server/postgrest";
 
 /**
@@ -38,6 +39,15 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ slug: string; topic: string }> },
 ) {
+  // The hosted site performs no admin write, and hostedWriteRefused carries the whole reasoning.
+  // HOSTED_READONLY is false in the local app, so the insert below is unchanged there. The
+  // docstring above already concedes that a comment filed here only ever queues, because no Agent
+  // SDK session can start on this surface: an operator with the app open files the request and
+  // resolves it in one move.
+  if (HOSTED_READONLY) {
+    return hostedWriteRefused("file a change request on this article");
+  }
+
   const user = await verifyRequest(request);
   if (user === null) {
     return unauthenticated();

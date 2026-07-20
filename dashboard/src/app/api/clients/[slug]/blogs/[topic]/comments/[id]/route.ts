@@ -1,6 +1,7 @@
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { adminRpcError } from "@/lib/server/admin-rpc";
 import { unauthenticated, verifyRequest } from "@/lib/server/auth";
-import { noContent } from "@/lib/server/http";
+import { hostedWriteRefused, noContent } from "@/lib/server/http";
 import { rpc } from "@/lib/server/postgrest";
 
 /**
@@ -34,6 +35,14 @@ export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ slug: string; topic: string; id: string }> },
 ) {
+  // The hosted site performs no admin write, and hostedWriteRefused carries the whole reasoning.
+  // HOSTED_READONLY is false in the local app, so the dismissal below is unchanged there.
+  // Dismissing is how a client's suggestion stops blocking a re-send, so it is a decision about
+  // someone else's request and belongs with the operator who can also act on it.
+  if (HOSTED_READONLY) {
+    return hostedWriteRefused("dismiss this change request");
+  }
+
   const user = await verifyRequest(request);
   if (user === null) {
     return unauthenticated();

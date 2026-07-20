@@ -406,6 +406,16 @@ def commit_topic(client_slug, topic_slug, allow_new_version=True):
     status, score, iters = _summarize_lines([e for _, e in lines])
     mtime = sj.stat().st_mtime if sj.is_file() else None
 
+    # The refs the question upsert in step 4 refused, and the version it refused them
+    # on. Collected INSIDE the transaction and reported AFTER it commits, because a
+    # report is a claim about what the record now holds and a rollback would make that
+    # claim false: announcing a dropped question to an operator whose transaction never
+    # landed sends them looking for a divergence that does not exist. Declared out here
+    # because step 4 sits behind two nested conditions and this has to survive both of
+    # them not running.
+    dropped_refs = []
+    dropped_version = None
+
     with db.tx() as cur:
         # 1. Status lines, keyed by ordinal. Append-only on disk, and
         # materialize_topic re-lays the file from the record on reclaimed
@@ -539,6 +549,60 @@ def commit_topic(client_slug, topic_slug, allow_new_version=True):
                      and not exists (select 1 from review_notes r
                                      where r.parent_id = n.id)""",
                 (tid,))
+            # THE CONFLICT UPDATE CARRIES THE SAME NOT EXISTS GUARD AS THE
+            # DELETE ABOVE, AND IT HAS TO, because the delete alone only half
+            # protects an answered question. The delete deliberately spares
+            # answered notes; the upsert then walks straight back onto the ones
+            # it spared. `vid` is the version matching blog.md's BYTES, and
+            # branch 3 REUSES the previous version row whenever those bytes did
+            # not move, so a second evaluator round on an unchanged draft
+            # collides on (blog_version_id, ref) with round one's row. Without
+            # this WHERE, the update rewrites body/why/area/asked_* in place
+            # while the client's reply stays hanging off that same id, which
+            # re-attributes a human's answer to a question nobody ever asked
+            # them. Every consumer downstream (the portal, the admin view, the
+            # rerun sweep) then reads that form as legitimately answered, and
+            # nothing in the record says otherwise: the old question text is
+            # gone. Silent corruption of a person's words is the one outcome
+            # worth failing over.
+            #
+            # The guard is in the STATEMENT rather than in a Python pre-check
+            # for the same reason the delete's is: it evaluates against the row
+            # as it stands inside this transaction, so a reply committed a
+            # moment ago is seen and honoured, and one racing this transaction
+            # loses to row locking rather than to a stale read taken before the
+            # tx opened.
+            #
+            # ON A BLOCKED ROW THE STATEMENT TOUCHES NOTHING AND REPORTS
+            # rowcount 0, which is unambiguous here: an insert reports 1 and a
+            # permitted update reports 1, so 0 can only mean the guard fired.
+            # We collect those refs and shout once, AFTER the loop, so a form
+            # with three colliding refs produces one actionable line naming all
+            # three instead of three interleaved ones.
+            #
+            # LOUD MEANS NOT raise, and the choice is the same one branch 3
+            # makes about the approval lock a hundred lines up. Raising here
+            # rolls back the ENTIRE commit: the status lines, the frozen
+            # dossier, links-verified.txt and the marker all vanish along with
+            # the question this refused, the scratch then reads as ahead of the
+            # record forever, and reconcile_all re-raises the identical
+            # exception on every boot from here on, because a rollback cannot
+            # change the condition that caused it. The operator would lose the
+            # whole topic to protect one row. So the offending question is the
+            # only thing dropped, and the answered row survives with the
+            # question it was actually asked still attached to it. The cost is a
+            # form that is stale for those refs, which is visibly wrong and
+            # recoverable, rather than one that is confidently wrong.
+            #
+            # LOUD ALSO MEANS MORE THAN A LOG LINE, and that half was missing.
+            # This guard converts silent corruption into silent LOSS if the only
+            # trace is a log.error: a round of questions the evaluator generated
+            # is dropped from the record, the operator is never told, and stderr
+            # on one teammate's laptop is not a place anybody reads. The refs are
+            # collected here and reported by _report_dropped_questions after the
+            # transaction, which puts the loss on the topic's own status feed
+            # where the blog stage renders it.
+            blocked = []
             for item in form["questions"]:
                 cur.execute(
                     """insert into review_notes
@@ -549,10 +613,17 @@ def commit_topic(client_slug, topic_slug, allow_new_version=True):
                          set body = excluded.body, why = excluded.why,
                              area = excluded.area,
                              asked_score = excluded.asked_score,
-                             asked_iter = excluded.asked_iter""",
+                             asked_iter = excluded.asked_iter
+                       where not exists (select 1 from review_notes r
+                                         where r.parent_id = review_notes.id)""",
                     (tid, cid, vid, item.get("id"), item.get("area"),
                      item.get("question") or "", item.get("why"),
                      form.get("score"), form.get("iter")))
+                if cur.rowcount == 0:
+                    blocked.append(str(item.get("id")))
+            if blocked:
+                dropped_refs = blocked
+                dropped_version = vid
         elif form is None and not qj.is_file():
             # No form on disk: the lead deleted it pre-eval or the engine
             # cleared it post-revise. Unanswered notes for this topic follow
@@ -567,6 +638,86 @@ def commit_topic(client_slug, topic_slug, allow_new_version=True):
                          and not exists (select 1 from review_notes r
                                          where r.parent_id = n.id)""",
                     (tid,))
+
+    # STRICTLY AFTER THE TRANSACTION, so nothing is announced that a rollback
+    # took back, and so a failure to report can never cost the commit that just
+    # succeeded.
+    if dropped_refs:
+        _report_dropped_questions(client_slug, topic_slug, tdir, dropped_refs,
+                                  dropped_version, status, score, iters)
+
+
+def _report_dropped_questions(client_slug, topic_slug, tdir, refs, vid,
+                              status, score, iters):
+    """Put a refused question round on the operator's feed, not only in stderr.
+
+    WHAT THIS EXISTS TO STOP. The ON CONFLICT guard in commit_topic correctly
+    refuses to rewrite an answered review_notes row, which is the only way to keep
+    a person's answer attached to the question they were actually asked. What it
+    cannot do by itself is tell anyone: the refused question text stays on disk in
+    questions.json and never reaches the record, so a round the evaluator generated
+    is simply gone from every surface the operator looks at. A log.error is the
+    trace a developer reads after being told to go looking; it is not a way of
+    being told. Silent corruption traded for silent loss is not a fix.
+
+    THE MECHANISM IS THE ONE THE ENGINE ALREADY HAS, and nothing new is invented
+    here. runner._restate_verdict_line appends a status line that re-states the
+    topic's own terminal status with a new note, on the argument that re-stating is
+    the only line that is both terminal and true, and dashboard status-trail.ts
+    renders the terminal line's note on the blog stage as the engine's own words for
+    why the run ended as it did. That is exactly the shape of this report: the
+    verdict is unchanged and only the reason is new.
+
+    THE STATUS IS RE-STATED AND NEVER CHOSEN, and that is deliberate rather than
+    timid. needs_review would be the obvious reach and it is WRONG here, because the
+    engine contract defines it as questions waiting for the operator that are
+    current, on disk, AND ANSWERABLE. These are not answerable: the app builds the
+    operator's form from review_notes, where the refs in question still carry the
+    OLD question text with an answer already hanging off it, so the form renders as
+    answered and there is nothing for a human to submit. Claiming needs_review would
+    produce the dead end with no door that definition exists to forbid. A running
+    topic keeps running for the same reason: it has not reached a verdict, this is
+    not one, and its own terminal line is still coming.
+
+    THE RECORD CATCHES UP THROUGH THE PATH BUILT FOR IT. The line is appended to
+    status.jsonl on disk, which leaves scratch one line ahead of the record until
+    the next commit_topic or the startup reconcile_all sweep pushes it. That window
+    is the same one commit-at-terminal already lives in and reconcile_all already
+    exists to close, so this borrows a guarantee rather than adding a gap. Writing
+    it into status_events from here instead would have to guess the next line_no
+    while the disk file is still the authority on ordinals.
+
+    Every failure is swallowed. The commit has already landed, and a topic whose
+    bookkeeping is safely in the record must never be lost to a report about it.
+    """
+    log.error(
+        "commit_topic: %s/%s tried to rewrite ALREADY ANSWERED question(s) "
+        "%s on blog version %s; the answered notes are kept as asked and the "
+        "new question text is NOT recorded for those refs. The form on disk "
+        "and the record now disagree for them, which needs a person: the "
+        "usual cause is an evaluator round that reused a version because "
+        "blog.md did not change between rounds",
+        client_slug, topic_slug, ", ".join(refs), vid)
+    try:
+        from . import runner
+        runner._status_module().append_status(
+            str(tdir), topic_slug,
+            stage="eval", event="end",
+            iter=iters or 1, score=score, status=status,
+            note=(
+                f"the engine generated question(s) {', '.join(refs)} for this topic and "
+                f"could NOT record them: blog version {vid} already carries answered "
+                f"question(s) under those same refs, and rewriting an answered row would "
+                f"re-attribute a person's answer to a question nobody asked them. The "
+                f"answered notes are kept exactly as asked. The new question text exists "
+                f"only in questions.json on disk and a person has to read it there. The "
+                f"verdict above is unchanged: only this reason is new"
+            ),
+        )
+    except Exception:
+        log.exception(
+            "could not put the dropped question report for %s/%s on the status feed; "
+            "the log line above is the only trace", client_slug, topic_slug)
 
 
 def commit_client_facts(client_slug):

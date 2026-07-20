@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the hardened runtime, which notarization requires.
+
+  Each of these is here because a bundled runtime needs it, not as a blanket
+  loosening. Removing one produces a build that notarizes and then fails to
+  launch on the recipient's machine, which is the worst failure mode available.
+
+  allow-jit / allow-unsigned-executable-memory
+      Node's V8 engine JIT-compiles JavaScript. Under the hardened runtime
+      without these, node exits immediately and the dashboard never starts.
+
+  disable-library-validation
+      The engine's .venv installs C extensions (pydantic, cryptography) that the
+      bundled Python loads at import time. Library validation rejects any .so not
+      signed by the same team, so every pip-installed extension would fail.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

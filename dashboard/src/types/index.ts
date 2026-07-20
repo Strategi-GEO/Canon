@@ -546,6 +546,29 @@ export type BlogSummary = {
    */
   change_round_open?: boolean;
   /**
+   * When the client submitted answers to the CURRENT question form, UTC ISO, or null while
+   * that form is still unanswered.
+   *
+   * A STAMP RATHER THAN A BOOLEAN, matching sent_to_client, client_approved and every other
+   * field here that records a human act. A boolean answers "did they" and nothing else, where
+   * a stamp answers "when", which is what a card renders under "Questions answered" without a
+   * second call to the backend.
+   *
+   * IT IS THE FIELD THAT SEPARATES has_questions FROM answers_submitted in lib/blog-state.ts,
+   * so an admin surface that cannot see it cannot tell an unanswered hold from an answered one
+   * waiting on the operator's rerun. Both backends have sent it since that state machine
+   * landed: the engine in server/app.py's blog listing, the hosted build in
+   * app/api/clients/[slug]/blogs/route.ts. Only this type was missing it, and the effect was
+   * quiet rather than loud, because blogState() takes BlogStateFacts, which declares the field
+   * as optional. A BlogSummary handed to it therefore carried the value at runtime while the
+   * compiler believed the property could not exist, so the derived state came out right by
+   * luck rather than because the contract said so.
+   *
+   * Optional on the wire for the same engine-age reason as sent_to_client: a summary from a
+   * build predating the field reads as unanswered rather than breaking.
+   */
+  answers_submitted?: string | null;
+  /**
    * Whether a run owns this topic right now, from the engine's run registry.
    *
    * NOT DERIVABLE FROM `status`, which is why it is on the wire at all. The status fold reads

@@ -158,13 +158,34 @@ for path in FILES:
             fail(f"{path.relative_to(REPO)}: contains an {name}")
 
 # ---------------------------------------------------------------------------
-# 6. The client's surfaces are exactly: the brand space (overview + read-only roadmap tab)
-#    and the blog page, plus its own /api. No create, repurpose, resources, settings, or new
-#    routes may exist for clients: the operator's requirement, stated as a directory rule the
-#    same way dashboard-check bans global route dirs.
+# 6. The client's surfaces are exactly: the brand space (overview, the read-only roadmap tab
+#    and the resources tab) and the blog page, plus its own /api. No create, repurpose,
+#    settings, new, generate or upload routes may exist for clients: the operator's
+#    requirement, stated as a directory rule the same way dashboard-check bans global route
+#    dirs.
+#
+#    RESOURCES USED TO BE ON THE FORBIDDEN LIST AND THE PRODUCT DECISION REVERSED, which is
+#    named here because a future reader finding it gone will otherwise go hunting for the bug
+#    that removed it. Resources is now the one surface the client owns outright: they are the
+#    ONLY people who upload and manage the documents their brand's research reads, and an
+#    admin can read those files and nothing more. portal/nav.ts carries the same reversal in
+#    its own words, and it is the row's ownership running the opposite way from every other
+#    row that earns it the place.
+#
+#    Leaving the name here would have been a trap rather than a guard. The rule passed only by
+#    the accident that the resources tab is rendered by the (client) catch-all page, so no
+#    directory named resources exists under it; the first person to give that tab a route of
+#    its own would have been told they had leaked an admin capability when what they shipped
+#    was the client's own surface.
+#
+#    THE TEETH DO NOT MOVE. Every remaining name is an ADMIN act and stays banned: `upload` is
+#    the operator's upload-a-written-blog flow against a roadmap topic, not the client's
+#    resource upload, which is a control and a dialog inside the resources tab rather than a
+#    route of its own. The roadmap stays GET-only below, and rule 7 is what actually bounds
+#    what a client may WRITE, resources included.
 # ---------------------------------------------------------------------------
 CLIENT_APP = DASH / "app" / "(client)"
-FORBIDDEN_ROUTES = ("create", "repurpose", "resources", "settings", "new", "generate", "upload")
+FORBIDDEN_ROUTES = ("create", "repurpose", "settings", "new", "generate", "upload")
 if CLIENT_APP.is_dir():
     for path in CLIENT_APP.rglob("*"):
         if path.is_dir() and path.name in FORBIDDEN_ROUTES:
@@ -181,14 +202,44 @@ else:
     fail("dashboard/src/app/api/roadmap/[brand]/route.ts is missing")
 
 # ---------------------------------------------------------------------------
-# 7. The client write surface: exactly the four SECURITY DEFINER functions, one per act a
-#    client may perform (answer the evaluator, suggest a change, reply in a comment thread,
-#    approve the article). A fifth RPC appearing means the client write surface grew
-#    without this file hearing about it, and a missing one means a client act silently lost
-#    its door.
+# 7. The client write surface: the vetted allowlist of SECURITY DEFINER functions, one per
+#    act a client may perform. A function outside the list means the write surface grew
+#    without this file hearing about it, and a missing door means a client act silently lost
+#    the route that reached it.
+#
+#    THIS USED TO SAY "EXACTLY THE FOUR" AND IT MISSED THE FIFTH, which is worth stating
+#    because the shape of the miss is what the rule now defends against. The surface grew in
+#    SQL, not in TypeScript: portal_resource_add arrived as a migration, and a rule that only
+#    reads rpc() call sites cannot see a function that has no caller in this app yet. So the
+#    allowlist below is checked from BOTH ends. The call sites may not name anything off it,
+#    and the SQL may not DECLARE a portal_ function that is not on it, and the second half is
+#    the one that would have caught the fifth on the day it landed.
+#
+#    THE LIST IS SIX AND TWO OF THE SIX HAVE NO DOOR IN SCOPE, which is expected rather than
+#    broken. The four blog-loop writes are called from app/api/blog/<brand>/<topic>/, squarely
+#    inside CLIENT_ROOTS, so each of those must still be reachable and CLIENT_WRITE_DOORS
+#    demands it. The two resource writes are called from app/api/clients/<slug>/resources/,
+#    which serves BOTH surfaces and is deliberately out of this file's scope, so requiring a
+#    door for them here would fail on a route this scan cannot read. They are allowed and
+#    bounded, not asserted present.
 # ---------------------------------------------------------------------------
-CLIENT_WRITES = {"portal_submit_answers", "portal_suggest_change", "portal_reply_comment",
-                 "portal_approve_blog"}
+CLIENT_WRITES = {
+    # The blog review loop: answer the evaluator, suggest a change to a passage, reply in a
+    # comment thread, approve the article as sent.
+    "portal_submit_answers",
+    "portal_suggest_change",
+    "portal_reply_comment",
+    "portal_approve_blog",
+    # The client's own fact base, and the reason rule 6 no longer forbids a resources route:
+    # the client is the only person who uploads and removes these documents, so these two are
+    # client writes in a way no admin_ function is. Both arrive in migration 016, and their
+    # callers are the POST on app/api/clients/<slug>/resources/ and the DELETE on that route's
+    # [name] child.
+    "portal_resource_add",
+    "portal_resource_remove",
+}
+CLIENT_WRITE_DOORS = {"portal_submit_answers", "portal_suggest_change", "portal_reply_comment",
+                      "portal_approve_blog"}
 rpc_calls = []
 for path in FILES:
     body = code_only(path.read_text(encoding="utf-8"))
@@ -196,12 +247,29 @@ for path in FILES:
         (str(path.relative_to(REPO)), m)
         for m in re.findall(r"rpc[<(]\s*[^,]*,\s*[\"']([a-z_]+)[\"']", body)
     ]
-names = {name for _, name in rpc_calls}
-if names != CLIENT_WRITES and rpc_calls:
-    fail(f"unexpected rpc surface: {sorted(names)} (expected {sorted(CLIENT_WRITES)})")
-for expected in sorted(CLIENT_WRITES):
+# The teeth: anything the client surface calls that is not on the allowlist. An admin_
+# function reaching a client route lands here, and so does an unvetted portal_ one.
+for where, name in sorted(set(rpc_calls)):
+    if name not in CLIENT_WRITES:
+        fail(f"{where}: calls {name!r}, which is not on the client write allowlist")
+for expected in sorted(CLIENT_WRITE_DOORS):
     if not any(name == expected for _, name in rpc_calls):
         fail(f"no client route calls {expected} any more")
+
+# The SQL half: a portal_ function that exists in the schema and is not on the allowlist is
+# the client write surface growing where the call-site scan cannot see it, which is exactly
+# how portal_resource_add went unnoticed. Migrations are read alongside schema.sql because a
+# function is real to a reviewer the moment its migration is written, not when it is applied.
+sql_files = [REPO / "supabase" / "schema.sql"]
+sql_files += sorted((REPO / "supabase" / "migrations").glob("*.sql"))
+DEFINED_RE = re.compile(r"create\s+or\s+replace\s+function\s+(portal_[a-z_]+)")
+for path in sql_files:
+    if not path.is_file():
+        continue
+    for name in sorted(set(DEFINED_RE.findall(path.read_text(encoding="utf-8")))):
+        if name not in CLIENT_WRITES:
+            fail(f"{path.relative_to(REPO)}: declares {name!r}, a client write function this "
+                 "check has never vetted; add it to CLIENT_WRITES once it is reviewed")
 
 # ---------------------------------------------------------------------------
 # 8. blog_comments.author_email never crosses the client wire. The column carries whoever
@@ -227,7 +295,9 @@ print("  ok  no secret key anywhere")
 print("  ok  dangerouslySetInnerHTML confined to the markdown sink; renderer escapes first")
 print("  ok  no localStorage on the client surface")
 print("  ok  no em or en dashes")
-print("  ok  no create/repurpose/resources/settings routes; roadmap is GET-only")
-print("  ok  write surface is exactly the four portal definer functions")
+print("  ok  no create/repurpose/settings/upload routes; resources are the client's own; "
+      "roadmap is GET-only")
+print(f"  ok  write surface is within the {len(CLIENT_WRITES)} vetted portal definer "
+      "functions, and every blog-loop door is reachable")
 print("  ok  author_email never crosses the client wire")
 print("\nall portal checks passed")

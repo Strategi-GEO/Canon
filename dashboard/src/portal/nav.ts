@@ -10,7 +10,7 @@
 // (RLS-scoped, so it only ever holds their orgs). resolveClientRoute() is that one resolver,
 // used by the client catch-all page to render and by the shell to light the active nav, so
 // the two can never disagree about where the caller is.
-import { FileText, LayoutDashboard, Map as MapIcon } from "lucide-react";
+import { FileText, FolderOpen, LayoutDashboard, Map as MapIcon } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 export type NavItem = {
@@ -22,19 +22,36 @@ export type NavItem = {
 
 /**
  * The CLIENT's brand nav: the admin dashboard's shape with the operator-only rows absent.
- * There is deliberately no Create, no Repurpose, no Resources and no Settings here: a client
- * reads and answers; the plan and the pipeline are the team's.
+ * There is deliberately no Create, no Repurpose and no Settings here: a client reads and
+ * answers; the plan and the pipeline are the team's.
+ *
+ * RESOURCES IS THE ONE ROW THAT CROSSED BACK, and it crossed because the ownership runs the
+ * other way from every other row. The rest of this nav shows work the team produced and the
+ * client receives, so an operator affordance on it would be the client editing the team's
+ * output. Resources is the client's own fact base: the documents they hand us, which the
+ * researcher reads before any external search. Only the client uploads and manages them, and
+ * an admin can read them and nothing more, so the row belongs here in a way Create never did.
+ * It sits last because it is the only row that is not a thing to read.
  */
 export const BRAND_NAV: NavItem[] = [
   { section: "", label: "Overview", icon: LayoutDashboard },
   { section: "/roadmap", label: "Content Roadmap", icon: MapIcon },
   { section: "/blogs", label: "Blogs", icon: FileText },
+  // Same section, label and icon as the admin dashboard's own Resources row
+  // (components/shell/nav.ts), because it is the same files under both roofs and a client
+  // reading over an operator's shoulder should not have to translate.
+  { section: "/resources", label: "Resources", icon: FolderOpen },
 ];
 
 /** Top-level segments the client space must never treat as an org or brand slug. */
 const RESERVED = new Set(["admin", "login", "api", "_next", "favicon.ico"]);
-/** Section keywords that disambiguate "brand + section" from "org + brand". */
-const SECTIONS = new Set(["blogs", "roadmap"]);
+/**
+ * Section keywords that disambiguate "brand + section" from "org + brand". EVERY nav section
+ * must appear here: the resolver reads /{a}/{b} as an org and a brand unless b is a known
+ * section word, so a section missing from this set resolves to not-found for a multi-brand
+ * org and, worse, silently to the brand overview for a single-brand one.
+ */
+const SECTIONS = new Set(["blogs", "roadmap", "resources"]);
 
 export type OrgLite = {
   slug: string;

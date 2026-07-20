@@ -1,6 +1,7 @@
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { unauthenticated, verifyRequest } from "@/lib/server/auth";
 import { readClient } from "@/lib/server/clients";
-import { detail, failure, json } from "@/lib/server/http";
+import { detail, failure, hostedWriteRefused, json } from "@/lib/server/http";
 import { rpc } from "@/lib/server/postgrest";
 import { adminRpcError } from "@/lib/server/admin-rpc";
 
@@ -52,6 +53,14 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ slug: string }> },
 ) {
+  // The hosted site performs no admin write, and hostedWriteRefused carries the whole reasoning:
+  // why the refusal is server-side, why it answers 501 rather than 403, and why it sits ahead of
+  // verifyRequest. HOSTED_READONLY is false in the local app, so the settings write below is
+  // unchanged there.
+  if (HOSTED_READONLY) {
+    return hostedWriteRefused("change this brand's settings");
+  }
+
   const user = await verifyRequest(request);
   if (user === null) {
     return unauthenticated();

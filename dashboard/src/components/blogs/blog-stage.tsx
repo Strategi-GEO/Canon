@@ -34,7 +34,7 @@ import { readTrail, type RunTrail } from "@/components/blogs/status-trail";
 import { artifactText, useArtifact, type LoadedArtifact } from "@/components/blogs/use-artifact";
 import { useBlogComments } from "@/components/blogs/use-blog-comments";
 import { brandHref } from "@/lib/orgs-context";
-import { adminCan, blogState } from "@/lib/blog-state";
+import { adminCan, adminWriteTierReady, blogState } from "@/lib/blog-state";
 import { formatAbsolute, formatCount, formatRelative } from "@/lib/format";
 import { useBlogQuestions } from "@/lib/use-blog-questions";
 import { ApiError, api } from "@/lib/api";
@@ -252,9 +252,31 @@ function StageBody({
    * demoMode is ANDed in rather than modelled as a state, because a demo brand is a property of
    * the CLIENT and not a place an article sits. Its blogs are precoded placeholder text, so no
    * act on this page means anything for one, whatever state the record is in.
+   *
+   * adminWriteTierReady IS THE DISCRIMINATING LAYER `edit` AND `comments` NEVER HAD, and its
+   * absence is the defect that shipped three times. `send` has had one since it was written, in
+   * SendToClient's blockedReason reading the status, and `answer` has had one in AnswerQuestions
+   * reading the form. These two were granted off the state bench with nothing in front of them, so
+   * in the one state whose status is not fixed by its own definition, `answers_submitted`, both
+   * controls rendered over a record migration 009 refuses: the Edit button saved into a
+   * PORTAL:NOTDONE and the selection composer filed a comment into the same one. blog-state.ts
+   * carries the full reasoning, including why the state is not split in two instead.
+   *
+   * READ OFF `blog` RATHER THAN OFF `state`, on purpose and unavoidably. The status is exactly the
+   * fact the state folds away, so composing the bench with the record is the only way to get it
+   * back, and reaching for `state` here would reproduce the bug one line lower down.
    */
-  const canEdit = !demoMode && adminCan(state, "edit");
-  const canComment = !demoMode && adminCan(state, "comments");
+  const canEdit =
+    !demoMode && !HOSTED_READONLY && adminCan(state, "edit") && adminWriteTierReady(blog);
+  /**
+   * NO HOSTED_READONLY TERM HERE, DELIBERATELY, and canEdit above carries one. They differ because
+   * this flag has a second consumer: commentsVisible reads it to decide whether the rail is
+   * FETCHED, and an admin on the hosted build must still be able to read what the client asked
+   * for. Folding the deployment axis in here would empty the margin beside the article on the
+   * build that exists mostly to read them. The write half of this axis is canRunClaude below,
+   * which is what the composer and the resolve doors are gated on.
+   */
+  const canComment = !demoMode && adminCan(state, "comments") && adminWriteTierReady(blog);
   const canSend = !demoMode && adminCan(state, "send");
   const canPublish = !demoMode && adminCan(state, "publish");
   const canAnswer = !demoMode && adminCan(state, "answer");
@@ -268,6 +290,13 @@ function StageBody({
    * request and cannot run it. Folding the two would make the hosted build look as though its
    * articles were in a different state, and they are not. Same article, same state, on a build
    * that cannot spend a session on it, so the rail shows the comment as a queued request.
+   *
+   * IT GATES THE COMPOSER AS WELL AS THE RESOLVE DOORS, which it did not before and should have.
+   * blogs/[topic]/comments/route.ts answers 501 hostedWriteRefused, so FILING a change request on
+   * the hosted build fails exactly as resolving one does, and the composer was rendering there in
+   * every state that granted `comments`. Passing canComment straight through offered a control the
+   * route refuses, which is the same offered-but-refused shape as the bench defect above, on the
+   * deployment axis rather than the record axis.
    */
   const canRunClaude = !HOSTED_READONLY && canComment;
 
@@ -280,6 +309,14 @@ function StageBody({
    * which claims nobody has asked for anything: strictly worse than being unable to act, because
    * it is wrong rather than merely limited. What the state decides is whether those cards carry
    * doors, and that is `canComment` below, not this.
+   *
+   * `answers_submitted` IS DELIBERATELY NOT ON THIS LIST, and the line the list draws is a SEND
+   * rather than "with the team". Every state named here is at or past a send, which is the only
+   * way a client suggestion can exist: clientActions offers `suggest` in client_review alone.
+   * `answers_submitted` carries no send stamp by construction, because a send outranks it in
+   * blogState's ladder, so there is no client conversation for the margin to omit. Adding it
+   * would buy a fetch that can only come back empty, and it would put this list out of step with
+   * has_questions and generating, which sit in exactly the same position and are also absent.
    */
   const commentsVisible =
     canComment || state === "client_review" || state === "approved" || state === "published";
@@ -515,10 +552,16 @@ function StageBody({
       ) : null}
 
       <Card className="mt-4 gap-0 overflow-hidden p-0">
-        {/* THE ANSWER FORM, in the one state that owes an answer and nowhere else.
-            adminActions gives `answer` to has_questions alone, because a question is precisely
-            what holds a blog: a blog that is not held has nothing anyone can answer, and a form
-            offered there would be a demand with no obligation behind it.
+        {/* THE ANSWER FORM, AND THE RERUN, in the two states where one of them is owed.
+            adminActions gives `answer` to has_questions AND to answers_submitted, and the verb
+            covers two acts because they are two moments of one panel reading one file: answer
+            what the evaluator asked, or dispatch the rerun that applies answers the client has
+            already filed from their portal. AnswerQuestions decides which it is looking at from
+            the form's own state, so it draws the Rerun strip only where a client-answered form is
+            live and draws nothing where the revise's finally-arm has already cleared it. That is
+            the discriminating layer this mount relies on, and it is why the grant is safe in a
+            state that spans two statuses. Every other state has nothing anyone can answer, and a
+            form offered there would be a demand with no obligation behind it.
 
             The strip also carries its own historical notes, a superseded form or the outcome of
             a revise that has already landed, and those go with it. They report on a demand that
@@ -612,9 +655,14 @@ function StageBody({
                         Could not read the comments on this blog: {comments.error.message}
                       </p>
                     ) : null}
+                    {/* canComment is passed canRunClaude, not canComment: the composer is a WRITE
+                        and the hosted route refuses it, so the flag that carries the deployment
+                        axis is the one this prop wants. canComment stays the permission axis up
+                        there because commentsVisible reads it to decide whether the rail is read
+                        at all, which the hosted build must keep doing. */}
                     <BlogArticle
                       loaded={article.loaded}
-                      canComment={canComment}
+                      canComment={canRunClaude}
                       canResolve={canRunClaude}
                       remaining={3 - applying}
                       comments={comments.comments}

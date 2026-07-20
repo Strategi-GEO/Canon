@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { FieldError } from "@/components/clients/engine-error";
 import { ApiError, api } from "@/lib/api";
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { formatAbsolute, formatRelative } from "@/lib/format";
 import type { BlogReviewState, BlogStatus } from "@/types";
 
@@ -64,11 +65,22 @@ export function SendToClient({
   /** Hands back the state the POST answered with, so the chip flips without a refetch. */
   onSent: (state: BlogReviewState) => void;
 }) {
-  // NO LONGER GATED ON HOSTED_READONLY. Sending is one timestamp UPDATE and touches nothing
-  // else, so migration 009's admin_send_blog_to_client does it in the database and
-  // app/api/clients/[slug]/blogs/[topic]/send/route.ts calls it. The old gate here predates
-  // that route and was hiding a control whose whole backend existed: the operator saw no
-  // button on the hosted build and had no way to release an article to a client.
+  // GATED ON HOSTED_READONLY AGAIN, and this time the route behind it refuses too. The hosted
+  // site is a view-and-preview window: an admin reads blogs and their status there, and every
+  // act that changes something happens in the Canon app. The real gate is server-side, in
+  // app/api/clients/[slug]/blogs/[topic]/send/route.ts, because a hidden button is not a gate
+  // and this one exists only so an operator is never offered a control that would refuse them.
+  //
+  // NO FACT LEAVES THE PAGE WITH THE CONTROL, which is the trap this gate fell into the last
+  // time it was written. Returning null here used to take the send and approval timestamps with
+  // it, because this component rendered both the button and the chip carrying them. It no longer
+  // has to: blog-stage.tsx renders ReviewStamp for when the article went out and who approved
+  // it, and BlogStateTag for where it sits, both outside this component and both unaffected by
+  // anything below. So the hosted build keeps every fact about the send and loses only the act.
+  if (HOSTED_READONLY) {
+    return null;
+  }
+
   if (status === "running" || status === "unknown") {
     return null;
   }
@@ -273,19 +285,55 @@ function SendControl({
   );
 }
 
-/** Why this blog cannot be sent, or null when it can. Mirrors the engine's rule. */
+/**
+ * Why this blog cannot be sent, or null when it can. Mirrors the engine's rule and migration
+ * 009's: admin_done_topic refuses anything whose topic_rollup.status is not exactly 'done'.
+ *
+ * EVERY STATUS BRANCH BELOW IS REACHABLE FROM ONE STATE ONLY, and knowing which one is what lets
+ * these sentences name a real next act instead of a generic refusal. blog-stage.tsx mounts this
+ * component behind `adminCan(state, "send")`, and of the three states that grant a send, two are
+ * `done` by construction: `internal_review` tests the status directly, and `changes_requested`
+ * sits above a send stamp that only a done blog could ever have earned. `answers_submitted` is
+ * the sole state that grants a send while carrying a not-done status, and it does so because it
+ * is derived from the client's submit stamp rather than from the status at all. So a not-done
+ * blog arriving here is an article whose client has ALREADY ANSWERED and whose rerun has not
+ * delivered a clarified draft, and the act it is waiting on is that rerun.
+ *
+ * ONLY THE `needs_review` BRANCH MAY NAME THE RERUN, and the other two may not, because the record
+ * does not support what they used to say. Both asserted that the rerun crashed or was stopped
+ * mid-flight, and a revise that dies cannot produce either status: server/runner.py's except-arm
+ * and its cancel-arm both append `prev_terminal["status"]`, which on an article held for answers is
+ * `needs_review`, so a crashed or stopped revise leaves this component reading `needs_review` and
+ * taking the branch above. `failed` here is a run that FINISHED and landed below the bar with
+ * nothing to ask, and `stopped` is a session ended before this article ever reached a verdict.
+ * Neither is a rerun that half ran, and neither has a live question form, so the Rerun strip that
+ * the first sentence points at is not on the page for them. Pointing at an absent control is the
+ * exact failure the first sentence was written to fix, so these two name the record instead.
+ *
+ * NAMING THE RERUN IS THE WHOLE FIX HERE. The old sentence told the operator to answer the
+ * evaluator's questions, which on this article had been answered already, by the client, which is
+ * the very reason it reached this state. It contradicted the record and pointed at a control that
+ * was not on the page, because the same table that withheld `answer` was the one granting `send`.
+ * The bench now grants both, so AnswerQuestions renders the Rerun strip directly above this
+ * button, and these sentences point at something the operator can actually press.
+ *
+ * DISABLED RATHER THAN ABSENT, which is the exception blog-stage.tsx's gone-rather-than-greyed
+ * rule states for itself: a greyed control is honest where the condition clears on its own, and
+ * this one clears the moment the rerun lands. What made the earlier version a puzzle was not the
+ * grey, it was a reason that named no act.
+ */
 function blockedReason(status: BlogStatus, demoMode: boolean): string | null {
   if (demoMode) {
     return "This brand is in demo mode. Demo blogs are placeholder text generated without research, so they are never delivered to a client.";
   }
   if (status === "needs_review") {
-    return "This blog is held until you answer the evaluator's questions, whatever it scored. Only a blog the engine shipped can be sent.";
+    return "The answers are in and the rerun that applies them has not run yet, so there is no clarified draft to send. Start it with Rerun above: this button comes back the moment the rerun lands.";
   }
   if (status === "failed") {
-    return "This run failed, so there is no finished blog to send.";
+    return "The last run on this article finished without a shippable draft, so the record carries no passing verdict and there is nothing to deliver. Generating this topic again is what produces one, and this button comes back once a run lands at done.";
   }
   if (status === "stopped") {
-    return "This brand's session was stopped before the evaluator scored this blog, so there is no finished draft to send. Generate the topic again to pick it up.";
+    return "This brand's session was stopped before this article reached a verdict, so the record carries no passing draft to send. Generating this topic again is what produces one, and this button comes back once a run lands at done.";
   }
   return null;
 }

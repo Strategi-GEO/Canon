@@ -174,6 +174,84 @@ export type ApproveBody = {
   version: string | null;
 };
 
+/**
+ * One file in the brand's own fact base, exactly as GET /api/clients/{slug}/resources
+ * answers it. Same four fields the admin surface reads, and deliberately the same four: this
+ * is the ONE payload on the portal wire that is not a narrowing of something the team owns,
+ * because the client uploaded these files and there is no internal half to withhold.
+ *
+ * `content_type` is a required string here where src/types marks it optional, because the
+ * hosted route already resolved the absence: a NULL column arrives as "". The empty string is
+ * not a missing value to guard against, it is the documented signal that nothing was recorded
+ * at upload and the filename decides. resource-type.ts reads it that way for both the badge
+ * and the preview choice, so it is the one guess in the one place.
+ */
+export type PortalResource = {
+  name: string;
+  size: number;
+  /** When the file was uploaded. UTC ISO, or "" on a row that never recorded one. */
+  modified: string;
+  content_type: string;
+};
+
+export type PortalResourceList = {
+  resources: PortalResource[];
+};
+
+/**
+ * A short-lived, header-free URL for one file's bytes, from
+ * GET /api/clients/{slug}/resources/{name}. NEVER the bytes themselves: Vercel caps a
+ * serverless body at 4.5 MB and a resource runs to 25 MiB, so the bytes travel between the
+ * browser and Storage directly and this is the ticket for that trip.
+ *
+ * Being header-free is the whole point of the shape: an <img> or an <iframe> cannot carry an
+ * Authorization header, so a preview that needed one would mean pulling the entire file into
+ * JS memory as a blob first. `expires_in` is seconds and it is short, so a dialog that can
+ * stay open longer than that asks for a fresh one rather than discovering the expiry
+ * mid-render.
+ */
+export type PortalResourceLink = {
+  name: string;
+  url: string;
+  content_type: string;
+  size: number;
+  expires_in: number;
+};
+
+/**
+ * Where the browser PUTs the bytes of ONE new file, from
+ * POST /api/clients/{slug}/resources/upload-url.
+ *
+ * The same 4.5 MB wall forces this, and it forces it in the harder direction: an upload
+ * cannot be proxied through a Route Handler at all, so the browser has to reach Storage
+ * itself. It does that on a URL minted for one object key on the caller's own authority
+ * (migration 015's resources_insert_scoped governs the minting), which is why `headers`
+ * arrives from the server rather than being assembled here: the browser is told what to send
+ * and never holds a project credential of its own.
+ */
+export type PortalUploadTarget = {
+  url: string;
+  /** PUT today. Carried on the wire so a Storage API change is a server-side change. */
+  method: string;
+  headers: Record<string, string>;
+};
+
+/**
+ * What indexing one uploaded file carries to POST /api/clients/{slug}/resources.
+ *
+ * `sha256` is the object's whole address: the bytes live at `<brand>/<sha256>` and the server
+ * builds that path from the brand it authorised the call for, so this body can never name
+ * another brand's object. The index row is written AFTER the bytes land, which is the order
+ * that makes a failed upload cost nothing: an unindexed object is invisible and a retry of
+ * the same file simply lands on the same address again.
+ */
+export type IndexResourceBody = {
+  name: string;
+  sha256: string;
+  size: number;
+  content_type: string;
+};
+
 export type PortalRoadmapRow = {
   index: number;
   topic: string;

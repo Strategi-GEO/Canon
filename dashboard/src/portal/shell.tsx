@@ -280,7 +280,10 @@ function AttentionStrip({ onNavigate }: { onNavigate?: () => void }) {
   }
   // The two states where the client OWES something, which is what clientActions says of them:
   // has_questions offers `answer` and client_review offers `approve`. changes_requested is
-  // deliberately absent, because a request already with the team is not a debt of the client's.
+  // deliberately absent, because a request already with the team is not a debt of the client's,
+  // and `answers_submitted` is absent for the same reason and a stronger one: clientActions
+  // gives it nothing at all, so counting it here would put a number on the sidebar that no page
+  // in the portal offers a way to clear.
   const action = blogs.filter((blog) => blog.state === "has_questions").length;
   const ready = blogs.filter((blog) => blog.state === "client_review").length;
   if (action === 0 && ready === 0) {
@@ -351,6 +354,10 @@ function Topbar() {
   // lg, so a small dot on the menu trigger says "open me" without inventing a second
   // notification surface. Amber when answers are owed (the stronger ask), accent when
   // articles are only waiting on approval.
+  //
+  // The same two states the sidebar strip counts, and deliberately the same omissions: this dot
+  // says "something in here is yours", so a state offering the client no act must never light it.
+  // `answers_submitted` offers none.
   const needsAnswers = blogs.some((blog) => blog.state === "has_questions");
   const needsApproval = blogs.some((blog) => blog.state === "client_review");
 
