@@ -273,12 +273,133 @@ def _org_config_value(organisation_name):
     return {"slug": org_slug, "name": org_name}
 
 
-def _upsert_org(org_config):
+# ---------------------------------------------------------------------------
+# The org and client slug namespaces overlap, and the CMS write key is the one
+# place where that is dangerous
+# ---------------------------------------------------------------------------
+# orgs.slug and clients.slug are each `not null unique` in SEPARATE tables
+# (supabase/schema.sql), so the record happily holds an org called "acme" and an
+# unrelated brand called "acme" at the same time. Nothing in the schema compares
+# the two namespaces. For everything else in this module that is harmless: an org
+# is a grouping, a client is a brand, and the two are joined by org_id and never
+# by name.
+#
+# The CMS write key is where it stops being harmless. A brand with org_id null is
+# its own single-brand org, synthesised on read by _client_from_row above, and
+# server/cms/routes.py turns that synthesised slug into the environment variable
+# STRATEGI_CMS_WRITE_KEY_<ORG>. So a brand "acme" with no org of its own asks for
+# exactly the variable the real org "acme" asks for, and it is handed that org's
+# key. server/cms/client.py spends twelve lines on why that particular outcome is
+# the worst one available: the CMS derives the destination org FROM THE KEY, the
+# payload is forbidden from carrying org_id, so neither side of the request can
+# notice that a draft went to the wrong tenant. One client's blog lands in
+# another client's CMS and both sides report success.
+#
+# The invariant the guards below keep is one sentence: NO CLIENT WITH org_id NULL
+# MAY SHARE ITS SLUG WITH AN orgs ROW. Note what it deliberately does NOT forbid.
+# A brand that BELONGS to an org of its own name is fine and common, because an
+# operator who names an org after its flagship brand has said those are the same
+# tenant, and the key that resolves is that org's own key. The danger is only ever
+# the SYNTHESISED org, which is a name nobody chose to point at that org.
+
+def _self_org_clients(org_slug):
+    """Brands that would answer to org_slug's CMS write key WITHOUT belonging to it.
+
+    A client with org_id null synthesises its own slug as its org, so this is
+    exactly the set of rows that would silently resolve this org's key. A client
+    that HAS an org is not in this set even when the slugs match, because its key
+    comes from its org_id and never from the synthesis.
+    """
+    rows = db.q(
+        """select slug from clients
+           where slug = %s and org_id is null and deleted_at is null""",
+        (org_slug,))
+    return [row[0] for row in rows]
+
+
+def _refuse_org_slug_collision(org_slug, for_client=None):
+    """Refuse an org whose slug a self-org brand already answers to.
+
+    `for_client` is the brand being written in this same operation, and it is
+    exempt for a concrete reason: it is about to STOP being a self-org brand,
+    because create_client and update_client both point its org_id at this very
+    row. By the time anything resolves a key the synthesis is gone and the match
+    is the deliberate "org named after its flagship brand" case, which is legal.
+
+    The refusal is InvalidClient because app.py already maps that to 422, and the
+    operator has typed an org name that cannot be used, which is the same class of
+    answer as an org name with no letters in it. A new exception class would be a
+    new mapping in a file this fix has no business editing.
+    """
+    colliding = [slug for slug in _self_org_clients(org_slug) if slug != for_client]
+    if colliding:
+        raise InvalidClient(
+            f"the organisation slug {org_slug!r} is already the slug of the brand "
+            f"{colliding[0]!r}, which has no organisation of its own. The two would "
+            f"resolve the same CMS write key, so one brand's blog would publish into "
+            f"the other's CMS. Rename the organisation, or give that brand this "
+            f"organisation first."
+        )
+
+
+def _org_row_exists(org_slug):
+    return bool(db.q("select 1 from orgs where slug = %s", (org_slug,), fetch="val"))
+
+
+def _refuse_self_org_collision(client_slug):
+    """The same invariant from the other side: a brand may not BECOME a self-org
+    brand whose slug an orgs row already owns.
+
+    This fires on the two writes that leave org_id null: onboarding a brand with
+    the organisation field blank, and clearing an existing brand's organisation
+    back to blank. Without it the guard above is half a guard, because a brand can
+    walk into the collision just as easily as an org can walk into it.
+    """
+    if _org_row_exists(client_slug):
+        raise InvalidClient(
+            f"the brand slug {client_slug!r} is already an organisation slug, so a brand "
+            f"with no organisation of its own would resolve that organisation's CMS write "
+            f"key and publish into its CMS. Give this brand an explicit organisation, or "
+            f"rename the organisation holding that slug."
+        )
+
+
+def synthesised_org_collides(client_slug):
+    """True when THIS brand's SYNTHESISED org is also a real org's slug. The safety net.
+
+    The two guards above stop the collision being written from now on. They do
+    nothing about a collision already sitting in the record, and they cannot: a
+    row written before they existed was legal when it was written. This is the
+    read-time half of the fix, called by server/cms/routes.py immediately before a
+    key is resolved, and it is the half that has to hold, because that call is the
+    last moment anything in the system can still tell the two orgs apart.
+
+    A brand with an explicit org is never a collision here, however its slug reads,
+    for the same reason the write guard exempts it: the org_id is the operator's
+    own statement about which tenant the brand belongs to.
+    """
+    row = db.q(
+        """select c.org_id is null,
+                  exists (select 1 from orgs o where o.slug = c.slug)
+           from clients c
+           where c.slug = %s and c.deleted_at is null""",
+        (client_slug,), fetch="one")
+    if row is None:
+        return False
+    synthesised, org_exists = row
+    return bool(synthesised) and bool(org_exists)
+
+
+def _upsert_org(org_config, for_client=None):
     """The orgs row for an explicit org, created or renamed in place. Returns its id.
 
     on conflict updates the name so the org rename an operator typed actually lands:
     orgs.slug is the identity, the name is display.
+
+    The collision guard runs BEFORE the insert, so a refused org name leaves no row
+    behind and the caller's client write never starts.
     """
+    _refuse_org_slug_collision(org_config["slug"], for_client=for_client)
     return db.q(
         """insert into orgs (slug, name) values (%s, %s)
            on conflict (slug) do update set name = excluded.name
@@ -307,6 +428,12 @@ def create_client(name, domain, industry, description="", demo_mode=False,
     # Validated before any write, so a bad org name refuses cleanly instead of leaving a
     # half-built client in the record.
     org_config = _org_config_value(organisation_name)
+    if org_config is None:
+        # A blank organisation means this brand becomes its own single-brand org, so its
+        # slug enters the org namespace by synthesis and can collide with a real org
+        # there. Refused here, before any write, for the same reason the org name is
+        # validated here: a refusal after the orgs upsert leaves a row nobody asked for.
+        _refuse_self_org_collision(slug)
 
     industry = str(industry or "").strip()
     domain = str(domain or "").strip()
@@ -333,7 +460,9 @@ def create_client(name, domain, industry, description="", demo_mode=False,
         "forbidden_claim_patterns": [],
     }
 
-    org_id = _upsert_org(org_config) if org_config is not None else None
+    # for_client exempts the brand being created: it is about to carry this org's id, so
+    # a matching slug is the flagship-brand case and not a synthesised collision.
+    org_id = _upsert_org(org_config, for_client=slug) if org_config is not None else None
 
     # canonical_facts is NOT written here, and onboarding must never write it. It is
     # BINDING: every blog for this client inherits it, and the runner refuses a real run
@@ -408,10 +537,15 @@ def update_client(slug, description=None, name=None, organisation_name=None,
         # clears back to its own single-brand org, which is what a null org_id means.
         org_config = _org_config_value(organisation_name)
         if org_config is None:
+            # Clearing the org sends this brand back to its own synthesised single-brand
+            # org, which is a brand walking into the slug collision rather than an org
+            # walking into it. Same invariant, other direction, and it has to be checked
+            # here because nothing else on this path touches the orgs table at all.
+            _refuse_self_org_collision(slug)
             sets.append("org_id = null")
         else:
             sets.append("org_id = %s")
-            params.append(_upsert_org(org_config))
+            params.append(_upsert_org(org_config, for_client=slug))
 
     if sets:
         db.q(f"update clients set {', '.join(sets)} where id = %s",

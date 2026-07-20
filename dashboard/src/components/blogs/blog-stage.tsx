@@ -301,8 +301,24 @@ function StageBody({
    * READ OFF `blog` RATHER THAN OFF `state`, for the same unavoidable reason canEdit is: the
    * status is the fact the state folds away, and the form's currency is derivable from the status
    * and from nothing else this page holds.
+   *
+   * THE !HOSTED_READONLY TERM IS THE DEPLOYMENT AXIS, and this was the last admin write flag
+   * without one: canEdit, canReply and canRunClaude all carry it. The claim that stood in its
+   * place was that AnswerQuestions gates itself, which is the SAME shape of claim this flag's own
+   * paragraph above records as round four of a defect, and it is weaker here than it looks: the
+   * gate being relied on lives in another file, on the record axis rather than the deployment one,
+   * so it answers a different question and cannot stand in for this one. A discriminating layer
+   * asserted in a comment is the same as no layer, which is this file's whole thesis.
+   *
+   * What the term closes is not hypothetical. There is no hosted answers route and no hosted
+   * revise route at all, so on the hosted build both doors this control opens lead nowhere: an
+   * answer submit and the Rerun that follows it have nothing to reach. Offering a control the
+   * build cannot serve is the same offered-but-refused shape canRunClaude closes for the
+   * composer, and the honest reading is that this flag was safe by accident rather than by
+   * construction.
    */
-  const canAnswer = !demoMode && adminCan(state, "answer") && adminAnswerTierReady(blog);
+  const canAnswer =
+    !demoMode && !HOSTED_READONLY && adminCan(state, "answer") && adminAnswerTierReady(blog);
   /**
    * REPLYING IN AN EXISTING THREAD, which is a door of its own now and not a corner of `comments`.
    *
@@ -599,8 +615,11 @@ function StageBody({
       {/* THE HOSTED BUILD OWES THE OPERATOR THIS SENTENCE, and until now it said nothing at all.
           Every admin write route on this build answers 501 hostedWriteRefused, and every control
           is REMOVED rather than greyed: SendToClient returns null, PublishAction returns null,
-          canEdit carries a !HOSTED_READONLY term, and canRunClaude gates the composer and the
-          resolve doors. That is the right shape for a control, and it leaves the page mute.
+          canEdit and canAnswer carry !HOSTED_READONLY terms, and canRunClaude gates the composer
+          and the resolve doors. That is the right shape for a control, and it leaves the page
+          mute. The sentence below already promised canAnswer's term before canAnswer had one:
+          it names answering the evaluator as an act that lives on the operator's own machine,
+          while the panel rendered here regardless.
 
           MUTE IS NOT NEUTRAL, because the tag beside the title is still ISSUING AN INSTRUCTION.
           ADMIN_TAGS says this article is on your bench to refine and send, the operator reads it,

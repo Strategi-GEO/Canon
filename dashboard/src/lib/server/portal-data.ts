@@ -44,10 +44,11 @@ import { inList, pg } from "@/lib/server/postgrest";
  * form is absent or stale back to done or failed. What this file reads is a MIRROR of the run
  * feed, and the mirror carries that correction only once the revise writes its own terminal
  * line. An ANSWERED spent hold is now `answers_submitted` and needs no repair. An UNANSWERED one
- * (no form on disk at all, or a form the anchor or the iteration has moved past) is still a
- * mirror claiming a question nobody can answer, and reporting it as `has_questions` would put a
- * client in front of an empty or stale form: an aside reading "0 questions before this can be
- * finalised", or a box whose submit portal_submit_answers refuses as stale. So the repair is
+ * (no form on disk at all, a form the anchor or the iteration has moved past, or a form the
+ * OPERATOR already answered) is still a mirror claiming a question the client cannot answer, and
+ * reporting it as `has_questions` would put a client in front of an empty, stale or spent form:
+ * an aside reading "0 questions before this can be finalised", or a box whose submit
+ * portal_submit_answers refuses as stale or as already answered. So the repair is
  * NARROWED to `unansweredSpentHold` rather than deleted, and the narrowing is the whole of what
  * lets `answers_submitted` outrank it, because `generating` sits above it in blogState's ladder
  * and would have swallowed the new state entirely.
@@ -285,6 +286,13 @@ type NoteRow = {
   created_at: string;
 };
 type ChildRow = { parent_id: string; body: string; created_at: string };
+/**
+ * A reply by ANY author, reduced to the only column that question needs. It deliberately carries
+ * no body and no author: this row type answers "has somebody already replied to this question",
+ * and a shape that could carry an operator's words onto the client surface is a shape a later
+ * edit can leak through. ChildRow above is the client's own reply, text and all.
+ */
+type ReplyParentRow = { parent_id: string };
 type EventRow = { topic_id: string; iter: number; line_no: number; status: string };
 type CommentRow = {
   id: string;
@@ -408,12 +416,13 @@ type BrandData = {
   ledger: LedgerRow[];
   notes: NoteRow[];
   children: ChildRow[];
+  replies: ReplyParentRow[];
   events: EventRow[];
   comments: CommentRow[];
 };
 
 async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
-  const [topics, versions, ledger, notes, children, events, comments] = await Promise.all([
+  const [topics, versions, ledger, notes, children, replies, events, comments] = await Promise.all([
     pg<TopicRow[]>(
       token,
       // published_at joins the select because it is the TOP of blogState's delivery ladder: a
@@ -442,11 +451,52 @@ async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
     // read identically. An internal_review article the client must never see then appeared in
     // their portal, captioned as their own answers, rendering the evaluator's questions and the
     // operator's internal replies. The genuine window, where a CLIENT has answered and the
-    // revise has not yet landed, is `answers_submitted`, and this read is what decides it.
+    // revise has not yet landed, is `answers_submitted`, and this read is what decides it. It is
+    // also the read whose bodies are handed back to the client as their own words, which is the
+    // second reason the filter can never come off it.
+    //
+    // IT IS NOT THE READ THAT DECIDES WHETHER THE FORM IS STILL OPEN, and it used to be. That
+    // question is the read below, and separating the two is the whole of this fix.
     pg<ChildRow[]>(
       token,
       `review_notes?select=parent_id,body,created_at&client_id=eq.${clientId}` +
         `&parent_id=not.is.null&author=eq.client`,
+    ),
+    // WHETHER ANY AUTHOR HAS ALREADY SPENT THE FORM, which is a different question from the one
+    // above and was being answered with the above read's filter. Every other computation of this
+    // fact in the repo is author agnostic: portal_submit_answers refuses a submit as
+    // PORTAL:ANSWERED on `exists (select 1 from review_notes r where r.parent_id = n.id)`
+    // (migration 003, carried forward whole by 014), server/questions.py _db_form_rows computes
+    // the engine's own `answered` with that same exists, client_answers._PENDING_SQL asks it of
+    // the dispatch a form owes, and blogs/[topic]/questions/route.ts folds the admin panel's
+    // `answered` over an unfiltered children read. This fold was the one scoped to the client, so
+    // an OPERATOR answering the form left the portal rating it answerable while the RPC refused
+    // it: the client saw an open form, typed into it, and got an error on every submit. Migration
+    // 014's header names that outcome as the unsafe direction by construction, "a client in front
+    // of a box that accepts their typing and then always errors, with no way for them to tell
+    // why", so the portal is the side that moves and the RPC is left alone.
+    //
+    // AN OPERATOR ANSWER REALLY DOES SATISFY THE FORM, which is why matching the RPC is right
+    // here rather than merely convenient. server/questions.py write_answers matches its child row
+    // by parent_id ALONE so an operator answer OVERWRITES a client reply, because two replies to
+    // one question is a state describe_questions reads as two answers to one; the RPC's own
+    // insert carries no such update arm, so author-scoping the RPC instead would manufacture
+    // exactly that duplicate from the client surface with nobody watching. The operator's submit
+    // has also already dispatched its surgical revise, synchronously, on POST /answers, so the
+    // form is not merely replied to, it is spent: the rerun it summoned is running.
+    //
+    // PARENT_ID ONLY, NEVER A BODY AND NEVER AN AUTHOR. This read exists to count replies, and an
+    // operator's reply text is internal material that must not reach a client payload at all. The
+    // client's own answers still come from the read above, so nothing this returns is rendered.
+    // PAGED, for the same reason the events read below is. This is the widest read in
+    // fetchBrand: every reply ever filed for the brand, by any author, with no limit. Above
+    // PostgREST's row cap the response truncates SILENTLY, repliedParents under-counts, and a
+    // spent form reads open again, which is the exact defect this read was added to close. A
+    // truncation here does not fail, it regresses, so the cap is the thing to remove rather
+    // than the thing to stay under.
+    pgPaged<ReplyParentRow>(
+      token,
+      `review_notes?select=parent_id&client_id=eq.${clientId}&parent_id=not.is.null`,
     ),
     // ORDERED BY THE UNIQUE KEY, never by line_no alone. `line_no` is the ordinal WITHIN one
     // topic (schema.sql declares `unique (topic_id, line_no)`), so across a brand it repeats
@@ -479,7 +529,7 @@ async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
         `&client_id=eq.${clientId}&author=eq.client&parent_id=is.null&order=created_at.asc`,
     ),
   ]);
-  return { topics, versions, ledger, notes, children, events, comments };
+  return { topics, versions, ledger, notes, children, replies, events, comments };
 }
 
 /**
@@ -543,6 +593,15 @@ function foldTopics(data: BrandData): TopicFold[] {
     if (seen === undefined || child.created_at > seen.created_at) {
       childByParent.set(child.parent_id, child);
     }
+  }
+
+  // The parents somebody, anybody, has already replied to. A Set and not a Map, because the
+  // author-agnostic read carries nothing to hold: membership IS the whole fact, and it is the
+  // same membership `exists (select 1 from review_notes r where r.parent_id = n.id)` computes
+  // inside portal_submit_answers before it accepts a word of what the client typed.
+  const repliedParents = new Set<string>();
+  for (const reply of data.replies) {
+    repliedParents.add(reply.parent_id);
   }
 
   // The client's own suggestions per topic, already oldest-first from the query's order.
@@ -621,6 +680,26 @@ function foldTopics(data: BrandData): TopicFold[] {
     const stale = form.length > 0 && (versionMoved || formIter !== iterHigh);
     const answered =
       form.length > 0 && form.every((row) => childByParent.has(row.id));
+    // SPENT BY ANY AUTHOR, which is the test portal_submit_answers will actually apply the
+    // instant the client presses Submit, so it is the test the offer has to be made on.
+    // `answered` above stays the narrower client-only fact and feeds what it always fed: the
+    // submit receipt, portal visibility, and the answers rendered back as the client's own. This
+    // one feeds `liveForm` alone. Two facts from one form, and conflating them is what put a
+    // client in front of a box that always errored.
+    // SOME, NEVER EVERY, and the word is the whole of this fact's correctness. portal_submit_answers
+    // raises PORTAL:ANSWERED from `exists (select 1 from review_notes r where r.parent_id = n.id)`
+    // nested inside an EXISTS over the form's questions (014:173-180), so ONE reply to ONE question
+    // spends the whole form as far as the RPC is concerned. An `every` here asked a different
+    // question, whether the form was FULLY answered, and the two disagree on exactly the partly
+    // replied form.
+    //
+    // THAT FORM IS NOT HYPOTHETICAL, WHICH IS WHY THIS IS A BUG AND NOT A STYLE CHOICE. commit_topic
+    // re-asks on the SAME blog_version_id with `on conflict ... do update ... where not exists
+    // (select 1 from review_notes r where r.parent_id = review_notes.id)` (sync.py:606-618), so an
+    // evaluator's re-ask deliberately leaves already-answered refs untouched and adds new ones
+    // beside them. The engine PRODUCES partly replied current forms by design. Under `every` the
+    // portal read one as open, rendered the box, and the RPC refused every submit into it.
+    const formSpent = form.length > 0 && form.some((row) => repliedParents.has(row.id));
 
     // The ledger row still supplies the title and the shipped date. It no longer gates the
     // released states: mark_sent refuses a topic that is not done, so a send stamp already
@@ -636,17 +715,28 @@ function foldTopics(data: BrandData): TopicFold[] {
         ? (versionById.get(topic.sent_version_id) ?? null)
         : null;
 
-    // A live form is the only thing that makes a needs_review hold answerable: current
-    // (matching the newest iteration), on disk, and nobody has replied to it yet. That is the
-    // engine's own definition of the status, restated against the mirror.
-    const liveForm = form.length > 0 && !stale && !answered;
+    // A live form is the only thing that makes a needs_review hold answerable: current (matching
+    // the newest iteration and the newest version), on disk, and NOBODY has replied to it yet,
+    // client or operator. That is the engine's own definition of the status, restated against the
+    // mirror, and the author-agnostic half of it is exactly what the RPC enforces on the submit
+    // this offer leads to. Reading `answered` here instead offered the form to a client whose
+    // operator had already answered it, and every submit came back PORTAL:ANSWERED.
+    const liveForm = form.length > 0 && !stale && !formSpent;
     const spentHold = status === "needs_review" && !liveForm;
-    // THE SPENT HOLD SPLITS IN TWO NOW, and only one half is still a fake. `answered` is a real
+    // THE SPENT HOLD SPLITS IN TWO, and only one half is still a fake. `answered` is a real
     // state, so it goes to blogState as a fact and the status is left alone. What is left here
-    // is a mirror asserting a question that does not exist to answer: no form on disk, or a form
-    // the anchor or the iteration has moved past. Repairing THAT to `running` is the same repair
-    // this file has always made, and it must survive, because the alternative is `has_questions`
-    // and `has_questions` is a promise that the aside beside the article can be answered.
+    // is a mirror asserting a question that does not exist for the CLIENT to answer, and it now
+    // covers three cases rather than two: no form on disk, a form the anchor or the iteration has
+    // moved past, and a form the OPERATOR has already answered. Repairing all three to `running`
+    // is the same repair this file has always made, and it must survive, because the alternative
+    // is `has_questions` and `has_questions` is a promise that the aside beside the article can
+    // be answered.
+    //
+    // THE OPERATOR CASE IS THE MOST HONEST OF THE THREE, not the most strained. An operator
+    // answering the form dispatched a surgical revise at submit time, so a run genuinely is what
+    // this blog is waiting on and `generating` is the true word for it. Note what this arm does
+    // NOT do here: it widens visibility by nothing at all, because before this fix that same row
+    // was visible anyway, as `has_questions`, with a form under it that could not be submitted.
     const unansweredSpentHold = spentHold && !answered;
 
     // Open suggestions the team still owes an answer on. `failed` is deliberately not counted:

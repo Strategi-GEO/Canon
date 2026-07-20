@@ -118,11 +118,30 @@ export async function GET(
         `review_notes?select=id,topic_id,blog_version_id,created_at&client_id=eq.${cid}` +
           `&author=eq.evaluator&parent_id=is.null&order=created_at.desc`,
       ),
-      // `author=eq.client` on the REPLIES is load-bearing, not tidiness. client_answers._PENDING_SQL
-      // counts any reply because it asks a dispatch question, which an operator-answered form owes
-      // identically. This asks a visibility question: `answers_submitted` widens what a client sees,
-      // and portal-data.ts records what an unfiltered read cost there, an internal_review article
-      // surfacing in a client's portal captioned as their own answers.
+      // `author=eq.client` on the REPLIES is load-bearing, not tidiness, and the reason is the
+      // QUESTION being asked rather than the surface asking it. THREE different questions get
+      // asked of these rows and only one of them is client scoped:
+      //
+      //   dispatch      is a revise owed? client_answers._PENDING_SQL, author agnostic: an
+      //                 operator-answered form whose revise crashed owes the same rerun.
+      //   is it spent   may this form still be submitted? portal_submit_answers, the engine's
+      //                 describe_questions, blogs/[topic]/questions/route.ts and portal-data.ts's
+      //                 `formSpent`, all author agnostic: any reply spends the form, and an
+      //                 operator answer already dispatched its revise at submit time.
+      //   visibility    has the CLIENT acted? THIS read, and portal-data.ts's `answered`, both
+      //                 client scoped, because `answers_submitted` widens what a client sees and
+      //                 portal-data.ts records what an unfiltered read cost there, an
+      //                 internal_review article surfacing in a client's portal captioned as their
+      //                 own answers.
+      //
+      // The third one is this field, so the filter stays. Reading the split as the binary
+      // "dispatch versus visibility" is what let the spent question inherit a visibility filter in
+      // portal-data.ts, where it offered a client a form portal_submit_answers refuses on every
+      // submit, so the middle row is named here rather than left to be re-derived.
+      //
+      // This route emits NO spent fact and needs none: it carries no answer form. The admin's
+      // answer door is blog-stage.tsx's canAnswer, and on this build HOSTED_READONLY closes it,
+      // because no hosted answers or revise route exists to serve it.
       pg<ReplyRow[]>(
         user.token,
         `review_notes?select=parent_id,created_at&client_id=eq.${cid}` +

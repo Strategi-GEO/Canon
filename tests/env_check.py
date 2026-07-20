@@ -120,6 +120,23 @@ try:
           not new_keys and not changed,
           f"new={sorted(new_keys)} changed={sorted(changed)}")
 
+    # THE CMS WRITE KEYS MAY NEVER BE ALLOWLISTED, and this asserts it structurally
+    # rather than trusting the comment in db.py that says so. A write key files a draft
+    # straight into a client's live CMS, so it is a publishing credential no research or
+    # drafting session has any use for: the push happens in the server process, in
+    # server/cms/, long after every agent has exited.
+    #
+    # The check exists because of the shape a future bug report takes. Someone hits "no
+    # CMS write key configured", finds the key sitting in server/.env, notices agent_env()
+    # filtering the environment, and "fixes" it by adding STRATEGI_CMS_WRITE_KEY to this
+    # tuple. That hands every agent session a credential that writes to a client's site
+    # and buys nothing, because the pusher never reads its key from a child environment.
+    # Matching on the substring CMS rather than on the exact prefix is deliberate: the
+    # variable could be renamed and the same mistake would still be caught.
+    cms_allowed = [k for k in db.AGENT_ENV_ALLOW if "CMS" in k.upper()]
+    check("no AGENT_ENV_ALLOW entry is a CMS credential", not cms_allowed,
+          ", ".join(cms_allowed))
+
     # The five ClaudeAgentOptions builders all route through agent_env: assert
     # at the source level so a sixth spawn site cannot appear un-allowlisted.
     door_files = ["server/runner.py", "server/describe.py",

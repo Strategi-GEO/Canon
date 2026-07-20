@@ -455,9 +455,11 @@ check(
 
 
 # ---------------------------------------------------------------------------
-# The key: per-org, env-only
+# The key: per-org, and no shared fallback in EITHER place it is read from
 # ---------------------------------------------------------------------------
-print("\nKey resolution: per-org, from the environment only")
+# This block covers the process environment. The block after it covers server/.env,
+# which resolve_key reads second and which nothing tested until it was added.
+print("\nKey resolution: per-org, from the environment")
 import os  # noqa: E402
 
 for var in ("STRATEGI_CMS_WRITE_KEY", "STRATEGI_CMS_WRITE_KEY_ACME", "STRATEGI_CMS_WRITE_KEY_OTHER"):
@@ -501,6 +503,200 @@ except ValueError:
     check("an empty org slug raises rather than defaulting", True)
 
 os.environ.pop("STRATEGI_CMS_WRITE_KEY_ACME", None)
+
+
+# ---------------------------------------------------------------------------
+# The key, second place: server/.env, which had no test at all
+# ---------------------------------------------------------------------------
+# The block above exercises os.environ only, so the whole server/.env fallback in
+# resolve_key could be deleted and this suite would stay green. That fallback is not
+# a convenience: install.sh prompts for that file, the tray app reads it, and a
+# Finder-launched .app reads no shell profile, so on the supported distribution it is
+# the ONLY door a write key comes through. An untested only door is the one that
+# regresses.
+#
+# EVERY BYTE HERE IS FAKE. db.SERVER_DIR is pointed at a temp directory holding a .env
+# this block wrote, so the real server/.env is never opened and never printed, and the
+# original SERVER_DIR and parsed config are put back in the finally.
+print("\nKey resolution: the server/.env fallback, with a FAKE .env")
+
+from server import db  # noqa: E402
+
+_saved_server_dir = db.SERVER_DIR
+_saved_cfg = dict(db._CFG)
+_tmp_env = tempfile.TemporaryDirectory()
+try:
+    Path(_tmp_env.name, ".env").write_text(
+        "STRATEGI_CMS_WRITE_KEY_ACME=acme-from-a-fake-dotenv\n"
+        "STRATEGI_CMS_WRITE_KEY_BLR_BREWING=brewing-from-a-fake-dotenv\n",
+        encoding="utf-8",
+    )
+    db.SERVER_DIR = Path(_tmp_env.name)
+    db._CFG.clear()
+
+    for var in ("STRATEGI_CMS_WRITE_KEY", "STRATEGI_CMS_WRITE_KEY_ACME",
+                "STRATEGI_CMS_WRITE_KEY_BLR_BREWING", "STRATEGI_CMS_WRITE_KEY_OTHER"):
+        os.environ.pop(var, None)
+
+    check(
+        "an org resolves its key from server/.env",
+        cms_client.resolve_key("acme") == "acme-from-a-fake-dotenv",
+        "the file fallback is gone",
+    )
+
+    os.environ["STRATEGI_CMS_WRITE_KEY_ACME"] = "acme-from-the-shell"
+    check(
+        "an exported var beats the file",
+        cms_client.resolve_key("acme") == "acme-from-the-shell",
+        "the file won, which lets a stale line beat a deliberate export",
+    )
+    os.environ.pop("STRATEGI_CMS_WRITE_KEY_ACME", None)
+    check(
+        "removing the export falls back to the file again",
+        cms_client.resolve_key("acme") == "acme-from-a-fake-dotenv",
+    )
+
+    # THE ONE THAT MATTERS. A second place to look must not become a second chance to
+    # answer with a neighbour's key. 'other' has no key in either place while two of its
+    # neighbours have file keys, and it must still get None and its 503.
+    check(
+        "an org absent from BOTH places gets None even though a neighbour has a file key",
+        cms_client.resolve_key("other") is None,
+        "the file fallback reintroduced the cross-client leak",
+    )
+
+    db._CFG["STRATEGI_CMS_WRITE_KEY"] = "shared-key-that-must-not-be-used"
+    check(
+        "a shared STRATEGI_CMS_WRITE_KEY in the FILE is ignored, exactly as in the environment",
+        cms_client.resolve_key("other") is None,
+        "the removed shared fallback is back, in the file this time",
+    )
+    check(
+        "the shared file key does not override a real per-org file key either",
+        cms_client.resolve_key("acme") == "acme-from-a-fake-dotenv",
+    )
+    db._CFG.pop("STRATEGI_CMS_WRITE_KEY", None)
+
+    check(
+        "each org still gets its OWN file key and not the first one in the file",
+        cms_client.resolve_key("blr-brewing") == "brewing-from-a-fake-dotenv",
+        cms_client.resolve_key("blr-brewing") or "None",
+    )
+
+    # RULE 1 (server/db.py): a key read from the file must never reach os.environ, because
+    # agent_env() filters os.environ and cannot filter what was never in it. Resolving is
+    # the operation that would leak it, so the assertion is made straight after resolving.
+    check(
+        "resolving a file key exports nothing",
+        "STRATEGI_CMS_WRITE_KEY_ACME" not in os.environ,
+    )
+    _agent_env = db.agent_env()
+    check(
+        "db.agent_env() carries no CMS key NAME",
+        not [k for k in _agent_env if "CMS" in k.upper()],
+        str(sorted(k for k in _agent_env if "CMS" in k.upper())),
+    )
+    check(
+        "db.agent_env() carries no CMS key VALUE under some other name",
+        "acme-from-a-fake-dotenv" not in _agent_env.values(),
+    )
+finally:
+    db.SERVER_DIR = _saved_server_dir
+    db._CFG.clear()
+    db._CFG.update(_saved_cfg)
+    _tmp_env.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# The org slug collision: a synthesised org must never answer to a real org's key
+# ---------------------------------------------------------------------------
+# orgs.slug and clients.slug are unique in SEPARATE tables, so a brand with org_id
+# null, whose org is synthesised from its own slug, can share that slug with a real
+# and unrelated org. The key var is derived from the slug alone, so the brand resolves
+# the other tenant's key, and client.py's no-shared-fallback comment is exact about why
+# nothing downstream catches it: the CMS routes by the key and the payload may not carry
+# org_id, so the wrong-tenant draft is created and reported as a success.
+#
+# No database is touched. The read-time net is asserted through routes._org_slug with the
+# clients module's two answers stubbed, and the write-time guards are asserted as pure
+# decisions with their single query stubbed, the same way FakeRunner above tests the
+# gate's decision rather than the runner.
+print("\nOrg slug collision: refuse to resolve rather than guess a tenant")
+
+from fastapi import HTTPException  # noqa: E402
+
+from server import clients as clients_mod  # noqa: E402
+from server.cms import routes as cms_routes  # noqa: E402
+
+_saved_read_client = clients_mod.read_client
+_saved_collides = clients_mod.synthesised_org_collides
+_saved_self_org_clients = clients_mod._self_org_clients
+_saved_org_row_exists = clients_mod._org_row_exists
+try:
+    # A brand inside an explicit org: the org's slug selects the key, as it always did.
+    clients_mod.read_client = lambda slug: {"organisation": {"slug": "acme-group"}}
+    clients_mod.synthesised_org_collides = lambda slug: False
+    check("an explicit org still selects that org's slug", cms_routes._org_slug("acme-north") == "acme-group")
+
+    # A genuine single-brand org: synthesis is correct here and must keep working.
+    clients_mod.read_client = lambda slug: {"organisation": {"slug": slug}}
+    check("an uncontested self-org brand still resolves its own slug",
+          cms_routes._org_slug("vacation-village") == "vacation-village")
+
+    # The collision. read_client would answer happily, so only the explicit check stops it.
+    clients_mod.synthesised_org_collides = lambda slug: True
+    try:
+        resolved = cms_routes._org_slug("acme")
+        check("a colliding synthesised org REFUSES instead of resolving", False,
+              f"it resolved to {resolved!r}, which is another tenant's key")
+    except HTTPException as refused:
+        check("a colliding synthesised org REFUSES instead of resolving", True)
+        check("the refusal is a 503, the same as a missing key", refused.status_code == 503,
+              str(refused.status_code))
+        check("the refusal names the brand and the collision",
+              "acme" in refused.detail and "organisation" in refused.detail,
+              refused.detail)
+        check("the refusal names the consequence, so nobody retries it blind",
+              "CMS" in refused.detail, refused.detail)
+
+    # Write-time guard, org side: an org may not take a slug a self-org brand answers to.
+    clients_mod._self_org_clients = lambda org_slug: ["acme"]
+    try:
+        clients_mod._refuse_org_slug_collision("acme")
+        check("an org colliding with a self-org brand is refused", False, "it was allowed")
+    except clients_mod.InvalidClient as refused:
+        check("an org colliding with a self-org brand is refused", True)
+        check("that refusal explains the CMS key, not just the slug",
+              "CMS write key" in str(refused), str(refused))
+    check(
+        "the brand being moved into that org in the same write is EXEMPT",
+        clients_mod._refuse_org_slug_collision("acme", for_client="acme") is None,
+    )
+    clients_mod._self_org_clients = lambda org_slug: []
+    check(
+        "an org whose slug no self-org brand holds is allowed",
+        clients_mod._refuse_org_slug_collision("acme-group") is None,
+    )
+
+    # Write-time guard, brand side: a brand may not become a self-org brand on a taken slug.
+    clients_mod._org_row_exists = lambda org_slug: True
+    try:
+        clients_mod._refuse_self_org_collision("acme")
+        check("a brand becoming a self-org on an org's slug is refused", False, "it was allowed")
+    except clients_mod.InvalidClient as refused:
+        check("a brand becoming a self-org on an org's slug is refused", True)
+        check("that refusal explains the CMS key too",
+              "CMS write key" in str(refused), str(refused))
+    clients_mod._org_row_exists = lambda org_slug: False
+    check(
+        "a brand whose slug is no org's slug is allowed",
+        clients_mod._refuse_self_org_collision("vacation-village") is None,
+    )
+finally:
+    clients_mod.read_client = _saved_read_client
+    clients_mod.synthesised_org_collides = _saved_collides
+    clients_mod._self_org_clients = _saved_self_org_clients
+    clients_mod._org_row_exists = _saved_org_row_exists
 
 
 # ---------------------------------------------------------------------------
