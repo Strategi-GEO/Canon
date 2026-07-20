@@ -535,6 +535,32 @@ export type BlogSummary = {
    * is above zero. Optional on the wire for the same engine-age reason as sent_to_client.
    */
   changes_requested?: number;
+  /**
+   * When this article was last pushed to the CMS, UTC ISO, or null.
+   *
+   * NULL MEANS "NO RECORD OF A PUSH", NEVER "NOT PUBLISHED", and every surface reading this
+   * field is bound by that. Migration 012 added the column with no backfill and said why:
+   * nothing anywhere recorded the pushes that happened before it, so a stamp invented from
+   * generated_at would assert a publish that may never have occurred. History starts at 012.
+   * The rendering rule that falls out of it is absolute: state the positive fact where the
+   * stamp exists and say NOTHING where it does not. No surface renders "not published".
+   *
+   * Optional on the wire for the same engine-age reason as sent_to_client.
+   */
+  published?: string | null;
+  /**
+   * The CMS's own word for this post, typically "draft" or "published", or null.
+   *
+   * It is the difference between an editor holding a draft and the article being live on the
+   * site, and those two call for opposite actions from an operator. ALWAYS NULL ON THE HOSTED
+   * BUILD: 012 granted only published_at to `authenticated`, so the hosted blogs route cannot
+   * read this column and reports null rather than guessing. A null is therefore "we cannot
+   * tell", never "draft", and it never licenses claiming the article is live: it settles on
+   * the weaker sentence, that the push happened.
+   *
+   * Optional on the wire for the same engine-age reason as sent_to_client.
+   */
+  cms_status?: string | null;
 };
 
 export type BlogsResponse = {
@@ -795,6 +821,18 @@ export type BlogReviewState = {
    * every suggestion is resolved or dismissed before the client sees a new version.
    */
   changes_requested: number;
+  /**
+   * When this article was last pushed to the CMS, or null. NULL MEANS "NO RECORD OF A PUSH",
+   * never "not published": migration 012 added the column with no backfill, so nothing pushed
+   * before it left a stamp behind. Render the positive fact and stay silent otherwise.
+   */
+  published: string | null;
+  /**
+   * The CMS's own word for this post, "draft" or "published", or null when nothing can tell.
+   * The hosted build never reads this column (012 grants only published_at), so a null is
+   * "unknown" rather than "draft" and never licenses saying the article is live.
+   */
+  cms_status: string | null;
 };
 
 /** The server whitelists exactly these artifact names, so the client should too. */

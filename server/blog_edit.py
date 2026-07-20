@@ -708,7 +708,8 @@ def sent_state(client_slug, topic_slug):
     blocking the re-send it was thanking the team for."""
     empty = {"sent_to_client": None, "sent_to_client_by": None,
              "client_approved": None, "client_approved_by": None,
-             "changes_requested": 0}
+             "changes_requested": 0,
+             "published": None, "published_by": None, "cms_status": None}
     tid = db.topic_id(client_slug, topic_slug)
     if tid is None:
         return empty
@@ -718,18 +719,26 @@ def sent_state(client_slug, topic_slug):
                   (select count(*) from blog_comments c
                     where c.topic_id = t.id and c.author = 'client'
                       and c.parent_id is null
-                      and c.state in ('open', 'applying'))
+                      and c.state in ('open', 'applying')),
+                  t.published_at, t.published_by, t.cms_status
            from topics t where t.id = %s""",
         (tid,), fetch="one")
     if row is None:
         return empty
-    sent_at, sent_by, approved_at, approved_by, changes = row
+    (sent_at, sent_by, approved_at, approved_by, changes,
+     published_at, published_by, cms_status) = row
     return {
         "sent_to_client": sent_at.isoformat() if sent_at else None,
         "sent_to_client_by": sent_by,
         "client_approved": approved_at.isoformat() if approved_at else None,
         "client_approved_by": approved_by,
         "changes_requested": int(changes or 0),
+        # NULL here means "no record of a push", NEVER "not published": nothing recorded a
+        # publish before 012, and a failed stamp after a successful push leaves the same
+        # null (see cms/record.py). Every consumer renders the positive fact only.
+        "published": published_at.isoformat() if published_at else None,
+        "published_by": published_by,
+        "cms_status": cms_status,
     }
 
 

@@ -9,6 +9,7 @@ type TopicRow = {
   title: string | null;
   sent_to_client_at: string | null;
   client_approved_at: string | null;
+  published_at: string | null;
 };
 type CommentRow = {
   topic_id: string;
@@ -54,7 +55,14 @@ export async function GET(
     const [topics, versions, led, roadmapRows, comments] = await Promise.all([
       pg<TopicRow[]>(
         user.token,
-        `topics?select=id,slug,title,sent_to_client_at,client_approved_at` +
+        // published_at and NOT cms_status, deliberately. 012 granted only the timestamp on
+        // the base table: this route serves non-admin users too, so it cannot read
+        // admin_topics, and cms_status stays off the client-readable column set until a
+        // surface actually needs it. The cost is a known asymmetry, stated here rather than
+        // discovered later: the local build can tell "live in the CMS" from "still a draft"
+        // and the hosted build shows only that a push happened. Publishing runs on the local
+        // engine, so the operator who needs that distinction is standing in front of it.
+        `topics?select=id,slug,title,sent_to_client_at,client_approved_at,published_at` +
           `&client_id=eq.${cid}&deleted_at=is.null`,
       ),
       pg<VersionRow[]>(
@@ -167,6 +175,10 @@ export async function GET(
         sent_to_client: topic.sent_to_client_at,
         client_approved: topic.client_approved_at,
         changes_requested: openByTopic.get(topic.id) ?? 0,
+        // Null is "no record of a push", never "not published": nothing recorded a publish
+        // before 012. cms_status is always null on this build, see the select above.
+        published: topic.published_at,
+        cms_status: null,
       };
     });
 

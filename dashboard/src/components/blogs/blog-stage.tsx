@@ -9,6 +9,7 @@ import {
   Download,
   FileUp,
   FlaskConical,
+  Globe,
   Pencil,
   TriangleAlert,
 } from "lucide-react";
@@ -233,6 +234,11 @@ function StageBody({
     client_approved: blog.client_approved ?? null,
     client_approved_by: null,
     changes_requested: blog.changes_requested ?? 0,
+    // Seeded from the list for the same reason as the fields above, and it matters more here:
+    // the hosted build has no /review route at all, so this seed is the ONLY source of the
+    // publish stamp there. Null is "no record of a push", which the chip renders as nothing.
+    published: blog.published ?? null,
+    cms_status: blog.cms_status ?? null,
   };
 
   // Read once per visit, then watched only while an apply this operator started is settling.
@@ -375,6 +381,11 @@ function StageBody({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {/* Left of the button that produces it, matching how SendToClient puts its own
+              state chip beside its own control. It renders on the hosted build too, where
+              PublishAction is absent: the record of a push is worth reading even where the
+              push itself cannot be made. */}
+          <PublishedChip published={reviewState.published} cmsStatus={reviewState.cms_status} />
           <PublishAction
             brandSlug={brandSlug}
             topicSlug={topicSlug}
@@ -392,7 +403,14 @@ function StageBody({
             onSent={(state) => {
               // The POST answers with the state it produced, so the chip flips on the spot
               // and the summary re-read only has to agree with it.
-              setReview(state);
+              //
+              // SPREAD OVER THE CURRENT STATE rather than replacing it. A send moves the
+              // client half of this record and touches nothing in the CMS half, and the
+              // hosted send RPC is admin_send_blog_to_client from migration 009, which
+              // predates 012 and answers with the review fields alone. Taking its answer
+              // whole would drop the publish stamp out of state and blank a Published chip
+              // that is still true.
+              setReview({ ...reviewState, ...state });
               onChanged();
             }}
           />
@@ -703,6 +721,57 @@ function UploadedChip() {
       <TooltipContent className="max-w-xs">
         This article was uploaded rather than generated, so the factory never researched,
         gated or scored it. It edits, comments and sends exactly like any other blog.
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * That this article reached the CMS, and NOTHING about the case where it did not.
+ *
+ * A NULL STAMP RENDERS NOTHING, and that silence is the whole design of this chip rather than a
+ * gap in it. Migration 012 added published_at with no backfill on purpose: nothing recorded the
+ * pushes made before it, so a null is the absence of a RECORD and not evidence that the article
+ * was never pushed. "Not published" would state as fact something the column cannot support, and
+ * an operator would act on it by publishing a second time. The positive fact is the only one
+ * this app is in a position to say.
+ *
+ * cms_status is the CMS's own word for the post, and it is null on the hosted build, which reads
+ * the timestamp alone. So the live sentence is claimed ONLY where the CMS itself said published;
+ * a draft and an unknown alike settle on the weaker one, that the push happened. Green is
+ * reserved for the same reason: a live article is a finished thing, a draft is an editor's queue.
+ */
+function PublishedChip({
+  published,
+  cmsStatus,
+}: {
+  published: string | null;
+  cmsStatus: string | null;
+}) {
+  if (published === null) {
+    return null;
+  }
+  const live = cmsStatus === "published";
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className={cn(
+            "inline-flex cursor-default items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium",
+            live
+              ? "border-ship/25 bg-ship/10 text-ship"
+              : "border-border bg-muted text-muted-foreground",
+          )}
+        >
+          <Globe className="size-3.5" aria-hidden />
+          {live ? "Live in the CMS" : "Posted to CMS"} {formatRelative(published)}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">
+        <span className="machine">{formatAbsolute(published)}</span>.{" "}
+        {live
+          ? "The CMS reports this post as published, so an editor has already taken it live and posting again will not change it."
+          : "This is the push, not the publication. An editor decides in the CMS whether the draft goes out."}
       </TooltipContent>
     </Tooltip>
   );

@@ -12,12 +12,13 @@ is testable without HTTP.
 """
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from .. import clients as clients_mod
 from .. import ledger, runner
 from . import client as cms_client
 from . import gate
+from . import record
 from .payload import PayloadError
 
 log = logging.getLogger("geo-factory")
@@ -59,12 +60,18 @@ def _status_for(upstream):
 
 
 @router.post("/api/clients/{slug}/blogs/{topic_slug}/publish")
-async def api_publish_blog(slug: str, topic_slug: str):
+async def api_publish_blog(slug: str, topic_slug: str, request: Request):
     """Push one shipped blog to the CMS as a draft.
 
     Not 202: this is a single request the operator is watching, so it stays
     synchronous and the answer is the CMS's own. Nothing is queued, and there is
     no background job to leave half-finished.
+
+    `request` is here for ONE reason: the email that attributes the push, read off
+    request.state where app.py's gate left it. This package imports no auth module and
+    stays deletable whole, which is why the identity arrives as a string on the request
+    rather than as an Identity this file would have to import a type for. getattr with a
+    default means deleting app.py's stash degrades attribution to null instead of raising.
     """
     if not clients_mod.exists(slug):
         raise HTTPException(status_code=404, detail=f"No client '{slug}'")
@@ -113,6 +120,15 @@ async def api_publish_blog(slug: str, topic_slug: str):
     log.info(
         "CMS push ok for %s/%s: post %s",
         slug, topic_slug, result.get("post_id"),
+    )
+
+    # AFTER the push and never before it. The stamp records something that happened, so
+    # writing it first would leave a publish date on an article the CMS then refused. It
+    # cannot raise (see record.py): the article is already in the CMS by this line, and
+    # nothing about bookkeeping is allowed to report that as a failed publish.
+    record.record_publish(
+        slug, topic_slug, result,
+        email=getattr(request.state, "admin_email", None),
     )
 
     # The CMS's shape, flattened to what the drawer actually renders. `skipped`

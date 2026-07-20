@@ -357,6 +357,30 @@ create table topics (
   client_approved_at timestamptz,
   client_approved_by text,
 
+  -- The CMS push (012). Written by server/cms/record.py AFTER the CMS accepts the article,
+  -- and re-stamped on every push: payload.source_run_id addresses the same CMS post
+  -- forever, so a second push updates it in place and the interesting fact is when the CMS
+  -- last received these bytes.
+  --
+  -- NULL MEANS "NO RECORD OF A PUSH", NEVER "NOT PUBLISHED". Nothing recorded publishes
+  -- before 012 and there was nothing to backfill from, so history starts there. A stamp
+  -- that fails to write after a successful push leaves the same null. Every consumer
+  -- renders the positive fact only and never states the negative.
+  --
+  -- cms_status is the CMS's own word for the post. It matters because a push answered
+  -- `skipped` means a human already advanced that post past draft, so the article is live
+  -- and pushing again will not move it, which calls for a different action than a draft.
+  --
+  -- published_by is an email and stays off the authenticated grants, like sent_to_client_by
+  -- and client_approved_by. So do the three cms_ columns: they are our CMS's internals and
+  -- no client surface renders them. The hosted admin reads them through admin_topics (003),
+  -- which is gated on auth_is_admin().
+  published_at timestamptz,
+  published_by text,
+  cms_post_id  text,
+  cms_slug     text,
+  cms_status   text,
+
   created_at timestamptz not null default now(),
   deleted_at timestamptz,
 
@@ -838,11 +862,13 @@ grant select (id, org_id, slug, name, domain, industry, description,
 -- internal. Identity, title, ship pointer and timestamps are safe. The review-loop columns
 -- (004, 005) join them: sent_to_client_at says when a blog was released, sent_version_id
 -- names WHICH body the client reviews (and blog_versions.body is already theirs to read),
--- and client_approved_at records the client's own act. The two _by columns are person
--- emails, operator material, and stay off this list.
+-- and client_approved_at records the client's own act. published_at (012) joins them as the
+-- same shape of fact: a date something happened to this article. The three _by columns are
+-- person emails, operator material, and stay off this list, and so do the cms_ columns,
+-- which are our CMS's internals and have no client-side reader.
 revoke select on topics from authenticated;
 grant select (id, client_id, slug, title, shipped_version_id, created_at, deleted_at,
-              sent_to_client_at, sent_version_id, client_approved_at)
+              sent_to_client_at, sent_version_id, client_approved_at, published_at)
   on topics to authenticated;
 
 -- blog_versions: score and eval_body are the whole hostile-audit surface; iteration and

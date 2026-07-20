@@ -7,6 +7,7 @@ import {
   Check,
   CheckCheck,
   ChevronsUpDown,
+  Globe,
   MessageCircleQuestion,
 } from "lucide-react";
 import {
@@ -204,6 +205,10 @@ function Row({
               changes={blog.changes_requested ?? 0}
             />
           ) : null}
+          {/* Gated on the stamp ALONE, never on the status beside it: the stamp is itself the
+              evidence that a push happened, and a row missing one is a row this app knows
+              nothing about rather than one it can call unpublished. */}
+          <PublishedChip published={blog.published ?? null} cmsStatus={blog.cms_status ?? null} />
         </span>
       </TableCell>
       <TableCell className="machine text-xs text-muted-foreground">
@@ -313,6 +318,56 @@ function DeliveryChip({
         </span>
       </TooltipTrigger>
       <TooltipContent className="machine">Sent to client {formatAbsolute(sentAt)}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * That this article reached the CMS, in the row, and NOTHING about the case where it did not.
+ *
+ * A NULL STAMP RENDERS NOTHING. Migration 012 added published_at with no backfill, deliberately:
+ * nothing recorded the pushes made before it, so a null is a missing RECORD and not evidence
+ * that the article was never pushed. A "not published" chip would state as fact something the
+ * column cannot support, and in a list of twenty rows it would read as a queue of work to do.
+ *
+ * A DELIVERY CHIP AND THIS ONE CAN BOTH SIT HERE, because they answer different questions. That
+ * one says where the client is with the article; this one says the article is on the site, or on
+ * its way there. Live wears the ship tone, a draft stays muted: an editor still holds a draft.
+ */
+function PublishedChip({
+  published,
+  cmsStatus,
+}: {
+  published: string | null;
+  /** The CMS's own word, and null on the hosted build, which reads only the timestamp. Null is
+   *  "cannot tell", so it settles on the weaker sentence rather than claiming a draft. */
+  cmsStatus: string | null;
+}) {
+  if (published === null) {
+    return null;
+  }
+  const live = cmsStatus === "published";
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className={cn(
+            "inline-flex cursor-default items-center gap-0.5 text-[0.6875rem] font-medium whitespace-nowrap",
+            live ? "text-ship" : "text-muted-foreground",
+          )}
+        >
+          <Globe className="size-3" aria-hidden />
+          {live ? "live" : "posted"}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">
+        <span className="machine">
+          {live ? "Live in the CMS" : "Posted to the CMS"} {formatAbsolute(published)}
+        </span>
+        {live
+          ? ". An editor has already taken this post live."
+          : ". This is the push, not the publication: an editor decides in the CMS whether the draft goes out."}
+      </TooltipContent>
     </Tooltip>
   );
 }

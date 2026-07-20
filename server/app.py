@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
@@ -86,10 +86,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+async def _cms_admin_gate(request: Request,
+                          user: auth.Identity = Depends(auth.require_admin)):
+    """The CMS router's admin gate, plus the one fact its routes need FROM the identity.
+
+    require_admin already refuses a non-admin, and that alone was the whole dependency
+    until publishes became attributable (012). server/cms/ imports no auth module and is
+    deletable whole, so it cannot take an Identity as a parameter, and the email reaches it
+    as a plain string on request.state instead. This is the seam: app.py knows about auth,
+    server/cms/ knows about a string, and neither knows about the other's type.
+    """
+    request.state.admin_email = user.email
+    return user
+
+
 # The CMS push is a write, so it rides behind the admin gate like every other
 # mutation. Attached here rather than inside the router so server/cms/ keeps
 # knowing nothing about auth and stays deletable whole.
-app.include_router(cms_router, dependencies=[Depends(auth.require_admin)])
+app.include_router(cms_router, dependencies=[Depends(_cms_admin_gate)])
 
 
 @app.on_event("startup")
@@ -1180,11 +1194,13 @@ def _blog_history(slug):
     # ride the same read: the approval comes off the same topics rows, and the open
     # client-suggestion counts come from ONE grouped query over blog_comments, never a
     # per-topic probe (twenty blogs must not cost twenty counts).
+    # The publish stamp rides this same read for the same reason: it is a record fact, so a
+    # blog teammate A pushed to the CMS must read as published on teammate B's machine.
     sent_rows = db.q(
-        """select slug, sent_to_client_at, client_approved_at from topics
-           where client_id = %s and deleted_at is null""",
+        """select slug, sent_to_client_at, client_approved_at, published_at, cms_status
+           from topics where client_id = %s and deleted_at is null""",
         (client_id,))
-    sent_map = {row_slug: (sent, approved) for row_slug, sent, approved in sent_rows}
+    sent_map = {row[0]: row[1:] for row in sent_rows}
     # parent_id is null: a client's REPLY is not a change request, and counting one would
     # put a "changes requested" chip on the library card for "thanks, looks good".
     changes_map = dict(db.q(
@@ -1203,10 +1219,14 @@ def _blog_history(slug):
     # reversible rather than a decision baked into every caller of this function.
     blogs = list(entries.values())
     for entry in blogs:
-        sent_at, approved_at = sent_map.get(entry["topic_slug"], (None, None))
+        sent_at, approved_at, published_at, cms_status = sent_map.get(
+            entry["topic_slug"], (None, None, None, None))
         entry["sent_to_client"] = sent_at.isoformat() if sent_at else None
         entry["client_approved"] = approved_at.isoformat() if approved_at else None
         entry["changes_requested"] = int(changes_map.get(entry["topic_slug"], 0))
+        # Null means "no record of a push", never "not published". See cms/record.py.
+        entry["published"] = published_at.isoformat() if published_at else None
+        entry["cms_status"] = cms_status
     blogs.sort(key=lambda b: b["created"], reverse=True)
     return blogs
 

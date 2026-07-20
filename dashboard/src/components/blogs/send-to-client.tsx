@@ -18,7 +18,6 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { FieldError } from "@/components/clients/engine-error";
 import { ApiError, api } from "@/lib/api";
-import { HOSTED_READONLY } from "@/lib/hosted";
 import { formatAbsolute, formatRelative } from "@/lib/format";
 import type { BlogReviewState, BlogStatus } from "@/types";
 
@@ -65,10 +64,11 @@ export function SendToClient({
   /** Hands back the state the POST answered with, so the chip flips without a refetch. */
   onSent: (state: BlogReviewState) => void;
 }) {
-  // Sending stamps the record through the engine; the hosted build has none behind it.
-  if (HOSTED_READONLY) {
-    return null;
-  }
+  // NO LONGER GATED ON HOSTED_READONLY. Sending is one timestamp UPDATE and touches nothing
+  // else, so migration 009's admin_send_blog_to_client does it in the database and
+  // app/api/clients/[slug]/blogs/[topic]/send/route.ts calls it. The old gate here predates
+  // that route and was hiding a control whose whole backend existed: the operator saw no
+  // button on the hosted build and had no way to release an article to a client.
   if (status === "running" || status === "unknown") {
     return null;
   }
