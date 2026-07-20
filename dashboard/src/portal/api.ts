@@ -2,9 +2,14 @@ import { clearSession, ensureFreshToken } from "@/lib/session";
 import type {
   AnswersBody,
   ApproveBody,
+  IndexResourceBody,
   Overview,
   PortalBlogDetail,
+  PortalResource,
+  PortalResourceLink,
+  PortalResourceList,
   PortalRoadmap,
+  PortalUploadTarget,
   ReplyBody,
   SuggestBody,
 } from "@/portal/types";
@@ -135,7 +140,103 @@ export const api = {
     ),
   roadmap: (brand: string, signal?: AbortSignal) =>
     request<PortalRoadmap>(`/api/roadmap/${encodeURIComponent(brand)}`, { signal }),
+
+  /**
+   * The brand's own fact base. These four sit under /api/clients/{slug}/... rather than in the
+   * portal's own /api/blog and /api/roadmap namespace, and that is deliberate rather than
+   * sloppy: those two namespaces exist because a blog reaches a client NARROWED, with the
+   * score, the iterations and the eval artifacts stripped at the boundary. A resource has no
+   * internal half to strip. It is the client's file, the same four fields under both roofs,
+   * and every one of these routes scopes itself by RLS on the caller's own JWT, so a second
+   * set of handlers answering the same rows would only be a second place for the scoping to
+   * drift.
+   */
+  resources: (brand: string, signal?: AbortSignal) =>
+    request<PortalResourceList>(`/api/clients/${encodeURIComponent(brand)}/resources`, { signal }),
+
+  /**
+   * A ticket for one file's bytes. `download` asks Storage for an attachment disposition
+   * carrying the original filename, so a save-as writes what the client uploaded rather than
+   * the sha256 the object is stored under.
+   */
+  resourceLink: (
+    brand: string,
+    name: string,
+    options: { download?: boolean; signal?: AbortSignal } = {},
+  ) =>
+    request<PortalResourceLink>(
+      `/api/clients/${encodeURIComponent(brand)}/resources/${encodeURIComponent(name)}` +
+        (options.download === true ? "?download=1" : ""),
+      { signal: options.signal },
+    ),
+
+  /** Step one of an upload: where to PUT the bytes. See PortalUploadTarget for why. */
+  resourceUploadTarget: (brand: string, body: { sha256: string }) =>
+    request<PortalUploadTarget>(
+      `/api/clients/${encodeURIComponent(brand)}/resources/upload-url`,
+      { method: "POST", body },
+    ),
+
+  /**
+   * Step two: the index row, written only once the bytes are up. A 409 here is the duplicate
+   * refusal, and it is a refusal by design: the record holds one row per filename per brand
+   * and there is no upsert anywhere in the path, so nothing this call can do overwrites a file
+   * the client already has.
+   */
+  indexResource: (brand: string, body: IndexResourceBody) =>
+    request<{ resource: PortalResource }>(
+      `/api/clients/${encodeURIComponent(brand)}/resources`,
+      { method: "POST", body },
+    ),
+
+  deleteResource: (brand: string, name: string) =>
+    request<unknown>(
+      `/api/clients/${encodeURIComponent(brand)}/resources/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
 };
+
+/**
+ * The one request in this app that does not go to our own origin, and the one that carries no
+ * bearer token of ours.
+ *
+ * It cannot use request() above, and the reasons are not stylistic. request() attaches the
+ * session's Authorization header, which would be handing our JWT to a third-party host; it
+ * JSON-encodes the body, where these bytes must travel raw; and it routes every 401 through
+ * clearSession(), so a Storage refusal would sign the client out of the portal. What travels
+ * instead is exactly what the server put in the target: a URL scoped to one object key and the
+ * headers it told us to send.
+ *
+ * A failure lands as ApiError so the view handles it beside every other failure it renders,
+ * with status 0 reserved for "the request never completed", which is what ApiError.isOffline
+ * already means everywhere else.
+ */
+export async function putResourceBytes(
+  target: PortalUploadTarget,
+  file: File,
+  signal?: AbortSignal,
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(target.url, {
+      method: target.method,
+      headers: target.headers,
+      body: file,
+      signal,
+    });
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === "AbortError") {
+      throw cause;
+    }
+    throw new ApiError(0, "The upload could not reach our file store");
+  }
+  if (!res.ok) {
+    // Storage answers XML or JSON depending on the failure, and neither is a sentence a client
+    // should read, so the status travels and the view writes the words. It never reaches
+    // handleUnauthorized: a 401 from Storage means this URL expired, not that our session did.
+    throw new ApiError(res.status, `The file store refused the upload (${res.status})`);
+  }
+}
 
 /** The server's own words for an error, for inline rendering next to the failed control. */
 export function detailText(error: ApiError): string {

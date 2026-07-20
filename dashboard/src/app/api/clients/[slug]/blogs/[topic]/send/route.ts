@@ -1,6 +1,7 @@
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { adminRpcError } from "@/lib/server/admin-rpc";
 import { unauthenticated, verifyRequest } from "@/lib/server/auth";
-import { json } from "@/lib/server/http";
+import { hostedWriteRefused, json } from "@/lib/server/http";
 import { rpc } from "@/lib/server/postgrest";
 
 /**
@@ -33,6 +34,14 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ slug: string; topic: string }> },
 ) {
+  // The hosted site performs no admin write, and hostedWriteRefused carries the whole reasoning.
+  // HOSTED_READONLY is false in the local app, so the send below is unchanged there. A send is
+  // the one act on this surface a client sees the moment it lands, and there is no unsend, so it
+  // is exactly the act that should happen from the machine the operator is sitting at.
+  if (HOSTED_READONLY) {
+    return hostedWriteRefused("send this blog to the client");
+  }
+
   const user = await verifyRequest(request);
   if (user === null) {
     return unauthenticated();

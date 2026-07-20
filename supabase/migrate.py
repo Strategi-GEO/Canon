@@ -576,9 +576,32 @@ def upload_resources(conn, corpus, env, client_id):
     # Private bucket. Private + no storage.objects policy = secret key only; the
     # portal gets signed URLs. A public bucket would serve every client's
     # knowledge base to anyone who guesses a path.
+    #
+    # file_size_limit is set AT CREATION so a fresh project is born with the 25 MiB
+    # cap rather than acquiring it from a migration afterwards. It matters because
+    # migration 015 grants authenticated members a direct INSERT into storage.objects,
+    # which a 25 MiB browser upload past Vercel's 4.5 MB body cap requires, and from
+    # that point no server of ours ever weighs the bytes: portal_resource_add's size
+    # check runs after the upload has landed and reads a number the browser supplied.
+    # storage-api checks this limit against the bytes themselves, during the upload and
+    # before any SQL of ours runs, so it is the only statement of the cap a client
+    # cannot route around. 26214400 is MAX_RESOURCE_BYTES in server/clients.py and the
+    # bound on the client_resources.size_bytes check constraint; the three move together
+    # or the smallest of them silently becomes the real limit.
+    #
+    # No allowed_mime_types, deliberately. A client knowledge base is heterogeneous by
+    # design and an allowlist would reject documents a client is entitled to upload,
+    # while the type itself is only a header the caller sends and can be relabelled at
+    # will. Size is the one property of an upload that cannot be misdeclared, so it
+    # carries this alone. Migration 015 states the same reasoning at more length.
+    #
+    # This payload governs CREATION only. Storage answers "already exists" for a bucket
+    # that is already there and changes nothing about it, so a project that predates
+    # this line gets its cap from migration 015's update rather than from here.
     status, body = api("POST", "/storage/v1/bucket",
                        json.dumps({"id": RESOURCE_BUCKET, "name": RESOURCE_BUCKET,
-                                   "public": False}).encode())
+                                   "public": False,
+                                   "file_size_limit": 26214400}).encode())
     if status not in (200, 201) and b"already exists" not in body:
         log(f"  bucket create -> {status} {body[:160]!r}")
 

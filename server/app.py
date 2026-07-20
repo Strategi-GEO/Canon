@@ -621,6 +621,18 @@ async def api_resource_upload(slug: str, file: UploadFile = File(...),
         )
     try:
         return clients_mod.save_resource(slug, file.filename, raw)
+    except db.DuplicateResource as exc:
+        # 409 and not 400, because nothing about the request is malformed: it
+        # conflicts with what is already on the server, and that is exactly what
+        # 409 says. The detail names the file so the uploader can act on it
+        # without guessing which of a multi-file drop was refused. Renaming or
+        # deleting the existing resource first are the two ways forward, and
+        # both are the uploader's decision rather than ours to make for them.
+        raise HTTPException(
+            status_code=409,
+            detail=f"a resource named {str(exc)!r} already exists for client "
+                   f"{slug!r}; delete it first or upload under a different name",
+        )
     except clients_mod.BadResource as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except clients_mod.UnknownClient as exc:
@@ -1234,6 +1246,60 @@ def _blog_history(slug):
              and t.sent_to_client_at is not null
              and c.created_at > t.sent_to_client_at""",
         (client_id,))}
+    # ANSWERS SUBMITTED: has the client fully answered the form that is on this blog RIGHT NOW.
+    # blogState() derives a state from this, and the state exists so an article does not vanish
+    # from under a client the moment they press submit: between the submit and the rerun's
+    # terminal line the topic still folds to needs_review, and after a clean rerun it folds to
+    # internal_review, which the client may not see. Without this fact the card they just acted
+    # on disappears with no receipt.
+    #
+    # SCOPED TO THE CURRENT FORM AND NOTHING ELSE, which is the whole difficulty. review_notes
+    # keeps every answered round forever, so "this topic has any answered question" would be true
+    # from the first submit onward: the blog would pin at answers_submitted, internal_review would
+    # be masked, client_review would be unreachable, and the article would never ship. The current
+    # form is the newest evaluator round BY blog_version_id, exactly as client_answers._PENDING_SQL
+    # and portal-data.ts define it, and a new round of questions carries a new anchor and no
+    # replies, so the fact clears itself with no expiry rule to get wrong.
+    #
+    # THE REPLY AUTHOR IS FILTERED TO 'client' AND THAT IS DELIBERATE. _PENDING_SQL is
+    # author-agnostic on purpose, because it asks a DISPATCH question ("is a revise owed") that an
+    # operator-answered form owes just the same. This asks a VISIBILITY question, and portal-data.ts
+    # records what an unfiltered read cost there: an operator answering an internal form satisfied
+    # it identically, and an internal_review article the client must never see appeared in their
+    # portal captioned as their own answers. Same fold, different author filter, and each surface
+    # filters for the question it is actually asking.
+    #
+    # STALENESS IS NOT APPLIED HERE, and that is the point rather than an omission. The other three
+    # twins raise stale once a new version lands under the form, because they gate whether the form
+    # may still be SUBMITTED or DISPATCHED. This fact says the client already answered, which a new
+    # version cannot un-do. Clearing it when the rerun commits is exactly the vanishing card above:
+    # a clean rerun at >= 95 asks nothing new, so the client is meant to keep holding the old draft
+    # and their own answers until an admin sends. The stamp therefore stands until the next round of
+    # questions replaces the anchor or a send moves the article past it in blogState's ladder.
+    answered_map = dict(db.q(
+        """with form as (
+             select n.topic_id,
+                    (select n2.blog_version_id from review_notes n2
+                      where n2.topic_id = n.topic_id and n2.author = 'evaluator'
+                        and n2.parent_id is null
+                      order by n2.created_at desc limit 1) as version_id
+             from review_notes n
+             where n.client_id = %s and n.author = 'evaluator' and n.parent_id is null
+             group by n.topic_id)
+           select t.slug, max(r.created_at)
+           from form f
+           join topics t on t.id = f.topic_id and t.deleted_at is null
+           join review_notes q on q.topic_id = f.topic_id and q.author = 'evaluator'
+                              and q.parent_id is null and q.blog_version_id = f.version_id
+           join review_notes r on r.parent_id = q.id and r.author = 'client'
+           where not exists (
+                   select 1 from review_notes q2
+                   where q2.topic_id = f.topic_id and q2.author = 'evaluator'
+                     and q2.parent_id is null and q2.blog_version_id = f.version_id
+                     and not exists (select 1 from review_notes r2
+                                      where r2.parent_id = q2.id and r2.author = 'client'))
+           group by t.slug""",
+        (client_id,)))
 
     # Newest first stays the default, because the library's own question is "what happened lately".
     # Sorting by roadmap_index here would be wrong twice over: a blog on no row has none to sort by,
@@ -1247,6 +1313,10 @@ def _blog_history(slug):
         entry["client_approved"] = approved_at.isoformat() if approved_at else None
         entry["changes_requested"] = int(changes_map.get(entry["topic_slug"], 0))
         entry["change_round_open"] = entry["topic_slug"] in round_map
+        # An ISO stamp rather than a boolean, matching every other human-act field on this
+        # entry, so a card can render "Questions answered, 18 Jul" without a second call.
+        answered_at = answered_map.get(entry["topic_slug"])
+        entry["answers_submitted"] = answered_at.isoformat() if answered_at else None
         # Null means "no record of a push", never "not published". See cms/record.py.
         entry["published"] = published_at.isoformat() if published_at else None
         entry["cms_status"] = cms_status

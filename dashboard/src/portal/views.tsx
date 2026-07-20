@@ -37,7 +37,7 @@ import { formatDate, formatRelative, readingTime } from "@/portal/format";
 import { brandHref } from "@/portal/nav";
 import { usePortal } from "@/portal/portal-context";
 import { useBlogDetail } from "@/portal/use-blog-detail";
-import type { PortalBlogCard, ReplyBody, SuggestBody } from "@/portal/types";
+import type { PortalAnswerView, PortalBlogCard, ReplyBody, SuggestBody } from "@/portal/types";
 
 /**
  * The client portal's views, one per resolved route. The (client) layout provides the
@@ -70,13 +70,23 @@ import type { PortalBlogCard, ReplyBody, SuggestBody } from "@/portal/types";
  */
 function bucket(blogs: PortalBlogCard[]) {
   return {
+    // OWED, and answering is the only debt here. `answers_submitted` is deliberately absent:
+    // the client has already paid it, and a card in "Waiting on you" asking them to answer
+    // questions they answered is the exact complaint the state was added to end.
     action: blogs.filter((blog) => blog.state === "has_questions"),
     ready: blogs.filter((blog) => blog.state === "client_review"),
-    // !clientCanSee is "on this wire only because the client acted on it", and portal-data.ts
-    // dropped every other such row before it became payload, so this needs no state list to
-    // keep in step with the machine: it is whatever the machine says a client cannot see.
+    // `answers_submitted` IS NAMED HERE and the naming is not optional. The old arm read
+    // "changes_requested or anything the client cannot see", which worked while every
+    // with-the-team row was a row clientCanSee refused. clientCanSee now ADMITS
+    // answers_submitted, so that arm silently stopped catching it, and a state in no bucket is
+    // not a mislabelled card: it is a card that disappears from the library entirely, in front
+    // of the client who just answered it. The !clientCanSee arm still stands for the two
+    // `generating` slivers portal-data.ts keeps visible.
     withTeam: blogs.filter(
-      (blog) => blog.state === "changes_requested" || !clientCanSee(blog.state),
+      (blog) =>
+        blog.state === "changes_requested" ||
+        blog.state === "answers_submitted" ||
+        !clientCanSee(blog.state),
     ),
     done: blogs.filter((blog) => blog.state === "approved" || blog.state === "published"),
   };
@@ -517,10 +527,20 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
   const canSuggest = clientCan(blog.state, "suggest");
   const canReply = clientCan(blog.state, "reply");
 
-  // Whether this payload carries the SENT article rather than the draft behind a question form.
-  // The server already decided which states carry a body (portal-data.clientReadsArticle), so
-  // this reads its answer instead of restating the list and letting the two drift.
-  const reading = blog.body !== null && blog.state !== "has_questions";
+  // Whether this payload carries the SENT article rather than the ANCHORED DRAFT a question
+  // form is about. Both arrive in `body`, so the state is the only thing that tells them apart,
+  // and getting it wrong is not a cosmetic error: the released branch below renders the approve
+  // banner, the suggestion rail and the reply threads, so a draft falling into it would invite a
+  // client to approve an article nobody sent them.
+  //
+  // BOTH DRAFT STATES ARE EXCLUDED, not just the one. portal-data.clientReadsDraft is the server
+  // side of this same sentence and it names has_questions and answers_submitted together,
+  // because answering a form does not re-anchor it. This file cannot import that function: it is
+  // a client component and portal-data.ts carries the PostgREST client with it. So the list is
+  // restated, and the two comments name each other so a third state added to one is looked for
+  // in the other.
+  const draft = blog.state === "has_questions" || blog.state === "answers_submitted";
+  const reading = blog.body !== null && !draft;
 
   return (
     <div className="space-y-6">
@@ -562,9 +582,15 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
           {blog.state === "has_questions" && blog.asked !== null
             ? `Review requested ${formatRelative(blog.asked)}`
             : null}
-          {!clientCanSee(blog.state) && blog.answered_at !== null
-            ? `You answered ${formatRelative(blog.answered_at)}`
-            : null}
+          {/* THE STATE TEST IS GONE FROM THIS ONE, because the wire already applied it and the
+              copy of it here had gone wrong. It used to read `!clientCanSee(blog.state)`, which
+              was true of every state a submit could produce until `answers_submitted` became one
+              a client CAN see: the receipt would have vanished from the header at the exact
+              moment it was worth reading. portal-data.ts nulls answered_at for every state at or
+              past a send, so a non-null stamp already means "before the send, and they
+              answered", and asking the field is asking the one authority rather than a second
+              guess at it. */}
+          {blog.answered_at !== null ? `You answered ${formatRelative(blog.answered_at)}` : null}
         </p>
       </header>
 
@@ -689,16 +715,69 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
         </div>
       ) : null}
 
-      {/* With the team: the form is answered or superseded, so the client is owed nothing here.
-          These states reach the portal only through the visibility addition portal-data.ts
-          documents, which exists so a client who just answered does not watch their article
-          disappear. The RECORD reads `generating`, `internal_review` or `failed` at three
-          points in one revise, which is the whole difficulty; portal-data.ts narrows all of
-          them to `generating` before they become payload, because those are the team's words
-          about the client's own article. So this branch sees one state where the run has
-          several. Asking clientCanSee rather than naming that state keeps the branch true
-          however the run ended, which is what leaves the narrowing a wire concern instead of
-          something every view has to remember. */}
+      {/*
+        ANSWERS SUBMITTED: the one window where the client keeps BOTH halves of what they did.
+        The draft they answered against on the left, their own answers on the right, and no act
+        offered on either, because clientActions gives this state nothing.
+
+        THE DRAFT HERE IS THE ANCHORED ONE AND THAT IS THE POINT OF THE BLOCK. A rerun that lands
+        clean commits a NEW version and goes to internal review, which is not theirs to see; a
+        rerun that asks again replaces the form and moves them to the next round. Either way the
+        bytes below are the ones review_notes anchored the answered form to, chosen server-side
+        in portal-data.buildDetail, so this view renders a draft rather than picking one.
+
+        It is a SEPARATE BLOCK from the with-the-team one below rather than a branch inside it,
+        because the two differ in what they can show and not merely in wording: this one has an
+        article, and the slivers below never do.
+      */}
+      {blog.state === "answers_submitted" ? (
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
+          <div className="order-2 lg:order-1">
+            {blog.body !== null ? (
+              <article className="rounded-xl bg-card p-6 ring-1 ring-foreground/10 sm:p-10">
+                <p className="mb-6 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                  This is the draft your answers are about, kept here so you can see what you
+                  answered against. It is not final: our team is working your answers into it.
+                </p>
+                <MarkdownView source={blog.body} />
+              </article>
+            ) : null}
+          </div>
+          {/* NOT sticky, unlike the question form's aside. That one is short and is a control the
+              reader scrolls the article beside; this is a transcript that can run past the
+              viewport, and pinning it would trap its own tail off screen. */}
+          <aside className="order-1 space-y-4 lg:order-2">
+            <div className="flex items-start gap-3 rounded-xl border bg-card p-5">
+              <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-ship" aria-hidden />
+              {/* The same weakened sentence the with-the-team block uses, for the same reason it
+                  was weakened there: on default configuration nothing picks a portal submission
+                  up until an operator clicks Rerun, so a present-tense claim that work is under
+                  way can be false all weekend. "With our team" is true either way. */}
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                Thank you. Your answers are with our editorial team. This page updates when the
+                article is ready for your review, or if the review needs anything further from
+                you.
+              </p>
+            </div>
+            {blog.answers !== null ? <YourAnswers answers={blog.answers} /> : null}
+          </aside>
+        </div>
+      ) : null}
+
+      {/* With the team, and NARROWER than it looks: portal-data.ts folds the ordinary answered
+          window to `answers_submitted` now, which the block above owns, so what reaches here are
+          the two slivers where the record honestly reads `generating`. One is a rerun actually in
+          flight; the other is a mirror still claiming a hold whose form is absent or stale. The
+          RECORD reads `generating`, `internal_review` or `failed` at several points in one
+          revise, and portal-data.ts narrows all of them to `generating` before they become
+          payload, because those are the team's words about the client's own article. So this
+          branch sees one state where the run has several. Asking clientCanSee rather than naming
+          that state keeps the branch true however the run ended, which is what leaves the
+          narrowing a wire concern instead of something every view has to remember.
+
+          NO ARTICLE IS SHOWN HERE and that is the wire's decision, not this file's: a body is
+          withheld in these two states because a live rerun is rewriting the very bytes an anchor
+          would point at. The client keeps their answers, which is what they wrote. */}
       {!clientCanSee(blog.state) ? (
         <div className="mx-auto max-w-2xl space-y-4">
           <div className="flex items-start gap-3 rounded-xl border bg-card p-5">
@@ -730,39 +809,52 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
             </div>
           </div>
 
-          {blog.answers !== null ? (
-            <section aria-label="Your answers" className="rounded-xl bg-card p-5 ring-1 ring-foreground/10 sm:p-6">
-              <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold">
-                <CheckCircle2 className="size-4 text-ship" aria-hidden />
-                Your answers
-              </h2>
-              <dl className="space-y-5">
-                {blog.answers.map((answer, index) => (
-                  <div key={answer.id} className="space-y-1.5">
-                    <dt className="flex items-start gap-2">
-                      <span className="text-xs font-semibold text-muted-foreground">
-                        {index + 1}
-                      </span>
-                      <span className="text-sm leading-snug font-medium text-pretty">
-                        {answer.question}
-                        {answer.area !== null ? (
-                          <Badge variant="secondary" className="ml-2 align-middle font-normal">
-                            {answer.area}
-                          </Badge>
-                        ) : null}
-                      </span>
-                    </dt>
-                    <dd className="ml-5 rounded-md bg-muted/60 px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap">
-                      {answer.answer}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            </section>
-          ) : null}
+          {blog.answers !== null ? <YourAnswers answers={blog.answers} /> : null}
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The client's own answers, read-only, rendered identically wherever they are shown.
+ *
+ * IT IS A COMPONENT BECAUSE IT HAS TWO CALLERS NOW, and two copies of a transcript is how one of
+ * them quietly stops matching the other. `answers_submitted` shows it beside the draft it was
+ * written about; the with-the-team slivers show it alone, because no draft is served there. The
+ * markup is the same in both, because it is the same act being reported.
+ */
+function YourAnswers({ answers }: { answers: PortalAnswerView[] }) {
+  return (
+    <section
+      aria-label="Your answers"
+      className="rounded-xl bg-card p-5 ring-1 ring-foreground/10 sm:p-6"
+    >
+      <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold">
+        <CheckCircle2 className="size-4 text-ship" aria-hidden />
+        Your answers
+      </h2>
+      <dl className="space-y-5">
+        {answers.map((answer, index) => (
+          <div key={answer.id} className="space-y-1.5">
+            <dt className="flex items-start gap-2">
+              <span className="text-xs font-semibold text-muted-foreground">{index + 1}</span>
+              <span className="text-sm leading-snug font-medium text-pretty">
+                {answer.question}
+                {answer.area !== null ? (
+                  <Badge variant="secondary" className="ml-2 align-middle font-normal">
+                    {answer.area}
+                  </Badge>
+                ) : null}
+              </span>
+            </dt>
+            <dd className="ml-5 rounded-md bg-muted/60 px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap">
+              {answer.answer}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </section>
   );
 }
 

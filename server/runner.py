@@ -426,8 +426,8 @@ def _status_baseline(out_dir):
     return len(_read_status(out_dir))
 
 
-def _stop_line_if_unterminated(out_dir, topic_slug, baseline, note):
-    """Append the terminal stopped line for a topic THIS session left without a verdict.
+def _stop_line_if_unterminated(client_slug, topic_slug, out_dir, baseline, note, root=None):
+    """Append the terminal line for a topic THIS session left without a verdict.
 
     THE GUARD IS THE OPERATOR'S PROMISE, IN CODE. "Whichever blogs have been created will be
     kept" fails on one careless append here: a topic can reach done microseconds before the
@@ -443,20 +443,100 @@ def _stop_line_if_unterminated(out_dir, topic_slug, baseline, note):
     implementation because the guard and the line shape must not drift apart: a second copy is
     how a topic comes to be stopped in one path and demoted in the other.
 
+    THE WORD IS "stopped" UNLESS A CURRENT FORM IS ON DISK, AND THEN IT IS needs_review. That
+    second arm closes a dead end with no door on either surface, and it is the one correction
+    this function makes to the operator's own act. Two windows produce it, and neither is exotic:
+
+      The evaluator writes questions.json through .claude/questions.py, and the session lead
+      appends the terminal line LAST, so every asking topic spends real time carrying a live form
+      and no verdict. A stop landing there used to write "stopped" over the form.
+
+      A topic that already ended needs_review is offered back to the operator, because the
+      roadmap withholds only done topics. Re-queue it, stop the brand before the semaphore
+      admits it, and run_batch's sweep finds a baseline covering the whole existing file, so the
+      slice is empty, the guard above does not fire, and the stopped line lands on top of a hold
+      that was correct an hour ago.
+
+    WHAT MADE IT A DEAD END RATHER THAN A DEMOTION. The engine still ACCEPTS an answer for that
+    form: api_answers refuses a stale form, a live run, a demo client and an approved article,
+    and never once reads the terminal status. No surface offers one. The admin bench is
+    adminActions, which grants "answer" to has_questions alone, and blogState maps a stopped
+    status to the stopped state, whose bench is empty. clientCanSee is false for stopped, so the
+    portal will not render the article either. The article's only remaining exit was a full
+    regeneration, which throws away the dossier, the draft and the score the run had already paid
+    for, and the operator's stop is documented as keeping exactly those.
+
+    THE QUESTION AXIS NEEDS NO SCORE, WHICH IS WHY IT REACHES A KILLED RUN AND THE THREE-STATE
+    TABLE DOES NOT. See TERMINAL_STATUSES: a stopped topic stays out of _resolve_needs_review
+    because every row of that table is resolved from a score the loop produced, and a killed loop
+    produced none, so passing one through would launder it into done or failed by a number that
+    describes a different run. That ground is about the SCORE and it still stands, so this
+    function does not call the resolver. A form on disk is not a score: it is a person's
+    outstanding task, it was written before the stop, and it is answerable after it. The contract
+    line saying an operator stop is "stopped, never needs_review" gives its own ground as "there
+    is no question in it", and in this window there demonstrably is one, so the ground fails
+    before the rule does. Nothing here manufactures a question on a stop's behalf; the evaluator
+    had already asked.
+
     Returns True when a line was written, so a caller can report what it halted.
     """
     lines = _read_status(out_dir)
     if _terminal_line(lines[baseline:]) is not None:
         return False
+
+    # READ THE FORM BEHIND A GUARD, because no line at all is the worse failure by a wide margin.
+    # This runs inside a CancelledError arm, and the whole reason that arm exists is that a topic
+    # with no terminal line hangs the SSE stream at running forever on a session the operator
+    # already killed. A read that raises must therefore cost the topic its hold, never its line,
+    # so a failure falls back to "stopped": that is the honest word for a topic whose form nobody
+    # can prove is holding anything. Logged rather than swallowed silently, the same way
+    # revise_topic's questions tidy-up reports a form it could not clear.
+    #
+    # IT IS ALL DISK AND IT STAYS SYNCHRONOUS, which is what makes it safe to call from here at
+    # all. _questions_state reads questions.json, answers.json and status.jsonl through
+    # server.questions, whose read_questions, read_answers and _current are file reads on every
+    # root including None. Nothing here touches the record and nothing here awaits. A coroutine
+    # can only be cancelled at an await, so an await added to this arm would be a cancellation
+    # point inside the handler for cancellation: the second stop would unwind straight past the
+    # append below and the topic would get no terminal line at all, which is the one outcome this
+    # whole function exists to prevent.
+    try:
+        held = _questions_state(client_slug, topic_slug, root=root) == "current"
+    except Exception as exc:
+        print(f"[runner] could not read the question form for {client_slug}/{topic_slug} while "
+              f"stopping it, so it is recorded stopped: {exc}", file=sys.stderr)
+        held = False
+
     # Whatever stage was in flight, kept as-is. A stop is the one terminal line that can land on
     # any stage, so its "end" may have no matching "start"; consumers read the status field and
-    # never the stage, which is what makes that harmless. No score is invented: a topic that never
-    # reached a verdict does not get one attributed to it.
+    # never the stage, which is what makes that harmless. No score is invented on either arm: a
+    # topic that never reached a verdict does not get one attributed to it, and a held one is held
+    # at whatever score it has or at none, exactly as _resolve_needs_review holds it.
     last = lines[-1] if lines else {}
+    status = "stopped"
+    if held:
+        status = "needs_review"
+        note = (
+            f"{note}, and questions.json is on disk, asks about the draft that exists, and "
+            f"nobody has answered it. A current question holds a blog at any score, so this "
+            f"topic is held for that answer rather than recorded stopped: a stopped line would "
+            f"leave a form the engine still accepts on a status no surface offers a door for, "
+            f"and answering is the cheap exit that keeps the dossier and the draft"
+        )
+        # The marker goes with the status it marks, exactly as _enforce_terminal_status writes and
+        # unlinks it in both directions. Nothing serves it, but a held blog with no marker beside
+        # it is the app disagreeing with itself on disk. It is not written on the stopped arm and
+        # is not removed there either: a stop deletes nothing, and a stale marker from an earlier
+        # run is cleared by the resolver the next time this topic reaches a verdict.
+        (Path(out_dir) / "NEEDS_REVIEW").write_text(
+            f"The operator stopped this brand and the engine held this topic rather than "
+            f"recording it stopped. {note}. See questions.json.\n",
+            encoding="utf-8",
+        )
     _status_module().append_status(
         str(out_dir), topic_slug,
         stage=last.get("stage", "research"), event="end",
-        iter=last.get("iter", 1), status="stopped", note=note,
+        iter=last.get("iter", 1), status=status, note=note,
     )
     return True
 
@@ -629,6 +709,35 @@ def _questions_state(client_slug, topic_slug, root=None):
     the same calls, so a second rule here would be a way for the engine to hold a blog open on a
     form the app will not accept.
 
+    THE STALENESS RULE IS VERSION **OR** ITERATION, and this path computes only the iteration
+    arm. That is a real asymmetry rather than an oversight, so it is named here with what closes
+    it. Migration 014 settled the rule across the four RECORD-side readers, and they are the whole
+    set: server/questions.py describe_questions, the dashboard's portal-data.ts fold,
+    server/client_answers.py _PENDING_SQL (which asks the complement and so reads "version matches
+    AND iteration matches"), and the portal_submit_answers RPC that 014 replaces. Each of them
+    reads review_notes, where blog_version_id is NOT NULL with a composite FK to blog_versions, so
+    each of them HAS an anchor to compare.
+
+    THIS PATH HAS NO ANCHOR TO COMPARE, and cannot acquire one honestly. The disk form is what
+    .claude/questions.py wrote, and its payload is slug, asked, iter, score and questions and
+    nothing else; sync.materialize_answers rebuilds it from the record with those same keys and
+    drops the anchor too. So the version arm has no left-hand side here.
+
+    WHAT MAKES THE MISSING ARM SAFE ON THIS PATH, which is the part worth reading before anyone
+    "fixes" it by reaching for the record. Every runner-facing caller runs against a form that
+    describes bytes NO blog_versions row exists for yet: terminal resolution runs strictly before
+    sync.commit_topic (see run_topic), the revise finally arm runs before its scheduled commit
+    (see _schedule_commit), and the lead's in-loop --check-area runs mid-session with nothing
+    committed at all. A version cannot have landed under a draft that has not been committed once,
+    so the arm that would fire has nothing to fire on.
+
+    READING THE RECORD HERE WOULD BE WORSE THAN THE GAP. At terminal resolution the newest
+    review_notes round is the PREVIOUS round and the newest blog_versions row is the PREVIOUS
+    session's, so a comparison drawn from them describes a different form and would rate a live
+    one stale. That releases a hold, which is the shipped-past-an-open-question failure this
+    resolver exists to prevent, and it is the same race is_stale's own docstring refuses the
+    record for. An arm that cannot fire truthfully is worth less than the hole it plugs.
+
     "answered" EXISTS BECAUSE A SPENT FORM COULD HOLD A BLOG FOREVER. This function read only
     raw["questions"] and is_stale, so it never consulted is_answered: the operator answered a 96,
     the surgical revise then crashed or was stopped before the form was cleared, and the file
@@ -762,6 +871,34 @@ def _enforce_terminal_status(client_slug, topic_slug, out_dir, root=None):
         # running, or the stopped line the backend writes. Neither is a claim about a loop that
         # reached a verdict, so the three-state table has nothing to say about it. See
         # TERMINAL_STATUSES on why a stopped topic never reaches the resolver.
+        #
+        # THE TWO EXCLUSIONS HAVE THE SAME SENTENCE ABOVE AND DIFFERENT ANSWERS UNDERNEATH, so
+        # the shared sentence is not the whole reason for either. It is right about the SCORE
+        # axis for both: neither status carries a verdict, and _resolve_needs_review resolves its
+        # nothing-to-answer branch from a score. It says nothing about the QUESTION axis, which
+        # needs no score at all, and that is where the two part company.
+        #
+        # THE EXCLUSION WAS WRONG FOR "stopped" AND IS NOW CLOSED UPSTREAM. A stopped topic can
+        # carry a live, answerable form: the evaluator writes questions.json before the lead
+        # appends its terminal line, and a stop landing in that window used to record "stopped"
+        # over it. The engine still accepts an answer for that form and no surface offers one, so
+        # the article's only exit was a full regeneration. It is fixed at the WRITE SITE rather
+        # than here, in _stop_line_if_unterminated, and deliberately so: the correction cannot
+        # live in this function, because run_topic's cancel arm re-raises immediately after
+        # writing that line and never reaches the resolver, and run_batch's sweep writes it for
+        # topics run_topic never ran at all. A branch for "stopped" here would read as coverage
+        # and never once fire.
+        #
+        # THE EXCLUSION IS RIGHT FOR "running", AND IT IS NOT THE SAME CASE. A running topic
+        # legitimately carries a current form mid-loop: the evaluator asks at iteration 2, the
+        # loop still has budget, and the lead deletes the form before the next evaluator. Holding
+        # on it would freeze a working topic at an iteration it is about to move past, on a form
+        # the next dispatch was going to replace. The hold would also be unanswerable while it
+        # lasted, because api_answers refuses a submit while a run is live, and it would be
+        # redundant once it ended, because the session's own terminal line then comes through
+        # this resolver and the question axis is checked there. Nothing is stranded by waiting: a
+        # running topic is one that something is still going to do. A stopped one is one that
+        # nothing will ever do again, which is the whole of the difference.
         return summary
 
     # The marker file goes with the status it marks, in both directions. Nothing serves it (see
@@ -1501,8 +1638,9 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
         # finds run 1's stopped line, writes nothing for run 2, and hangs run 2's watch view at
         # running forever, which is precisely what this arm exists to prevent.
         _stop_line_if_unterminated(
-            out_dir, topic_slug, baseline,
+            client_slug, topic_slug, out_dir, baseline,
             "stopped by the operator before this topic reached a verdict",
+            root=run_dir_root,
         )
         # A STOPPED TOPIC COMMITS TOO: the frozen dossier is the expensive half of a blog and
         # the stop contract promises it is kept, so whatever this session left on disk goes to
@@ -1870,9 +2008,14 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=Non
     # `iteration`, and the difference is load bearing rather than cosmetic. The line describes the
     # ORIGINAL bytes, so claiming the new iteration for them says the topic advanced to a draft
     # that was just thrown away. It also decides whether the operator has a door: staleness is
-    # questions.json's iter against the highest iter in status.jsonl, so a restore that stamped
-    # `iteration` pushed the topic past the very form it was keeping and the app refused the
-    # re-submit as stale. Restoring the draft and stranding its form is not a restore.
+    # VERSION **OR** ITERATION since migration 014, and this stamp is what settles the ITERATION
+    # arm, the form's iter against the topic's high-water iter. A restore that stamped `iteration`
+    # pushed the topic past the very form it was keeping and the app refused the re-submit as
+    # stale. Restoring the draft and stranding its form is not a restore. The VERSION arm needs
+    # nothing from this line and holds for free, because A RESTORE COMMITS NO NEW VERSION: it puts
+    # the artifact set back byte for byte, commit_topic sees bytes that match the latest committed
+    # version and inserts no row, so the form's anchor still points at the topic's current
+    # version. That case is 014's own stated reason for keeping the iteration arm at all.
     restored_iter = 1
     # Did a clarified draft actually ship? Read by the finally arm, which cannot see which branch
     # ran. False through every failure path, because none of them ships one.
@@ -2253,10 +2396,14 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=Non
         #
         # KEEPING THE FORM IS THE WHOLE OF THE DOOR, and answers.json is deliberately NOT deleted
         # to open it. A second submit is not refused for being answered: api_answers refuses a
-        # stale form and a live run and never consults answeredness at all, so the form only has
-        # to survive and be iteration-matched, which is what restored_iter above guarantees.
-        # answers.json stays because it is the durable record of what the operator said, and
-        # write_answers overwrites it on the re-submit anyway.
+        # stale form and a live run and never consults answeredness at all, so the form has to
+        # survive and be NOT STALE. Since migration 014 that is two conditions rather than one,
+        # version OR iteration, and BOTH hold on this path. The iteration half is what
+        # restored_iter above guarantees. The version half holds because a restore commits no new
+        # version: the artifact set goes back byte for byte, so commit_topic finds the bytes
+        # unchanged, inserts no blog_versions row, and the form's anchor still names the topic's
+        # current version. answers.json stays because it is the durable record of what the
+        # operator said, and write_answers overwrites it on the re-submit anyway.
         #
         # Where the re-stated verdict names no hold, the form goes, and the two rules agree rather
         # than compete. Nothing is waiting on an answer there, so there is no door to preserve,
@@ -2520,7 +2667,7 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
             out_dir = output_dir(client_slug, topic_slug)
             out_dir.mkdir(parents=True, exist_ok=True)
             _stop_line_if_unterminated(
-                out_dir, topic_slug, baseline,
+                client_slug, topic_slug, out_dir, baseline,
                 "the operator stopped this brand before this topic reached a verdict",
             )
             # ONE COMMIT PER BASELINED TOPIC, after its stopped line lands: a stopped topic

@@ -285,12 +285,20 @@ def _db_form_rows(topic_id):
     created one. Older rounds survive in the table only when answered (sync.commit_topic deletes
     unanswered ones), and they are history, not the form: folding them in would render spent
     questions to the operator and demand re-answers for them on submit.
+
+    version_no rides along on a LEFT JOIN because the anchor the form carries is a UUID, and a
+    UUID is not a thing an admin can read off a screen and match against the draft in front of
+    them. The join is LEFT rather than inner so a form whose version row is somehow unreachable
+    still renders its questions with a null number, exactly as it did before this column existed:
+    a missing display label must never become the thing that hides an outstanding form.
     """
     return db.q(
         """select n.id, n.client_id, n.blog_version_id, n.ref, n.area, n.body,
                   n.why, n.asked_score, n.asked_iter, n.created_at,
-                  exists (select 1 from review_notes r where r.parent_id = n.id)
+                  exists (select 1 from review_notes r where r.parent_id = n.id),
+                  v.version_no
            from review_notes n
+           left join blog_versions v on v.id = n.blog_version_id
            where n.topic_id = %s and n.author = 'evaluator' and n.parent_id is null
              and n.blog_version_id = (
                  select n2.blog_version_id from review_notes n2
@@ -332,12 +340,39 @@ def describe_questions(client_slug, topic_slug, root=None):
     form_iter = next((r[8] for r in rows if r[8] is not None), None)
     form_score = next((r[7] for r in rows if r[7] is not None), None)
     asked = min((r[9] for r in rows if r[9] is not None), default=None)
-    # stale mirrors is_stale, the ITERATION comparison, not the version anchor: is_stale compares
-    # the form's iter against the blog's current iteration, so the record-side twin compares
-    # asked_iter against the status_events high-water iter. The blog_version anchor also goes
-    # stale when a new version lands, but a restore that commits no new version moves the
-    # iteration while keeping the anchor, and the iteration is what today's behavior reads.
-    stale = form_iter != current_iteration(client_slug, topic_slug)
+    # stale is VERSION **OR** ITERATION, and it takes both arms because each one alone misses a
+    # real case the other catches.
+    #
+    # The version anchor is the stronger signal and it is why it leads. review_notes.blog_version_id
+    # is NOT NULL with a composite FK to blog_versions(id, topic_id), so "these questions are about
+    # that exact draft" is a fact the database enforces, while an iteration is a per-topic counter
+    # that merely resembles an identity: schema.sql says so at the table itself, that the anchor is
+    # what makes staleness an FK comparison rather than an integer that looks like one. A revise
+    # that commits a new version while the iteration lands on the same number leaves an
+    # iteration-only check reporting a form as current when it describes a draft that is gone.
+    #
+    # THE ITERATION ARM STAYS BECAUSE A RESTORE COMMITS NO NEW VERSION. The stop-mid-revise path
+    # puts blog.md and eval.md back byte for byte, so no row is added to blog_versions and the
+    # form's anchor still points at the topic's current version, while the iteration has moved on.
+    # Version-only reads that form as current and offers it for answering. That case is the whole
+    # reason this is an OR and not the version comparison the anchor would otherwise justify.
+    #
+    # All four twins compute this identically: the portal fold in portal-data.ts, the sweep's
+    # _PENDING_SQL in client_answers.py, and portal_submit_answers (migration 014). They must not
+    # drift, because a form the portal offers and the RPC then refuses is a client typing answers
+    # into a box that always errors.
+    #
+    # The version arm fires only on a POSITIVE disagreement: an unreadable current version leaves
+    # staleness to the iteration arm rather than hiding an outstanding form behind a failed lookup.
+    form_version = rows[0][2]
+    current_version = db.q(
+        "select id from blog_versions where topic_id = %s order by version_no desc limit 1",
+        (tid,), fetch="val")
+    version_moved = (
+        form_version is not None
+        and current_version is not None
+        and form_version != current_version)
+    stale = version_moved or form_iter != current_iteration(client_slug, topic_slug)
     answered = all(r[10] for r in rows)
     # WHO answered, for the dashboard's rerun affordance. A client answer arrives from the
     # portal with no revise dispatched (the portal has no engine), so the operator needs to
@@ -369,6 +404,23 @@ def describe_questions(client_slug, topic_slug, root=None):
         "asked": asked.isoformat() if asked is not None else None,
         "iter": form_iter,
         "score": form_score,
+        # THE FORM'S VERSION ANCHOR, on the wire. review_notes.blog_version_id is NOT NULL with a
+        # composite FK to blog_versions, so the anchor has always existed in the record; it simply
+        # never left this function, which meant no admin screen could render a form beside the
+        # exact draft it was asked against, and no route could check version agreement at its own
+        # boundary. Both had to infer the pairing from the iteration, and an iteration is a
+        # counter shared by every topic rather than an identity. Purely additive: existing
+        # consumers ignore keys they do not read.
+        #
+        # The anchor now FEEDS the staleness verdict as well as riding beside it: `stale` above is
+        # version OR iteration, so this field is the first half of the answer rather than a label
+        # reported next to it. It is still the identity a caller reads, and `version_no` below is
+        # still only its display label.
+        "blog_version_id": str(rows[0][2]) if rows[0][2] is not None else None,
+        # The human-readable twin of the anchor, for a surface that has to SHOW which draft the
+        # questions belong to. The UUID is the identity and this number is only its label, so a
+        # caller deciding anything reads blog_version_id and never this.
+        "version_no": rows[0][11],
         "questions": [
             {"id": r[3], "area": r[4], "question": r[5], "why": r[6] or ""}
             for r in rows
@@ -402,6 +454,12 @@ def _describe_questions_from_disk(client_slug, topic_slug, root=None):
         "asked": raw.get("asked"),
         "iter": raw.get("iter"),
         "score": raw.get("score"),
+        # A sandbox form never reached blog_versions, so it has no anchor to report and these are
+        # null rather than absent. The keys exist on BOTH paths deliberately: a consumer that has
+        # to branch on whether a key is present at all ends up encoding which read path served it,
+        # and the two paths are supposed to be indistinguishable on the wire.
+        "blog_version_id": None,
+        "version_no": None,
         "questions": raw.get("questions") or [],
         "stale": is_stale(raw, client_slug, topic_slug, root=root),
         "blocking": is_blocking(client_slug, topic_slug, root=root),
@@ -454,7 +512,9 @@ def write_answers(client_slug, topic_slug, submitted, root=None):
     built = []
     missing = []
     for row in rows:
-        row_id, cid, vid, ref, _area, question, _why, _score, _iter, _at, _answered = row
+        # Trailing _version_no absorbs the display column _db_form_rows now joins in. This unpack
+        # is positional against that select list, so the two move together or this raises.
+        row_id, cid, vid, ref, _area, question, _why, _score, _iter, _at, _answered, _version_no = row
         qid = str(ref)
         text = str(by_id.get(qid) or "").strip()
         if not text:

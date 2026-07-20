@@ -233,6 +233,18 @@ def ensure_topic(client_slug: str, topic_slug: str, title: str | None = None) ->
 RESOURCE_BUCKET = "resources"
 
 
+class DuplicateResource(Exception):
+    """A resource with this filename already exists for this client.
+
+    Its own class rather than a RuntimeError because the route has to tell it
+    apart from a storage failure: one is the caller's mistake and answers 409,
+    the other is our infrastructure falling over and answers 502. storage_put
+    and storage_get both raise RuntimeError, so reusing RuntimeError here would
+    force the route to sniff the message text to decide which HTTP status the
+    operator sees.
+    """
+
+
 def _storage(method: str, path: str, data: bytes | None = None,
              ctype: str = "application/octet-stream"):
     cfg = _load_cfg()
@@ -269,17 +281,36 @@ def storage_get(object_path: str) -> bytes:
 
 def resource_add(client_slug: str, name: str, raw: bytes,
                  content_type: str | None = None) -> None:
+    """Index one uploaded resource. A filename already in use is REFUSED.
+
+    This used to upsert on (client_id, name), which meant a second upload of
+    the same filename silently repointed object_path at different bytes and
+    still answered 201, so the client believed they had added a file when they
+    had in fact replaced one. Resources are the knowledge base every run reads,
+    so a silent replacement quietly changes what future blogs are written from.
+    Soon the only uploader is the CLIENT, through a hosted path with no
+    operator watching the request, which is why the refusal is being put in now
+    rather than after that path exists: an overwrite nobody sees is worse than
+    an overwrite an admin at least performed deliberately. Replacing a file is
+    delete then upload, two explicit acts.
+
+    The check runs BEFORE storage_put so a rejected upload leaves no orphaned
+    object behind. It is a read-then-write and not a constraint, so two uploads
+    of the same name racing each other can both pass the check; the unique
+    index on (client_id, name) is what actually stops the second one, and it
+    surfaces as a 500 rather than a 409. That race needs two uploads of one
+    filename within milliseconds of each other and it fails CLOSED, which is
+    the acceptable direction here.
+    """
     cid = client_id(client_slug)
+    if q("select 1 from client_resources where client_id = %s and name = %s",
+         (cid, name), fetch="val"):
+        raise DuplicateResource(name)
     sha = hashlib.sha256(raw).hexdigest()
     storage_put(f"{client_slug}/{sha}", raw)
     q("""insert into client_resources
            (client_id, name, object_path, sha256, size_bytes, content_type)
-         values (%s, %s, %s, %s, %s, %s)
-         on conflict (client_id, name) do update
-           set object_path = excluded.object_path,
-               sha256 = excluded.sha256,
-               size_bytes = excluded.size_bytes,
-               content_type = excluded.content_type""",
+         values (%s, %s, %s, %s, %s, %s)""",
       (cid, name, f"{RESOURCE_BUCKET}/{client_slug}/{sha}", sha, len(raw),
        content_type), fetch="none")
 

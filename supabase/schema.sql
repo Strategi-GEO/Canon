@@ -41,10 +41,15 @@ drop table if exists clients           cascade;
 drop table if exists orgs              cascade;
 
 drop function if exists auth_can_read_client(uuid) cascade;
+drop function if exists auth_can_read_client_slug(text)  cascade;
+drop function if exists auth_can_write_client_slug(text) cascade;
 drop function if exists auth_org_slugs()           cascade;
 drop function if exists auth_is_admin()            cascade;
+drop function if exists portal_submit_answers(text, text, jsonb) cascade;
 drop function if exists portal_suggest_change(text, text, text, text, text, text) cascade;
 drop function if exists portal_reply_comment(text, text, uuid, text) cascade;
+drop function if exists portal_resource_add(text, text, text, bigint, text) cascade;
+drop function if exists portal_resource_remove(text, text) cascade;
 -- BOTH approve signatures. An earlier build of this file created the two-argument form,
 -- and `create or replace` cannot change a signature: it adds an overload. Dropping only
 -- the current one would leave a second, version-blind approve door callable forever, which
@@ -711,15 +716,42 @@ where t.deleted_at is null;
 -- not citable. Answering is a DEMAND at every score. Measured: 4 topics are
 -- currently done at 95/96 WITH current unanswered questions, and a score-based
 -- formula reports every one of them as non-blocking.
+-- `stale` is VERSION **OR** ITERATION, the one rule every reader of staleness now computes:
+-- server/questions.py (describe_questions), the dashboard's portal-data.ts fold,
+-- server/client_answers.py (_PENDING_SQL, which asks the complement and so reads "version
+-- matches AND iteration matches"), and portal_submit_answers as replaced by migration 014.
+--
+-- The anchor leads because it is the stronger signal, for the reason stated at review_notes
+-- itself: blog_version_id is NOT NULL with a composite FK, so it makes staleness an FK
+-- comparison rather than an integer that resembles one. THE ITERATION ARM IS WHAT THIS VIEW
+-- GAINED, and it is not redundant with the anchor: a RESTORE COMMITS NO NEW VERSION. The
+-- stop-mid-revise path puts blog.md and eval.md back byte for byte, adding no blog_versions
+-- row, so the anchor still matches while the iteration has moved past it. Version-only reads
+-- that form as current, which is exactly the form the app refuses.
+--
+-- `is distinct from` on the iteration arm makes a row carrying no asked_iter stale, matching
+-- what the app twins compute: a null form iter never equals the high-water integer.
+--
+-- Per ROW, not per form, which is this view's pre-existing shape: the app twins take the
+-- form's iter as the first non-null asked_iter across the round. Nothing reads this view
+-- today (it is revoked from authenticated and no query in the engine or dashboard names it),
+-- so it is kept in step with the rule rather than being allowed to drift into a sixth,
+-- disagreeing definition of the same word.
 create view v_review_notes as
 select n.*,
        (n.blog_version_id <> (select v.id from blog_versions v
                                where v.topic_id = n.topic_id
-                               order by v.version_no desc limit 1)) as stale,
+                               order by v.version_no desc limit 1)
+        or n.asked_iter is distinct from
+           coalesce((select max(s.iter) from status_events s
+                      where s.topic_id = n.topic_id), 0)) as stale,
        exists (select 1 from review_notes r where r.parent_id = n.id) as answered,
        (n.blog_version_id = (select v.id from blog_versions v
                               where v.topic_id = n.topic_id
                               order by v.version_no desc limit 1)
+        and n.asked_iter is not distinct from
+            coalesce((select max(s.iter) from status_events s
+                       where s.topic_id = n.topic_id), 0)
         and not exists (select 1 from review_notes r where r.parent_id = n.id)) as blocking
 from review_notes n
 where n.parent_id is null;
@@ -776,8 +808,43 @@ create or replace function auth_can_read_client(cid uuid) returns boolean
       )
 $$;
 
+-- The SLUG-keyed pair (015, folded in here). Storage object keys carry the client SLUG in
+-- their first path segment, never the client uuid, so a policy on storage.objects cannot
+-- reuse auth_can_read_client. Same SECURITY DEFINER reasoning as its uuid sibling:
+-- org_membership is a security_invoker view over clients, which carries its own RLS, so an
+-- invoker function would answer a question about what the caller can SELECT rather than
+-- about what they are a member of.
+create or replace function auth_can_read_client_slug(cslug text) returns boolean
+  language sql stable security definer set search_path = public as $$
+  select auth_is_admin()
+      or exists (
+        select 1 from org_membership m
+        where m.client_slug = cslug
+          and m.org_slug in (select auth_org_slugs())
+      )
+$$;
+
+-- The WRITE predicate, deliberately not the read predicate under another name. It drops the
+-- admin bypass, because only clients upload and manage resources, and it requires the
+-- writing role, matching every other portal write door (portal_suggest_change,
+-- portal_approve_blog): a viewer is a read seat.
+create or replace function auth_can_write_client_slug(cslug text) returns boolean
+  language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from org_membership m
+    join org_members om on om.org_slug = m.org_slug
+    where m.client_slug = cslug
+      and om.user_id = auth.uid()
+      and om.role in ('admin', 'commenter')
+  )
+$$;
+
 revoke all on function auth_is_admin(), auth_org_slugs(), auth_can_read_client(uuid) from anon;
+revoke all on function auth_can_read_client_slug(text), auth_can_write_client_slug(text)
+  from anon;
 grant execute on function auth_can_read_client(uuid) to authenticated;
+grant execute on function auth_can_read_client_slug(text)  to authenticated;
+grant execute on function auth_can_write_client_slug(text) to authenticated;
 
 -- Views must run as invoker or they leak (a view runs as its owner by default).
 alter view org_membership set (security_invoker = true);
@@ -932,6 +999,213 @@ grant select (id, topic_id, client_id, blog_version_id, parent_id, author, selec
 revoke select on topic_rollup   from authenticated;   -- score, iterations
 revoke select on topics_live    from authenticated;   -- topics.* incl dossier/review_note
 revoke select on v_review_notes from authenticated;   -- review_notes.* incl asked_score
+
+-- ---------------------------------------------------------------------------
+-- The client answer write (002, hardened by 003, tightened by 014)
+-- ---------------------------------------------------------------------------
+-- portal_submit_answers is the client's ONE write in the question loop: the portal posts an
+-- answer per question on the evaluator's current form, and this function records each answer
+-- as a reply row under the question it answers. IT WAS NEVER IN THIS FILE AT ALL, which is the
+-- same class of defect the column boundary above records for 003: the live database has held
+-- it since 002 while every fresh build came up without the function the answer form posts to,
+-- so a new teammate's database refused the one write the whole loop is built on. The body
+-- below is 014's, because 014 is the current definition and no earlier one is worth
+-- reproducing beside it.
+--
+-- STALENESS IS VERSION **OR** ITERATION, which is the same rule v_review_notes computes above
+-- and the same rule the three application readers compute: server/questions.py
+-- (describe_questions), the dashboard's portal-data.ts fold, and server/client_answers.py
+-- (_PENDING_SQL, which asks the complement and so reads "version matches AND iteration
+-- matches"). Five readers of one word, so a sixth definition here would be a disagreement
+-- rather than a restatement.
+--
+-- THE ANCHOR LEADS because review_notes.blog_version_id is NOT NULL with a composite FK to
+-- blog_versions(id, topic_id), so "these questions are about that exact draft" is a fact the
+-- database enforces rather than an integer that resembles one. It was available to this
+-- function from the beginning and went unread until 014, and a revise that commits a new
+-- version while the iteration lands on the same number is what it catches.
+--
+-- THE ITERATION ARM IS NOT REDUNDANT WITH THE ANCHOR, and this is the part a reader is
+-- tempted to drop on the FK's authority. A RESTORE COMMITS NO NEW VERSION: the stop-mid-revise
+-- path puts blog.md and eval.md back byte for byte, so no blog_versions row is added and the
+-- form's anchor still points at the topic's current version while the iteration has moved past
+-- it. A version-only check reads that form as current and accepts answers about a draft the
+-- blog has already moved on from, which is why the rule is OR rather than the pure anchor
+-- comparison the FK would otherwise justify.
+create or replace function portal_submit_answers(
+  p_client_slug text,
+  p_topic_slug  text,
+  p_answers     jsonb
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid             uuid := auth.uid();
+  v_is_admin        boolean;
+  v_is_member       boolean;
+  v_cid             uuid;
+  v_demo            boolean;
+  v_tid             uuid;
+  v_form_version    uuid;
+  v_current_version uuid;
+  v_form_iter       int;
+  v_current_iter    int;
+  v_row             record;
+  v_answer          text;
+  v_missing         text[] := '{}';
+  v_out             jsonb  := '[]'::jsonb;
+begin
+  if v_uid is null then
+    raise exception 'PORTAL:AUTH:not authenticated';
+  end if;
+  if p_answers is null or jsonb_typeof(p_answers) <> 'array' then
+    raise exception 'PORTAL:BADBODY:answers must be a JSON array of {id, answer}';
+  end if;
+
+  select c.id, c.demo_mode into v_cid, v_demo
+  from clients c
+  where c.slug = p_client_slug and c.deleted_at is null;
+
+  v_is_admin := exists (select 1 from app_admins a where a.user_id = v_uid);
+  v_is_member := v_cid is not null and (
+      v_is_admin
+      or exists (
+          select 1
+          from org_membership m
+          join org_members om on om.org_slug = m.org_slug
+          where m.client_id = v_cid and om.user_id = v_uid));
+
+  -- A NON-MEMBER learns nothing: a brand that does not exist and a brand in someone else's
+  -- org answer identically. This is the parity the read path already has (RLS folds both to
+  -- an empty result), matched on the write path so the two cannot be told apart. 003 added
+  -- this and it is carried forward here unchanged.
+  if not v_is_member then
+    raise exception 'PORTAL:NOTFOUND:no blog to answer for this account';
+  end if;
+
+  -- A member who lacks the answering role is told so plainly: they can already see the brand,
+  -- so this reveals nothing, and role vocabulary stays out of the message.
+  if not (v_is_admin or exists (
+      select 1 from org_membership m
+      join org_members om on om.org_slug = m.org_slug
+      where m.client_id = v_cid and om.user_id = v_uid
+        and om.role in ('admin', 'commenter'))) then
+    raise exception 'PORTAL:ROLE:this account is not allowed to answer for this brand';
+  end if;
+
+  if v_demo then
+    raise exception 'PORTAL:DEMO:demo brands never run a real revise, so answers are not accepted';
+  end if;
+
+  select t.id into v_tid
+  from topics t
+  where t.client_id = v_cid and t.slug = p_topic_slug and t.deleted_at is null;
+  if v_tid is null then
+    raise exception 'PORTAL:NOTFOUND:no blog to answer for this account';
+  end if;
+
+  -- The current form: the latest asking round, exactly _db_form_rows' definition in
+  -- server/questions.py. Older rounds are history, not the form.
+  select n.blog_version_id into v_form_version
+  from review_notes n
+  where n.topic_id = v_tid and n.author = 'evaluator' and n.parent_id is null
+  order by n.created_at desc
+  limit 1;
+  if v_form_version is null then
+    raise exception 'PORTAL:NOTFOUND:the evaluator asked nothing here';
+  end if;
+
+  -- Serialize concurrent submits on the form's parent rows: the loser of this lock
+  -- re-reads after the winner commits and refuses below as already answered.
+  perform 1
+  from review_notes n
+  where n.topic_id = v_tid and n.author = 'evaluator' and n.parent_id is null
+    and n.blog_version_id = v_form_version
+  for update;
+
+  -- The topic's current version, by version_no and not by committed_at: version_no carries
+  -- unique (topic_id, version_no), so this ordering is total, while two rows can share a
+  -- timestamp and leave "the current version" decided by whichever the planner returned.
+  -- Every other reader of "the current draft" in this codebase selects it exactly this way.
+  select v.id into v_current_version
+  from blog_versions v
+  where v.topic_id = v_tid
+  order by v.version_no desc
+  limit 1;
+
+  select n.asked_iter into v_form_iter
+  from review_notes n
+  where n.topic_id = v_tid and n.author = 'evaluator' and n.parent_id is null
+    and n.blog_version_id = v_form_version and n.asked_iter is not null
+  order by n.created_at, n.ref
+  limit 1;
+
+  select coalesce(max(s.iter), 0) into v_current_iter
+  from status_events s
+  where s.topic_id = v_tid;
+
+  -- VERSION OR ITERATION, the rule this section's header states, in the order it argues it.
+  -- The version arm fires only where a current version was actually found: v_current_version
+  -- is null only if the topic has no blog_versions row at all, which the NOT NULL FK on the
+  -- form's own anchor makes unreachable while a form exists, and refusing on a failed lookup
+  -- would turn a missing row into a client who cannot answer anything.
+  --
+  -- `is distinct from` on the iteration arm is deliberate and pre-existing: a form carrying no
+  -- asked_iter at all is stale, which is what the app twins compute too (a null form iter
+  -- never equals the high-water integer).
+  if (v_current_version is not null and v_form_version <> v_current_version)
+     or (v_form_iter is distinct from v_current_iter) then
+    raise exception 'PORTAL:STALE:these questions describe an earlier draft; the editorial team has since moved the article on';
+  end if;
+
+  if exists (
+      select 1
+      from review_notes n
+      where n.topic_id = v_tid and n.author = 'evaluator' and n.parent_id is null
+        and n.blog_version_id = v_form_version
+        and exists (select 1 from review_notes r where r.parent_id = n.id)) then
+    raise exception 'PORTAL:ANSWERED:this form has already been answered';
+  end if;
+
+  for v_row in
+    select n.id, n.client_id, n.blog_version_id, n.ref, n.body
+    from review_notes n
+    where n.topic_id = v_tid and n.author = 'evaluator' and n.parent_id is null
+      and n.blog_version_id = v_form_version
+    order by n.created_at, n.ref
+  loop
+    select btrim(coalesce(a.elem ->> 'answer', '')) into v_answer
+    from jsonb_array_elements(p_answers) a(elem)
+    where a.elem ->> 'id' = v_row.ref
+    limit 1;
+
+    if v_answer is null or v_answer = '' then
+      v_missing := v_missing || coalesce(v_row.ref, '?');
+    else
+      insert into review_notes
+        (topic_id, client_id, blog_version_id, parent_id, author, author_id, body)
+      values
+        (v_tid, v_row.client_id, v_row.blog_version_id, v_row.id, 'client', v_uid, v_answer);
+      v_out := v_out || jsonb_build_object(
+        'id', v_row.ref, 'question', v_row.body, 'answer', v_answer);
+    end if;
+  end loop;
+
+  if array_length(v_missing, 1) is not null then
+    raise exception 'PORTAL:INCOMPLETE:%', array_to_string(v_missing, ',');
+  end if;
+
+  return jsonb_build_object(
+    'slug', p_topic_slug,
+    'answered_at', now(),
+    'answers', v_out);
+end
+$$;
+
+revoke all on function portal_submit_answers(text, text, jsonb) from public, anon;
+grant execute on function portal_submit_answers(text, text, jsonb) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- The client review writes (005): three SECURITY DEFINER gates
@@ -1274,6 +1548,268 @@ revoke all on function portal_approve_blog(text, text, uuid) from public, anon;
 grant execute on function portal_approve_blog(text, text, uuid) to authenticated;
 
 -- ---------------------------------------------------------------------------
+-- The client resource write door (016, folded in here)
+-- ---------------------------------------------------------------------------
+-- The index half of a resource upload. The BYTES went browser -> Storage directly, governed by
+-- 015's resources_insert_scoped, because Vercel's 4.5 MB body cap makes proxying a 25 MiB file
+-- impossible. This function records the row that makes those bytes findable.
+--
+-- It is a function rather than an INSERT grant because `authenticated` holds SELECT and nothing
+-- else on every table here, and RLS filters ROWS without stopping a caller from writing a row
+-- that satisfies the filter. It is portal_ rather than admin_ because ONLY clients upload and
+-- manage resources, so it reuses auth_can_write_client_slug, which has no admin bypass, rather
+-- than answering that question a second time.
+--
+-- IT TAKES A SLUG AND A SHA, NEVER AN object_path. A caller-supplied path is the pointer to the
+-- bytes themselves: `resources/<other-brand>/<sha>` would index another brand's private
+-- document into this brand's knowledge base while passing every check that looked at client_id.
+-- The path is BUILT from the brand this call is authorised for, so the only object a caller can
+-- index is one they were permitted to upload.
+--
+-- A FILENAME ALREADY IN USE IS REFUSED AND NEVER UPSERTED, which is db.resource_add's rule and
+-- this is the path its docstring was written for: the client uploads with no operator watching
+-- the request, and an overwrite nobody sees silently changes what future blogs are written
+-- from. Replacing a file is delete then upload, two visible acts.
+create or replace function portal_resource_add(
+  p_client_slug  text,
+  p_name         text,
+  p_sha256       text,
+  p_size_bytes   bigint,
+  p_content_type text default null
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_cid   uuid;
+  v_path  text;
+  v_other text;
+  v_out   jsonb;
+  v_con   text;
+begin
+  if auth.uid() is null then
+    raise exception 'PORTAL:AUTH:not authenticated';
+  end if;
+
+  -- Authorise before existence, the ordering 003 established: a refusal that differs by scope
+  -- is an enumeration oracle. The predicate answers false for an unknown slug, a soft-deleted
+  -- brand, a non-member and a viewer seat, and all four get this one sentence.
+  if not auth_can_write_client_slug(p_client_slug) then
+    raise exception 'PORTAL:NOTFOUND:no such brand for this account';
+  end if;
+
+  select c.id into v_cid from clients c
+   where c.slug = p_client_slug and c.deleted_at is null;
+  if v_cid is null then
+    raise exception 'PORTAL:NOTFOUND:no such brand for this account';
+  end if;
+
+  -- Shape checks mirroring the table's constraints, so a malformed argument is a sentence
+  -- rather than a check violation reaching the browser as a 500.
+  if coalesce(btrim(p_name), '') = '' then
+    raise exception 'PORTAL:BLANK:a resource needs a filename';
+  end if;
+  if length(p_name) > 255 then
+    raise exception 'PORTAL:BLANK:that filename is over 255 characters, which no filename is';
+  end if;
+  if p_sha256 is null or p_sha256 !~ '^[0-9a-f]{64}$' then
+    raise exception 'PORTAL:BADBODY:sha256 must be 64 lowercase hex characters';
+  end if;
+  if p_size_bytes is null or p_size_bytes < 0 then
+    raise exception 'PORTAL:BADBODY:size_bytes must be a non-negative byte count';
+  end if;
+  -- MAX_RESOURCE_BYTES, stated where a browser cannot route around it: the upload went
+  -- straight to Storage, so no server of ours measured the file.
+  if p_size_bytes > 26214400 then
+    raise exception 'PORTAL:TOOLARGE:that file is over 25 MiB, which is the resource limit';
+  end if;
+
+  v_path := 'resources/' || p_client_slug || '/' || p_sha256;
+
+  select cr.name into v_other from client_resources cr
+   where cr.client_id = v_cid and cr.name = p_name;
+  if v_other is not null then
+    raise exception 'PORTAL:EXISTS:a resource named % already exists for this brand; delete it first or upload under a different name', p_name;
+  end if;
+
+  -- object_path is GLOBALLY unique and content-addressed, so one brand uploading identical
+  -- bytes under two names collides with itself. (Two brands cannot collide: the slug is inside
+  -- the path.) The clean outcome is to refuse and name the file it already is, because two rows
+  -- sharing one object would be broken by the name-keyed delete, which removes the Storage
+  -- object and would pull the bytes out from under the surviving row.
+  select cr.name into v_other from client_resources cr where cr.object_path = v_path;
+  if v_other is not null then
+    raise exception 'PORTAL:DUPLICATEBYTES:this file is already stored for this brand as %; upload it once under the name you want', v_other;
+  end if;
+
+  insert into client_resources
+    (client_id, name, object_path, sha256, size_bytes, content_type)
+  values
+    (v_cid, p_name, v_path, p_sha256, p_size_bytes, nullif(btrim(coalesce(p_content_type, '')), ''))
+  returning jsonb_build_object(
+              'name', name,
+              'size', size_bytes,
+              'modified', uploaded_at,
+              'content_type', coalesce(content_type, ''))
+       into v_out;
+  return v_out;
+
+exception
+  -- The race db.resource_add leaves open (its own comment concedes it surfaces as a 500): two
+  -- uploads of one filename milliseconds apart both pass the pre-checks and the index decides.
+  -- Re-raised as the SAME code the pre-check uses, so a race and a plain duplicate are one
+  -- answer. CONSTRAINT_NAME says which unique fired.
+  when unique_violation then
+    get stacked diagnostics v_con = constraint_name;
+    if v_con = 'client_resources_object_path_key' then
+      raise exception 'PORTAL:DUPLICATEBYTES:this file is already stored for this brand under another name; upload it once under the name you want';
+    end if;
+    raise exception 'PORTAL:EXISTS:a resource named % already exists for this brand; delete it first or upload under a different name', p_name;
+end
+$$;
+
+-- DELIBERATELY NOT CHECKED: that the object exists in the bucket. A definer function's reach
+-- into storage.objects depends on whether its owner bypasses RLS, and the failure direction is
+-- the bad one: an empty read for a permissions reason refuses every upload and kills the
+-- feature. An index row with no bytes behind it is a lesser fault, scoped to the brand that
+-- created it and removable by the delete they already have.
+
+revoke all on function portal_resource_add(text, text, text, bigint, text) from public, anon;
+grant execute on function portal_resource_add(text, text, text, bigint, text) to authenticated;
+
+-- The matching REMOVE, and the reason a function has to mediate a delete the storage policy
+-- below already authorises. resources_delete_scoped hands a client member a real capability over
+-- the bytes: a browser holding it deletes the object from the bucket with no code of ours
+-- involved. It cannot delete the matching INDEX row by any path that exists, because
+-- `authenticated` holds SELECT and nothing else on client_resources. So the policy alone grants
+-- exactly half a delete, and the destructive half: the bytes are gone, the row is still listed,
+-- and the download route answers 502 for a file the client believes they removed.
+--
+-- Both halves happen HERE, in one call and one transaction, so the two cannot diverge. This does
+-- not take the raw capability away and is not meant to, since a client who deletes the object
+-- directly still strands the row and no database rule stops them. It makes the whole delete the
+-- easy path and the only one the portal offers, which is the difference between a divergence that
+-- happens by accident and one someone has to go out of their way to cause.
+--
+-- IT TAKES A SLUG AND A NAME, NEVER AN object_path, for the reason portal_resource_add states
+-- above and with more force: here the path would point at bytes this function DELETES with the
+-- definer's own authority, so `resources/<other-brand>/<sha>` would destroy another client's
+-- document. The path used below is the one already recorded on the row this call was authorised
+-- to remove.
+create or replace function portal_resource_remove(
+  p_client_slug text,
+  p_name        text
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_cid    uuid;
+  v_path   text;
+  v_bucket text;
+  v_key    text;
+  v_gone   int;
+begin
+  if auth.uid() is null then
+    raise exception 'PORTAL:AUTH:not authenticated';
+  end if;
+
+  -- Authorise before existence, the ordering portal_resource_add uses above: a refusal that
+  -- differs by scope is an enumeration oracle. The predicate answers false for an unknown slug,
+  -- a soft-deleted brand, a non-member and a viewer seat, and all four get this one sentence.
+  if not auth_can_write_client_slug(p_client_slug) then
+    raise exception 'PORTAL:NOTFOUND:no such brand for this account';
+  end if;
+
+  select c.id into v_cid from clients c
+   where c.slug = p_client_slug and c.deleted_at is null;
+  if v_cid is null then
+    raise exception 'PORTAL:NOTFOUND:no such brand for this account';
+  end if;
+
+  -- NO SHAPE CHECKS ON p_name, and the asymmetry with portal_resource_add is deliberate. Those
+  -- exist there because that function WRITES, so a blank or over-long name would reach the
+  -- browser as a check-constraint 500 rather than a sentence. This one only MATCHES: a name
+  -- blank, over-long, or simply not one of this brand's matches no row and earns the same
+  -- refusal, and one sentence for every miss is what keeps it from saying which miss was hit.
+  --
+  -- Keyed on (client_id, name), the pair the unique constraint uses, so this deletes one row or
+  -- none. object_path comes back from the row itself, which is what makes the storage half safe:
+  -- it is a value this call just proved the caller owns.
+  delete from client_resources cr
+   where cr.client_id = v_cid and cr.name = p_name
+   returning cr.object_path into v_path;
+  if v_path is null then
+    raise exception 'PORTAL:NOTFOUND:no resource named % for this brand', p_name;
+  end if;
+
+  -- object_path carries the bucket prefix (`resources/<slug>/<sha256>`) while storage.objects
+  -- keys an object WITHOUT it, so the first segment is split off exactly as server/app.py and
+  -- sync.materialize_client split it. On the FIRST slash only, because the key contains a slash
+  -- of its own and has to survive intact. The bucket is read from the path rather than hardcoded
+  -- so a row written under a different bucket cannot have its key applied to this one.
+  v_bucket := split_part(v_path, '/', 1);
+  v_key    := substr(v_path, length(v_bucket) + 2);
+
+  -- A MISSING OBJECT IS NOT AN ERROR, and it must not be. portal_resource_add says plainly that
+  -- it does not verify the bytes exist before indexing them, so an index row with nothing behind
+  -- it is an admitted state of this system. Raising on a zero row count would make that row
+  -- permanently undeletable, leaving a listing entry the client can neither download nor remove.
+  --
+  -- Whether this function reaches storage.objects at all depends on whether its owner bypasses
+  -- RLS, the same uncertainty the note under portal_resource_add names, and that uncertainty
+  -- resolves into TWO DIFFERENT FAILURES rather than one. Conflating them is what put a bug here:
+  --
+  --   RLS FILTERS THE ROW. A legal statement matches nothing, row_count is 0, the index row still
+  --   goes, the object is orphaned, and the function returns object_removed = false. That is the
+  --   state the system is already in today, so the false makes it visible rather than silent.
+  --
+  --   THE OWNER LACKS THE DELETE PRIVILEGE. The statement does not come back empty, it RAISES,
+  --   and unhandled that raise aborted the function and rolled the index delete back with it, so
+  --   the client read an error and the resource could not be removed by any path the product
+  --   offers: the permanently undeletable row the rule above refuses to cause, from the far side.
+  --
+  -- The nested block makes the second case leave through the first case's signal. A plpgsql block
+  -- with an exception clause is a subtransaction, so a raise rolls back to the block's entry and
+  -- no further, and the index delete the product's readers depend on survives the storage half
+  -- failing. `others` is caught deliberately: every way this statement raises is a way the object
+  -- did not get removed, which is exactly what the return value says, and the warning carries the
+  -- SQLSTATE to the log so one false does not hide three causes. v_gone is assigned 0 because the
+  -- raise precedes `get diagnostics`, and a null v_gone would return JSON null for a boolean.
+  begin
+    delete from storage.objects o
+     where o.bucket_id = v_bucket and o.name = v_key;
+    get diagnostics v_gone = row_count;
+  exception
+    when others then
+      v_gone := 0;
+      raise warning 'portal_resource_remove: storage delete of %/% failed (%: %); the index row is removed and the object is orphaned', v_bucket, v_key, sqlstate, sqlerrm;
+  end;
+
+  -- The OUTER block has no exception handler, unlike portal_resource_add, because there is no
+  -- constraint here to violate: two callers removing one name concurrently is already correct,
+  -- one delete returning the row and the other raising NOTFOUND. The handler above is scoped to
+  -- the storage statement alone, because widening it would swallow that NOTFOUND and the
+  -- authorisation refusals, which the caller has to see.
+  return jsonb_build_object('name', p_name, 'object_removed', v_gone > 0);
+end
+$$;
+
+-- WHAT "DELETING THE OBJECT" MEANS HERE, PRECISELY. Supabase Storage keeps an object's metadata
+-- in storage.objects and its bytes in the backing store, and it is the storage.objects row every
+-- reader resolves: the signed-URL route, a direct download and a bucket listing all answer
+-- not-found the moment the row is gone. Removing the row is a complete delete as far as this
+-- product, its clients and its agents can observe. What it does not do is remove the stored
+-- bytes, so a blob no row references can survive in the backing store. It costs storage, it is
+-- content-addressed, and it is unreachable without a row pointing at it, which is a far smaller
+-- fault than the index and the bucket disagreeing about what a client owns.
+
+revoke all on function portal_resource_remove(text, text) from public, anon;
+grant execute on function portal_resource_remove(text, text) to authenticated;
+
+-- ---------------------------------------------------------------------------
 -- The approved lock (013). An approved article is locked, for everyone.
 -- ---------------------------------------------------------------------------
 -- The approval stamp records that the client accepted THESE BYTES. Any edit after it makes the
@@ -1341,6 +1877,119 @@ drop trigger if exists blog_comments_approved_lock on blog_comments;
 create trigger blog_comments_approved_lock
   before insert on blog_comments
   for each row execute function refuse_comment_when_approved();
+
+-- ---------------------------------------------------------------------------
+-- Storage RLS for the Resources bucket (015, folded in here)
+-- ---------------------------------------------------------------------------
+-- Vercel caps a serverless request body at 4.5 MB on every plan and MAX_RESOURCE_BYTES is
+-- 25 MiB, so a resource upload CANNOT be proxied through a Route Handler: the platform
+-- rejects it before our code runs. The browser therefore talks to Storage directly with the
+-- signed-in user's JWT, and these policies are the only thing standing between one client's
+-- private documents and another's. db.resource_add writes bytes at `<client_slug>/<sha256>`
+-- inside bucket `resources`, so the scope key is the FIRST PATH SEGMENT.
+--
+-- The storage schema is created by supabase/storage-api, not by this file. Fail with the
+-- reason rather than with a bare "relation does not exist", exactly as the version check does.
+do $$
+begin
+  if to_regclass('storage.objects') is null then
+    raise exception
+      'geo-factory storage policies need the Supabase storage schema; storage.objects was '
+      'not found. This schema targets a Supabase database, not bare Postgres.';
+  end if;
+end $$;
+
+-- storage-api resolves the bucket row on the CALLER's connection for several object
+-- operations, so with no policy an upload fails as bucket-not-found rather than as a
+-- permissions error. This exposes one row and only the fact that a private bucket named
+-- `resources` exists. It grants no reach over any OBJECT.
+drop policy if exists resources_bucket_visible on storage.buckets;
+create policy resources_bucket_visible on storage.buckets for select to authenticated
+  using (id = 'resources');
+
+-- The 25 MiB cap, stated where Storage itself enforces it. The insert policy below is what
+-- makes this line necessary: once the browser PUTs to Storage directly, no server of ours ever
+-- weighs the bytes, and portal_resource_add's size check runs AFTER the upload has landed and
+-- reads a number the BROWSER supplied, so it is not a cap on the upload at all. A client can
+-- PUT at the project default, which is 50 MB on a new project, then never call the index RPC
+-- or call it declaring 1024 bytes, and an object nobody indexed is invisible to every query
+-- this app makes.
+--
+-- file_size_limit is checked by storage-api during the upload, before any SQL of ours runs and
+-- against the bytes themselves rather than against a claim about them, which makes it the only
+-- statement of this limit a caller cannot route around. 26214400 is MAX_RESOURCE_BYTES in
+-- server/clients.py and the bound on the client_resources.size_bytes check constraint above;
+-- the three move together or the smallest one silently becomes the real cap.
+--
+-- NO allowed_mime_types, DELIBERATELY. A resource corpus is a client's knowledge base and is
+-- heterogeneous by design, and the set is open because the next client arrives with a format
+-- no list written today predicted, so an allowlist would reject documents a client is entitled
+-- to upload and the failure would look like a broken portal rather than a policy. It would buy
+-- little in return: a MIME type is a header the caller sends rather than a property of the
+-- bytes, so relabelling the file defeats it. Size is the opposite, being the one property of an
+-- upload that cannot be misdeclared to Storage, so it carries this alone.
+--
+-- An UPDATE and not an INSERT, because supabase/migrate.py owns creating this bucket and a
+-- second creator here would race it. ZERO ROWS IS THE NORMAL FRESH-BUILD OUTCOME rather than a
+-- failure: this file runs BEFORE upload_resources creates the bucket, so raising would break
+-- every fresh build, and migrate.py's create payload carries this same number so such a project
+-- is born with the cap already set. The notice exists because the other way to reach zero rows
+-- is a live database where the cap is now NOT set, and that must never pass silently.
+do $$
+declare
+  n_buckets int;
+begin
+  update storage.buckets set file_size_limit = 26214400 where id = 'resources';
+  get diagnostics n_buckets = row_count;
+  if n_buckets = 0 then
+    raise notice
+      'no file_size_limit was set: no row of storage.buckets matched id = ''resources''. '
+      'Either the bucket does not exist yet, which is EXPECTED here because this file runs '
+      'before supabase/migrate.py creates it carrying the same 26214400 limit, or this role '
+      'cannot reach storage.buckets, which is owned by supabase_storage_admin. On a live '
+      'database the second case means the 25 MiB cap is UNSET and a client can upload at the '
+      'project default; re-run this statement from the Supabase SQL editor.';
+  end if;
+end $$;
+
+-- Every policy is scoped to bucket_id = 'resources' FIRST, so it never governs a bucket this
+-- project adds later. (storage.foldername(name))[1] is matched by EQUALITY against a slug the
+-- caller holds membership for: no wildcard and no prefix match, so `acme` and `acme-holdings`
+-- are unrelated values and a caller with no membership satisfies nothing.
+--
+-- SELECT is admin-inclusive because the admin console lists a brand's knowledge base.
+drop policy if exists resources_read_scoped on storage.objects;
+create policy resources_read_scoped on storage.objects for select to authenticated
+  using (
+    bucket_id = 'resources'
+    and auth_can_read_client_slug((storage.foldername(name))[1])
+  );
+
+-- INSERT and DELETE are client-only and role-gated. The depth check exists because storage
+-- keys are literal strings never validated against the client_slug domain: `mine/../yours/x`
+-- has first segment `mine`, so it could never be read as another brand's, but every
+-- legitimate key is exactly one folder deep and requiring that removes the question.
+drop policy if exists resources_insert_scoped on storage.objects;
+create policy resources_insert_scoped on storage.objects for insert to authenticated
+  with check (
+    bucket_id = 'resources'
+    and array_length(storage.foldername(name), 1) = 1
+    and auth_can_write_client_slug((storage.foldername(name))[1])
+  );
+
+drop policy if exists resources_delete_scoped on storage.objects;
+create policy resources_delete_scoped on storage.objects for delete to authenticated
+  using (
+    bucket_id = 'resources'
+    and auth_can_write_client_slug((storage.foldername(name))[1])
+  );
+
+-- NO UPDATE POLICY, DELIBERATELY. An UPDATE on storage.objects governs overwriting a key
+-- (x-upsert) and moving one. Objects here are content-addressed at `<slug>/<sha256>`, so
+-- different bytes are a different key and an overwrite could never legitimately change
+-- anything. The product rule agrees from the other end: a duplicate filename WARNS AND IS
+-- REJECTED, never overwritten, and an UPDATE policy would hand the browser exactly the
+-- overwrite that rule forbids. Replacing a resource is delete then insert, two visible acts.
 
 -- A one-time REVOKE is point-in-time, and Supabase ships default privileges that
 -- GRANT every LATER-created table to anon. Without this, the next migration

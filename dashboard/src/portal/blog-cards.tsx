@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils";
  *                   finished, read it and approve it, or say what should change by leaving a
  *                   note on the text itself. (client_review)
  *   FrozenRow    -- quiet rows with a lock. Nothing to do here; saying so calmly is the job.
- *                   (changes_requested, and a spent hold the client has already answered)
+ *                   (changes_requested, answers_submitted, and the in-flight slivers)
  *   ApprovedCard -- a clean reading library. White cards, dates, reading time, a quiet mark.
  *                   (approved and published, both locked and both only to be read)
  *
@@ -112,10 +112,16 @@ export function ReadyCard({ card, showBrand }: { card: PortalBlogCard; showBrand
 }
 
 /**
- * The quiet row, for the two states where the article is with the team and the client is not
- * being asked for anything: a change request they filed, and a hold whose form they have
- * already answered. The tag says which; the sentence beside it says when they acted, because
- * "what happened to my article" is answered by the tag and "how long ago" is not.
+ * The quiet row, for every state where the article is with the team and the client is not being
+ * asked for anything: a change request they filed, a form they have already answered
+ * (`answers_submitted`), and the two in-flight slivers portal-data.ts keeps visible. The tag says
+ * which; the sentence beside it says when they acted, because "what happened to my article" is
+ * answered by the tag and "how long ago" is not.
+ *
+ * THE SENTENCE READS OFF `card.answered`, NOT OFF THE STATE, and that is what makes this one of
+ * the few sites the new state needed no edit for. The flag means "the client's answers are
+ * recorded", portal-data.ts sets it for every pre-send state including `answers_submitted`, and
+ * the row asks the flag rather than listing the states that carry it.
  */
 export function FrozenRow({ card, showBrand }: { card: PortalBlogCard; showBrand: boolean }) {
   const { isSingleBrand } = usePortal();
@@ -123,7 +129,12 @@ export function FrozenRow({ card, showBrand }: { card: PortalBlogCard; showBrand
     card.state === "changes_requested"
       ? `you asked for changes ${formatRelative(card.date)}`
       : card.answered
-        ? `answers received ${formatRelative(card.date)}, our team is applying your input`
+        ? // "WITH our team", never "applying", and the weakening is the same correction the
+          // detail page's with-the-team copy already carries. Nothing picks a portal submission
+          // up on default configuration until an operator clicks Rerun, so a present-tense claim
+          // that the answers are being applied can be false for as long as the client is looking
+          // at the row. What is unconditionally true is where their answers are.
+          `answers received ${formatRelative(card.date)}, they are with our editorial team`
         : null;
   return (
     <Link

@@ -1,5 +1,6 @@
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { unauthenticated, verifyRequest } from "@/lib/server/auth";
-import { detail, json } from "@/lib/server/http";
+import { detail, hostedWriteRefused, json } from "@/lib/server/http";
 import { rpc } from "@/lib/server/postgrest";
 import { adminRpcError } from "@/lib/server/admin-rpc";
 import type { UploadBlogResult } from "@/types";
@@ -28,6 +29,15 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ slug: string; topic: string }> },
 ) {
+  // The hosted site performs no admin write, and hostedWriteRefused carries the whole reasoning.
+  // HOSTED_READONLY is false in the local app, so the upload below is unchanged there. This route
+  // is also the one whose hosted answer was always the weaker half of the pair, since gates.py is
+  // a subprocess and Vercel has none: sending the operator to the app gets the article checked as
+  // well as stored.
+  if (HOSTED_READONLY) {
+    return hostedWriteRefused("upload an article for this topic");
+  }
+
   const user = await verifyRequest(request);
   if (user === null) {
     return unauthenticated();

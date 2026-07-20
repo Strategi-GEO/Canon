@@ -22,37 +22,52 @@ import { inList, pg } from "@/lib/server/postgrest";
  * is a claim rather than a mechanism. `blogState()` is the mechanism, `clientCanSee()` decides
  * what a client is shown of it, and `clientCan()` decides what a client may do to it.
  *
- * THE FIVE FACTS, and where each comes from:
+ * THE FACTS, and where each comes from:
  *   status            the run feed's last terminal line, folded below, with ONE correction
+ *   answers_submitted the newest reply on the CURRENT form, so a submit is a state and not a flag
  *   sent_to_client    topics.sent_to_client_at, the admin-review exit
  *   client_approved   topics.client_approved_at, the client's sign-off on exactly these bytes
  *   changes_requested top-level client suggestions still open or mid-apply
  *   published         topics.published_at, granted to authenticated by migration 012
  *
- * THE ONE CORRECTION, AND WHY IT IS A FACT RATHER THAN A STATE. The engine defines
- * needs_review as "questions that are current, on disk and answerable", and runner.py corrects
- * a hold whose form is absent, stale or already answered back to done or failed. blogState is
- * therefore right that the status IS the question signal and needs no second questions read.
- * What this file reads is a MIRROR of the run feed, and the mirror carries that correction only
- * once the answer-driven revise writes its own terminal line: between a client pressing Submit
- * and that line landing, the feed still says needs_review while the form is spent. So the
- * portal repairs the SIGNAL, reporting a spent hold as `running`, which is what the record is
- * actually doing. It does not invent a state beside blogState's, because a second state is
- * exactly what this refactor deleted.
+ * THE SUBMIT IS A FACT NOW, AND IT USED TO BE TWO FAKES. This file previously simulated the
+ * window between a client pressing Submit and the rerun's terminal line by rewriting the status
+ * to `running` for EVERY spent hold and then widening visibility to catch what that rewrite hid.
+ * Both devices are gone from the answered case, because `answers_submitted` is a real state in
+ * lib/blog-state.ts and the machine decides it from the same fact both backends already send.
+ * A simulation that lands on `generating` cannot be told apart from an actual run, so no view
+ * could render the client's own answers beside the draft they answered against; the state can,
+ * and the whole of PART 1 of this change is handing it the fact instead of faking the answer.
  *
- * VISIBILITY IS clientCanSee, PLUS ONE ADDITION THIS FILE OWNS: AN ARTICLE THE CLIENT ANSWERED
- * STAYS VISIBLE WHILE THE TEAM WORKS. A spent hold folds to `generating` and the revise that
- * follows it lands on `internal_review`, `failed` or nothing readable, and clientCanSee refuses
- * all four. Refusing them here would make the article vanish out from under the person who just
- * acted on it, and worse than vanish: portal_submit_answers is explicit that the portal freezes
- * the blog on submit, so the detail page they are standing on would 404 the instant they
- * answered. Such a row is shown as a calm with-the-team row until the team sends it.
+ * THE ONE CORRECTION THAT SURVIVES, AND WHY IT IS NOT REDUNDANT. The engine defines needs_review
+ * as "questions that are current, on disk and answerable", and runner.py corrects a hold whose
+ * form is absent or stale back to done or failed. What this file reads is a MIRROR of the run
+ * feed, and the mirror carries that correction only once the revise writes its own terminal
+ * line. An ANSWERED spent hold is now `answers_submitted` and needs no repair. An UNANSWERED one
+ * (no form on disk at all, or a form the anchor or the iteration has moved past) is still a
+ * mirror claiming a question nobody can answer, and reporting it as `has_questions` would put a
+ * client in front of an empty or stale form: an aside reading "0 questions before this can be
+ * finalised", or a box whose submit portal_submit_answers refuses as stale. So the repair is
+ * NARROWED to `unansweredSpentHold` rather than deleted, and the narrowing is the whole of what
+ * lets `answers_submitted` outrank it, because `generating` sits above it in blogState's ladder
+ * and would have swallowed the new state entirely.
+ *
+ * VISIBILITY IS clientCanSee, PLUS TWO ARMS THIS FILE STILL OWNS, both narrower than before.
+ * clientCanSee now admits `answers_submitted` itself, so the ordinary answered window needs no
+ * addition here at all. What the arms cover is the two slivers the state genuinely cannot reach:
+ *   answered              a rerun that is LIVE outranks the submit in blogState (deliberately:
+ *                         the rerun is the thing the state waits for), so the record reads
+ *                         `generating` while it runs and clientCanSee refuses it.
+ *   unansweredSpentHold   the repaired mirror above, which reads `generating` by construction.
+ * Refusing either would make the article vanish out from under the person who just acted on it,
+ * and worse than vanish: portal_submit_answers freezes the blog on submit, so the detail page
+ * they are standing on would 404 the instant they answered.
  *
  * That is a VISIBILITY rule over one state and never a second state machine, which is the same
- * distinction lib/blog-state.ts draws for the labels. Note what it does NOT do: it grants no
- * act (clientCan still answers no to everything in those states), it reveals no article (no body
- * is fetched for them), and it admits no row the client never touched. What it DOES cost is one
- * narrowing at the wire, because the widened rule can hand a client's JSON a state word their
+ * distinction lib/blog-state.ts draws for the labels. Note what the two arms do NOT do: they
+ * grant no act (clientCan still answers no in `generating`), they reveal no article (no body is
+ * fetched for them), and they admit no row the client never touched. What they DO cost is one
+ * narrowing at the wire, because a widened rule can hand a client's JSON a state word their
  * vocabulary was never meant to carry. See clientWireState below.
  */
 
@@ -60,6 +75,20 @@ import { inList, pg } from "@/lib/server/postgrest";
  * The states whose payload carries the SENT article, so the client reads and annotates exactly
  * the bytes the send stamped. Exported because the blog route needs the same answer for its
  * thread read, and two copies of this list would drift the moment one state was added.
+ *
+ * `answers_submitted` IS DELIBERATELY ABSENT, and the omission is the load-bearing half of this
+ * function rather than an oversight. Every state listed here is at or past a SEND, and three
+ * separate things key off that and nothing else: the body served is topics.sent_version_id's
+ * bytes, the word count describes the released article, and app/api/blog/[brand]/[topic] reads
+ * the suggestion threads and the approve-time version stamp for exactly this set. An article
+ * whose client has just answered a question form has never been sent, so it has no sent version
+ * to serve, no released length to report, and no thread to read: admitting it here would hand it
+ * the LATEST bytes under a name that promises the sent ones, which is the precise failure the
+ * anchored-body rule below exists to prevent.
+ *
+ * The client DOES read an article in `answers_submitted`, and clientReadsDraft is where that
+ * lives. Two predicates because there are two articles: the one a send released, and the one a
+ * question form is anchored to.
  */
 export function clientReadsArticle(state: BlogState): boolean {
   return (
@@ -71,16 +100,45 @@ export function clientReadsArticle(state: BlogState): boolean {
 }
 
 /**
+ * The states whose payload carries the ANCHORED DRAFT: the exact version the current question
+ * form is about, never the newest committed row.
+ *
+ * BOTH MEMBERS ARE THE SAME RULE AT TWO MOMENTS. In `has_questions` the client is answering
+ * about that draft; in `answers_submitted` they have answered about that same draft and are
+ * owed the right to keep reading what they answered against, plus their own answers beside it.
+ * The anchor does not move between the two, because the anchor is review_notes.blog_version_id
+ * on the form itself and answering a form does not re-anchor it.
+ *
+ * THIS IS WHAT KEEPS A NEWER DRAFT AWAY FROM THE CLIENT. A rerun that lands clean at a passing
+ * score with nothing to ask commits a NEW version and goes to internal review, which is not
+ * theirs to see. Serving `fold.latest` in this window would show them that draft anyway, silently
+ * and with no send behind it. Serving `fold.formVersion` shows them the article the conversation
+ * is actually about, which is the same article on both sides of their Submit.
+ *
+ * Not exported, and that is on purpose: portal/views.tsx is a client component and importing
+ * anything from this module would drag the PostgREST client into the browser bundle.
+ */
+function clientReadsDraft(state: BlogState): boolean {
+  return state === "has_questions" || state === "answers_submitted";
+}
+
+/**
  * The state as a CLIENT may RECEIVE it, applied where a payload is built and nowhere else.
  *
- * VISIBILITY IS WIDER THAN clientCanSee, SO THE WIRE NEEDS A NARROWING. The addition
- * documented at the top of this file keeps an article the client answered on their screen
- * while the team works, and that window reads `generating`, `internal_review`, `failed`,
+ * VISIBILITY IS WIDER THAN clientCanSee, SO THE WIRE NEEDS A NARROWING. The two arms documented
+ * at the top of this file keep an article the client answered on their screen while a rerun is
+ * genuinely in flight, and that window reads `generating`, `internal_review`, `failed`,
  * `stopped` or `unknown` depending on where the answer-driven revise got to. The rendered UI
  * is already right about all five, because clientTag folds every one of them to a busy "In
  * progress". The JSON was not, and the JSON is the half a client can read in devtools: it
  * shipped the team's own words about the client's article, and it contradicted
  * portal/types.ts, which states that internal_review, failed and stopped never reach here.
+ *
+ * IT NARROWS STRICTLY LESS THAN IT USED TO, and that is `answers_submitted` working rather than
+ * this function weakening. clientCanSee admits the new state, so the ordinary window between a
+ * Submit and a send now travels under its own name and reaches the views intact: that is what
+ * lets the detail page render the client's answers beside the draft they answered against, which
+ * is impossible under a word that also means "a run is live".
  *
  * THE ANSWER IS AN EXISTING STATE, NEVER A PORTAL DIALECT. portal/types.ts records why the
  * old private four-value vocabulary was deleted: every view speaks BlogState, so a dialect on
@@ -140,9 +198,10 @@ export type PortalBlogCard = {
   state: BlogState;
   /** The state's own date: published, approved, suggested, sent, asked or answered. UTC ISO. */
   date: string;
+  /** has_questions only: the size of the OPEN form. Null once it is answered. */
   question_count: number | null;
   word_count: number | null;
-  /** Spent holds only: true when answers are recorded (vs a generic with-the-team hold). */
+  /** Before a send only: true when the client's answers to the current form are recorded. */
   answered: boolean;
   /** Released states only: when the team sent the article for review. UTC ISO. */
   sent: string | null;
@@ -164,12 +223,15 @@ export type PortalBlogDetail = {
   state: BlogState;
   date: string;
   word_count: number | null;
-  /** Released: the article as sent. has_questions: the draft under review. Held: absent. */
+  /**
+   * Released: the article as sent. has_questions and answers_submitted: the ANCHORED draft, the
+   * one the question form is about. The two `generating` slivers: absent.
+   */
   body: string | null;
-  /** has_questions only: the form to answer. */
+  /** has_questions only: the form to answer. Null once it is answered, because it is spent. */
   questions: PortalQuestion[] | null;
   asked: string | null;
-  /** Spent-hold-with-answers only: what was answered, read-only. */
+  /** Before a send, once answered: what was answered, read-only. Chiefly answers_submitted. */
   answers: PortalAnswerView[] | null;
   answered_at: string | null;
   /** Released states only: the client's own suggestions, oldest first. */
@@ -315,6 +377,15 @@ type TopicFold = {
   ledger: LedgerRow | null;
   comments: CommentRow[];
   form: NoteRow[];
+  /**
+   * THE VERSION THE CURRENT FORM IS ANCHORED TO, which is the draft a client answering these
+   * questions is answering ABOUT. review_notes.blog_version_id is NOT NULL and carries a
+   * composite foreign key to blog_versions(id, topic_id), so the anchor is a fact the database
+   * already keeps rather than something this fold infers; the fold's only job is to carry it
+   * out where the body read can reach it. Null only where the topic has no form at all, or,
+   * defensively, where the anchored row fell outside this brand's version read.
+   */
+  formVersion: VersionRow | null;
   childByParent: Map<string, ChildRow>;
   formIter: number | null;
   maxIter: number;
@@ -322,7 +393,7 @@ type TopicFold = {
   stale: boolean;
   answered: boolean;
   state: BlogState;
-  /** clientCanSee, plus the spent-hold addition documented at the top of this file. */
+  /** clientCanSee, plus the two `generating` arms documented at the top of this file. */
   visible: boolean;
   title: string;
   askedAt: string | null;
@@ -370,8 +441,8 @@ async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
     // widens portal visibility, and an OPERATOR answering the same form satisfies an unfiltered
     // read identically. An internal_review article the client must never see then appeared in
     // their portal, captioned as their own answers, rendering the evaluator's questions and the
-    // operator's internal replies. The spentHold arm still covers the genuine window where a
-    // client has answered and the revise has not yet run.
+    // operator's internal replies. The genuine window, where a CLIENT has answered and the
+    // revise has not yet landed, is `answers_submitted`, and this read is what decides it.
     pg<ChildRow[]>(
       token,
       `review_notes?select=parent_id,body,created_at&client_id=eq.${clientId}` +
@@ -515,13 +586,39 @@ function foldTopics(data: BrandData): TopicFold[] {
           a.created_at.localeCompare(b.created_at) || (a.ref ?? "").localeCompare(b.ref ?? ""),
       );
 
+    // The anchor, resolved to the row itself here and not at the body read, so the one place
+    // that knows how the form was assembled is also the place that says which draft it is
+    // about. `versionById` is built from this brand's own version read, so a miss can only
+    // mean the anchored row is out of RLS scope, and the body read falls back rather than
+    // inventing a version.
+    const formVersion =
+      formVersionId !== null ? (versionById.get(formVersionId) ?? null) : null;
+
     const formIter = form.find((row) => row.asked_iter !== null)?.asked_iter ?? null;
     const iterHigh = maxIter.get(topic.id) ?? 0;
     const status =
       (eventCount.get(topic.id) ?? 0) > 0
         ? (lastTerminal.get(topic.id) ?? "running")
         : "unknown";
-    const stale = form.length > 0 && formIter !== iterHigh;
+    // stale is VERSION **OR** ITERATION, the same rule the other three twins compute: the engine's
+    // questions.describe_questions, the sweep's _PENDING_SQL, and portal_submit_answers (migration
+    // 014). Drift between them is not a tidiness problem, it is a deadlock: a form this fold rates
+    // answerable while the RPC refuses it as stale is a client typing into a box that always
+    // errors, and a form this fold rates stale while the sweep still rates it pending keeps
+    // dispatching reruns nobody asked for.
+    //
+    // The anchor leads because it is the stronger signal. review_notes.blog_version_id is NOT NULL
+    // with a composite FK to blog_versions(id, topic_id), so it names the exact draft the questions
+    // are about, where an iteration is a per-topic counter that only resembles an identity.
+    //
+    // THE ITERATION ARM STAYS BECAUSE A RESTORE COMMITS NO NEW VERSION: the stop-mid-revise path
+    // puts the artifact set back byte for byte, adding no blog_versions row, so the anchor still
+    // matches while the iteration has moved past it. Version-only would offer that form.
+    //
+    // `latestVersion` is this topic's newest committed row (versions arrive version_no.desc), the
+    // same "current version" the SQL twins select with `order by version_no desc limit 1`.
+    const versionMoved = formVersionId !== null && formVersionId !== latestVersion.id;
+    const stale = form.length > 0 && (versionMoved || formIter !== iterHigh);
     const answered =
       form.length > 0 && form.every((row) => childByParent.has(row.id));
 
@@ -544,6 +641,13 @@ function foldTopics(data: BrandData): TopicFold[] {
     // engine's own definition of the status, restated against the mirror.
     const liveForm = form.length > 0 && !stale && !answered;
     const spentHold = status === "needs_review" && !liveForm;
+    // THE SPENT HOLD SPLITS IN TWO NOW, and only one half is still a fake. `answered` is a real
+    // state, so it goes to blogState as a fact and the status is left alone. What is left here
+    // is a mirror asserting a question that does not exist to answer: no form on disk, or a form
+    // the anchor or the iteration has moved past. Repairing THAT to `running` is the same repair
+    // this file has always made, and it must survive, because the alternative is `has_questions`
+    // and `has_questions` is a promise that the aside beside the article can be answered.
+    const unansweredSpentHold = spentHold && !answered;
 
     // Open suggestions the team still owes an answer on. `failed` is deliberately not counted:
     // an apply that broke is the team's retry, never a request the client is still waiting on,
@@ -552,31 +656,15 @@ function foldTopics(data: BrandData): TopicFold[] {
       (comment) => comment.state === "open" || comment.state === "applying",
     );
 
-    // THE ONE PLACE A STATE IS DECIDED. Everything above this line is a fact; everything
-    // below reads the answer. `spentHold` corrects the status rather than branching around it,
-    // for the reason set out at the top of this file.
-    const state = blogState({
-      status: spentHold ? "running" : status,
-      sent_to_client: topic.sent_to_client_at,
-      client_approved: topic.client_approved_at,
-      changes_requested: openSuggestions.length,
-      published: topic.published_at,
-    });
-
-    // clientCanSee decides this, with the ONE addition documented at the top of the file.
-    //
-    // The addition has two arms and they cover the same window from both ends. `spentHold` is
-    // the mirror still reading needs_review while the answer-driven revise runs. `answered` is
-    // that same form once the revise has landed, whatever it landed as: the run status is then
-    // done, or failed, or nothing readable, and none of those is a state a client may see. In
-    // both arms the client ANSWERED, and an article they acted on must not disappear out from
-    // under them. It stays a calm with-the-team row until the team sends it.
-    const visible = clientCanSee(state) || spentHold || answered;
-
     const askedAt = form.reduce<string | null>(
       (min, row) => (min === null || row.created_at < min ? row.created_at : min),
       null,
     );
+    // COMPUTED ABOVE THE STATE NOW, because it is an INPUT to it rather than a decoration on it.
+    // `answered` is still the derive input, and this is that same boolean carrying its date: the
+    // reduce cannot return null while `answered` is true, since `answered` is exactly "every row
+    // of the form has a reply" and every reply carries a created_at. blogState reads the field
+    // truthily, so the two can never disagree about whether a submit happened.
     const answeredAt = answered
       ? form.reduce<string | null>((max, row) => {
           const child = childByParent.get(row.id);
@@ -587,6 +675,30 @@ function foldTopics(data: BrandData): TopicFold[] {
         }, null)
       : null;
 
+    // THE ONE PLACE A STATE IS DECIDED. Everything above this line is a fact; everything
+    // below reads the answer. The submit is now one of those facts rather than a rewrite of a
+    // different one, and the status repair that remains is narrowed to the case the new state
+    // does not reach, for the reason set out at the top of this file.
+    const state = blogState({
+      status: unansweredSpentHold ? "running" : status,
+      answers_submitted: answeredAt,
+      sent_to_client: topic.sent_to_client_at,
+      client_approved: topic.client_approved_at,
+      changes_requested: openSuggestions.length,
+      published: topic.published_at,
+    });
+
+    // clientCanSee decides this, with the TWO arms documented at the top of the file.
+    //
+    // NEITHER ARM IS THE OLD ANSWERED WINDOW ANY MORE: clientCanSee admits `answers_submitted`
+    // itself, so the ordinary case between a Submit and a send is covered by the machine. What
+    // is left is the pair of slivers where the record honestly reads `generating` and the client
+    // still acted. `answered` catches a rerun that is LIVE, which blogState deliberately ranks
+    // above the submit because the rerun is the thing the submit waits for. `unansweredSpentHold`
+    // catches the repaired mirror above. Removing either would drop a row the client is standing
+    // on, and portal_submit_answers freezes the blog on submit, so the page they are on 404s.
+    const visible = clientCanSee(state) || unansweredSpentHold || answered;
+
     folds.push({
       topic,
       latest: latestVersion,
@@ -595,6 +707,7 @@ function foldTopics(data: BrandData): TopicFold[] {
       ledger: entry,
       comments: commentsByTopic.get(topic.id) ?? [],
       form,
+      formVersion,
       childByParent,
       formIter,
       maxIter: iterHigh,
@@ -633,6 +746,13 @@ function cardOf(
   // exactly when the client last needed to look at it. The shipped-date fallbacks are for
   // legacy stamps only, and published_at falls back through the ladder beneath it because
   // migration 012 has no backfill: a legacy push left no stamp to read.
+  //
+  // `answers_submitted` GETS NO ARM OF ITS OWN, and that is a decision rather than a gap: the
+  // act that created it is the submit, and the trailing arm already reads `answeredAt` first.
+  // Writing the arm out would be the same expression one indent higher, so the ladder would
+  // gain a branch that can only ever agree with the one below it. The trailing arm still has to
+  // stand for the two `generating` slivers as well, where answeredAt is null for a spent hold
+  // nobody answered and askedAt is the honest date.
   const date =
     fold.state === "published"
       ? (fold.topic.published_at ?? fold.topic.client_approved_at ?? shippedDate)
@@ -655,15 +775,23 @@ function cardOf(
     // from `fold.state`, the real one, and only what leaves gets the client's vocabulary.
     state: clientWireState(fold.state),
     date,
+    // THE OPEN FORM'S SIZE, so it stays null once the form is answered. ActionCard is the only
+    // card that renders it and its sentence is "N questions from our editorial review", which is
+    // a demand; an answered form makes no demand, and its card is a FrozenRow that reads the
+    // `answered` flag below instead.
     question_count: fold.state === "has_questions" ? fold.form.length : null,
     word_count: released
       ? ((fold.sentVersion ?? fold.shippedVersion ?? fold.latest).word_count ?? null)
       : null,
-    // !clientCanSee is exactly "on this wire only because the client acted on it", since every
-    // other such row was dropped above. The flag then splits the two with-the-team rows: one
-    // where the client's answers are recorded and being applied, and one where the hold simply
-    // carries nothing they can act on.
-    answered: !clientCanSee(fold.state) && fold.answered,
+    // KEYED OFF clientReadsArticle, NOT clientCanSee, and the swap is a correctness fix rather
+    // than a tidy. This flag means "the client's answers are recorded", and it used to be able to
+    // say so only in the states a client could not see, because those were the only states a
+    // submit could produce. `answers_submitted` is a state a client CAN see, so the old test
+    // silently answered false in the one place the flag exists to be true: FrozenRow would have
+    // dropped its tick and its "answers received" sentence exactly when the answers had just
+    // arrived. clientReadsArticle is the honest line, because it is a send that ends this
+    // window: before one, an answered form is news; after one, the article itself is the news.
+    answered: !clientReadsArticle(fold.state) && fold.answered,
     sent: released ? fold.topic.sent_to_client_at : null,
     approved:
       fold.state === "approved" || fold.state === "published"
@@ -847,15 +975,41 @@ export async function buildDetail(
     const versionId = (fold.sentVersion ?? fold.shippedVersion ?? fold.latest).id;
     const rows = await pg<{ body: string }[]>(token, `blog_versions?select=body&id=eq.${versionId}`);
     body = rows[0]?.body ?? null;
-  } else if (fold.state === "has_questions") {
-    const rows = await pg<{ body: string }[]>(
-      token,
-      `blog_versions?select=body&id=eq.${fold.latest.id}`,
-    );
+  } else if (clientReadsDraft(fold.state)) {
+    // THE ANCHORED VERSION'S BYTES, NEVER THE LATEST, and this is the same rule the released
+    // branch above states, applied before the send instead of after it. A client is shown the
+    // draft the QUESTIONS ARE ABOUT, because that is the only draft their answers can be
+    // answers to: the form quotes it, the aside tells them it is "the current draft, shown so
+    // you can answer in context", and an answer written against other bytes is an answer to a
+    // question nobody asked. Nothing guarantees the newest committed version is that draft. A
+    // topic keeps generating while a hold stands, so a stopped or crashed revise, an engine
+    // rerun, or an admin edit on the stage page can all land a newer row behind the form the
+    // client is still looking at, and `fold.latest` would hand them that row silently. The
+    // anchor is review_notes.blog_version_id, folded above, so the answer and the article it
+    // describes stay the same article. The fallback is for an anchor RLS did not return, where
+    // the latest draft is a worse answer than no answer only if it is also wrong, and here it
+    // is the best remaining guess.
+    //
+    // IT NOW COVERS `answers_submitted` TOO, and that is the product rule this file previously
+    // had to decline. The old comment below this branch said the rule needed a rendering branch
+    // this file could not reach, and it was right at the time: the answered window folded to
+    // `generating`, a body on `generating` is indistinguishable from the SENT article to the
+    // view, and handing one over would have rendered the approve banner and the suggestion rail
+    // over an article nobody released. `answers_submitted` is a state of its own, so the view
+    // can branch on it, and the anchor is unchanged by the act of answering. The client keeps
+    // reading the draft they answered against, and a rerun that lands a newer passing draft in
+    // internal review changes nothing they see, because nothing here reads `fold.latest`.
+    const versionId = (fold.formVersion ?? fold.latest).id;
+    const rows = await pg<{ body: string }[]>(token, `blog_versions?select=body&id=eq.${versionId}`);
     body = rows[0]?.body ?? null;
   }
-  // A spent hold gets no body on purpose. The draft is mid-revision; showing yesterday's bytes
-  // as though they were the article would be showing something nobody will publish.
+  // The two `generating` slivers still get NO body, and the reason is the one the paragraph
+  // above retired for `answers_submitted`: a state the client vocabulary renders as "in
+  // progress" has no rendering branch that could tell an anchored draft from a released one,
+  // and portal/views.tsx reads any non-null body outside the draft states as the SENT article.
+  // A live rerun is also the one moment the anchored bytes are genuinely being rewritten, so
+  // the article is briefly absent from a page that keeps the client's own answers. See the
+  // notes on this change.
 
   const card = cardOf(fold, { slug: brand.client_slug, name: brand.client_name }, brand.org_slug);
   return {
@@ -883,8 +1037,14 @@ export async function buildDetail(
           }))
         : null,
     asked: fold.state === "has_questions" ? fold.askedAt : null,
+    // THE SAME clientCanSee-to-clientReadsArticle SWAP the card's `answered` flag makes, and it
+    // matters more here: this IS the client's own answers, and `answers_submitted` is the state
+    // whose entire purpose is showing them back. Testing clientCanSee would have withheld a
+    // client's answers from the client precisely because the machine had finally granted them
+    // sight of the article. A send is the honest end of the window: after one, the article is
+    // what the page is about and the answers that shaped it are history.
     answers:
-      !clientCanSee(fold.state) && fold.answered
+      !clientReadsArticle(fold.state) && fold.answered
         ? fold.form.map((row) => ({
             id: row.ref ?? "",
             area: row.area,
@@ -892,7 +1052,7 @@ export async function buildDetail(
             answer: fold.childByParent.get(row.id)?.body ?? "",
           }))
         : null,
-    answered_at: !clientCanSee(fold.state) ? fold.answeredAt : null,
+    answered_at: !clientReadsArticle(fold.state) ? fold.answeredAt : null,
     comments: released
       ? fold.comments.map((row) => ({
           id: row.id,

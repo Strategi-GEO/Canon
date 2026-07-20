@@ -1,7 +1,8 @@
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { adminRpcError } from "@/lib/server/admin-rpc";
 import { unauthenticated, verifyRequest } from "@/lib/server/auth";
 import { clientId, ledgerStamp, liveSlugs } from "@/lib/server/clients";
-import { detail, failure, json } from "@/lib/server/http";
+import { detail, failure, hostedWriteRefused, json } from "@/lib/server/http";
 import { pg, rpc } from "@/lib/server/postgrest";
 
 type SheetRow = { id: string; columns: string[] };
@@ -101,6 +102,15 @@ export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ slug: string }> },
 ) {
+  // The hosted site performs no admin write, and hostedWriteRefused carries the whole reasoning.
+  // HOSTED_READONLY is false in the local app, so the delete below is unchanged there. Dropping a
+  // roadmap is the most destructive act on this surface and the one with the largest gap between
+  // the two builds: the local engine also unlinks clients/<slug>/roadmap.csv, and nothing hosted
+  // can reach that file at all.
+  if (HOSTED_READONLY) {
+    return hostedWriteRefused("delete this brand's roadmap");
+  }
+
   const user = await verifyRequest(request);
   if (user === null) {
     return unauthenticated();

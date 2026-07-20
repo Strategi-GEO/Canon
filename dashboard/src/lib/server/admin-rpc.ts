@@ -21,6 +21,14 @@ import { PostgrestError } from "@/lib/server/postgrest";
  *
  * So the map is the union of every code the admin_* functions raise, and it is maintained
  * against them. If a function gains a code, it goes here.
+ *
+ * THE UNION NOW REACHES PAST THE admin_* FUNCTIONS, and that is deliberate rather than a
+ * slip. The client resource writes go through portal_resource_add and portal_resource_remove
+ * (migration 016), which raise the same PORTAL:<CODE>:<detail> protocol, so their routes hand
+ * their refusals here rather than growing a fourth private copy of the same mapping. The
+ * reasoning above is unchanged by that: these functions share auth_can_write_client_slug with
+ * everything else in the resource path, so they share most of their codes too, and a code
+ * raised but unmapped is the same bare 400 the header already calls the failure to prevent.
  */
 const STATUS_FOR: Record<string, number> = {
   // Raised by admin_brand_id when auth.uid() is null. In practice unreachable through these
@@ -46,8 +54,26 @@ const STATUS_FOR: Record<string, number> = {
   // exactly what every other code in this block means. 403 would read as "your account cannot
   // do this" and send an admin looking for a permission they already have.
   LOCKED: 409,
+  // The same bytes are already stored for this brand under a different filename, raised by
+  // portal_resource_add (migration 016:147 and :171). It belongs in this block and not with
+  // the body problems: nothing about the request is malformed, it conflicts with what the
+  // brand already holds, which is what every other 409 above means.
+  //
+  // THIS ENTRY IS LOAD-BEARING RATHER THAN COMPLETING A SET. portal/resources.tsx keys the
+  // entire duplicate story off status 409: at that status it renders the database's own
+  // sentence, which names the file the bytes are already stored as, followed by the promise
+  // that nothing was overwritten. Without the entry the refusal arrives as a bare 400 and the
+  // client is told their upload failed with no sentence telling them they already have the
+  // file, which is the one thing that would let them act on it.
+  DUPLICATEBYTES: 409,
   // Body problems. The function judges content; the route only judged shape.
   BLANK: 422,
+  // A sha256 that is not 64 lowercase hex characters, or a size that is null or negative,
+  // raised by portal_resource_add (migration 016:108 and :111). 422 rather than 400 for the
+  // reason BLANK is: the request parsed and its shape was right, so what failed is a value
+  // inside it. The upload route validates the same sha before it builds a storage path, so a
+  // BADBODY reaching a caller means the two halves of one upload disagreed about the digest.
+  BADBODY: 422,
   TOOLARGE: 413,
 };
 
