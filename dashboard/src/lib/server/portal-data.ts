@@ -1,3 +1,4 @@
+import { blogState, clientCanSee, type BlogState } from "@/lib/blog-state";
 import { inList, pg } from "@/lib/server/postgrest";
 
 /**
@@ -13,40 +14,59 @@ import { inList, pg } from "@/lib/server/postgrest";
  * Reads run as the caller via PostgREST, so RLS scopes every row: an org login only ever
  * receives its own org's brands, and an out-of-scope brand folds to "not found".
  *
- * STATE MODEL, the portal's whole vocabulary, derived and never stored:
- *   ready     -- the ledger records the blog as shipped AND an operator pressed Send to
- *                client (topics.sent_to_client_at) AND the client has not approved it yet.
- *                Shipped alone is not enough: a done blog sits in ADMIN REVIEW, editable
- *                on the dashboard's blog stage page, until the send releases it. This is
- *                the portal's acting state on a finished article: Approve and Suggest
- *                changes both live here. Open suggestions read "with the team" on the
- *                detail page, and the state STAYS ready with Approve still offered,
- *                because a suggestion is input to the team, never a lock on the client.
- *   approved  -- ready plus the client's approval stamp (topics.client_approved_at).
- *                Terminal until the team sends again: every send clears the stamp, so an
- *                approval always describes bytes the client actually reviewed, never an
- *                article that changed underneath their sign-off.
- *   action    -- the blog is held at needs_review and the CURRENT question form is
- *                unanswered and not stale: the client can and should answer.
- *   frozen    -- the blog is with the editorial team and the client cannot act:
- *                either the form was answered (answers recorded, revise owed/running),
- *                or the form went stale / the hold carries no answerable form.
- *   hidden    -- everything else (failed, stopped, unknown, first runs in flight, and a
- *                shipped blog nobody sent yet with nothing the client ever acted on).
- *                A client portal is not a run console; work the team has not finished
- *                and the client cannot act on simply is not shown.
+ * THE STATE IS NOT DECIDED HERE. lib/blog-state.ts decides it, for both surfaces at once, and
+ * this file's only job is to hand it honest facts and to render the answer. The portal used to
+ * own a private four-value vocabulary (action / frozen / ready / approved) computed from a
+ * ledger row, two stamps and a form read; the admin dashboard computed its own from the same
+ * record, and what kept the two agreeing was a comment in each one asserting that it did. That
+ * is a claim rather than a mechanism. `blogState()` is the mechanism, `clientCanSee()` decides
+ * what a client is shown of it, and `clientCan()` decides what a client may do to it.
  *
- * The old "delivered" state is GONE, split by the approval stamp into ready and approved.
- * Nothing a client used to see disappears: every topic that was delivered is sent, so it
- * folds to one of the two new states, and the article stays readable in both.
+ * THE FIVE FACTS, and where each comes from:
+ *   status            the run feed's last terminal line, folded below, with ONE correction
+ *   sent_to_client    topics.sent_to_client_at, the admin-review exit
+ *   client_approved   topics.client_approved_at, the client's sign-off on exactly these bytes
+ *   changes_requested top-level client suggestions still open or mid-apply
+ *   published         topics.published_at, granted to authenticated by migration 012
  *
- * A note on sent-with-open-questions: a handful of legacy topics shipped under the old
- * gate while carrying current unanswered questions. The send wins here, because the ledger
- * says the artifact went out; the portal never summons a client to act on an article they
- * already received. New holds never reach done, so the case is legacy-only.
+ * THE ONE CORRECTION, AND WHY IT IS A FACT RATHER THAN A STATE. The engine defines
+ * needs_review as "questions that are current, on disk and answerable", and runner.py corrects
+ * a hold whose form is absent, stale or already answered back to done or failed. blogState is
+ * therefore right that the status IS the question signal and needs no second questions read.
+ * What this file reads is a MIRROR of the run feed, and the mirror carries that correction only
+ * once the answer-driven revise writes its own terminal line: between a client pressing Submit
+ * and that line landing, the feed still says needs_review while the form is spent. So the
+ * portal repairs the SIGNAL, reporting a spent hold as `running`, which is what the record is
+ * actually doing. It does not invent a state beside blogState's, because a second state is
+ * exactly what this refactor deleted.
+ *
+ * VISIBILITY IS clientCanSee, PLUS ONE ADDITION THIS FILE OWNS: AN ARTICLE THE CLIENT ANSWERED
+ * STAYS VISIBLE WHILE THE TEAM WORKS. A spent hold folds to `generating` and the revise that
+ * follows it lands on `internal_review`, `failed` or nothing readable, and clientCanSee refuses
+ * all four. Refusing them here would make the article vanish out from under the person who just
+ * acted on it, and worse than vanish: portal_submit_answers is explicit that the portal freezes
+ * the blog on submit, so the detail page they are standing on would 404 the instant they
+ * answered. Such a row is shown as a calm with-the-team row until the team sends it.
+ *
+ * That is a VISIBILITY rule over one state and never a second state machine, which is the same
+ * distinction lib/blog-state.ts draws for the labels. Note what it does NOT do: it grants no
+ * act (clientCan still answers no to everything in those states), it reveals no article (no body
+ * is fetched for them), and it admits no row the client never touched.
  */
 
-export type PortalState = "action" | "frozen" | "ready" | "approved";
+/**
+ * The states whose payload carries the SENT article, so the client reads and annotates exactly
+ * the bytes the send stamped. Exported because the blog route needs the same answer for its
+ * thread read, and two copies of this list would drift the moment one state was added.
+ */
+export function clientReadsArticle(state: BlogState): boolean {
+  return (
+    state === "client_review" ||
+    state === "changes_requested" ||
+    state === "approved" ||
+    state === "published"
+  );
+}
 
 export type PortalQuestion = {
   id: string;
@@ -85,16 +105,16 @@ export type PortalBlogCard = {
   brand_name: string;
   topic_slug: string;
   title: string;
-  state: PortalState;
-  /** The state's own date: approved date, sent date, asked date, or answered date. UTC ISO. */
+  state: BlogState;
+  /** The state's own date: published, approved, suggested, sent, asked or answered. UTC ISO. */
   date: string;
   question_count: number | null;
   word_count: number | null;
-  /** frozen only: true when answers are recorded (vs a generic with-the-team hold). */
+  /** Spent holds only: true when answers are recorded (vs a generic with-the-team hold). */
   answered: boolean;
-  /** ready and approved only: when the team sent the article for review. UTC ISO. */
+  /** Released states only: when the team sent the article for review. UTC ISO. */
   sent: string | null;
-  /** approved only: when the client approved. UTC ISO. */
+  /** approved and published only: when the client approved. UTC ISO. */
   approved: string | null;
 };
 
@@ -109,22 +129,22 @@ export type PortalBlogDetail = {
   brand_name: string;
   topic_slug: string;
   title: string;
-  state: PortalState;
+  state: BlogState;
   date: string;
   word_count: number | null;
-  /** ready/approved: the article as sent. action: the current draft under review. frozen: absent. */
+  /** Released: the article as sent. has_questions: the draft under review. Held: absent. */
   body: string | null;
-  /** action only: the form to answer. */
+  /** has_questions only: the form to answer. */
   questions: PortalQuestion[] | null;
   asked: string | null;
-  /** frozen-with-answers only: what was answered, read-only. */
+  /** Spent-hold-with-answers only: what was answered, read-only. */
   answers: PortalAnswerView[] | null;
   answered_at: string | null;
-  /** ready and approved only: the client's own suggestions, oldest first. */
+  /** Released states only: the client's own suggestions, oldest first. */
   comments: PortalComment[] | null;
-  /** ready and approved only: when the team sent the article for review. UTC ISO. */
+  /** Released states only: when the team sent the article for review. UTC ISO. */
   sent: string | null;
-  /** approved only: when the client approved. UTC ISO. */
+  /** approved and published only: when the client approved. UTC ISO. */
   approved: string | null;
 };
 
@@ -147,6 +167,8 @@ type TopicRow = {
   sent_version_id: string | null;
   sent_to_client_at: string | null;
   client_approved_at: string | null;
+  /** NULL IS "NO RECORD OF A PUSH", never "not published" (migration 012 has no backfill). */
+  published_at: string | null;
 };
 type VersionRow = {
   id: string;
@@ -267,10 +289,14 @@ type TopicFold = {
   status: string;
   stale: boolean;
   answered: boolean;
-  state: PortalState | null;
+  state: BlogState;
+  /** clientCanSee, plus the spent-hold addition documented at the top of this file. */
+  visible: boolean;
   title: string;
   askedAt: string | null;
   answeredAt: string | null;
+  /** The newest open or mid-apply suggestion, so a change request floats its own card. */
+  suggestedAt: string | null;
 };
 
 type BrandData = {
@@ -287,7 +313,10 @@ async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
   const [topics, versions, ledger, notes, children, events, comments] = await Promise.all([
     pg<TopicRow[]>(
       token,
-      `topics?select=id,slug,title,shipped_version_id,sent_version_id,sent_to_client_at,client_approved_at` +
+      // published_at joins the select because it is the TOP of blogState's delivery ladder: a
+      // live article must not keep reading as merely approved. Migration 012 grants exactly
+      // this column to authenticated, and an ungranted column would refuse the whole request.
+      `topics?select=id,slug,title,shipped_version_id,sent_version_id,sent_to_client_at,client_approved_at,published_at` +
         `&client_id=eq.${clientId}&deleted_at=is.null`,
     ),
     pg<VersionRow[]>(
@@ -316,10 +345,16 @@ async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
     // email column is never selected on this surface, and neither are error or edits:
     // an apply failure and its diff are the team's material, and selecting a column the
     // portal never shows is exactly the regression tests/portal_check.py exists to catch.
+    //
+    // parent_id=is.null IS LOAD-BEARING NOW. A reply carries its text in `instruction` and
+    // nothing in selected_text, so an unfiltered read counts every line a client ever wrote
+    // in a thread as a fresh change request, and the state fold below would hold an article
+    // at changes_requested on the strength of "thanks, that reads well". The blog route's
+    // thread read has always applied this filter for the same reason.
     pg<CommentRow[]>(
       token,
       `blog_comments?select=id,topic_id,selected_text,instruction,state,created_at` +
-        `&client_id=eq.${clientId}&author=eq.client&order=created_at.asc`,
+        `&client_id=eq.${clientId}&author=eq.client&parent_id=is.null&order=created_at.asc`,
     ),
   ]);
   return { topics, versions, ledger, notes, children, events, comments };
@@ -432,8 +467,11 @@ function foldTopics(data: BrandData): TopicFold[] {
     const answered =
       form.length > 0 && form.every((row) => childByParent.has(row.id));
 
+    // The ledger row still supplies the title and the shipped date. It no longer gates the
+    // released states: mark_sent refuses a topic that is not done, so a send stamp already
+    // implies the ledger entry the old test read, and where the two disagree the stamp is the
+    // act an operator actually performed while the row is bookkeeping about it.
     const entry = ledger.get(topic.slug) ?? null;
-    const shipped = entry !== null;
     const shippedVersion =
       topic.shipped_version_id !== null
         ? (versionById.get(topic.shipped_version_id) ?? null)
@@ -443,34 +481,39 @@ function foldTopics(data: BrandData): TopicFold[] {
         ? (versionById.get(topic.sent_version_id) ?? null)
         : null;
 
-    let state: PortalState | null = null;
-    if (shipped && topic.sent_to_client_at !== null) {
-      // Shipped AND released: the send stamp is the admin-review exit, pressed by an
-      // operator on the blog stage page. Without it a shipped blog is still the team's,
-      // so it falls through to the branches below exactly as it did before shipping: a
-      // client who answered a form keeps their with-the-team row (a blog must never
-      // vanish on them), and a blog they never acted on stays out of sight until it is
-      // sent. Legacy delivered blogs were backfilled as sent by migration 004, so
-      // nothing a client already received disappears. The approval stamp then splits the
-      // released article in two: approved once the client signed off, ready until then.
-      // The stamp alone decides it; open suggestions do NOT move a blog off ready,
-      // because the client keeps the right to approve past their own suggestions.
-      state = topic.client_approved_at !== null ? "approved" : "ready";
-    } else if (form.length > 0 && !stale && !answered && status === "needs_review") {
-      state = "action";
-    } else if (form.length > 0 && answered) {
-      // The CLIENT answered this form, so it is with the team until it ships, WHATEVER the
-      // run status now reads: revise still running, or interrupted, or landed failed/stopped
-      // before delivering. The status is deliberately not part of this test. A client who
-      // answered must never watch their blog VANISH: dropping it (state null) would erase
-      // the one action they took with no trace and no explanation. It stays a calm
-      // with-the-team row until delivery replaces it.
-      state = "frozen";
-    } else if (status === "needs_review") {
-      // Held, but with nothing the client can answer (stale form, or a hold that never
-      // filed one): with the team, not with the client.
-      state = "frozen";
-    }
+    // A live form is the only thing that makes a needs_review hold answerable: current
+    // (matching the newest iteration), on disk, and nobody has replied to it yet. That is the
+    // engine's own definition of the status, restated against the mirror.
+    const liveForm = form.length > 0 && !stale && !answered;
+    const spentHold = status === "needs_review" && !liveForm;
+
+    // Open suggestions the team still owes an answer on. `failed` is deliberately not counted:
+    // an apply that broke is the team's retry, never a request the client is still waiting on,
+    // and the client is never told it happened at all.
+    const openSuggestions = (commentsByTopic.get(topic.id) ?? []).filter(
+      (comment) => comment.state === "open" || comment.state === "applying",
+    );
+
+    // THE ONE PLACE A STATE IS DECIDED. Everything above this line is a fact; everything
+    // below reads the answer. `spentHold` corrects the status rather than branching around it,
+    // for the reason set out at the top of this file.
+    const state = blogState({
+      status: spentHold ? "running" : status,
+      sent_to_client: topic.sent_to_client_at,
+      client_approved: topic.client_approved_at,
+      changes_requested: openSuggestions.length,
+      published: topic.published_at,
+    });
+
+    // clientCanSee decides this, with the ONE addition documented at the top of the file.
+    //
+    // The addition has two arms and they cover the same window from both ends. `spentHold` is
+    // the mirror still reading needs_review while the answer-driven revise runs. `answered` is
+    // that same form once the revise has landed, whatever it landed as: the run status is then
+    // done, or failed, or nothing readable, and none of those is a state a client may see. In
+    // both arms the client ANSWERED, and an article they acted on must not disappear out from
+    // under them. It stays a calm with-the-team row until the team sends it.
+    const visible = clientCanSee(state) || spentHold || answered;
 
     const askedAt = form.reduce<string | null>(
       (min, row) => (min === null || row.created_at < min ? row.created_at : min),
@@ -501,9 +544,14 @@ function foldTopics(data: BrandData): TopicFold[] {
       stale,
       answered,
       state,
+      visible,
       title: entry?.topic || latestVersion.h1_title || topic.title || topic.slug,
       askedAt,
       answeredAt,
+      suggestedAt: openSuggestions.reduce<string | null>(
+        (max, comment) => (max === null || comment.created_at > max ? comment.created_at : max),
+        null,
+      ),
     });
   }
   return folds;
@@ -514,25 +562,31 @@ function cardOf(
   brand: { slug: string; name: string },
   org: string,
 ): PortalBlogCard | null {
-  if (fold.state === null) {
+  if (!fold.visible) {
     return null;
   }
-  const released = fold.state === "ready" || fold.state === "approved";
+  const released = clientReadsArticle(fold.state);
   const shippedDate =
     fold.ledger?.generated_at ||
     fold.shippedVersion?.committed_at ||
     fold.latest.committed_at;
-  // ready and approved carry the stamp that created them, so a re-send or an approval is
-  // new activity and floats the card in the newest-first sort exactly when the client
-  // last needed to look at it. The shipped-date fallbacks are for legacy stamps only.
+  // Every state carries the stamp of the act that created it, so a push, an approval, a
+  // suggestion or a re-send is new activity and floats the card in the newest-first sort
+  // exactly when the client last needed to look at it. The shipped-date fallbacks are for
+  // legacy stamps only, and published_at falls back through the ladder beneath it because
+  // migration 012 has no backfill: a legacy push left no stamp to read.
   const date =
-    fold.state === "approved"
-      ? (fold.topic.client_approved_at ?? shippedDate)
-      : fold.state === "ready"
-        ? (fold.topic.sent_to_client_at ?? shippedDate)
-        : fold.state === "action"
-          ? (fold.askedAt ?? fold.latest.committed_at)
-          : (fold.answeredAt ?? fold.askedAt ?? fold.latest.committed_at);
+    fold.state === "published"
+      ? (fold.topic.published_at ?? fold.topic.client_approved_at ?? shippedDate)
+      : fold.state === "approved"
+        ? (fold.topic.client_approved_at ?? shippedDate)
+        : fold.state === "changes_requested"
+          ? (fold.suggestedAt ?? fold.topic.sent_to_client_at ?? shippedDate)
+          : fold.state === "client_review"
+            ? (fold.topic.sent_to_client_at ?? shippedDate)
+            : fold.state === "has_questions"
+              ? (fold.askedAt ?? fold.latest.committed_at)
+              : (fold.answeredAt ?? fold.askedAt ?? fold.latest.committed_at);
   return {
     org,
     brand: brand.slug,
@@ -541,13 +595,20 @@ function cardOf(
     title: fold.title,
     state: fold.state,
     date,
-    question_count: fold.state === "action" ? fold.form.length : null,
+    question_count: fold.state === "has_questions" ? fold.form.length : null,
     word_count: released
       ? ((fold.sentVersion ?? fold.shippedVersion ?? fold.latest).word_count ?? null)
       : null,
-    answered: fold.state === "frozen" && fold.answered,
+    // !clientCanSee is exactly "on this wire only because the client acted on it", since every
+    // other such row was dropped above. The flag then splits the two with-the-team rows: one
+    // where the client's answers are recorded and being applied, and one where the hold simply
+    // carries nothing they can act on.
+    answered: !clientCanSee(fold.state) && fold.answered,
     sent: released ? fold.topic.sent_to_client_at : null,
-    approved: fold.state === "approved" ? fold.topic.client_approved_at : null,
+    approved:
+      fold.state === "approved" || fold.state === "published"
+        ? fold.topic.client_approved_at
+        : null,
   };
 }
 
@@ -708,13 +769,13 @@ export async function buildDetail(
   }
   const folds = foldTopics(await fetchBrand(token, brand.client_id));
   const fold = folds.find((entry) => entry.topic.slug === topicSlug);
-  if (fold === undefined || fold.state === null) {
+  if (fold === undefined || !fold.visible) {
     return null;
   }
 
   // Bodies are fetched per detail, never in the list: an org's whole corpus in one
   // overview response would be most of a megabyte for no screen that shows it.
-  const released = fold.state === "ready" || fold.state === "approved";
+  const released = clientReadsArticle(fold.state);
   let body: string | null = null;
   if (released) {
     // The SENT version's bytes, never the latest: a sent blog stays editable on the admin
@@ -726,15 +787,15 @@ export async function buildDetail(
     const versionId = (fold.sentVersion ?? fold.shippedVersion ?? fold.latest).id;
     const rows = await pg<{ body: string }[]>(token, `blog_versions?select=body&id=eq.${versionId}`);
     body = rows[0]?.body ?? null;
-  } else if (fold.state === "action") {
+  } else if (fold.state === "has_questions") {
     const rows = await pg<{ body: string }[]>(
       token,
       `blog_versions?select=body&id=eq.${fold.latest.id}`,
     );
     body = rows[0]?.body ?? null;
   }
-  // frozen: no body on purpose. The draft is mid-revision; showing yesterday's bytes as
-  // though they were the article would be showing something nobody will publish.
+  // A spent hold gets no body on purpose. The draft is mid-revision; showing yesterday's bytes
+  // as though they were the article would be showing something nobody will publish.
 
   const card = cardOf(fold, { slug: brand.client_slug, name: brand.client_name }, brand.org_slug);
   return {
@@ -749,7 +810,7 @@ export async function buildDetail(
       : null,
     body,
     questions:
-      fold.state === "action"
+      fold.state === "has_questions"
         ? fold.form.map((row) => ({
             id: row.ref ?? "",
             area: row.area,
@@ -757,9 +818,9 @@ export async function buildDetail(
             why: row.why ?? "",
           }))
         : null,
-    asked: fold.state === "action" ? fold.askedAt : null,
+    asked: fold.state === "has_questions" ? fold.askedAt : null,
     answers:
-      fold.state === "frozen" && fold.answered
+      !clientCanSee(fold.state) && fold.answered
         ? fold.form.map((row) => ({
             id: row.ref ?? "",
             area: row.area,
@@ -767,7 +828,7 @@ export async function buildDetail(
             answer: fold.childByParent.get(row.id)?.body ?? "",
           }))
         : null,
-    answered_at: fold.state === "frozen" ? fold.answeredAt : null,
+    answered_at: !clientCanSee(fold.state) ? fold.answeredAt : null,
     comments: released
       ? fold.comments.map((row) => ({
           id: row.id,
@@ -778,6 +839,9 @@ export async function buildDetail(
         }))
       : null,
     sent: released ? fold.topic.sent_to_client_at : null,
-    approved: fold.state === "approved" ? fold.topic.client_approved_at : null,
+    approved:
+      fold.state === "approved" || fold.state === "published"
+        ? fold.topic.client_approved_at
+        : null,
   };
 }

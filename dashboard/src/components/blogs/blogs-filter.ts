@@ -9,6 +9,7 @@
  */
 
 import type { BlogStatus, BlogSummary } from "@/types";
+import { adminUrgency, blogState } from "@/lib/blog-state";
 
 export type SortKey = "created" | "score" | "status" | "topic" | "roadmap";
 export type SortDir = "asc" | "desc";
@@ -45,32 +46,12 @@ export function isKnownStatus(status: string): status is BlogStatus {
   return (KNOWN_STATUSES as string[]).includes(status);
 }
 
-/** Sorting status alphabetically would be arbitrary, so it sorts by how much it wants a
- *  human: failures first, then the review queue, then what already shipped. A blog the engine
- *  cannot describe wants a human early, and it is never evidence that anything is in flight.
- *
- *  A stopped blog sorts after the ones that want an explanation and before the ones in flight.
- *  It is the only state here the operator already knows about, because they caused it, so it
- *  never earns the top of a list they opened to find out what went wrong. It ranks above
- *  `running` because it is a decision left open: generating the topic again is the way to
- *  resume, and nothing else on this list is waiting on that call. */
-const STATUS_ORDER: Record<BlogStatus, number> = {
-  failed: 0,
-  needs_review: 1,
-  unknown: 2,
-  stopped: 3,
-  running: 4,
-  done: 5,
-};
-
-/**
- * An unmodelled status sorts with the unknown ones rather than crashing the compare. It sorted
- * with the RUNNING ones until "unknown" became a real state, which quietly grouped every blog
- * the engine could not describe in among the ones actually in flight.
- */
-function statusRank(status: string): number {
-  return isKnownStatus(status) ? STATUS_ORDER[status] : STATUS_ORDER.unknown;
-}
+/* STATUS_ORDER and statusRank lived here and are GONE, not misplaced. They ranked the six raw
+ * run statuses, and the status column no longer shows one: it shows a BlogStateTag, under which
+ * every sent, approved and published article is the same `done` and would have collapsed into
+ * one indistinguishable block. Their ordering was carefully reasoned and that reasoning was not
+ * thrown away with them: it moved to ADMIN_URGENCY in lib/blog-state.ts, which still ranks the
+ * mute states early and still keeps a stopped blog below the ones that want an explanation. */
 
 export function sortBlogs(blogs: BlogSummary[], key: SortKey, dir: SortDir): BlogSummary[] {
   const sorted = [...blogs].sort((a, b) => {
@@ -86,7 +67,20 @@ export function sortBlogs(blogs: BlogSummary[], key: SortKey, dir: SortDir): Blo
       return (a.roadmap_index ?? Infinity) - (b.roadmap_index ?? Infinity);
     }
     if (key === "status") {
-      return statusRank(a.status) - statusRank(b.status);
+      // SORTS BY THE THING THE CELL SHOWS. That column renders a BlogStateTag now, so ranking
+      // by the raw run status would sort by an axis the operator cannot see: every sent,
+      // approved and published article is `done`, so the four states the tag distinguishes
+      // would land in one indistinguishable block, and clicking the header would look broken.
+      //
+      // adminUrgency answers the question this header is clicked for, which is "which of these
+      // is mine to move": held and changes-requested first, then the mute ones that cannot
+      // explain themselves, then the bench, then everything waiting on somebody else.
+      //
+      // THE FILTER STILL WORKS ON THE RAW RUN STATUS and that is not an inconsistency to tidy
+      // away. Sorting asks "what should I look at first", which is a question about the whole
+      // article; filtering asks "show me only the failed ones", which is a question about how
+      // the loop ended. Those are different axes and the STATUS_FILTERS list names the second.
+      return adminUrgency(blogState(a)) - adminUrgency(blogState(b));
     }
     if (key === "topic") {
       // Natural language, so it collates by the reader's locale rather than by code point,

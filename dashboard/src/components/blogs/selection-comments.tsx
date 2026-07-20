@@ -198,13 +198,14 @@ export function CommentableArticle({
             unanchored={lost.has(comment.id)}
             capped={full}
             canResolve={canResolve}
+            readOnly={disabled}
             onDismiss={onDismiss}
             onResolve={onResolve}
             onReply={onReply}
           />
         ),
       })),
-    [shown, lost, full, canResolve, onDismiss, onResolve, onReply],
+    [shown, lost, full, canResolve, disabled, onDismiss, onResolve, onReply],
   );
 
   const composer: RailComment | null =
@@ -329,12 +330,19 @@ function Composer({
  * THREE DOORS, AND ONLY ONE OF THEM NEEDS AN ENGINE. Dismiss and Reply are database writes,
  * so they are offered wherever the article is commentable. Resolve is a Claude session, so
  * where there is nothing to run it the card drops the button and says where it runs instead.
+ *
+ * ALL THREE GO AT ONCE when the article itself is not open for changes. That case arrived with
+ * the state machine: the rail is now read on an article the client is mid-review of, one they
+ * have approved, and one already in the CMS, because an admin has to be able to SEE what was
+ * asked for even where nobody may act on it. Reading is the whole of what is permitted there,
+ * so the card becomes a record rather than a queue.
  */
 function CommentCard({
   comment,
   unanchored,
   capped,
   canResolve,
+  readOnly,
   onDismiss,
   onResolve,
   onReply,
@@ -344,6 +352,15 @@ function CommentCard({
   unanchored: boolean;
   /** Three applies are already live, so Resolve would be refused. */
   capped: boolean;
+  /**
+   * The article takes no changes right now, so this card carries no doors at all.
+   *
+   * A DIFFERENT QUESTION FROM `canResolve`, which asks whether an engine exists to run one act.
+   * This asks whether the ARTICLE is open, and when it is not, dismissing and replying are
+   * refused with it: the record says the client accepted these exact bytes, and an admin
+   * waving a suggestion away afterwards edits a conversation that is closed.
+   */
+  readOnly: boolean;
   /** An engine is behind this page, so a Claude session can actually run. False replaces the
    *  button with the reason: a card owed an act, offering neither the act nor an explanation
    *  for its absence, reads as a broken card rather than a deliberate one. */
@@ -368,7 +385,7 @@ function CommentCard({
           <StateIcon state={comment.state} />
           <AuthorChip author={comment.author} />
         </div>
-        {comment.state !== "applying" ? (
+        {comment.state !== "applying" && !readOnly ? (
           <Button
             size="icon-xs"
             variant="ghost"
@@ -422,7 +439,19 @@ function CommentCard({
         </ul>
       ) : null}
 
-      {resolvable && !canResolve ? (
+      {readOnly && resolvable ? (
+        // A card owed an act, showing neither the act nor a reason for its absence, reads as
+        // broken. This says the absence is the article's state rather than a missing button,
+        // and it points at the tag that names which state: the header says "With client" or
+        // "Approved" and its tooltip says who owes the next act.
+        <p className="mt-1.5 flex gap-1.5 text-xs leading-relaxed text-muted-foreground">
+          <CircleDashed className="mt-0.5 size-3 shrink-0" aria-hidden />
+          This article is not open for changes right now, so this request is read only here. The
+          tag beside the title says where the article is and what would reopen it.
+        </p>
+      ) : null}
+
+      {resolvable && !canResolve && !readOnly ? (
         // HIDDEN RATHER THAN DISABLED, and the sentence is what makes the hiding legible. A
         // greyed-out Resolve sends the operator hunting for the state that ungreys it, and on
         // this build there is none to find: no engine will ever sit behind this page, so the
@@ -443,25 +472,27 @@ function CommentCard({
         </p>
       ) : null}
 
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        {resolvable && canResolve ? (
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={capped}
-            title={
-              capped
-                ? "Three changes are already in flight. Wait for one to land before starting another."
-                : undefined
-            }
-            onClick={() => onResolve(comment)}
-          >
-            <Sparkles data-icon="inline-start" aria-hidden />
-            Resolve with Claude
-          </Button>
-        ) : null}
-        <ReplyBox comment={comment} onReply={onReply} />
-      </div>
+      {readOnly ? null : (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          {resolvable && canResolve ? (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={capped}
+              title={
+                capped
+                  ? "Three changes are already in flight. Wait for one to land before starting another."
+                  : undefined
+              }
+              onClick={() => onResolve(comment)}
+            >
+              <Sparkles data-icon="inline-start" aria-hidden />
+              Resolve with Claude
+            </Button>
+          ) : null}
+          <ReplyBox comment={comment} onReply={onReply} />
+        </div>
+      )}
     </div>
   );
 }

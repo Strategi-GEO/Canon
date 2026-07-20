@@ -80,6 +80,67 @@ class EditError(Exception):
     """A comment apply that cannot proceed, with the reason the operator reads."""
 
 
+# ---------------------------------------------------------------------------
+# The approved lock
+# ---------------------------------------------------------------------------
+# supabase/migrations/013_approved_lock.sql put two BEFORE INSERT triggers on the record: no
+# new blog_versions row, and no new TOP-LEVEL blog_comments row, once topics.client_approved_at
+# is set. Those triggers are the invariant and they stay the backstop, because five write paths
+# in two languages reach those tables and the database is the only thing all five must pass.
+#
+# What a trigger cannot do is refuse WELL. It fires at the INSERT, which on every engine path
+# is the last step of a sequence that has already run a Claude session and already written
+# blog.md to disk, and it arrives as a psycopg exception carrying a PORTAL:LOCKED string that
+# nothing in server/ knows how to read. The operator asks to edit an approved article and gets
+# a 500 with a stack trace, for an act the engine should have declined at the door. The two
+# helpers below are that door: one SELECT and one sentence, so each write path can refuse in
+# the idiom its own caller already understands rather than inventing a sixth.
+#
+# THE SENTENCE IS NOT "PERMISSION DENIED", and the difference is not pedantry. The operator
+# holds every permission this act needs; the ARTICLE is in a state that forbids it. A
+# permission error sends them to ask someone for access that nobody can grant, and they come
+# back with the same 500. Naming the approval, its date, and the one act still available sends
+# them somewhere that works.
+
+
+def approved_at(client_slug, topic_slug):
+    """When the client approved this article, or None when they have not.
+
+    ONE query behind every approved-lock guard in the engine, rather than five copies of the
+    same SELECT drifting apart as the column moves. An unknown client or topic answers None,
+    exactly as every other read in this module does: a topic the record has never heard of
+    cannot be approved, and the caller's own missing-topic refusal is the honest one for it.
+    """
+    tid = db.topic_id(client_slug, topic_slug)
+    if tid is None:
+        return None
+    return db.q("select client_approved_at from topics where id = %s",
+                (tid,), fetch="val")
+
+
+def locked_detail(approved, act):
+    """The refusal every locked write path reads back, in one place so they all agree.
+
+    Carries the DATE because the operator's next question is always "approved when", and they
+    should not have to open another surface to answer it. Names the CMS push because it is the
+    one act an approval leaves open: it changes no bytes, so it cannot make the record assert
+    something the client never signed off on. `act` is the caller's own name for what it was
+    asked to do, so the sentence describes the refused act rather than a generic write.
+    """
+    return (f"the client approved this article on {approved:%d %b %Y}, so it is locked and "
+            f"{act} is not available on it. Posting it to the CMS is the only act left.")
+
+
+def _refuse_if_approved(client_slug, topic_slug, act):
+    """Raise EditError when this article is approved, in the shape this module's callers
+    already handle: _apply lands an EditError on the comment as a failed verdict with its
+    reason attached, so a locked article fails the comment honestly instead of stranding it
+    on 'applying' behind a database exception nobody mapped."""
+    approved = approved_at(client_slug, topic_slug)
+    if approved is not None:
+        raise EditError(locked_detail(approved, act))
+
+
 # The columns every comment read selects, in the order _wire unpacks. One string, so a new
 # column cannot be added to one query and forgotten in another.
 _COMMENT_COLS = """id, created_at, author, author_email, selected_text,
@@ -257,6 +318,13 @@ def add_comment(client_slug, topic_slug, *, selected_text, instruction,
     tid = db.topic_id(client_slug, topic_slug)
     if tid is None:
         raise EditError(f"no topic {topic_slug!r} for client {client_slug!r}")
+    # THE APPROVED LOCK, in front of the trigger that would otherwise refuse this INSERT.
+    # An operator comment is born 'applying' and the route runs Claude on it immediately, so
+    # it is an edit wearing a comment's clothes, which is exactly the reasoning migration 013
+    # gives for closing top-level comments alongside versions. Replies are untouched here
+    # because reply_comment carries parent_id and the trigger exempts it: replying is the
+    # cheapest act in the loop and an approval is no reason to make someone wait on silence.
+    _refuse_if_approved(client_slug, topic_slug, "a Claude edit")
     state = "applying" if author == "operator" else "open"
     # applying_since is stamped by the same expression that sets the state, so the two can
     # never disagree: an 'applying' row with no stamp is a row the stranded sweep cannot
@@ -406,6 +474,14 @@ async def _apply_locked(client_slug, topic_slug, comment_id):
     # in the gap would race the writer agent for blog.md, so re-check before touching it.
     _refuse_live_run(client_slug, "applied")
 
+    # The approved lock, re-checked for the same reason and at the same moment. add_comment
+    # refused an already-approved article, but this task then queued on APPLY_LOCK behind
+    # other applies, and an approval landing in that window makes the edit below one the
+    # client never agreed to. Checked before the session rather than only before the commit
+    # so a locked article costs no model spend at all.
+    await asyncio.to_thread(
+        _refuse_if_approved, client_slug, topic_slug, "a Claude edit")
+
     # Scratch may be reclaimed for a settled topic. Materialize lays blog.md AND
     # status.jsonl down from the record, and status.jsonl is load-bearing: commit_topic
     # re-folds it for the version row's score and shipped flag, so committing without it
@@ -434,6 +510,15 @@ async def _apply_locked(client_slug, topic_slug, comment_id):
 
     # The session ran for tens of seconds; a run registered meanwhile owns these files now.
     _refuse_live_run(client_slug, "applied")
+
+    # And the client may have approved the article in that same window, from the portal,
+    # while this session was rewriting the very passage they were reading. Checked here
+    # rather than left to the trigger because the write below lands on DISK first: the
+    # trigger would refuse the commit that follows, the commit-failure arm would restore
+    # blog.md, and the operator would read "the record could not be updated" for a refusal
+    # that has a name and a date.
+    await asyncio.to_thread(
+        _refuse_if_approved, client_slug, topic_slug, "a Claude edit")
 
     # And the OTHER engine may have committed in that same window. The edits below were
     # computed against base_version's bytes, so landing them on a newer article writes a
@@ -675,6 +760,13 @@ def save_content(client_slug, topic_slug, body):
     Materialize first, for the same status.jsonl reason _apply_locked names; the
     operator's body then overwrites whatever blog.md was laid down. Returns the committed
     word count, measured the way commit_topic measures it."""
+    # THE APPROVED LOCK, FIRST, before a byte of scratch is touched. The route refuses this
+    # too and carries the operator's 409; this line is what holds for anything reaching
+    # save_content directly, and it belongs at the top because every step below writes: the
+    # materialize lays files down, the write replaces blog.md, and only commit_topic reaches
+    # the trigger. Left to the trigger alone the operator's bytes sit on disk through a failed
+    # commit and a restore, for an act that was never going to land.
+    _refuse_if_approved(client_slug, topic_slug, "editing")
     base_version = _record_version_no(client_slug, topic_slug)
     sync.materialize_topic(client_slug, topic_slug)
     tdir = runner.output_dir(client_slug, topic_slug)
@@ -765,6 +857,22 @@ def mark_sent(client_slug, topic_slug, email):
     tid = db.topic_id(client_slug, topic_slug)
     if tid is None:
         return sent_state(client_slug, topic_slug)
+
+    # THE APPROVED LOCK, AND THIS IS THE ONE PATH NO TRIGGER COVERS. Sending inserts nothing:
+    # it UPDATEs topics, so neither trigger in migration 013 ever fires on it. Migration 013
+    # closed the hosted build's equivalent inside admin_done_topic and named this act the most
+    # damaging of the three, because the UPDATE below CLEARS client_approved_at as it re-stamps.
+    # A re-send would erase the very record the whole lock protects, and then every other guard
+    # in this file would read the article as unapproved and let it be rewritten freely. So this
+    # check is not belt and braces here: it is the lock itself for this act.
+    #
+    # None IS the refusal, the same protocol the open-suggestion refusal already answers with,
+    # so api_send_blog_to_client turns it into a 409 with no new error type to teach it. The
+    # route runs its own approved check first and carries the sentence with the date; a caller
+    # reaching mark_sent directly reads the refusal from the None and this comment.
+    if approved_at(client_slug, topic_slug) is not None:
+        return None
+
     sent = db.q(
         """update topics
              set sent_to_client_at = now(),

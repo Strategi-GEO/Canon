@@ -66,6 +66,7 @@ them does not fail the build; it fails the app at runtime, which is harder to di
 | `008_admin_roadmap_sheets.sql` | The roadmap sheet preview and the generation report both 502. |
 | `009_admin_write_tier.sql`, `010_admin_write_tier_fixes.sql`, `011_admin_reply_comment.sql` | **The hosted build becomes read-only in fact.** Send to client, comments, replies, dismiss, manual edits, brand settings, roadmap delete and blog upload all 404 or 403. 010 and 011 are not optional refinements: without 010, dismissing a comment DELETES it and cascades away its replies, and saving an edit blanks the score so a shipped blog reads as uploaded; without 011 the Reply control posts to a route that does not exist. |
 | `012_publish_tracking.sql` | The record never learns a blog reached the CMS. No publish stamp is written and no Published chip appears anywhere. Harmless to omit, and invisible rather than broken. |
+| `013_approved_lock.sql` | **An approved article stays editable.** Two triggers enforce the lock, so without them the UI hides the controls and the database still accepts the writes: the engine can commit a new version over an article the client signed off, and either side can file a change request against it. The record would then say the client approved bytes they never read. |
 
 006 through 008 exist specifically because 003 hardened the column grants and left the
 hosted admin surface with no legal route to the columns it legitimately reads. They add no

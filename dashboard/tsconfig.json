@@ -30,5 +30,13 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  "//exclude": [
+    "tests/ is excluded because Node's own test runner needs the explicit .ts extension on its",
+    "imports to strip types at runtime, and tsc refuses that extension unless",
+    "allowImportingTsExtensions is on, which conflicts with how Next builds this app. Excluding",
+    "the directory is the smaller compromise: the tests run under `node --test tests/`, the app",
+    "compiles unchanged, and neither has to bend for the other. The tests still type-check in",
+    "practice because they import the real module and would fail loudly on a shape change."
+  ],
+  "exclude": ["node_modules", "tests"]
 }

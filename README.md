@@ -122,6 +122,44 @@ This is single-process by design. Scaling out is listed under "Not built yet" be
 would require moving both primitives and the registry out of process, and nothing here
 does that.
 
+## Blog states
+
+Every blog is in exactly one state, and one function decides which:
+`dashboard/src/lib/blog-state.ts`. The admin and the client are looking at the same article at
+the same moment, so they see the same state through two vocabularies rather than two state
+machines that could disagree. `dashboard/tests/blog-state.test.ts` is the specification,
+executable: `cd dashboard && node --test tests/blog-state.test.ts`.
+
+| State | Admin tag | Admin can | Client tag | Client can |
+|---|---|---|---|---|
+| `generating` | Generating | nothing | In progress | nothing |
+| `has_questions` | Has questions | answer | Waiting on you | answer |
+| `internal_review` | Internal review | edit, comment, send | not visible | nothing |
+| `client_review` | With client | nothing | Ready to review | approve, suggest, reply |
+| `changes_requested` | Changes requested | edit, comment, send again | With our team | reply |
+| `approved` | Approved | **post to CMS only** | Approved | reply |
+| `published` | Published | post again | Published | nothing |
+| `failed` / `stopped` | Failed / Stopped | nothing | not visible | nothing |
+
+Three things in that table are load-bearing:
+
+**`needs_review` IS `has_questions`.** The engine contract defines it as exactly "this blog has
+questions that are current, on disk and answerable", and `runner._enforce_terminal_status`
+corrects a claimed `needs_review` with no live form back to `done` or `failed`. So the status
+itself is the question signal, and nothing needs a second read to know an answer is owed.
+
+**The admin has NO actions during `client_review`.** The client is reading the exact bytes
+pinned by `sent_version_id`. An edit there changes the article underneath someone mid-review.
+
+**`approved` is LOCKED, for everyone.** The approval stamp records that the client accepted
+THOSE bytes, so an edit after it makes the record assert something the client never did.
+Migration 013 enforces this with two triggers rather than a check in each writer, because the
+five write paths into an article share no chokepoint and two of them are in Python. Replies are
+exempt: they carry `parent_id`, change no bytes, and refusing them only buys silence.
+
+There is no un-approve. A client who approves by mistake cannot be walked back from inside the
+app, and neither can the team.
+
 ## Engine vs client
 
 `CLAUDE.md` says HOW. `clients/<slug>/` says WHO. Onboarding a client is four files, never

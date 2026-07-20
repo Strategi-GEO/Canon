@@ -27,6 +27,11 @@ const STATUS_FOR: Record<string, number> = {
   ROLE: 403,
   NOTFOUND: 404,
   NOTSENT: 409,
+  // Raised by migration 013's blog_comments trigger, not by portal_suggest_change itself: the
+  // article was approved, so it is locked and takes no new change requests from either side.
+  // Listed here and NOT on the reply route, because the trigger exempts replies and the map's
+  // rule above is that a code nothing raises must not appear.
+  LOCKED: 409,
   BADBODY: 422,
   LIMIT: 429,
 };

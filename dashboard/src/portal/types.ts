@@ -1,18 +1,23 @@
+import type { BlogState } from "@/lib/blog-state";
+
 /**
  * The portal's wire types, mirroring what the Route Handlers actually answer. Deliberately
  * SMALL: no score, no iterations, no stage, no run timing, no eval or dossier artifacts
  * anywhere on this wire. That absence is the client-safe boundary, and
  * tests/portal_check.py enforces it by grepping this app for the forbidden fields.
+ *
+ * THE STATE ON THIS WIRE IS THE CANONICAL BlogState, not a portal dialect. The old private
+ * four-value vocabulary (action / frozen / ready / approved) is GONE, and the reason it went
+ * is that translating at the wire boundary would have put a second decider back: every view
+ * that asks `clientCan(state, "approve")` or renders `<BlogStateTag>` speaks BlogState, so a
+ * dialect on the wire only means mapping back on arrival, in each view, forever.
+ *
+ * Carrying the canonical state is NOT carrying the admin's information. A client is shown a
+ * different LABEL for the same state (clientTag), is offered different ACTS (clientActions),
+ * and is shown only the states clientCanSee admits: internal_review, failed and stopped never
+ * reach this wire at all, because portal-data.ts drops those rows before they become payload.
  */
-
-/**
- * The portal's whole vocabulary for a blog, derived server-side (portal-data.ts) and never
- * stored: action (the client owes answers), frozen (with the editorial team), ready (sent
- * for the client's review: approve it or suggest changes), approved (the client signed it
- * off and the team takes it live). "ready" and "approved" together replace the old
- * terminal "delivered": delivery is no longer the end of the conversation, approval is.
- */
-export type PortalState = "action" | "frozen" | "ready" | "approved";
+export type { BlogState };
 
 export type PortalOrg = {
   slug: string;
@@ -39,14 +44,15 @@ export type PortalBlogCard = {
   brand_name: string;
   topic_slug: string;
   title: string;
-  state: PortalState;
+  state: BlogState;
   date: string;
   question_count: number | null;
   word_count: number | null;
+  /** Spent holds only: true when the client's answers are recorded and being applied. */
   answered: boolean;
-  /** ready and approved only: when the team sent the article for review. UTC ISO. */
+  /** Released states only: when the team sent the article for review. UTC ISO. */
   sent: string | null;
-  /** approved only: when the client approved. UTC ISO. */
+  /** approved and published only: when the client approved. UTC ISO. */
   approved: string | null;
 };
 
@@ -110,28 +116,28 @@ export type PortalBlogDetail = {
   brand_name: string;
   topic_slug: string;
   title: string;
-  state: PortalState;
+  state: BlogState;
   date: string;
   word_count: number | null;
-  /** ready/approved: the sent article. action: the current draft under review. frozen: absent. */
+  /** Released: the sent article. has_questions: the draft under review. Held: absent. */
   body: string | null;
   questions: PortalQuestion[] | null;
   asked: string | null;
   answers: PortalAnswerView[] | null;
   answered_at: string | null;
-  /** ready and approved only: the client's own suggestions, oldest first, with their threads. */
+  /** Released states only: the client's own suggestions, oldest first, with their threads. */
   comments: PortalComment[] | null;
   /**
-   * ready and approved only: the id of the version these bytes came from, carried back on
+   * Released states only: the id of the version these bytes came from, carried back on
    * approve. It is what closes the race where the team re-sends while an approval is in
    * flight: without it the stamp lands on an article the client never read, and the record
    * would say they signed off on bytes that appeared after they pressed the button. Null on
    * a legacy send that predates the stamp, which the record accepts as the matching value.
    */
   version: string | null;
-  /** ready and approved only: when the team sent the article for review. UTC ISO. */
+  /** Released states only: when the team sent the article for review. UTC ISO. */
   sent: string | null;
-  /** approved only: when the client approved. UTC ISO. */
+  /** approved and published only: when the client approved. UTC ISO. */
   approved: string | null;
 };
 

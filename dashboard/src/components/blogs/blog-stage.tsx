@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   ArrowLeft,
   Check,
+  CheckCheck,
   Copy,
   Download,
   FileUp,
@@ -20,20 +21,20 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { NotFoundCard } from "@/components/shell/brand-route";
-import { StatusBadge } from "@/components/shell/status-badge";
+import { BlogStateTag } from "@/components/shell/blog-state-tag";
 import { AnswerQuestions } from "@/components/blogs/answer-questions";
 import { BlogEditor } from "@/components/blogs/blog-editor";
 import { MarkdownView } from "@/components/blogs/markdown-view";
 import { PublishAction } from "@/components/blogs/publish-action";
 import { SendToClient } from "@/components/blogs/send-to-client";
 import { CommentableArticle, type SelectionDraft } from "@/components/blogs/selection-comments";
-import { isKnownStatus } from "@/components/blogs/blogs-filter";
 import { extractScore } from "@/components/blogs/markdown";
 import { countSources, countWords } from "@/components/blogs/metrics";
 import { readTrail, type RunTrail } from "@/components/blogs/status-trail";
 import { artifactText, useArtifact, type LoadedArtifact } from "@/components/blogs/use-artifact";
 import { useBlogComments } from "@/components/blogs/use-blog-comments";
 import { brandHref } from "@/lib/orgs-context";
+import { adminCan, blogState } from "@/lib/blog-state";
 import { formatAbsolute, formatCount, formatRelative } from "@/lib/format";
 import { useBlogQuestions } from "@/lib/use-blog-questions";
 import { ApiError, api } from "@/lib/api";
@@ -164,7 +165,6 @@ function StageBody({
   // content, so a draft held inside the editor would be destroyed by a glance at the
   // Eval tab. Null means not editing.
   const [editDraft, setEditDraft] = React.useState<string | null>(null);
-  const editing = editDraft !== null;
 
   // blog.md and status.jsonl load regardless of the open tab: the header meta is measured
   // from the draft, and the score trail from the run feed, so neither can wait for a tab.
@@ -184,21 +184,6 @@ function StageBody({
     onChanged();
     reloadQuestions();
   }, [onChanged, reloadQuestions]);
-
-  // What this page may change. The engine, or the admin_* definer functions on the hosted
-  // build, enforce every bit of this; the flags only decide which affordances exist on screen.
-  //
-  // NO LONGER GATED ON HOSTED_READONLY, and that is the point of migration 009: editing,
-  // commenting, dismissing and sending are all plain database writes, so an operator on the
-  // hosted build can do them. They used to be hidden there for the honest reason that nothing
-  // could perform them; now something can.
-  const editable = !demoMode && blog.status === "done";
-
-  // WHAT STILL NEEDS AN ENGINE, and the one thing this page cannot do hosted. Resolving a
-  // comment with Claude is an Agent SDK session, not a row: a definer function can file the
-  // request and cannot run it. The comment rail therefore offers Resolve only where an engine
-  // is behind it, and the hosted build shows the comment as a queued request instead.
-  const canRunClaude = !HOSTED_READONLY && editable;
 
   // Where this blog sits with the client: sent, approved, and how many suggestions are
   // still open. Read beside the summary rather than derived from it, because a resolve or
@@ -241,10 +226,71 @@ function StageBody({
     cms_status: blog.cms_status ?? null,
   };
 
+  /**
+   * WHERE THIS ARTICLE IS, computed once, from the record and nothing else.
+   *
+   * The summary and the review read are merged because they carry the same delivery facts at
+   * different ages: the summary is the blogs list's copy from page load, and the review read is
+   * this page's own, re-read on every resolve, dismiss and send. reviewState spreads LAST so the
+   * fresher one wins, and it already falls back to the summary's fields while its own request is
+   * in flight, so the merge never opens a hole where a sent blog reads as unsent.
+   */
+  const state = blogState({ ...blog, ...reviewState });
+
+  /**
+   * WHAT THE STATE PERMITS. This replaces a single `blog.status === "done"` flag that governed
+   * everything, and the reason it had to go is that `done` is not a place: it was equally true of
+   * an article on the refining bench, one the client is reading right now, one they have approved,
+   * and one already in the CMS. Those are four situations with four different sets of doors, so
+   * one flag over all of them offered an edit that rewrote bytes somebody was mid-review of.
+   *
+   * demoMode is ANDed in rather than modelled as a state, because a demo brand is a property of
+   * the CLIENT and not a place an article sits. Its blogs are precoded placeholder text, so no
+   * act on this page means anything for one, whatever state the record is in.
+   */
+  const canEdit = !demoMode && adminCan(state, "edit");
+  const canComment = !demoMode && adminCan(state, "comments");
+  const canSend = !demoMode && adminCan(state, "send");
+  const canPublish = !demoMode && adminCan(state, "publish");
+  const canAnswer = !demoMode && adminCan(state, "answer");
+
+  /**
+   * WHAT STILL NEEDS AN ENGINE, and it is a SEPARATE AXIS that stays separate.
+   *
+   * Every flag above asks what the state permits. This asks whether an engine exists to do the
+   * work, which is a fact about the deployment and not about the article: resolving a comment
+   * with Claude is an Agent SDK session rather than a row, so a definer function can file the
+   * request and cannot run it. Folding the two would make the hosted build look as though its
+   * articles were in a different state, and they are not. Same article, same state, on a build
+   * that cannot spend a session on it, so the rail shows the comment as a queued request.
+   */
+  const canRunClaude = !HOSTED_READONLY && canComment;
+
+  /**
+   * The rail is READ even where the admin may not act on it, and that is deliberate.
+   *
+   * A client's suggestions are the whole reason an article comes back, so an admin looking at a
+   * blog that is out for review, approved or published has to be able to see what was said about
+   * it. Leaving the hook idle in those states would render an empty margin beside the article,
+   * which claims nobody has asked for anything: strictly worse than being unable to act, because
+   * it is wrong rather than merely limited. What the state decides is whether those cards carry
+   * doors, and that is `canComment` below, not this.
+   */
+  const commentsVisible =
+    canComment || state === "client_review" || state === "approved" || state === "published";
+
+  /**
+   * The draft the editor is actually holding, and null the moment the state stops permitting an
+   * edit. A client approving while this page sits open locks the article for everyone, this side
+   * included, so a textarea left standing over that promises a save the engine refuses. Dropping
+   * back to the read view says so by construction, and the tag beside the title says why.
+   */
+  const editorDraft = canEdit ? editDraft : null;
+
   // Read once per visit, then watched only while an apply this operator started is settling.
   // A client's suggestion arriving is NOT watched for: it lands in the bell at the next read
   // of the blogs library, which is what a refresh is for.
-  const comments = useBlogComments(brandSlug, topicSlug, editable);
+  const comments = useBlogComments(brandSlug, topicSlug, commentsVisible);
   const applying = comments.comments.filter((comment) => comment.state === "applying").length;
 
   // Announce each comment that settles, once, and re-read the article it changed. The ref
@@ -359,7 +405,14 @@ function StageBody({
             {blog.topic}
           </h2>
           <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
-            {isKnownStatus(blog.status) ? <StatusBadge status={blog.status} /> : null}
+            {/* WHERE THE ARTICLE IS, which is not the same fact as how the run ended.
+                StatusBadge read "shipped" for a blog on the bench, one the client was mid
+                review of, one they had already approved and one sitting in the CMS. Those
+                are four situations offering four different sets of controls on this very
+                page, so the badge was contradicting the buttons under it. The tag names the
+                one state this blog is in, and its tooltip names who owes the next act, which
+                is the sentence that explains every control this page then declines to show. */}
+            <BlogStateTag state={state} audience="admin" />
             {/* An uploaded blog gets the provenance chip INSTEAD of a score trail. A bare
                 "no score" beside a shipped article reads as a missing number, which invites
                 the operator to go looking for the evaluation that failed to run. There was
@@ -386,34 +439,65 @@ function StageBody({
               PublishAction is absent: the record of a push is worth reading even where the
               push itself cannot be made. */}
           <PublishedChip published={reviewState.published} cmsStatus={reviewState.cms_status} />
-          <PublishAction
-            brandSlug={brandSlug}
-            topicSlug={topicSlug}
-            topic={blog.topic}
-            status={blog.status}
-            demoMode={demoMode}
-          />
-          <SendToClient
-            brandSlug={brandSlug}
-            topicSlug={topicSlug}
-            brandName={brandName}
-            status={blog.status}
-            demoMode={demoMode}
-            review={reviewState}
-            onSent={(state) => {
-              // The POST answers with the state it produced, so the chip flips on the spot
-              // and the summary re-read only has to agree with it.
-              //
-              // SPREAD OVER THE CURRENT STATE rather than replacing it. A send moves the
-              // client half of this record and touches nothing in the CMS half, and the
-              // hosted send RPC is admin_send_blog_to_client from migration 009, which
-              // predates 012 and answers with the review fields alone. Taking its answer
-              // whole would drop the publish stamp out of state and blank a Published chip
-              // that is still true.
-              setReview({ ...reviewState, ...state });
-              onChanged();
-            }}
-          />
+          {/* GONE RATHER THAN GREYED wherever the state refuses them, both of these.
+
+              A disabled Post to CMS on an article the client has not approved yet, or a
+              disabled Send on one they are reading right now, is a control an operator has to
+              read and reject on every single visit, and the first thing they do about it is go
+              hunting for the switch that turns it on. There is no switch: the answer is the
+              state, and the tag beside the title already carries it in words. An absent control
+              next to an explained state is legible; a dead control next to it is a puzzle.
+
+              THE DISABLED PATTERN SURVIVES INSIDE these components, and only for the reasons
+              that clear on their own: demo mode, a Claude apply already in flight, the engine's
+              one-session cap. Those are conditions to wait out, so a button that comes back is
+              the honest shape for them. A state is not a condition to wait out.
+
+              PublishAction keeps its own HOSTED_READONLY gate, untouched. That axis is about
+              whether an engine exists to make the push, not about where the article sits, and
+              the two compose here rather than either one swallowing the other. */}
+          {canPublish ? (
+            <PublishAction
+              brandSlug={brandSlug}
+              topicSlug={topicSlug}
+              topic={blog.topic}
+              status={blog.status}
+              demoMode={demoMode}
+            />
+          ) : null}
+          {/* THE STAMP IS A FACT, NOT A CONTROL, so it survives the gating that removes the
+              control. Gating Send on `canSend` was correct and it took the timestamp with it,
+              because SendToClient rendered both: in client_review and approved the operator
+              could no longer see WHEN the article went out or WHO sent it. The tag says where
+              the article is and cannot say that, because a tag is per state and this is per
+              record. Rendered whenever the record carries a stamp, which is exactly the set of
+              states where the control is gone, so the two never double up. */}
+          <ReviewStamp review={reviewState} />
+          {canSend ? (
+            <SendToClient
+              brandSlug={brandSlug}
+              topicSlug={topicSlug}
+              brandName={brandName}
+              status={blog.status}
+              demoMode={demoMode}
+              review={reviewState}
+              onSent={(sent) => {
+                // The POST answers with the review state it produced, so the chip flips on the
+                // spot and the summary re-read only has to agree with it. Named `sent` rather
+                // than `state` because this scope now holds the blog's own BlogState, and two
+                // different `state`s one line apart is how the wrong one gets spread.
+                //
+                // SPREAD OVER THE CURRENT STATE rather than replacing it. A send moves the
+                // client half of this record and touches nothing in the CMS half, and the
+                // hosted send RPC is admin_send_blog_to_client from migration 009, which
+                // predates 012 and answers with the review fields alone. Taking its answer
+                // whole would drop the publish stamp out of state and blank a Published chip
+                // that is still true.
+                setReview({ ...reviewState, ...sent });
+                onChanged();
+              }}
+            />
+          ) : null}
         </div>
       </div>
 
@@ -426,18 +510,29 @@ function StageBody({
       ) : null}
 
       <Card className="mt-4 gap-0 overflow-hidden p-0">
-        <AnswerQuestions
-          brandSlug={brandSlug}
-          topicSlug={topicSlug}
-          blogScore={blog.score}
-          entry={byTopic.get(topicSlug)}
-          review={
-            blog.status === "needs_review"
-              ? { note: trail?.terminalNote ?? null, pending: status.loaded === undefined }
-              : null
-          }
-          onSettled={questionsSettled}
-        />
+        {/* THE ANSWER FORM, in the one state that owes an answer and nowhere else.
+            adminActions gives `answer` to has_questions alone, because a question is precisely
+            what holds a blog: a blog that is not held has nothing anyone can answer, and a form
+            offered there would be a demand with no obligation behind it.
+
+            The strip also carries its own historical notes, a superseded form or the outcome of
+            a revise that has already landed, and those go with it. They report on a demand that
+            is discharged, and what they were reporting, the score the answers bought, is in the
+            eval tab and in the score trail above. */}
+        {canAnswer ? (
+          <AnswerQuestions
+            brandSlug={brandSlug}
+            topicSlug={topicSlug}
+            blogScore={blog.score}
+            entry={byTopic.get(topicSlug)}
+            review={
+              blog.status === "needs_review"
+                ? { note: trail?.terminalNote ?? null, pending: status.loaded === undefined }
+                : null
+            }
+            onSettled={questionsSettled}
+          />
+        ) : null}
 
         <Tabs value={tab} onValueChange={(value) => setTab(value as OutputFile)} className="gap-0">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2">
@@ -449,7 +544,12 @@ function StageBody({
               ))}
             </TabsList>
             <div className="flex items-center gap-1.5">
-              {editable && tab === "blog.md" && !editing ? (
+              {/* The button is absent where the state refuses an edit, and DISABLED where the
+                  state allows one but this moment does not. That split is the whole rule on
+                  this page: an in-flight Claude apply clears by itself, so the button stays and
+                  explains itself, while an approved article never reopens and a greyed control
+                  over it would be an invitation to look for a way in. */}
+              {canEdit && tab === "blog.md" && editorDraft === null ? (
                 <EditButton
                   disabled={articleText === null || applying > 0}
                   reason={
@@ -463,7 +563,7 @@ function StageBody({
               {/* Hidden while the blog tab is being edited: these export the SAVED
                   article, and offering them beside an unsaved draft exports stale text
                   the operator just rewrote. */}
-              {editing && tab === "blog.md" ? null : (
+              {editorDraft !== null && tab === "blog.md" ? null : (
                 <Artifacts raw={raw} tab={tab} topicSlug={topicSlug} />
               )}
             </div>
@@ -478,13 +578,13 @@ function StageBody({
                     loaded={item.name === tab ? loaded : undefined}
                     uploaded={blog.uploaded === true}
                   />
-                ) : editDraft !== null ? (
+                ) : editorDraft !== null ? (
                   <BlogEditor
                     brandSlug={brandSlug}
                     topicSlug={topicSlug}
                     baseVersion={blog.version_no ?? null}
                     initial={articleText ?? ""}
-                    value={editDraft}
+                    value={editorDraft}
                     onChange={setEditDraft}
                     onSaved={() => {
                       setEditDraft(null);
@@ -495,7 +595,11 @@ function StageBody({
                   />
                 ) : (
                   <>
-                    {editable && comments.error !== null ? (
+                    {/* Keyed to whether the rail was FETCHED, not to whether it can be acted
+                        on. An admin who may only read the client's suggestions still has to
+                        know the read failed, because the empty margin beside the article
+                        otherwise claims nobody asked for anything. */}
+                    {commentsVisible && comments.error !== null ? (
                       // The rail could not be read, and an article with an empty margin
                       // beside it would claim nobody has asked for anything. The engine's
                       // own words, above the piece they are about.
@@ -505,7 +609,7 @@ function StageBody({
                     ) : null}
                     <BlogArticle
                       loaded={article.loaded}
-                      editable={editable}
+                      canComment={canComment}
                       canResolve={canRunClaude}
                       remaining={3 - applying}
                       comments={comments.comments}
@@ -558,11 +662,19 @@ function EditButton({
   );
 }
 
-/** The article view: commentable on a done blog, with the review rail beside it, and a plain
- *  read everywhere else. */
+/**
+ * The article view: commentable where the state permits it, with the review rail beside it,
+ * and a plain read everywhere else.
+ *
+ * READ-ONLY IS NOT THE SAME AS ABSENT here. On an article the client is reading, has approved,
+ * or that is already in the CMS, the rail still renders every suggestion filed against it. What
+ * goes is the composer and the doors on each card, because none of those acts is permitted
+ * then. Hiding the whole rail instead would hide the record of a conversation that actually
+ * happened.
+ */
 function BlogArticle({
   loaded,
-  editable,
+  canComment,
   canResolve,
   remaining,
   comments,
@@ -572,7 +684,8 @@ function BlogArticle({
   onReply,
 }: {
   loaded: LoadedArtifact | undefined;
-  editable: boolean;
+  /** Whether the STATE lets this side file, resolve, dismiss or reply to a change. */
+  canComment: boolean;
   /** Whether an engine is behind this page, so a Claude session can actually run. Threaded
    *  from StageBody rather than read off HOSTED_READONLY down here, so the one flag that
    *  already knows the answer is the only thing the rail can disagree with. */
@@ -595,7 +708,7 @@ function BlogArticle({
   }
   return (
     <>
-      {editable ? (
+      {canComment ? (
         // Above BOTH columns and no longer centred on the article's measure: it describes
         // the whole surface now, rail included. It also stays OUTSIDE the rail's container
         // deliberately, because everything inside that container is selectable text a
@@ -608,7 +721,7 @@ function BlogArticle({
       <CommentableArticle
         source={loaded.text}
         comments={comments}
-        disabled={!editable}
+        disabled={!canComment}
         canResolve={canResolve}
         remaining={remaining}
         onSubmit={onSubmit}
@@ -721,6 +834,69 @@ function UploadedChip() {
       <TooltipContent className="max-w-xs">
         This article was uploaded rather than generated, so the factory never researched,
         gated or scored it. It edits, comments and sends exactly like any other blog.
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * WHEN the article went to the client, and who sent or approved it.
+ *
+ * This exists because gating the Send control on `canSend` correctly removed a BUTTON and
+ * incorrectly removed a FACT along with it. SendToClient rendered both: the control, and a chip
+ * carrying the send or approval timestamp with the person's email in its tooltip. In
+ * client_review and approved the control must go, and the operator was left unable to see when
+ * they released the article or who approved it.
+ *
+ * The state tag cannot carry this. A tag is per STATE and says the same sentence for every
+ * article in it; this is per RECORD. They sit next to each other and answer different questions:
+ * the tag says where the article is, this says when it got there.
+ *
+ * IT RENDERS NOTHING BEFORE THE FIRST SEND, so it never doubles up with the control it
+ * complements: the states that carry a stamp are exactly the states where Send is gated away,
+ * and internal_review has both a Send button and nothing to report.
+ */
+function ReviewStamp({ review }: { review: BlogReviewState }) {
+  const sent = review.sent_to_client;
+  if (sent === null) {
+    return null;
+  }
+  // The approval is the later act and supersedes the send in this one line. Both remain
+  // readable: the tooltip carries the absolute time and the person for whichever is shown, and
+  // the send date is not lost, because an approval cannot exist without one.
+  //
+  // Bound to a LOCAL first, rather than tested through `review.client_approved !== null` and
+  // read back off the object afterwards. The two are the same value to a reader and not to the
+  // compiler: a property access cannot stay narrowed across the lines between, so the second
+  // read is `string | null` again and the formatters reject it. Widening the formatters or
+  // asserting non-null here would both trade a real check for a claim.
+  const approvedAt = review.client_approved;
+  const when = approvedAt ?? sent;
+  const who = approvedAt === null ? review.sent_to_client_by : review.client_approved_by;
+  const approved = approvedAt !== null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex cursor-default items-center gap-1.5 text-xs text-muted-foreground">
+          {approved ? (
+            <CheckCheck className="size-3.5" aria-hidden />
+          ) : (
+            <Check className="size-3.5" aria-hidden />
+          )}
+          {approved ? "Approved" : "Sent"} {formatRelative(when)}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">
+        <span className="machine">
+          {approved ? "Approved by the client " : "Sent to the client "}
+          {formatAbsolute(when)}
+          {who ? ` by ${who}` : ""}
+          {/* The send date survives an approval rather than being replaced by it: the chip can
+              only show one, and "when did this go out" stays a question worth answering after
+              the client has said yes. `sent` is the narrowed local, so this needs no second
+              null test that the compiler would not believe anyway. */}
+          {approved ? `. Sent ${formatAbsolute(sent)}.` : "."}
+        </span>
       </TooltipContent>
     </Tooltip>
   );

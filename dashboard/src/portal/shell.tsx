@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   BRAND_NAV,
   brandHref,
@@ -277,8 +278,11 @@ function AttentionStrip({ onNavigate }: { onNavigate?: () => void }) {
   if (loading) {
     return null;
   }
-  const action = blogs.filter((blog) => blog.state === "action").length;
-  const ready = blogs.filter((blog) => blog.state === "ready").length;
+  // The two states where the client OWES something, which is what clientActions says of them:
+  // has_questions offers `answer` and client_review offers `approve`. changes_requested is
+  // deliberately absent, because a request already with the team is not a debt of the client's.
+  const action = blogs.filter((blog) => blog.state === "has_questions").length;
+  const ready = blogs.filter((blog) => blog.state === "client_review").length;
   if (action === 0 && ready === 0) {
     return null;
   }
@@ -347,8 +351,8 @@ function Topbar() {
   // lg, so a small dot on the menu trigger says "open me" without inventing a second
   // notification surface. Amber when answers are owed (the stronger ask), accent when
   // articles are only waiting on approval.
-  const needsAnswers = blogs.some((blog) => blog.state === "action");
-  const needsApproval = blogs.some((blog) => blog.state === "ready");
+  const needsAnswers = blogs.some((blog) => blog.state === "has_questions");
+  const needsApproval = blogs.some((blog) => blog.state === "client_review");
 
   React.useEffect(() => {
     const read = () => setEmail(getSession()?.user.email ?? null);
@@ -469,12 +473,25 @@ export function PortalShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <PortalDataProvider>
-      <Sidebar />
-      <div className="flex min-h-dvh flex-col lg:pl-60">
-        <Topbar />
-        <main className="flex-1 px-4 py-6 sm:px-6 sm:py-8">{children}</main>
-      </div>
-    </PortalDataProvider>
+    /*
+     * ONE TooltipProvider, HERE, above everything the portal renders.
+     *
+     * <BlogStateTag> is a Radix <Tooltip>, and a Radix tooltip outside a provider is a RUNTIME
+     * crash that neither tsc nor next build can see: the types are satisfied and the context is
+     * missing. That exact bug has shipped in this app before (the roadmap table went out without
+     * one). The tag is on the blog cards, on the library, on the brand overview and on the
+     * detail badge, and every one of those renders inside this <main>, so one provider at the
+     * root of the portal tree covers all of them. Adding a provider per view would work and is
+     * the wrong shape: it makes the next view that forgets one a crash rather than a no-op.
+     */
+    <TooltipProvider>
+      <PortalDataProvider>
+        <Sidebar />
+        <div className="flex min-h-dvh flex-col lg:pl-60">
+          <Topbar />
+          <main className="flex-1 px-4 py-6 sm:px-6 sm:py-8">{children}</main>
+        </div>
+      </PortalDataProvider>
+    </TooltipProvider>
   );
 }

@@ -41,6 +41,11 @@ const STATUS_FOR: Record<string, number> = {
   HELD: 409,
   RUNNING: 409,
   NOSHEET: 409,
+  // The client approved this article, so migration 013 locks it. 409 rather than 403: the
+  // caller is permitted to do this in general, just not to an article in this state, which is
+  // exactly what every other code in this block means. 403 would read as "your account cannot
+  // do this" and send an admin looking for a permission they already have.
+  LOCKED: 409,
   // Body problems. The function judges content; the route only judged shape.
   BLANK: 422,
   TOOLARGE: 413,

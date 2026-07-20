@@ -1,6 +1,6 @@
 import { unauthenticated, verifyRequest } from "@/lib/server/auth";
 import { detail, failure, json } from "@/lib/server/http";
-import { brandRow, buildDetail } from "@/lib/server/portal-data";
+import { brandRow, buildDetail, clientReadsArticle } from "@/lib/server/portal-data";
 import { pg } from "@/lib/server/postgrest";
 import type { PortalBlogDetail, PortalComment, PortalReply } from "@/portal/types";
 
@@ -111,9 +111,12 @@ export async function GET(
     if (blog === null) {
       return detail(404, `no blog '${topic}' for '${brand}'`);
     }
-    // Only the released states have either. buildDetail already answers null for both on
-    // the others, so the thread read is skipped rather than run and thrown away.
-    if (blog.state !== "ready" && blog.state !== "approved") {
+    // Only the released states have either, and clientReadsArticle is the ONE list of them:
+    // buildDetail asks the same function which states carry a body, so a state added to the
+    // machine cannot arrive here with an article and no conversation beside it. buildDetail
+    // already answers null for both on the others, so the thread read is skipped rather than
+    // run and thrown away.
+    if (!clientReadsArticle(blog.state)) {
       return json({ ...blog, comments: null, version: null } satisfies PortalBlogDetail);
     }
     const scope = await brandRow(user.token, brand);

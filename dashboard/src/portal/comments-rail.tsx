@@ -28,6 +28,15 @@ import type {
  * sentence has already said what they mean by selecting it, and a toggle only gave them a
  * way to mean it while the app was not listening.
  *
+ * WHETHER THERE IS ANYTHING TO SELECT IS THE CALLER'S CALL, and it arrives as `canSuggest` and
+ * `canReply` because lib/blog-state.ts decides both from the article's state. This component
+ * never infers them: it has the comments and the article, which is not enough to know whether
+ * the record would accept a new one, and guessing here is how an approved article came to offer
+ * a suggestion box that migration 013 refuses. With `canSuggest` false the article renders
+ * unselectable and no composer can open, so the rail becomes a reading view with the
+ * conversation still beside it; with `canReply` false the threads stay legible and lose only
+ * their reply box.
+ *
  * The mechanics live in @/components/comments: the rail lays the cards out beside their
  * passages, marks the article, links hover both ways, and captures selections on touch as
  * well as mouse. NONE of the words are its. Everything a client reads here is written here,
@@ -200,19 +209,27 @@ function ReplyLine({ reply }: { reply: PortalReply }) {
  * One suggestion's card: what the client asked, where it stands, what has been said since,
  * and a way to say more.
  *
- * THE REPLY BOX IS AVAILABLE AT EVERY STATE, resolved and reviewed included, and that is
- * the point of a thread rather than a form. "Resolved by the team" is the team's account of
+ * THE REPLY BOX IS AVAILABLE AT EVERY COMMENT STATE, resolved and reviewed included, and that
+ * is the point of a thread rather than a form. "Resolved by the team" is the team's account of
  * what they did, and a client who disagrees with it has nowhere else to say so: closing the
  * conversation on the team's own verdict would make the last word structurally theirs.
+ *
+ * The ARTICLE's state is a separate question and it is the one that can close the box, through
+ * `canReply`. While the article is with the client or its changes are with the team, replying is
+ * the cheapest way to keep the two sides talking. Once it is approved the article is locked and
+ * the exchange it belonged to is over, so the threads become the record of what was asked.
  */
 function ThreadCard({
   comment,
   anchored,
   onReply,
+  canReply,
 }: {
   comment: PortalComment;
   anchored: boolean;
   onReply: (draft: ReplyBody) => Promise<void>;
+  /** False once the article is signed off: the thread stays readable, the box goes. */
+  canReply: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
   const [text, setText] = React.useState("");
@@ -262,7 +279,7 @@ function ThreadCard({
         </ul>
       ) : null}
 
-      {open ? (
+      {!canReply ? null : open ? (
         <div className="mt-2.5">
           <Textarea
             autoFocus
@@ -330,12 +347,18 @@ export function CommentedArticle({
   comments,
   onSuggest,
   onReply,
+  canSuggest,
+  canReply,
 }: {
   source: string;
   /** The client's own suggestions with their threads, oldest first. */
   comments: PortalComment[];
   onSuggest: (draft: SuggestBody) => Promise<void>;
   onReply: (draft: ReplyBody) => Promise<void>;
+  /** clientCan(state, "suggest"): whether selecting a passage may open a composer at all. */
+  canSuggest: boolean;
+  /** clientCan(state, "reply"): whether a thread still takes a new line. */
+  canReply: boolean;
 }) {
   const [pending, setPending] = React.useState<{ capture: SelectionCapture; text: string } | null>(
     null,
@@ -432,12 +455,16 @@ export function CommentedArticle({
         comment={comment}
         anchored={!lost.includes(comment.id)}
         onReply={onReply}
+        canReply={canReply}
       />
     ),
   }));
 
+  // A composer can only exist where a suggestion is permitted. The guard is here rather than on
+  // the selection handler alone so that a note left half typed when the article is approved in
+  // another tab disappears with the permission, instead of sitting there offering to send.
   const composer: RailComment | null =
-    pending === null
+    pending === null || !canSuggest
       ? null
       : {
           id: COMPOSER_ID,
@@ -470,7 +497,10 @@ export function CommentedArticle({
       activeId={activeId}
       onActivate={setActiveId}
       onSelect={onSelect}
-      selectable
+      // Not selectable once suggesting is refused: the rail stops capturing selections at all,
+      // so the article reads as ordinary prose rather than as a surface that swallows a
+      // highlight and offers nothing back.
+      selectable={canSuggest}
       onAnchorsChange={onAnchorsChange}
       railLabel="Your notes on this article"
     />

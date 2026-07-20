@@ -1327,6 +1327,14 @@ async def api_answers(slug: str, topic: str, body: AnswersRequest,
 
     _topic_or_404(slug, topic)
 
+    # THE APPROVED LOCK, ahead of the form checks, because it is the permanent one and they
+    # are not: a stale form can be re-asked and an unanswered one can be answered, while an
+    # approved article is finished. An answer dispatches a surgical revise, which rewrites the
+    # draft and commits a version, so it is a full edit reached through the answer door.
+    # Refused here rather than at the revise's own commit, where migration 013's trigger would
+    # catch it only after a real SDK session had already been spent on it.
+    _require_not_approved(slug, topic, "a revise")
+
     try:
         state = questions_mod.describe_questions(slug, topic)
     except questions_mod.NoQuestions as exc:
@@ -1404,6 +1412,10 @@ async def api_revise_answered(slug: str, topic: str,
     if runner.is_demo_client(slug):
         raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
     _topic_or_404(slug, topic)
+    # The same lock api_answers makes, at the same point and for the same reason: this route
+    # dispatches the identical revise, so an approved article has to be refused on both doors
+    # or the rerun button becomes the way around the one that checks.
+    _require_not_approved(slug, topic, "a revise")
 
     try:
         state = questions_mod.describe_questions(slug, topic)
@@ -1491,6 +1503,28 @@ def _require_done(slug, topic_slug, act):
         )
 
 
+def _require_not_approved(slug, topic_slug, act):
+    """409 unless the client's approval is absent. The HTTP half of the approved lock.
+
+    Migration 013 put triggers on blog_versions and top-level blog_comments so no engine can
+    change an article the client signed off on, and blog_edit's guards refuse before those
+    triggers fire. This is the layer above both: it answers the OPERATOR, in the 409 every
+    other refusal on these routes already speaks, instead of letting a database exception with
+    an unmapped PORTAL:LOCKED string surface as a 500 and a stack trace.
+
+    It runs beside _require_done rather than inside it because the two say different things and
+    send the operator to different places. Not-done means the pipeline is not finished with the
+    blog yet; approved means it is finished with it permanently, and the only act left is the
+    CMS push. A blog can be done and approved at once, so both checks run and this one goes
+    second: done is the more basic fact and its message is the more useful one for a topic that
+    is neither.
+    """
+    approved = blog_edit.approved_at(slug, topic_slug)
+    if approved is not None:
+        raise HTTPException(
+            status_code=409, detail=blog_edit.locked_detail(approved, act))
+
+
 @app.get("/api/clients/{slug}/blogs/{topic}/comments")
 async def api_blog_comments(slug: str, topic: str,
                             user: auth.Identity = Depends(auth.require_user)):
@@ -1515,6 +1549,12 @@ async def api_add_blog_comment(slug: str, topic: str, body: CommentRequest,
         raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
     _topic_or_404(slug, topic)
     _require_done(slug, topic, "a Claude edit")
+    # Permanent before transient, exactly as this route's own ordering comment states: an
+    # approved article is locked for good, so saying so before the live-run and in-flight
+    # refusals keeps the operator from waiting out a run to retry something that will never
+    # be allowed. An operator comment is born 'applying' and runs Claude at once, which is
+    # why filing one on an approved article is refused rather than merely left unapplied.
+    _require_not_approved(slug, topic, "a Claude edit")
     if _client_has_live_run(slug):
         raise HTTPException(
             status_code=409,
@@ -1567,6 +1607,11 @@ async def api_resolve_blog_comment(slug: str, topic: str, comment_id: str,
         raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
     _topic_or_404(slug, topic)
     _require_done(slug, topic, "a Claude edit")
+    # Resolving spends a Claude session that ends in a committed version, so it is the same
+    # act as filing a comment as far as the approved lock is concerned. It matters separately
+    # from the filing route because a suggestion filed BEFORE the approval is still sitting
+    # there open afterwards, and this button is the one that would apply it.
+    _require_not_approved(slug, topic, "a Claude edit")
     if _client_has_live_run(slug):
         raise HTTPException(
             status_code=409,
@@ -1675,6 +1720,11 @@ async def api_save_blog_content(slug: str, topic: str, body: ContentRequest,
         raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
     _topic_or_404(slug, topic)
     _require_done(slug, topic, "editing")
+    # The editor is the most direct way to change bytes the client already accepted, so the
+    # lock is checked before the body is even looked at. save_content refuses this too; this
+    # is what turns the refusal into a 409 the Save button can render, rather than the 500 an
+    # unmapped PORTAL:LOCKED exception from the trigger would produce.
+    _require_not_approved(slug, topic, "editing")
     if _client_has_live_run(slug):
         raise HTTPException(
             status_code=409,
@@ -1724,6 +1774,17 @@ async def api_send_blog_to_client(slug: str, topic: str,
         raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
     _topic_or_404(slug, topic)
     _require_done(slug, topic, "sending to the client")
+    # THE APPROVED LOCK, AND HERE IT GUARDS AN ACT NO TRIGGER SEES. Sending inserts nothing, it
+    # UPDATEs topics, so neither trigger in migration 013 fires on it, and the UPDATE clears
+    # client_approved_at as it re-stamps. A re-send would erase the approval that every other
+    # guard reads, which is why migration 013 closed the hosted build's equivalent inside
+    # admin_done_topic and called sending the most damaging of the three acts it covers.
+    #
+    # BEFORE mark_sent, not after. mark_sent refuses an approved article too, but its refusal
+    # protocol is None, which this route already spends on the open-suggestion case below. The
+    # operator would read "the client's suggestions are still open" for an article that is
+    # locked, which sends them to resolve comments that are not the problem.
+    _require_not_approved(slug, topic, "sending to the client")
     email = getattr(user, "email", "") or ""
     state = await asyncio.to_thread(blog_edit.mark_sent, slug, topic, email)
     if state is None:
@@ -2028,6 +2089,35 @@ async def api_generate(slug: str, body: GenerateRequest,
                       f"Deselect them and resubmit.",
             "duplicates": duplicates,
         })
+
+    # THE APPROVED LOCK, before a run is registered and long before a session is opened.
+    #
+    # Almost every approved topic is already refused by the duplicate check above, because
+    # approval can only follow a ship and a shipped blog is in the ledger. Almost is not
+    # always: blog_upload documents the generated-but-not-ledgered state a failed ledger write
+    # leaves behind, and in it the duplicate check passes. A generate would then research,
+    # draft, gate, link check and evaluate a full article against an approved topic, spending
+    # real Firecrawl, DataForSEO and model quota, and die at its commit when the record's
+    # trigger refuses the version. Migration 013's header names that late death and accepts it
+    # as the price of the invariant; this block is the cheaper refusal in front of it, and it
+    # is where the refusal belongs, because this is the only point in the chain that can still
+    # answer the operator rather than a status line.
+    #
+    # THE WHOLE SUBMIT IS REFUSED, matching the duplicate block above it: a batch that ran
+    # nineteen of twenty rows and silently dropped the locked one would leave the operator
+    # reading a run summary to work out what happened to it.
+    locked = []
+    for row in selected:
+        approved = blog_edit.approved_at(slug, row["topic_slug"])
+        if approved is not None:
+            locked.append(f"{row['topic']!r} (approved {approved:%d %b %Y})")
+    if locked:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{len(locked)} selected row(s) are locked because the client approved "
+                   f"them: {', '.join(locked)}. An approved article cannot be regenerated; "
+                   f"posting it to the CMS is the only act left. Deselect them and resubmit.",
+        )
 
     ok, reason = _preflight(slug)
     if not ok:

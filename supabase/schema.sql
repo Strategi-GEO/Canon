@@ -1273,6 +1273,75 @@ $$;
 revoke all on function portal_approve_blog(text, text, uuid) from public, anon;
 grant execute on function portal_approve_blog(text, text, uuid) to authenticated;
 
+-- ---------------------------------------------------------------------------
+-- The approved lock (013). An approved article is locked, for everyone.
+-- ---------------------------------------------------------------------------
+-- The approval stamp records that the client accepted THESE BYTES. Any edit after it makes the
+-- record assert something the client never did: they approved v4, the article is now v6, and
+-- nothing distinguishes the two. Posting to the CMS is the one act left, because it changes
+-- nothing about the article.
+--
+-- TRIGGERS RATHER THAN A CHECK IN EACH WRITER, because there are five write paths into an
+-- article and they share no chokepoint: two SQL functions on the hosted build, two Python
+-- functions in the engine, and the runner committing a version at the end of a generate.
+-- Guarding the SQL half would lock the hosted build and leave the engine free to overwrite an
+-- approved article, which is the worse half to leave open, since the engine is where the
+-- writing happens. A trigger is the only guard all five must pass.
+--
+-- REPLIES ARE EXEMPT, which is what `parent_id is not null` buys. A reply changes no bytes and
+-- resolves nothing, so "thanks, this reads well" is not an edit, and refusing it only buys
+-- silence from a client who has just been told their article is finished.
+create or replace function refuse_version_when_approved()
+returns trigger
+language plpgsql
+set search_path to 'public'
+as $$
+declare
+  v_approved timestamptz;
+begin
+  select t.client_approved_at into v_approved from topics t where t.id = new.topic_id;
+  if v_approved is not null then
+    raise exception
+      'PORTAL:LOCKED:the client approved this article on %, so it is locked and cannot be '
+      'changed. Posting it to the CMS is the only act left.',
+      to_char(v_approved, 'DD Mon YYYY');
+  end if;
+  return new;
+end
+$$;
+
+drop trigger if exists blog_versions_approved_lock on blog_versions;
+create trigger blog_versions_approved_lock
+  before insert on blog_versions
+  for each row execute function refuse_version_when_approved();
+
+create or replace function refuse_comment_when_approved()
+returns trigger
+language plpgsql
+set search_path to 'public'
+as $$
+declare
+  v_approved timestamptz;
+begin
+  if new.parent_id is not null then
+    return new;
+  end if;
+  select t.client_approved_at into v_approved from topics t where t.id = new.topic_id;
+  if v_approved is not null then
+    raise exception
+      'PORTAL:LOCKED:this article was approved on % and is locked, so it cannot take new '
+      'change requests. Replies to existing threads still work.',
+      to_char(v_approved, 'DD Mon YYYY');
+  end if;
+  return new;
+end
+$$;
+
+drop trigger if exists blog_comments_approved_lock on blog_comments;
+create trigger blog_comments_approved_lock
+  before insert on blog_comments
+  for each row execute function refuse_comment_when_approved();
+
 -- A one-time REVOKE is point-in-time, and Supabase ships default privileges that
 -- GRANT every LATER-created table to anon. Without this, the next migration
 -- silently reopens the hole for tables that do not exist yet.

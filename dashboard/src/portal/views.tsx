@@ -11,6 +11,7 @@ import {
   Clock,
   Inbox,
   Loader2,
+  Lock,
 } from "lucide-react";
 import { ActionCard, ApprovedCard, FrozenRow, ReadyCard, SectionHeading } from "@/portal/blog-cards";
 import { AnswerForm } from "@/portal/answer-form";
@@ -29,19 +30,57 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { BlogStateTag } from "@/components/shell/blog-state-tag";
+import { clientCan, clientCanSee } from "@/lib/blog-state";
 import { ApiError, api, detailText, isStaleVersion } from "@/portal/api";
 import { formatDate, formatRelative, readingTime } from "@/portal/format";
 import { brandHref } from "@/portal/nav";
 import { usePortal } from "@/portal/portal-context";
 import { useBlogDetail } from "@/portal/use-blog-detail";
-import type { PortalBlogDetail, ReplyBody, SuggestBody } from "@/portal/types";
+import type { PortalBlogCard, ReplyBody, SuggestBody } from "@/portal/types";
 
 /**
  * The client portal's views, one per resolved route. The (client) layout provides the
  * shell; the catch-all page resolves the URL against the caller's orgs and renders one of
  * these with explicit props. None reads useParams: the resolver is the single authority for
  * which org/brand/section a URL names, so a view is handed what it renders.
+ *
+ * NO AFFORDANCE ON THIS SURFACE DECIDES FOR ITSELF WHETHER IT IS OFFERED. `clientCan(state,
+ * act)` decides, from the table in lib/blog-state.ts, and these views ask it. Writing the
+ * condition inline instead is how the portal came to offer a suggestion on an approved article
+ * that the record then refused: the affordance and the rule were two different sentences in two
+ * different files, and only one of them was ever updated.
+ *
+ * THE UI IS NOT THE ENFORCEMENT LAYER. Migration 013's triggers refuse a change request on an
+ * approved article whatever this file renders, and that is the guarantee. What these gates buy
+ * is that a client is never SHOWN a door the record will slam: an affordance that always fails
+ * is worse than no affordance, because it costs someone the effort of writing the request first.
  */
+
+/**
+ * The four sections a client's library has, from the canonical state and nothing else.
+ *
+ * Written once and shared by both list views, because the two used to filter with their own
+ * copies of the same four predicates. THE BUCKETS ARE BY WHO OWES WHAT, which is why
+ * changes_requested sits with a spent hold rather than beside client_review: an article whose
+ * change request is with the team asks the client for nothing, however recently they were
+ * reading it, and putting it under "ready to post" would ask them to approve past their own
+ * outstanding note. `published` sits with `approved` because both are locked and both are only
+ * to be read; the tag on each card is what distinguishes them.
+ */
+function bucket(blogs: PortalBlogCard[]) {
+  return {
+    action: blogs.filter((blog) => blog.state === "has_questions"),
+    ready: blogs.filter((blog) => blog.state === "client_review"),
+    // !clientCanSee is "on this wire only because the client acted on it", and portal-data.ts
+    // dropped every other such row before it became payload, so this needs no state list to
+    // keep in step with the machine: it is whatever the machine says a client cannot see.
+    withTeam: blogs.filter(
+      (blog) => blog.state === "changes_requested" || !clientCanSee(blog.state),
+    ),
+    done: blogs.filter((blog) => blog.state === "approved" || blog.state === "published"),
+  };
+}
 
 function ErrorCard({ message, detail, onRetry }: { message: string; detail?: string; onRetry?: () => void }) {
   return (
@@ -103,9 +142,11 @@ export function OrgChooser({ org: orgSlug }: { org: string }) {
     );
   }
 
+  // The org chooser shows only what is OWED, so it buckets on the two states whose
+  // clientActions carry an act: answer and approve. Everything else waits on the team.
   const mine = blogs.filter((blog) => blog.org === org.slug);
-  const action = mine.filter((blog) => blog.state === "action");
-  const ready = mine.filter((blog) => blog.state === "ready");
+  const action = mine.filter((blog) => blog.state === "has_questions");
+  const ready = mine.filter((blog) => blog.state === "client_review");
 
   return (
     <div className="space-y-10">
@@ -195,11 +236,8 @@ export function BrandOverview({ org, brand: brandSlug }: { org: string; brand: s
   }
 
   const mine = blogs.filter((blog) => blog.brand === brand.slug && blog.org === org);
-  const action = mine.filter((blog) => blog.state === "action");
-  const ready = mine.filter((blog) => blog.state === "ready");
-  const frozen = mine.filter((blog) => blog.state === "frozen");
-  const approved = mine.filter((blog) => blog.state === "approved");
-  const recent = approved.slice(0, 3);
+  const { action, ready, withTeam, done } = bucket(mine);
+  const recent = done.slice(0, 3);
 
   return (
     <div className="space-y-10">
@@ -239,7 +277,7 @@ export function BrandOverview({ org, brand: brandSlug }: { org: string; brand: s
       ) : null}
 
       {action.length + ready.length === 0 ? (
-        frozen.length + approved.length > 0 ? (
+        withTeam.length + done.length > 0 ? (
           <div className="flex items-center gap-2 rounded-lg border border-ship/20 bg-ship-bg px-4 py-3 text-sm text-ship">
             <CheckCircle2 className="size-4 shrink-0" aria-hidden />
             Nothing needs your attention right now.
@@ -251,11 +289,11 @@ export function BrandOverview({ org, brand: brandSlug }: { org: string; brand: s
         )
       ) : null}
 
-      {frozen.length > 0 ? (
+      {withTeam.length > 0 ? (
         <section className="space-y-3" aria-label="In progress">
           <SectionHeading>In progress with our team</SectionHeading>
           <div className="space-y-2">
-            {frozen.map((blog) => (
+            {withTeam.map((blog) => (
               <FrozenRow key={blog.topic_slug} card={blog} showBrand={false} />
             ))}
           </div>
@@ -310,10 +348,7 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
 
   const brand = brands.find((entry) => entry.slug === brandSlug && entry.org === org);
   const mine = blogs.filter((blog) => blog.brand === brandSlug && blog.org === org);
-  const action = mine.filter((blog) => blog.state === "action");
-  const ready = mine.filter((blog) => blog.state === "ready");
-  const frozen = mine.filter((blog) => blog.state === "frozen");
-  const approved = mine.filter((blog) => blog.state === "approved");
+  const { action, ready, withTeam, done } = bucket(mine);
 
   if (brand === undefined) {
     return <BrandUnavailable />;
@@ -353,29 +388,31 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
         </section>
       ) : null}
 
-      {action.length + ready.length === 0 && frozen.length + approved.length > 0 ? (
+      {action.length + ready.length === 0 && withTeam.length + done.length > 0 ? (
         <div className="flex items-center gap-2 rounded-lg border border-ship/20 bg-ship-bg px-4 py-3 text-sm text-ship">
           <CheckCircle2 className="size-4 shrink-0" aria-hidden />
           Nothing needs your attention right now.
         </div>
       ) : null}
 
-      {frozen.length > 0 ? (
+      {withTeam.length > 0 ? (
         <section className="space-y-3" aria-label="In progress">
           <SectionHeading>In progress with our team</SectionHeading>
           <div className="space-y-2">
-            {frozen.map((blog) => (
+            {withTeam.map((blog) => (
               <FrozenRow key={blog.topic_slug} card={blog} showBrand={false} />
             ))}
           </div>
         </section>
       ) : null}
 
-      {approved.length > 0 ? (
-        <section className="space-y-3" aria-label="Approved">
-          <SectionHeading>Approved</SectionHeading>
+      {done.length > 0 ? (
+        <section className="space-y-3" aria-label="Signed off">
+          {/* One section for approved and published both. The client's question here is "which
+              articles are finished", and the tag on each card answers the finer one. */}
+          <SectionHeading>Signed off</SectionHeading>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {approved.map((blog) => (
+            {done.map((blog) => (
               <ApprovedCard key={blog.topic_slug} card={blog} showBrand={false} />
             ))}
           </div>
@@ -465,6 +502,26 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
     );
   }
 
+  /*
+   * THE FOUR ACTS, ASKED OF THE TABLE RATHER THAN OF THE BRANCH THEY SIT IN. Read together
+   * they are the whole of what a client may do to an article, and each one is a lookup rather
+   * than a condition this file invented:
+   *   answer   has_questions only
+   *   approve  client_review only
+   *   suggest  client_review only, so an approved article no longer collects requests
+   *   reply    client_review and changes_requested, so a thread stays usable while the team
+   *            works, and closes when the article is signed off
+   */
+  const canAnswer = clientCan(blog.state, "answer");
+  const canApprove = clientCan(blog.state, "approve");
+  const canSuggest = clientCan(blog.state, "suggest");
+  const canReply = clientCan(blog.state, "reply");
+
+  // Whether this payload carries the SENT article rather than the draft behind a question form.
+  // The server already decided which states carry a body (portal-data.clientReadsArticle), so
+  // this reads its answer instead of restating the list and letting the two drift.
+  const reading = blog.body !== null && blog.state !== "has_questions";
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -475,7 +532,9 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
           <ArrowLeft className="size-4" aria-hidden />
           Blogs
         </Link>
-        <StateBadge blog={blog} />
+        {/* The one badge, in the client's vocabulary, from the one state. Inside the portal
+            shell's TooltipProvider, like every other tag on this surface. */}
+        <BlogStateTag state={blog.state} audience="client" />
       </div>
 
       <header className="space-y-2">
@@ -485,75 +544,114 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
         <h1 className="font-serif text-3xl leading-tight tracking-tight text-pretty">
           {blog.title}
         </h1>
+        {/* Dates and reading time only. The tag above already said WHERE the article is, and a
+            second sentence repeating it in other words is how two vocabularies start again. */}
         <p className="text-xs text-muted-foreground">
-          {blog.state === "ready"
+          {blog.state === "client_review"
             ? `Sent to you ${formatRelative(blog.sent ?? blog.date)}`
+            : null}
+          {blog.state === "changes_requested"
+            ? `You asked for changes ${formatRelative(blog.date)}`
             : null}
           {blog.state === "approved"
             ? `Approved ${formatDate(blog.approved ?? blog.date)}`
             : null}
-          {(blog.state === "ready" || blog.state === "approved") && blog.word_count !== null
-            ? ` · ${readingTime(blog.word_count)}`
-            : null}
-          {blog.state === "action" && blog.asked !== null
+          {blog.state === "published" ? `Published ${formatDate(blog.date)}` : null}
+          {/* word_count is populated only for the released states, so it gates itself. */}
+          {blog.word_count !== null ? ` · ${readingTime(blog.word_count)}` : null}
+          {blog.state === "has_questions" && blog.asked !== null
             ? `Review requested ${formatRelative(blog.asked)}`
             : null}
-          {blog.state === "frozen"
-            ? blog.answered_at !== null
-              ? `You answered ${formatRelative(blog.answered_at)}`
-              : "With our editorial team"
+          {!clientCanSee(blog.state) && blog.answered_at !== null
+            ? `You answered ${formatRelative(blog.answered_at)}`
             : null}
         </p>
       </header>
 
-      {blog.state === "ready" && blog.body !== null ? (
+      {/*
+        ONE released branch for all four states that carry the sent article, because the
+        article, its threads and its rail are identical in every one of them and only the
+        banner and the permitted acts differ. Four copies of this block is what let the
+        approved copy drift into promising something the record refuses.
+
+        The body test is repeated rather than folded into `reading` because a boolean cannot
+        narrow `blog.body` for the reader below it, and only the narrowing satisfies the type.
+      */}
+      {reading && blog.body !== null ? (
         <div className="space-y-6">
-          <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 sm:flex sm:items-center sm:justify-between sm:gap-4">
-            <p className="text-sm leading-relaxed">
-              This article is ready for you. Approve it and our team takes it live. To ask
-              for a change, select any text in the article and leave a note beside it.
-            </p>
-            <div className="mt-3 flex shrink-0 items-center gap-2 sm:mt-0">
-              {/* Approve stands alone. Nothing beside it offers a mode, because there is
-                  no mode: a selection is always an invitation to comment. */}
-              <ApproveAction
-                brand={blog.brand}
-                topic={blog.topic_slug}
-                version={blog.version}
-                onSettled={refresh}
-              />
+          {blog.state === "client_review" ? (
+            <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 sm:flex sm:items-center sm:justify-between sm:gap-4">
+              <p className="text-sm leading-relaxed">
+                This article is ready for you. Approve it and our team takes it live. To ask
+                for a change, select any text in the article and leave a note beside it.
+              </p>
+              {canApprove ? (
+                <div className="mt-3 flex shrink-0 items-center gap-2 sm:mt-0">
+                  {/* Approve stands alone. Nothing beside it offers a mode, because there is
+                      no mode: a selection is always an invitation to comment. */}
+                  <ApproveAction
+                    brand={blog.brand}
+                    topic={blog.topic_slug}
+                    version={blog.version}
+                    onSettled={refresh}
+                  />
+                </div>
+              ) : null}
             </div>
-          </div>
+          ) : null}
+
+          {blog.state === "changes_requested" ? (
+            <div className="flex items-start gap-2 rounded-lg border bg-card px-4 py-3 text-sm">
+              <Clock className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+              <span className="leading-relaxed">
+                The changes you asked for are with our editorial team. Read the article as it
+                stands and reply in any note to add to it. We send it back for your approval
+                once your notes are in.
+              </span>
+            </div>
+          ) : null}
+
+          {/*
+            THE APPROVED BANNER IS AN ENDING NOW, and the old line offering "an approval is not
+            the end of the conversation" is gone with the affordance it described. Migration
+            013's trigger refuses a change request on an approved article from BOTH sides, the
+            admin's included, so a suggestion box here would collect a request nobody is
+            permitted to apply. Saying the article is locked is the honest version of a door
+            that was already shut.
+          */}
+          {blog.state === "approved" ? (
+            <div className="flex items-start gap-2 rounded-lg border border-ship/20 bg-ship-bg px-4 py-3 text-sm text-ship">
+              <Lock className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <span className="leading-relaxed">
+                You approved this article {formatRelative(blog.approved ?? blog.date)}, so it is
+                locked: these are the exact words going out, and nobody edits them from here,
+                our team included. It is on its way to your site.
+              </span>
+            </div>
+          ) : null}
+
+          {blog.state === "published" ? (
+            <div className="flex items-start gap-2 rounded-lg border border-ship/20 bg-ship-bg px-4 py-3 text-sm text-ship">
+              <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <span className="leading-relaxed">
+                This article is live on your site. It stays here so you can read exactly what
+                went out.
+              </span>
+            </div>
+          ) : null}
 
           <CommentedArticle
             source={blog.body}
             comments={blog.comments ?? []}
             onSuggest={submitSuggestion}
             onReply={submitReply}
+            canSuggest={canSuggest}
+            canReply={canReply}
           />
         </div>
       ) : null}
 
-      {blog.state === "approved" && blog.body !== null ? (
-        <div className="space-y-6">
-          <div className="flex items-start gap-2 rounded-lg border border-ship/20 bg-ship-bg px-4 py-3 text-sm text-ship">
-            <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden />
-            <span>
-              You approved this article {formatRelative(blog.approved ?? blog.date)}. Our
-              team takes it live from here. If something still needs changing, select the
-              text and leave a note: an approval is not the end of the conversation.
-            </span>
-          </div>
-          <CommentedArticle
-            source={blog.body}
-            comments={blog.comments ?? []}
-            onSuggest={submitSuggestion}
-            onReply={submitReply}
-          />
-        </div>
-      ) : null}
-
-      {blog.state === "action" ? (
+      {blog.state === "has_questions" ? (
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
           <div className="order-2 lg:order-1">
             {blog.body !== null ? (
@@ -576,7 +674,10 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
               Our editorial review found points only you can settle. Answer below and the
               team takes it from there.
             </p>
-            {blog.questions !== null ? (
+            {/* canAnswer is the table's word, and it is true for exactly this state. Asking it
+                rather than trusting the branch is what keeps the affordance and the rule the
+                same sentence when a state is added to the machine. */}
+            {blog.questions !== null && canAnswer ? (
               <AnswerForm
                 brand={blog.brand}
                 topic={blog.topic_slug}
@@ -588,7 +689,13 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
         </div>
       ) : null}
 
-      {blog.state === "frozen" ? (
+      {/* With the team: the form is answered or superseded, so the client is owed nothing here.
+          These states reach the portal only through the visibility addition portal-data.ts
+          documents, which exists so a client who just answered does not watch their article
+          disappear. Asking clientCanSee rather than naming the states keeps this branch true
+          however the run ended, which is the whole difficulty: the same article reads
+          `generating`, `internal_review` or `failed` at three points in one revise. */}
+      {!clientCanSee(blog.state) ? (
         <div className="mx-auto max-w-2xl space-y-4">
           <div className="flex items-start gap-3 rounded-xl border bg-card p-5">
             <Clock className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
@@ -632,35 +739,6 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
         </div>
       ) : null}
     </div>
-  );
-}
-
-function StateBadge({ blog }: { blog: PortalBlogDetail }) {
-  if (blog.state === "approved") {
-    return (
-      <Badge className="border-transparent bg-ship-bg text-ship" variant="outline">
-        Approved
-      </Badge>
-    );
-  }
-  if (blog.state === "ready") {
-    return (
-      <Badge className="border-transparent bg-primary/10 text-primary" variant="outline">
-        Ready to post
-      </Badge>
-    );
-  }
-  if (blog.state === "action") {
-    return (
-      <Badge className="border-transparent bg-review-bg text-review" variant="outline">
-        Waiting on you
-      </Badge>
-    );
-  }
-  return (
-    <Badge variant="secondary" className="font-normal">
-      In progress
-    </Badge>
   );
 }
 

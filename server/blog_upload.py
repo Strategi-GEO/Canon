@@ -43,7 +43,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-from . import db, ledger, runner, sync
+from . import blog_edit, db, ledger, runner, sync
 
 log = logging.getLogger("engine.blog_upload")
 
@@ -203,6 +203,21 @@ def upload_blog(client_slug: str, topic_slug: str, title: str, covers: str,
             "article and not an export", status=413)
 
     tid = db.topic_id(client_slug, topic_slug)
+
+    # THE APPROVED LOCK, AHEAD OF EVERY OTHER TOPIC-STATE REFUSAL. An approved article always
+    # has a committed version, so checking after the replace-confirm below would tell the
+    # operator to confirm a replace and only then refuse the replace they confirmed, which is
+    # a round trip spent teaching them nothing. This is also the refusal that cannot be argued
+    # with by adding `replace=true`: the confirm exists for "you are about to overwrite a
+    # blog", and no confirmation makes an article the client signed off on overwritable.
+    #
+    # UploadError with a 409, which is this module's whole refusal protocol: the route maps
+    # status and detail straight onto the HTTPException, so nothing new is needed to carry it.
+    approved = blog_edit.approved_at(client_slug, topic_slug)
+    if approved is not None:
+        raise UploadError(
+            blog_edit.locked_detail(approved, "uploading an article over it"), status=409)
+
     existing = _committed_version_no(client_slug, topic_slug)
     if existing is not None and not replace:
         raise UploadError(

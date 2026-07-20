@@ -1246,6 +1246,28 @@ def _commit_topic_record(client_slug, topic_slug):
             "reconciler (sync.reconcile_all) re-commits it", client_slug, topic_slug)
 
 
+def _approved_refusal(client_slug, topic_slug, act):
+    """The locked sentence when the client has approved this topic, or None. SYNC: call via
+    asyncio.to_thread, exactly as the materialize and commit helpers above are called.
+
+    THE POINT IS TO REFUSE BEFORE THE SPEND, NOT AT THE COMMIT. Migration 013's trigger
+    refuses the blog_versions INSERT, and on this module's paths that INSERT is the very last
+    thing a run does: a generate against an approved topic would research, draft, gate, link
+    check and evaluate a whole article, burning a full Claude session plus Firecrawl and
+    DataForSEO quota, and then die on its commit with a psycopg exception. The migration's own
+    header names that outcome and accepts it as the price of having the invariant at all. This
+    helper is the cheaper refusal in front of it, and it removes nothing: the trigger still
+    stands behind every path, including the ones that never call this.
+
+    blog_edit is imported HERE rather than at module scope because blog_edit imports this
+    module, so a top-level import would close the cycle at startup. run_batch dodges the same
+    cycle the same way for facts_gen.
+    """
+    from . import blog_edit
+    approved = blog_edit.approved_at(client_slug, topic_slug)
+    return None if approved is None else blog_edit.locked_detail(approved, act)
+
+
 def _schedule_commit(client_slug, topic_slug):
     """Schedule the post-terminal commit as a fire-and-forget background task.
 
@@ -1296,6 +1318,36 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
     # SSE window. The second take, after materialization, covers re-laid
     # scratch, where the file may have grown by the record's whole history.
     baseline = _status_baseline(out_dir)
+
+    # THE APPROVED LOCK, BEFORE THE TRY AND BEFORE ANY AGENT IS SPAWNED.
+    #
+    # OUTSIDE the try DELIBERATELY, which is the opposite of where every other refusal in this
+    # function sits, so the reason has to be stated. The PreflightError arm below appends a
+    # terminal FAILED line. An approved topic already carries a terminal line and it says done:
+    # approval can only follow a send, a send can only follow a ship. Appending failed over it
+    # demotes a blog that is sitting in generated.csv, has been signed off by the client, and
+    # is waiting on nothing but its CMS push. This module already documents that harm at length
+    # in revise_topic's arms, where one word demoted a finished blog everywhere at once and left
+    # the operator no door. A refusal must not do to the record what it exists to prevent.
+    #
+    # The cost of staying outside is that no terminal line is appended here, which normally
+    # hangs an SSE watch view at running forever. It cannot hang one for this case, because a
+    # watch view only exists for a REGISTERED run and api_generate refuses an approved topic
+    # before register_run. What reaches this line is a caller that bypassed the route: the CLI,
+    # a test, or a direct call, none of which is watching an SSE stream. So the exception
+    # propagates to the caller and the topic's own verdict is left exactly as it stands.
+    #
+    # CALLED SYNCHRONOUSLY, NOT THROUGH asyncio.to_thread, AND THAT IS THE LOAD-BEARING HALF OF
+    # STAYING OUTSIDE THE TRY. A coroutine can only be cancelled at an await, so an await here
+    # would be a cancellation point sitting outside the arm that handles cancellation: a stop
+    # landing on it would unwind straight past _stop_line_if_unterminated, and the topic would
+    # get NO terminal line at all, which is the one outcome that arm exists to prevent. The
+    # blocking cost is one indexed SELECT on a pooled connection, in a function that is about
+    # to hold a Claude session open for minutes, and the two calls immediately above it
+    # (mkdir and _status_baseline) already block the loop on disk for the same reason.
+    refusal = _approved_refusal(client_slug, topic_slug, "a generate run")
+    if refusal is not None:
+        raise PreflightError(refusal)
 
     append_status = _status_module().append_status
     try:
@@ -1702,6 +1754,25 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=Non
     prev_blog = out_dir / PREV_BLOG_NAME
     clients_root = REPO_ROOT / "clients"
     append_status = _status_module().append_status
+
+    # THE APPROVED LOCK, BEFORE THE RUN IS EVEN REGISTERED, and outside the try for the reason
+    # run_topic states at length: this function's PreflightError arm appends a terminal FAILED
+    # line, and an approved topic already carries a done line that is still true. A revise is
+    # the path where that matters most, because everything below this point is built to protect
+    # a verdict a revise might lose, and refusing one by writing "failed" over a shipped 96
+    # would be this module doing the exact thing its own comments spend pages preventing.
+    #
+    # A revise commits a version like any other write, so the trigger would refuse it at the
+    # end. Refusing here saves the session, and no watch view is stranded: api_answers and
+    # api_revise_answered both refuse an approved topic before register_revise_run, so anything
+    # reaching this line arrived from a CLI or a test with no SSE stream open on it.
+    #
+    # SYNCHRONOUS, for the reason run_topic spells out: an await outside the try is a
+    # cancellation point outside the arm that handles cancellation, and a stop landing on it
+    # would leave this topic with no terminal line and its watch view heartbeating forever.
+    refusal = _approved_refusal(client_slug, topic_slug, "a revise")
+    if refusal is not None:
+        raise PreflightError(refusal)
 
     # Callable on its own (a CLI, a test), so register if the caller has not. The endpoint always
     # has, and this is a no-op there.

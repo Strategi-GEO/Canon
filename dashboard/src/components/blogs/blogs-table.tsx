@@ -1,15 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import {
-  ArrowDown,
-  ArrowUp,
-  Check,
-  CheckCheck,
-  ChevronsUpDown,
-  Globe,
-  MessageCircleQuestion,
-} from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronsUpDown, MessageCircleQuestion } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -19,10 +11,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { StatusBadge } from "@/components/shell/status-badge";
+import { BlogStateTag } from "@/components/shell/blog-state-tag";
 import { formatAbsolute, formatRelative } from "@/lib/format";
+import { blogState } from "@/lib/blog-state";
 import { cn } from "@/lib/utils";
-import { isKnownStatus, type SortDir, type SortKey } from "@/components/blogs/blogs-filter";
+import type { SortDir, SortKey } from "@/components/blogs/blogs-filter";
 import type { WaitingSignal } from "@/components/blogs/questions-state";
 import type { BlogSummary } from "@/types";
 
@@ -137,6 +130,12 @@ function Row({
   href: string;
   onOpen: (blog: BlogSummary) => void;
 }) {
+  // ONE read of where this blog is, for the whole row. BlogSummary already carries the exact
+  // five fields blogState takes, so this row and the stage page reach their answer through the
+  // same function over the same wire fields rather than each folding the status feed its own
+  // way. That divergence is what put a green score on one screen and a plain one on the other.
+  const state = blogState(blog);
+
   return (
     <TableRow
       // The row is a click target for the mouse, but the LINK in the title cell is the
@@ -192,24 +191,30 @@ function Row({
       <TableCell>
         <Score score={blog.score} shipped={blog.shipped} uploaded={blog.uploaded === true} />
       </TableCell>
+      {/* ONE TAG, where three elements used to sit: the run status, a delivery chip
+          re-deriving sent / approved / changes from the same fields, and a published chip.
+          All three answered one question, "where is this article", in three vocabularies that
+          nothing kept in agreement. blogState answers it once and the tag speaks it once.
+
+          THE DELIVERY CHIP IS GONE OUTRIGHT. "With client", "Changes requested" and "Approved"
+          are states of the tag now, so a chip repeating them is a second thing to keep honest
+          for no second fact.
+
+          THE PUBLISHED CHIP WENT TOO, and it was the closer call, because it did carry one
+          fact the tag does not: the CMS's own word, live where an editor has taken the post
+          out against posted where the push landed on a draft. It goes for two reasons. That
+          word is null on the hosted build, so the chip degrades to "posted" on every row
+          there and adds nothing at all; and it changes no act this list leads to, since
+          adminActions("published") is publish either way. The stage page keeps its own fuller
+          published chip, which is where an operator stands when the draft-or-live difference
+          is actually the thing they came to check.
+
+          The old fallback that printed an unmodelled status as itself is gone with the badge.
+          blogState folds anything it does not recognise to `unknown`, which is the same
+          refusal to guess the fallback existed for: what it must never do is alias onto
+          `running` and report a finished blog as in flight, and it does not. */}
       <TableCell>
-        <span className="inline-flex items-center gap-1.5">
-          <Status status={blog.status} />
-          {/* Which shipped blogs already left admin review, and what the client did with
-              them. The unsent ones are the operator's queue, so the difference belongs in
-              the list. */}
-          {blog.status === "done" && blog.sent_to_client ? (
-            <DeliveryChip
-              sentAt={blog.sent_to_client}
-              approvedAt={blog.client_approved ?? null}
-              changes={blog.changes_requested ?? 0}
-            />
-          ) : null}
-          {/* Gated on the stamp ALONE, never on the status beside it: the stamp is itself the
-              evidence that a push happened, and a row missing one is a row this app knows
-              nothing about rather than one it can call unpublished. */}
-          <PublishedChip published={blog.published ?? null} cmsStatus={blog.cms_status ?? null} />
-        </span>
+        <BlogStateTag state={state} audience="admin" />
       </TableCell>
       <TableCell className="machine text-xs text-muted-foreground">
         {typeof blog.iterations === "number" ? blog.iterations : ""}
@@ -254,121 +259,6 @@ function WaitingChip({ signal }: { signal: WaitingSignal }) {
       <MessageCircleQuestion className="size-3 shrink-0" aria-hidden />
       <span className="machine">{signal.count}</span> {noun} to answer
     </span>
-  );
-}
-
-/**
- * Where one sent blog sits with the client, in the row: sent / changes requested / approved,
- * exactly one at a time because the states are exclusive by derivation. Tiny and muted next
- * to the status badge, since the badge answers "did the factory finish" and this answers the
- * follow-up, "and where is it now".
- *
- * "changes requested" wears the review tone, not the fail one: the client asking for changes
- * is the review loop working, and the row is back in the operator's queue until each
- * suggestion is resolved with Claude or dismissed. The other two are ship green, because both
- * mean the article is out of the team's hands.
- */
-function DeliveryChip({
-  sentAt,
-  approvedAt,
-  changes,
-}: {
-  sentAt: string;
-  approvedAt: string | null;
-  changes: number;
-}) {
-  if (changes > 0) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="inline-flex cursor-default items-center gap-0.5 text-[0.6875rem] font-medium whitespace-nowrap text-review">
-            <MessageCircleQuestion className="size-3" aria-hidden />
-            changes requested
-          </span>
-        </TooltipTrigger>
-        <TooltipContent className="max-w-xs">
-          The client suggested {changes} {changes === 1 ? "change" : "changes"} from their
-          portal. Open the blog to resolve each with Claude or dismiss it; it cannot be
-          re-sent past them.
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
-  if (approvedAt !== null) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="inline-flex cursor-default items-center gap-0.5 text-[0.6875rem] font-medium text-ship">
-            <CheckCheck className="size-3" aria-hidden />
-            approved
-          </span>
-        </TooltipTrigger>
-        <TooltipContent className="machine">
-          Approved by the client {formatAbsolute(approvedAt)}
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className="inline-flex cursor-default items-center gap-0.5 text-[0.6875rem] font-medium text-ship">
-          <Check className="size-3" aria-hidden />
-          sent
-        </span>
-      </TooltipTrigger>
-      <TooltipContent className="machine">Sent to client {formatAbsolute(sentAt)}</TooltipContent>
-    </Tooltip>
-  );
-}
-
-/**
- * That this article reached the CMS, in the row, and NOTHING about the case where it did not.
- *
- * A NULL STAMP RENDERS NOTHING. Migration 012 added published_at with no backfill, deliberately:
- * nothing recorded the pushes made before it, so a null is a missing RECORD and not evidence
- * that the article was never pushed. A "not published" chip would state as fact something the
- * column cannot support, and in a list of twenty rows it would read as a queue of work to do.
- *
- * A DELIVERY CHIP AND THIS ONE CAN BOTH SIT HERE, because they answer different questions. That
- * one says where the client is with the article; this one says the article is on the site, or on
- * its way there. Live wears the ship tone, a draft stays muted: an editor still holds a draft.
- */
-function PublishedChip({
-  published,
-  cmsStatus,
-}: {
-  published: string | null;
-  /** The CMS's own word, and null on the hosted build, which reads only the timestamp. Null is
-   *  "cannot tell", so it settles on the weaker sentence rather than claiming a draft. */
-  cmsStatus: string | null;
-}) {
-  if (published === null) {
-    return null;
-  }
-  const live = cmsStatus === "published";
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          className={cn(
-            "inline-flex cursor-default items-center gap-0.5 text-[0.6875rem] font-medium whitespace-nowrap",
-            live ? "text-ship" : "text-muted-foreground",
-          )}
-        >
-          <Globe className="size-3" aria-hidden />
-          {live ? "live" : "posted"}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent className="max-w-xs">
-        <span className="machine">
-          {live ? "Live in the CMS" : "Posted to the CMS"} {formatAbsolute(published)}
-        </span>
-        {live
-          ? ". An editor has already taken this post live."
-          : ". This is the push, not the publication: an editor decides in the CMS whether the draft goes out."}
-      </TooltipContent>
-    </Tooltip>
   );
 }
 
@@ -421,22 +311,6 @@ function Score({
       className={cn("machine text-sm", shipped ? "font-medium text-ship" : "text-foreground")}
     >
       {score}
-    </span>
-  );
-}
-
-/**
- * The engine really does send status "unknown" for a topic with a blog.md and no status.jsonl,
- * and StatusBadge maps an unmodelled value onto "running", which would tell an operator that a
- * finished blog is still in flight. Anything outside the modelled set is labelled as itself.
- */
-function Status({ status }: { status: string }) {
-  if (isKnownStatus(status)) {
-    return <StatusBadge status={status} />;
-  }
-  return (
-    <span className="machine inline-flex h-5 shrink-0 items-center rounded border border-border bg-muted px-1.5 text-[0.6875rem] leading-none text-muted-foreground">
-      {status}
     </span>
   );
 }
