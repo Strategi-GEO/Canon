@@ -239,12 +239,40 @@ export type AdminAction =
    * answers the client already filed from their portal. AnswerQuestions decides which of them it
    * is looking at from the form's own state, so a second verb here would be a second name for a
    * control that does not split.
+   *
+   * THE GRANT IS NOT ENOUGH ON ITS OWN, and believing it was is what shipped the fourth round of
+   * this bug. Both doors behind this verb need a CURRENT question form, and the state cannot see
+   * whether one exists. adminAnswerTierReady below is the layer that can, and blog-stage.tsx
+   * composes it with this grant exactly as it composes adminWriteTierReady with `edit`.
    */
   | "answer"
   /** Edit the markdown directly, and select a passage to have Claude change it. */
   | "edit"
-  /** Resolve, dismiss or reply to a client's change request. */
+  /** File a change request, resolve one with Claude, dismiss one, or reply in its thread. */
   | "comments"
+  /**
+   * Reply in an existing thread, and nothing else: no filing, no resolving, no dismissing.
+   *
+   * A SECOND VERB RATHER THAN A WIDER `comments`, because the acts behind `comments` all change
+   * the article and a reply changes nothing. It carries parent_id, commits no version and
+   * resolves no request, which is why migration 013 exempts it from the approved lock by name
+   * (013:18, and the `new.parent_id is not null` early return at 013:88), why migration 011's
+   * admin_reply_comment carries no done gate and no approved gate at all, and why
+   * server/app.py's reply route (:1898) states the same two absences in its own docstring.
+   *
+   * IT EXISTS BECAUSE THE TWO BENCHES DISAGREED AND THE CLIENT'S WAS RIGHT. CLIENT_ACTIONS grants
+   * `reply` in client_review and approved, so a client can ask a question about an article the
+   * operator may no longer edit. The admin bench carried nothing there, so the rail rendered
+   * read-only, ReplyBox was withheld, and the operator could not answer a person who was waiting
+   * on them, over an act every layer underneath accepts. Withdrawing the client's grant was the
+   * other way to make the two agree and it is the wrong one: it buys agreement by taking away
+   * the cheapest, least destructive act in the loop and leaving the client with silence.
+   *
+   * GRANTED WHERE THE RAIL IS READ AND `comments` IS NOT, which is exactly client_review,
+   * approved and published. In every state that grants `comments` the reply door already rides
+   * on that grant, so the two never both appear and blog-stage.tsx ORs them into one flag.
+   */
+  | "reply"
   /** Release it, or release it again after resolving change requests. */
   | "send"
   /** Push it to the CMS. */
@@ -275,20 +303,29 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   // away is the whole point of the state, because the client must read one steady thing across
   // their own Submit, so the fold is right and the BENCH is where the difference has to come back.
   //
-  // GRANTING FOUR IS NOT A FUDGE, BECAUSE EVERY ONE OF THEM HAS A LAYER THAT DISCRIMINATES ON THE
-  // SAME FACT THIS TABLE CANNOT SEE. A GRANT HERE IS A PERMISSION, NEVER A RENDERING.
-  // `answer` renders AnswerQuestions, which reads the question form: in (a) it finds a
-  // client-answered form and draws the Rerun button, and in (b) it finds no form at all, because
-  // clearing it is the revise's own finally-arm, and draws nothing.
+  // GRANTING FOUR IS NOT A FUDGE, BECAUSE EVERY ONE OF THEM NOW HAS A LAYER THAT DISCRIMINATES ON
+  // THE SAME FACT THIS TABLE CANNOT SEE. A GRANT HERE IS A PERMISSION, NEVER A RENDERING.
+  // `answer` passes through adminAnswerTierReady below, which reads the status the way the revise
+  // route reads the form: in (a) the status is needs_review, the form is current, and the Rerun
+  // strip renders and works; in (b) it is not, so blog-stage.tsx withholds the strip.
   // `send` renders SendToClient, whose blockedReason reads the status: in (b) it sends, and in (a)
   // it greys the control and names the rerun as the act that comes first.
   // `edit` and `comments` pass through adminWriteTierReady below, which reads the same status
   // migration 009's admin_done_topic reads: in (b) it is 'done' and both controls render and
-  // work, and in (a) it is not and blog-stage.tsx withholds them. THEY HAD NO SUCH LAYER UNTIL
-  // NOW AND THAT IS THE WHOLE OF WHAT WAS BROKEN HERE: they were granted alongside two acts that
-  // discriminate, which made the row read as though all four did.
+  // work, and in (a) it is not and blog-stage.tsx withholds them.
   // Each situation gets the controls its record can take, and the rest are either absent or say
   // what to do instead.
+  //
+  // `answer` LOOKED LIKE IT ALREADY HAD ONE AND IT DID NOT, WHICH IS ROUND FOUR OF THIS DEFECT.
+  // The claim written here was that AnswerQuestions finds no form in (b), because clearing it is
+  // the revise's own finally-arm. That is true of the DISK and the panel reads the RECORD:
+  // questions.describe_questions with no root reads review_notes (server/questions.py:329), and
+  // server/sync.py:546 to :551 spares ANSWERED evaluator rows from its post-revise delete. So the
+  // answered form survives the rerun, questions-state.ts modeOf (:60) tests `answered` before
+  // `stale`, and answer-questions.tsx:208 drew "Rerun with their answers" over a form
+  // server/app.py:1538 refuses as stale. The control rendered and 409'd. A discriminating layer
+  // that was asserted in a comment rather than composed in code is the same as no layer at all,
+  // which is the lesson of every round of this bug.
   //
   // WHY THE STATE IS NOT SPLIT IN TWO INSTEAD. A split would put the difference where a reader
   // sees it without this comment, and it would also put it on the CLIENT wire, where there is no
@@ -311,6 +348,16 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   // refused there, which is the SAME defect a third time: a row keyed by state cannot answer a
   // question keyed by status, so the third fix is the second layer rather than a fourth row value.
   //
+  // WHAT (a) LOOKS LIKE WHEN THE RERUN HAS ALREADY BEEN AND GONE BADLY, because the state also
+  // holds records neither situation describes. A rerun that crashes lands on `failed` and one the
+  // operator stops lands on `stopped`, and both keep the submit stamp, so both derive this state.
+  // The status is not `done`, so `edit`, `comments` and `send` are all refused; the form is no
+  // longer current, so `answer` is refused too. THAT IS NOT A DEAD END WITH BUTTONS ON IT: every
+  // one of those four is either withheld by its tier layer or greyed by SendToClient with the
+  // sentence that names the act which does move the article, which is generating this topic
+  // again. The exit is a fresh run rather than a bench act, exactly as it is for `failed` and
+  // `stopped` proper, and the page says so instead of offering a control that argues.
+  //
   // A LIVE RERUN NEVER REACHES THIS BRANCH, which is a separate reassurance and not the one that
   // makes `edit` safe. `generating` is derived above every stamp including this one, so while a
   // run owns the artifact the state is `generating` and this list is never consulted. The old fear
@@ -319,18 +366,30 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   answers_submitted: ["answer", "edit", "comments", "send"],
   // The refining bench. This is the one state where the admin shapes the article freely.
   internal_review: ["edit", "comments", "send"],
-  // WAITING, and the empty list is the feature. The client is reading the exact bytes pinned by
-  // sent_version_id, so an edit here changes the article underneath someone mid-review.
-  client_review: [],
+  // WAITING, and the emptiness of the WRITE bench is still the feature. The client is reading the
+  // exact bytes pinned by sent_version_id, so an edit here changes the article underneath someone
+  // mid-review. `reply` is not an edit: CLIENT_ACTIONS grants the client `reply` in this same
+  // state, and an operator who cannot answer a question the client asked while reading is the
+  // asymmetry the verb was added to close. See `reply` above.
+  client_review: ["reply"],
   // The client asked for something, so the admin answers it and sends again. `send` is listed
   // and is still refused by the record while any suggestion is open: the button appears once
   // the last one is resolved or dismissed, which is what makes it a queue rather than a trap.
   changes_requested: ["edit", "comments", "send"],
-  // LOCKED. One door, and it is the only act that does not alter what the client approved.
-  approved: ["publish"],
-  // Still one door: pushing again updates the same CMS post rather than creating a second one,
-  // so a re-push is how a failed or partial push is retried. Nothing else reopens.
-  published: ["publish"],
+  // LOCKED for every act that changes the article, which is what the lock is for and all it is
+  // for. `publish` is the one act that alters nothing the client approved. `reply` is the other,
+  // and its absence here was a defect rather than part of the lock: CLIENT_ACTIONS grants the
+  // client `reply` on an approved article, migration 013 exempts replies from the approved lock
+  // in so many words, and the bench carried nothing, so the client could speak and the operator
+  // could not answer.
+  approved: ["publish", "reply"],
+  // Still the same two doors: pushing again updates the same CMS post rather than creating a
+  // second one, so a re-push is how a failed or partial push is retried. `reply` survives the
+  // publish for the same reason it survives the approval, and it matters here for one specific
+  // road: a client replies while the article is approved, the operator publishes, and without
+  // this grant the thread they left open becomes unanswerable at the moment it is least
+  // excusable. The client's own bench is empty here, so no NEW question can arrive.
+  published: ["publish", "reply"],
   // Today's handling, unchanged: these never reach a client and carry no review loop.
   failed: [],
   stopped: [],
@@ -384,6 +443,40 @@ export function adminCan(state: BlogState, action: AdminAction): boolean {
  */
 export function adminWriteTierReady(facts: BlogStateFacts): boolean {
   return facts.status === "done";
+}
+
+/**
+ * WHETHER A QUESTION FORM IS CURRENT ENOUGH FOR EITHER DOOR BEHIND `answer` TO WORK, which is the
+ * layer that verb was believed to have and did not.
+ *
+ * WHAT THE ROUTES ACTUALLY REQUIRE. Both doors run through server/questions.py's staleness test:
+ * POST /answers refuses a stale form at server/app.py:1457 and POST /revise refuses one at
+ * :1538, both with a 409, and both 404 at :1536 when there is no form at all. Staleness is the
+ * form's version anchor OR its iteration having moved (questions.py:375). Neither of those is a
+ * field on this record, so the previous fix asserted in a comment that AnswerQuestions read the
+ * form and withheld the control itself. It reads the form and renders the control anyway:
+ * questions-state.ts modeOf (:60) tests `answered` before `stale`, so an answered stale form
+ * takes the "answered" branch and draws the Rerun button.
+ *
+ * SO IT IS DERIVED FROM THE STATUS, OFF AN INVARIANT THE ENGINE ENFORCES RATHER THAN OFF A GUESS.
+ * server/runner.py _enforce_terminal_status (:817) is symmetric on the question axis and says so
+ * at :825 to :830: a claimed needs_review with nothing current to answer is corrected to done or
+ * failed by its score, and a claimed done or failed over a CURRENT form is corrected back to
+ * needs_review. The stop path holds a topic at needs_review for the same reason (runner.py:531)
+ * rather than recording it stopped over a live form. The two facts are therefore one fact:
+ *
+ *     status === "needs_review"  <=>  a current, answerable question form exists.
+ *
+ * That makes the record able to answer a question about the form after all, and it makes this
+ * predicate correct for every state rather than for the one that exposed it.
+ *
+ * IT NAMES THE RULE AND NOT A STATE, exactly as adminWriteTierReady does and for the same reason.
+ * `has_questions` is needs_review by construction, so this is transparent there and costs that
+ * state nothing. `answers_submitted` is where it bites, because that state spans four statuses
+ * and only one of them still holds a form anyone can rerun.
+ */
+export function adminAnswerTierReady(facts: BlogStateFacts): boolean {
+  return facts.status === "needs_review";
 }
 
 /**

@@ -397,23 +397,48 @@ placeholder text and its "not for publication" marker is prose no CMS can read.
 
 ### The write key
 
-One key per client org, read from the environment, server-side only. Never in `gates.json`:
-that file is operator-visible and checked in, and a write credential in it is a credential in
-the repo.
+One key per client org, server-side only. Never in `gates.json`: that file is
+operator-visible and checked in, and a write credential in it is a credential in the repo.
+
+**There are two places to put a key, and `server/.env` is the one that works everywhere.**
+Add one line per org, no `export` keyword, and restart the engine:
 
 ```
-export STRATEGI_CMS_WRITE_KEY_BLR_BREWING=...        # one var per org, org slug uppercased
-export STRATEGI_CMS_WRITE_KEY_VACATION_VILLAGE=...
+STRATEGI_CMS_WRITE_KEY_BLR_BREWING=...        # one line per org, org slug uppercased
+STRATEGI_CMS_WRITE_KEY_VACATION_VILLAGE=...   # hyphens in the slug become underscores
+```
+
+The other place is the process environment, which still wins over the file:
+
+```
+export STRATEGI_CMS_WRITE_KEY_BLR_BREWING=...        # same variable name
 export STRATEGI_CMS_URL=...                          # optional, to point at a staging CMS
 ```
+
+**Prefer the file unless you know why you are exporting.** An exported variable reaches the
+engine only when the engine was started from that same shell, which covers a terminal and
+covers `Start Canon.command` because a login shell sources your profile. It does NOT cover
+the tray app opened from Finder: macOS GUI apps read no shell profile, so on the packaged
+distribution an `export` line in `.zshrc` reaches the engine never. `server/.env` is read on
+every launch path.
+
+The exported variable wins where both exist, matching how `server/db.py` resolves its own
+three credentials. A var you exported into this process is a deliberate act aimed at this
+process; a file on disk is ambient, and letting a stale line in it override the key you just
+set is the harder of the two failures to diagnose.
+
+A key kept in `server/.env` is **less** exposed than an exported one, not more. `server/db.py`
+parses that file into a private dict and never into `os.environ`, and `agent_env()` builds
+every Claude subprocess environment by filtering `os.environ`, so a key in the file cannot
+reach an agent session at all. The `STRATEGI_CMS_WRITE_KEY_` prefix is deliberately absent
+from `AGENT_ENV_ALLOW`: a write key files drafts into a client's live CMS, the push happens in
+the server process long after every agent has exited, and no research or drafting session has
+any use for one.
 
 The endpoint defaults to `https://client.strategi.is/api/v1/ingest` and needs no config. If
 you override it, give the **full endpoint including `/api/v1/ingest`**, never a bare host:
 the value is POSTed to verbatim, and `https://client.strategi.is` on its own 307s to
 `/login`, so a host-only value would push a blog at the login page and never tell you.
-
-```
-```
 
 **There is no shared fallback key, deliberately.** The CMS decides which org a draft belongs
 to *from the key*, and the payload is forbidden from carrying `org_id`, so the key is the only
@@ -423,7 +448,14 @@ in BLR Brewing's CMS. Nothing in the request names the intended org, so neither 
 it and the leak is silent. An org gets its own key or it gets a 503.
 
 With no key set for an org, the endpoint answers 503 naming the exact variable it wanted. That
-is a setup problem, not a CMS failure, and it says so.
+is a setup problem, not a CMS failure, and it says so. Put the variable it names into
+`server/.env` as a `NAME=value` line and restart the engine. Both places are checked before
+that 503 is raised, and both are checked for that org's variable alone, so a second place to
+look is never a second chance to answer with a neighbour's key.
+
+`server/cms/client.py` carries `missing_key_detail(org_slug)`, which returns that sentence
+plus the file to put the variable in and the reason an `export` is not enough on the packaged
+app. The endpoint should raise its 503 with that string rather than composing its own.
 
 A key is a per-org secret: a key pasted into a chat, a ticket, or a commit should be rotated
 rather than reused.

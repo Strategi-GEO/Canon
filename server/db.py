@@ -47,6 +47,11 @@ REPO_ROOT = SERVER_DIR.parent
 _CFG: dict[str, str] = {}
 _CFG_LOCK = threading.Lock()
 
+# The credentials this module OWNS. They are named once, because two places need
+# the list and they must never drift: _load_cfg lets an exported one win, and
+# config_value refuses to hand any of them to a caller outside this module.
+_OWN_CREDENTIALS = ("SUPABASE_URL", "SUPABASE_SECRET_KEY", "DATABASE_URL")
+
 
 def _load_cfg() -> dict[str, str]:
     """Parse server/.env once, into _CFG, and NEVER into os.environ."""
@@ -65,7 +70,7 @@ def _load_cfg() -> dict[str, str]:
         # config through the environment keep working. This widens exposure
         # (an exported var is visible process-wide), which is exactly why
         # agent_env() is an allowlist and not a denylist.
-        for key in ("SUPABASE_URL", "SUPABASE_SECRET_KEY", "DATABASE_URL"):
+        for key in _OWN_CREDENTIALS:
             if os.environ.get(key):
                 _CFG[key] = os.environ[key]
         return _CFG
@@ -75,12 +80,54 @@ def db_configured() -> bool:
     return bool(_load_cfg().get("DATABASE_URL"))
 
 
+def config_value(name: str) -> str:
+    """One value out of the parsed server/.env, for a credential this module does
+    not own. Returns "" when the file does not carry it.
+
+    server/.env is the only credential file a teammate is ever handed, install.sh
+    is the only thing that prompts for one, and the tray app reads it on every
+    launch path. So a credential belonging to another module still has to be
+    readable from here, or it has nowhere to live that works everywhere. The CMS
+    write keys are the case that forced this accessor into existence: they are
+    per-org, they are not the engine's own credentials, and before this a key
+    placed in the obvious file was parsed into _CFG and then consulted by nobody,
+    failing exactly as though it had never been written.
+
+    RULE 1 SURVIVES INTACT, and routing the read through here rather than through
+    os.environ is the whole reason it does. Nothing is exported. A value returned
+    from this dict never enters os.environ, so agent_env() cannot carry it into a
+    Claude session whatever its allowlist says: that allowlist filters os.environ,
+    and this value was never in os.environ to be filtered. A secret kept in
+    server/.env is therefore LESS exposed to an agent session than the same
+    secret exported in a shell, not more.
+
+    The three Supabase values are refused by name. They are this module's own
+    credentials, nothing outside it has any business reading them, and a general
+    accessor that would hand them over is a laundering route out of the private
+    dict rather than a config reader.
+    """
+    if name in _OWN_CREDENTIALS:
+        raise ValueError(
+            f"{name} belongs to server/db.py and is not readable from outside it")
+    return (_load_cfg().get(name) or "").strip()
+
+
 # ---------------------------------------------------------------------------
 # The child environment for agent subprocesses: ALLOWLIST, the only legal door
 # ---------------------------------------------------------------------------
 # A denylist is correct until someone adds SUPABASE_DB_PASSWORD or PGPASSWORD,
 # and then it is a hole nobody edited into existence. Everything an agent
 # session legitimately needs is named here; nothing else crosses.
+#
+# THE CMS WRITE KEYS (STRATEGI_CMS_WRITE_KEY_<ORG>) ARE DELIBERATELY ABSENT, and
+# the omission is load-bearing rather than an oversight nobody got to. A write
+# key files a draft straight into a client's live CMS, so it is a publishing
+# credential, and no research or drafting session has any use for one: the push
+# runs in THIS process, in server/cms/, long after every agent has exited. Naming
+# the prefix here would hand every agent session the ability to write to a
+# client's site and buy nothing at all in return. The keys reach
+# server/cms/client.py either through os.environ in this process or through
+# config_value() above, and neither route needs a line on this list.
 AGENT_ENV_ALLOW = (
     # Process basics
     "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TMPDIR", "TERM",

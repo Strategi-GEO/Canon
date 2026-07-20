@@ -11,6 +11,7 @@ import {
   FileUp,
   FlaskConical,
   Globe,
+  Laptop,
   Pencil,
   TriangleAlert,
 } from "lucide-react";
@@ -34,7 +35,13 @@ import { readTrail, type RunTrail } from "@/components/blogs/status-trail";
 import { artifactText, useArtifact, type LoadedArtifact } from "@/components/blogs/use-artifact";
 import { useBlogComments } from "@/components/blogs/use-blog-comments";
 import { brandHref } from "@/lib/orgs-context";
-import { adminCan, adminWriteTierReady, blogState } from "@/lib/blog-state";
+import {
+  adminActions,
+  adminAnswerTierReady,
+  adminCan,
+  adminWriteTierReady,
+  blogState,
+} from "@/lib/blog-state";
 import { formatAbsolute, formatCount, formatRelative } from "@/lib/format";
 import { useBlogQuestions } from "@/lib/use-blog-questions";
 import { ApiError, api } from "@/lib/api";
@@ -279,7 +286,38 @@ function StageBody({
   const canComment = !demoMode && adminCan(state, "comments") && adminWriteTierReady(blog);
   const canSend = !demoMode && adminCan(state, "send");
   const canPublish = !demoMode && adminCan(state, "publish");
-  const canAnswer = !demoMode && adminCan(state, "answer");
+  /**
+   * adminAnswerTierReady IS THE LAYER `answer` WAS BELIEVED TO HAVE AND DID NOT, and its absence
+   * is round four of the same defect the two flags above closed in round three.
+   *
+   * The claim it replaces was that AnswerQuestions discriminates on its own, finding no form once
+   * the revise's finally-arm has cleared it. The panel reads the RECORD rather than the disk, and
+   * server/sync.py spares answered evaluator rows from the post-revise delete, so the form
+   * survives; questions-state.ts modeOf tests `answered` before `stale`, so an answered stale form
+   * takes the answered branch and draws "Rerun with their answers"; and server/app.py:1538 refuses
+   * that rerun as stale. The control rendered and 409'd on every record in `answers_submitted`
+   * except the one where the rerun has genuinely not run.
+   *
+   * READ OFF `blog` RATHER THAN OFF `state`, for the same unavoidable reason canEdit is: the
+   * status is the fact the state folds away, and the form's currency is derivable from the status
+   * and from nothing else this page holds.
+   */
+  const canAnswer = !demoMode && adminCan(state, "answer") && adminAnswerTierReady(blog);
+  /**
+   * REPLYING IN AN EXISTING THREAD, which is a door of its own now and not a corner of `comments`.
+   *
+   * ORed with canComment because the two grants are disjoint by construction: blog-state.ts hands
+   * out `reply` only in the three states where the rail is read and `comments` is withheld, so
+   * this reads as "the fuller bench, or the reply door alone". Where `comments` is granted the
+   * reply box already rides on it and always has.
+   *
+   * HOSTED_READONLY IS IN HERE AND NOT IN canComment, and the split is the same one canRunClaude
+   * makes: canComment feeds commentsVisible, which must keep FETCHING the rail on the hosted
+   * build, while this feeds a control that writes. blogs/[topic]/comments/[id]/reply/route.ts
+   * answers 501 hostedWriteRefused, so offering the box there would be the deployment-axis twin of
+   * the bench defect this file keeps closing.
+   */
+  const canReply = !demoMode && !HOSTED_READONLY && (canComment || adminCan(state, "reply"));
 
   /**
    * WHAT STILL NEEDS AN ENGINE, and it is a SEPARATE AXIS that stays separate.
@@ -310,16 +348,23 @@ function StageBody({
    * it is wrong rather than merely limited. What the state decides is whether those cards carry
    * doors, and that is `canComment` below, not this.
    *
-   * `answers_submitted` IS DELIBERATELY NOT ON THIS LIST, and the line the list draws is a SEND
-   * rather than "with the team". Every state named here is at or past a send, which is the only
-   * way a client suggestion can exist: clientActions offers `suggest` in client_review alone.
+   * `answers_submitted` IS DELIBERATELY NOT REACHED BY THIS TEST, and the line it draws is a SEND
+   * rather than "with the team". Every state that reaches it is at or past a send, which is the
+   * only way a client suggestion can exist: clientActions offers `suggest` in client_review alone.
    * `answers_submitted` carries no send stamp by construction, because a send outranks it in
    * blogState's ladder, so there is no client conversation for the margin to omit. Adding it
-   * would buy a fetch that can only come back empty, and it would put this list out of step with
+   * would buy a fetch that can only come back empty, and it would put this out of step with
    * has_questions and generating, which sit in exactly the same position and are also absent.
+   *
+   * THE THREE STATES ARE NOW NAMED BY THE GRANT RATHER THAN LISTED BY HAND, and it is the same
+   * three: blog-state.ts hands `reply` to client_review, approved and published, which is exactly
+   * the set this list used to spell out. Reading it off the bench ties the fetch to the reason for
+   * the fetch, so a future state that gains a reply door gets its rail read without anyone
+   * remembering to come back here, and one that loses the door stops paying for a rail nobody can
+   * use. HOSTED_READONLY is deliberately not consulted, because reading is exactly what that build
+   * is for: this is `adminCan` and not `canReply`.
    */
-  const commentsVisible =
-    canComment || state === "client_review" || state === "approved" || state === "published";
+  const commentsVisible = canComment || adminCan(state, "reply");
 
   /**
    * The draft the editor is actually holding, and null the moment the state stops permitting an
@@ -551,6 +596,33 @@ function StageBody({
         </p>
       ) : null}
 
+      {/* THE HOSTED BUILD OWES THE OPERATOR THIS SENTENCE, and until now it said nothing at all.
+          Every admin write route on this build answers 501 hostedWriteRefused, and every control
+          is REMOVED rather than greyed: SendToClient returns null, PublishAction returns null,
+          canEdit carries a !HOSTED_READONLY term, and canRunClaude gates the composer and the
+          resolve doors. That is the right shape for a control, and it leaves the page mute.
+
+          MUTE IS NOT NEUTRAL, because the tag beside the title is still ISSUING AN INSTRUCTION.
+          ADMIN_TAGS says this article is on your bench to refine and send, the operator reads it,
+          finds no bench, and goes hunting for the switch that turns one on. There is no switch:
+          the acts live in the app on their own machine. A bench that is honest locally and silent
+          hosted is still dishonest, so the page says where the acts went.
+
+          KEYED ON THE BENCH BEING NON-EMPTY rather than on a list of states, so it appears exactly
+          where something was withheld and stays away from `generating`, `failed`, `stopped` and
+          `unknown`, which offer nothing on either build and would be told they are missing acts
+          they never had. demoMode is deliberately not ANDed out: a demo brand on the hosted build
+          is refused twice over, and both refusals are true. */}
+      {HOSTED_READONLY && adminActions(state).length > 0 ? (
+        <p className="mt-3 flex gap-2 text-xs leading-relaxed text-muted-foreground">
+          <Laptop className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+          This is the hosted view of the record, so it reads and never writes. Answering the
+          evaluator, editing, asking Claude for a change, sending to the client and posting to the
+          CMS all run in the Canon app on your own machine, which is why none of those controls
+          are on this page.
+        </p>
+      ) : null}
+
       <Card className="mt-4 gap-0 overflow-hidden p-0">
         {/* THE ANSWER FORM, AND THE RERUN, in the two states where one of them is owed.
             adminActions gives `answer` to has_questions AND to answers_submitted, and the verb
@@ -664,6 +736,16 @@ function StageBody({
                       loaded={article.loaded}
                       canComment={canRunClaude}
                       canResolve={canRunClaude}
+                      canReply={canReply}
+                      /* THE STATE WOULD TAKE A CHANGE AND THIS BUILD WILL NOT, which is a
+                         different sentence from "this article is closed" and the rail was
+                         printing the wrong one. canComment carries no HOSTED_READONLY term, so
+                         this is true exactly where the article is open and the deployment is
+                         what refuses. In client_review, approved and published it is false and
+                         the state's own sentence stands, which is the right precedence: telling
+                         an operator to open the local app for an act that is absent there too
+                         sends them somewhere for nothing. */
+                      deploymentLocked={canComment && !canRunClaude}
                       remaining={3 - applying}
                       comments={comments.comments}
                       onSubmit={submitComment}
@@ -729,6 +811,8 @@ function BlogArticle({
   loaded,
   canComment,
   canResolve,
+  canReply,
+  deploymentLocked,
   remaining,
   comments,
   onSubmit,
@@ -743,6 +827,13 @@ function BlogArticle({
    *  from StageBody rather than read off HOSTED_READONLY down here, so the one flag that
    *  already knows the answer is the only thing the rail can disagree with. */
   canResolve: boolean;
+  /** Whether a reply may be filed in an existing thread. A door of its own, so it survives on
+   *  an article that takes no other change: see blog-state.ts's `reply`. */
+  canReply: boolean;
+  /** Whether the read-only rail is read-only because of the DEPLOYMENT rather than the state.
+   *  It decides which sentence a card owed an act prints, and the two are not interchangeable:
+   *  one names a state that will change, the other names a build that will not. */
+  deploymentLocked: boolean;
   remaining: number;
   comments: BlogComment[];
   onSubmit: (draft: SelectionDraft) => Promise<void>;
@@ -776,6 +867,8 @@ function BlogArticle({
         comments={comments}
         disabled={!canComment}
         canResolve={canResolve}
+        canReply={canReply}
+        deploymentLocked={deploymentLocked}
         remaining={remaining}
         onSubmit={onSubmit}
         onDismiss={onDismiss}

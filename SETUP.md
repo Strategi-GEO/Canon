@@ -105,6 +105,36 @@ Claude login pays for generations, the dashboard login identifies you in the
 app. The menu also shows which Claude account this machine is logged in to,
 as "Claude account: you@company.com".
 
+## Posting blogs to the client CMS (optional)
+
+Finished blogs have a **Post to CMS** button in the preview drawer, which sends
+the blog to `client.strategi.is` as a draft for an editor to approve. That button
+needs a write key, and there is **one key per client org**, never one shared key.
+Ask your admin for the key for each brand you will be posting.
+
+Put each key in the same `server/.env` file the installer created, one line per
+org, then restart Canon from the menu:
+
+```
+STRATEGI_CMS_WRITE_KEY_BLR_BREWING=the-key-your-admin-sent
+STRATEGI_CMS_WRITE_KEY_VACATION_VILLAGE=a-different-key
+```
+
+The variable name is `STRATEGI_CMS_WRITE_KEY_` followed by the org's slug in
+capitals, with any hyphens turned into underscores. No `export` keyword: this is
+a file of `NAME=value` lines, not a shell script. Add the lines to the file that
+is already there rather than replacing it, so the database values stay.
+
+**Do not use `export` in your shell profile for this.** It works if you start
+Canon from a terminal and stops working the moment you start it by
+double-clicking, because apps opened from Finder do not read shell profiles. The
+file works on both.
+
+One key posts to exactly one client's CMS, so the wrong key in the wrong line
+files one client's blog into another client's site with nothing able to catch it.
+Treat these like the database values above: a key that lands in chat or a ticket
+has to be rotated for everybody.
+
 ## Troubleshooting
 
 | Symptom | What it means | Fix |
@@ -116,6 +146,7 @@ as "Claude account: you@company.com".
 | App opens then nothing happens, no dot | The app could not find the Canon folder | Keep the app inside the Canon folder (next to `launcher.py`), or pick the folder when the chooser appears |
 | Engine is up but dashboard login fails | `server/.env` is missing/stale, or your dashboard user was never provisioned | Ask the admin for the current `server/.env` and confirm they created your account. Replace the file, then "Restart" |
 | Blogs will not generate, viewing works | Firecrawl / DataForSEO keys were found nowhere | Have the admin set up the MCP servers in your Claude Code, or set the three variables from Prerequisites step 4, then "Restart" |
+| **Post to CMS** says "No CMS write key configured for org ..." | That client org has no key on this machine | Add the line the message names to `server/.env` (see Posting blogs to the client CMS), then "Restart". The message names the exact variable |
 | First start sits for minutes | One-time setup: pip and npm downloading dependencies | Normal. Later starts skip both |
 | Port already in use messages in logs | A previous run left a server behind | The launcher reclaims its ports automatically on start; "Restart" is usually enough. Otherwise reboot |
 

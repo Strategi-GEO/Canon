@@ -3,9 +3,10 @@
 httpx, not requests: FastAPI already brings httpx and it speaks async, so the
 push does not block the event loop the SSE run feed is tailing on.
 
-THE KEY IS SERVER-SIDE ONLY. It is read from the environment, it is never
-returned in a response body, never written to an artifact, and never logged, not
-even truncated. A key in a log line is a key in whatever ships those logs.
+THE KEY IS SERVER-SIDE ONLY. It is read from the process environment or from
+server/.env, it is never returned in a response body, never written to an
+artifact, and never logged, not even truncated. A key in a log line is a key in
+whatever ships those logs.
 """
 import asyncio
 import logging
@@ -13,6 +14,8 @@ import os
 import socket
 
 import httpx
+
+from .. import db
 
 log = logging.getLogger("geo-factory")
 
@@ -39,7 +42,8 @@ CMS_URL = os.environ.get("STRATEGI_CMS_URL", "https://client.strategi.is/api/v1/
 # error message and a much better failure: it stops, instead of guessing wrong quietly.
 #
 # The key does NOT live in gates.json: that file is operator-visible and checked in, and a
-# write credential in it is a credential in the repo.
+# write credential in it is a credential in the repo. It lives in the process environment or
+# in server/.env, and resolve_key below says which wins and why.
 KEY_VAR_PREFIX = "STRATEGI_CMS_WRITE_KEY_"
 
 MAX_ATTEMPTS = 5
@@ -78,10 +82,60 @@ def key_var_for_org(org_slug):
 def resolve_key(org_slug):
     """The write key for THIS org, or None. Never another org's key.
 
+    TWO PLACES, ONE PER-ORG VARIABLE NAME, AND AN EXPORTED VAR WINS. The process
+    environment is read first, so every deployment that exports the variable
+    behaves exactly as it did and exactly as the README documents. server/.env is
+    read second, because that file is the only credential store a teammate is
+    actually given: install.sh prompts for it, the tray app reads it, and it is
+    the file an operator reaches for. Until this fallback existed, a key put
+    there was parsed into db's private config and consulted by nobody, so the
+    obvious place produced the same 503 as no key at all and said nothing about
+    having read the file.
+
+    The precedence matches db.py, which resolves its own three credentials the
+    same way, and it is the order that surprises nobody: a var exported into this
+    process is a deliberate act aimed at this process, while a file sitting on
+    disk is ambient. Reversing it would let a stale line in a file silently beat
+    the key an operator just exported to fix something, which is the harder
+    failure to diagnose of the two.
+
+    THE NO-SHARED-FALLBACK RULE IS UNTOUCHED. Both lookups ask for exactly
+    key_var_for_org(org_slug) and nothing else, so a second place to look is not
+    a second chance to answer with a neighbour's key. An org that misses in both
+    gets None and its 503, exactly as before.
+
     Returns None rather than raising so a caller can render "no key configured"
     as a setup problem, which it is, instead of a CMS failure, which it is not.
     """
-    return os.environ.get(key_var_for_org(org_slug), "").strip() or None
+    var = key_var_for_org(org_slug)
+    exported = os.environ.get(var, "").strip()
+    if exported:
+        return exported
+    # db.config_value reads the parsed server/.env WITHOUT exporting anything, so
+    # a key kept in that file never enters os.environ and agent_env() cannot carry
+    # it into a Claude session. See the RULE 1 argument in server/db.py.
+    return db.config_value(var) or None
+
+
+def missing_key_detail(org_slug):
+    """What to tell an operator whose org has no write key: the variable AND the
+    place to put it.
+
+    Naming only the variable is accurate and useless on the packaged app, which
+    is the supported way Canon is distributed: a macOS GUI app opened from Finder
+    reads no shell profile, so an `export` line in .zshrc reaches it never, and an
+    operator following that advice watches the same 503 come back. server/.env is
+    named first because it is the one location that works on every launch path,
+    tray app and terminal alike. The export is still named, because it is what
+    existing deployments run on and it still wins.
+    """
+    var = key_var_for_org(org_slug)
+    return (
+        f"No CMS write key configured for org '{org_slug}'. Add the line "
+        f"{var}=<key> to server/.env in the Canon folder, then restart the engine. "
+        f"Exporting {var} works too, and only for an engine started from that same "
+        f"shell: an app launched from Finder never reads a shell profile."
+    )
 
 
 def _is_dns_failure(error):
@@ -141,8 +195,9 @@ async def push_draft(payload, api_key, *, url=None, client=None):
     """
     if not api_key:
         raise CmsError(
-            "No CMS write key is configured for this org. Set the key in the "
-            "engine's environment, not in gates.json."
+            "No CMS write key is configured for this org. Put "
+            "STRATEGI_CMS_WRITE_KEY_<ORG> in server/.env, or export it in the "
+            "shell that starts the engine. Never in gates.json."
         )
 
     target = url or CMS_URL

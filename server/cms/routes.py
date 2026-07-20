@@ -95,14 +95,15 @@ async def api_publish_blog(slug: str, topic_slug: str, request: Request):
 
     org_slug = _org_slug(slug)
     key = cms_client.resolve_key(org_slug)
+    # The detail comes from cms_client because that module is the one that knows WHERE it
+    # looked. It reads the process environment first and server/.env second, and an operator
+    # who is told only "set it in the engine's environment" is told the one thing that does
+    # not work on the packaged app: a Finder-launched .app reads no shell profile, so an
+    # export never reaches the engine and the file is the only door. Composing the sentence
+    # here meant it could not name the file without this route knowing the resolution order,
+    # which is exactly the duplication that let the message go stale when the order changed.
     if not key:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"No CMS write key configured for org '{org_slug}'. Set "
-                f"{cms_client.key_var_for_org(org_slug)} in the engine's environment."
-            ),
-        )
+        raise HTTPException(status_code=503, detail=cms_client.missing_key_detail(org_slug))
 
     try:
         result = await cms_client.push_draft(payload, key)

@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 
 import {
   adminActions,
+  adminAnswerTierReady,
   adminCan,
   adminTag,
   adminUrgency,
@@ -30,6 +31,7 @@ import {
   type AdminAction,
   type BlogState,
   type BlogStateFacts,
+  type ClientAction,
 } from "../src/lib/blog-state.ts";
 
 const ALL_STATES: BlogState[] = [
@@ -237,10 +239,16 @@ test("adminActions: the full policy, state by state", () => {
     // both of those, so the test that actually governs this row is the lower-layer one below.
     answers_submitted: ["answer", "edit", "comments", "send"],
     internal_review: ["edit", "comments", "send"],
-    client_review: [],
+    // NOT EMPTY ANY MORE, and the one verb here is the one that changes nothing. The client may
+    // reply while they read (CLIENT_ACTIONS grants it), every layer under a reply accepts one,
+    // and an operator who cannot answer the person reading their article is an asymmetry rather
+    // than a lock. Every act that touches the bytes is still absent.
+    client_review: ["reply"],
     changes_requested: ["edit", "comments", "send"],
-    approved: ["publish"],
-    published: ["publish"],
+    // The approved lock covers the bytes and nothing else. Migration 013 says so twice, in its
+    // header and in refuse_comment_when_approved's early return on parent_id.
+    approved: ["publish", "reply"],
+    published: ["publish", "reply"],
     failed: [],
     stopped: [],
     unknown: [],
@@ -284,9 +292,21 @@ test("an approved article is locked for BOTH sides", () => {
 });
 
 test("the admin cannot touch an article the client is reading", () => {
-  // client_review pins the client to sent_version_id. An edit here changes the article
-  // underneath someone mid-review, so every door is shut until they act.
-  assert.deepEqual([...adminActions("client_review")], []);
+  // client_review pins the client to sent_version_id. An edit here changes the article underneath
+  // someone mid-review, so every door that writes a version is shut until they act.
+  //
+  // STATED AS "NOTHING THAT CHANGES THE BYTES" RATHER THAN AS AN EMPTY LIST, which is the claim
+  // this test was always making and the list was only a proxy for. A reply commits no version,
+  // resolves nothing and is exempt from every lock in the schema, so counting it as a touch would
+  // forbid the one act that lets an operator answer the person doing the reading.
+  for (const action of ["edit", "comments", "send", "publish"] as AdminAction[]) {
+    assert.equal(
+      adminCan("client_review", action),
+      false,
+      `client_review: "${action}" would move the article out from under the client mid-review`,
+    );
+  }
+  assert.deepEqual([...adminActions("client_review")], ["reply"]);
 });
 
 test("nobody edits an article while a run owns it", () => {
@@ -447,29 +467,138 @@ test("no state that only an admin act can leave is left with an empty admin benc
  * it mirrors so a reader can go and check it, and each takes the STRICTER of the two surfaces
  * where they differ, because a bench has to work for an operator on the hosted build as well as on
  * the local engine, and an act only one of them accepts is not a door.
+ *
+ * ROUND 4 SHIPPED A GREEN RUN OVER A WRONG MODEL, WHICH IS WORSE THAN NO MODEL AT ALL, and that
+ * is the failure this rewrite is here to close. `answer` was modelled as `!facts.client_approved`
+ * on the strength of one line of server/app.py, and the real route is seven refusals deep. So the
+ * test certified a control that 409s, in the exact state the whole file exists to get right, and
+ * the certification is what made the fourth round look finished.
+ *
+ * SO EVERY CONDITION BELOW IS ENUMERATED, NOT SUMMARISED, AND CARRIES ITS OWN file:line. A rule
+ * with one citation covering four refusals is how a missing refusal hides: the reader checks the
+ * line, finds it says what the comment says, and never learns that three more lines follow it.
+ * The provenance is per condition so a drift check is a diff rather than a re-derivation.
+ *
+ * CONDITIONS THIS RECORD CANNOT EXPRESS ARE NAMED WHERE THEY ARE DROPPED, never silently omitted.
+ * BlogStateFacts carries five fields and a route can refuse on facts none of them holds. Where a
+ * refusal is unmodellable the comment says so and says why dropping it is safe, which is a claim
+ * a reviewer can attack. An unstated omission is not.
  */
 function lowerLayerAccepts(action: AdminAction, facts: BlogStateFacts): boolean {
   switch (action) {
-    // supabase/migrations/009_admin_write_tier.sql: admin_save_blog_content (:352) and
-    // admin_add_comment (:299) both resolve the topic through admin_done_topic, which raises
-    // PORTAL:NOTDONE at :143 unless topic_rollup.status is exactly 'done'. The migration's own
-    // header says why: with no liveness table in the schema, requiring 'done' is the stand-in for
-    // the engine's refusal to write under a live run.
+    // POST /api/clients/{slug}/blogs/{topic}/content, server/app.py api_save_blog_content, and
+    // POST .../comments, api_add_blog_comment. Their refusals, in the order each route runs them:
+    //
+    //   demo brand                app.py:1968 / :1778.       NOT MODELLED: demoMode is a property
+    //                             of the CLIENT and is not a BlogStateFacts field. blog-stage.tsx
+    //                             ANDs it into every flag on the page, so it can never be the
+    //                             thing that makes a bench dishonest.
+    //   unknown topic             app.py:1970 / :1780.       Unreachable: the page is rendered
+    //                             from a topic the same record produced.
+    //   status is not 'done'      app.py:1971 / :1781 via _require_done (:1640), and on the
+    //                             hosted build migration 009's admin_done_topic (009:145, restated
+    //                             013:137) raising PORTAL:NOTDONE from admin_save_blog_content
+    //                             (009:352) and admin_add_comment (009:299). MODELLED.
+    //   client approved           app.py:1976 / :1787 via _require_not_approved (:1652), plus
+    //                             013's refuse_version_when_approved and
+    //                             refuse_comment_when_approved triggers, plus 013:141 inside
+    //                             admin_done_topic. MODELLED, and it is subsumed by the status
+    //                             test only by accident, so it is written out.
+    //   out with the client       app.py:1982 / :1796 via _require_not_with_client (:1716), which
+    //                             is "sent AND no change round open", exactly blogState's
+    //                             `client_review`. MODELLED.
+    //   a run is live             app.py:1983 / :1797. Modelled through `live`, which derives
+    //                             `generating`, whose bench is empty, so it can never be reached.
     case "edit":
     case "comments":
-      return facts.status === "done";
-    // The same done gate at :180, plus the open-suggestion refusal at :190 to :196, which is a
-    // WHERE clause rather than a pre-check: a client top-level comment in state open or applying
-    // updates zero rows, and zero rows IS the refusal. send-to-client.tsx mirrors both halves,
-    // the status in blockedReason and the count in the chip that replaces the button.
+      return (
+        facts.status === "done" &&
+        !facts.client_approved &&
+        !(facts.sent_to_client && !(facts.change_round_open ?? (facts.changes_requested ?? 0) > 0)) &&
+        !facts.live
+      );
+    // POST .../send, server/app.py api_send_blog_to_client:
+    //
+    //   demo brand                app.py:2028. Not modelled, as above.
+    //   unknown topic             app.py:2030. Unreachable, as above.
+    //   status is not 'done'      app.py:2031 via _require_done (:1640), and 009:180 resolving
+    //                             through admin_done_topic (009:145). MODELLED.
+    //   client approved           app.py:2042 via _require_not_approved (:1652), and 013:141
+    //                             inside the same admin_done_topic. MODELLED.
+    //   open client suggestions   mark_sent's own WHERE clause, answered as None and turned into
+    //                             a 409 at app.py:2045, mirrored on the hosted build by 009:202.
+    //                             A WHERE clause rather than a pre-check, so zero rows IS the
+    //                             refusal. MODELLED through changes_requested, which counts
+    //                             exactly the top-level client comments in state open or
+    //                             applying that the clause tests.
     case "send":
-      return facts.status === "done" && (facts.changes_requested ?? 0) === 0;
-    // THE ONE ACT THAT IS NOT GATED ON `done`, which is the whole reason it is the exit from a
-    // state that is not done. server/app.py's revise route calls _require_not_approved (:1450) and
-    // nothing else about the status: the rerun exists to move a topic the loop has not finished
-    // with. An approved article is locked for everyone, so that one refusal is real and modelled.
+      return (
+        facts.status === "done" &&
+        !facts.client_approved &&
+        (facts.changes_requested ?? 0) === 0
+      );
+    // POST .../revise, server/app.py api_revise_answered, THE ROUTE ROUND 4 MODELLED WITH ONE
+    // CONDITION OUT OF SEVEN. In the order the route runs them:
+    //
+    //   demo brand                app.py:1526. Not modelled, as above.
+    //   unknown topic             app.py:1528. Unreachable, as above.
+    //   client approved           app.py:1532 via _require_not_approved (:1652). MODELLED.
+    //   no question form at all   app.py:1534 to :1536, NoQuestions raised by
+    //                             questions.describe_questions (server/questions.py:336) becomes
+    //                             a 404. MODELLED, see the status derivation below.
+    //   THE FORM IS STALE         app.py:1538. questions.py:375 computes it as the form's version
+    //                             anchor having moved OR its iteration having moved. MODELLED,
+    //                             and its absence is the entire round-4 defect.
+    //   the form is unanswered    app.py:1544. NOT REACHABLE while `answers_submitted` is set:
+    //                             that stamp means every question of the newest evaluator round
+    //                             carries a CLIENT reply (server/app.py:1280 to :1301 and the
+    //                             hosted twin at blogs/route.ts:208 to :219), while
+    //                             questions.py:376 computes `answered` author-agnostically over
+    //                             the same round, so the stamp implies the flag. Named rather
+    //                             than dropped, because the implication is the reason and it is
+    //                             not obvious.
+    //   a run is live             app.py:1550. Derives `generating`, as above.
+    //   the rerun is claimed      app.py:1558, client_answers.claim. Another machine's engine is
+    //                             mid-rerun on this topic. NOT MODELLED: no field carries it, it
+    //                             is transient, and it clears itself when that task settles.
+    //
+    // THE STALE ARM IS DERIVED FROM THE STATUS RATHER THAN RESTATED, which is what makes it
+    // checkable at all from a record that carries no form anchor. server/runner.py
+    // _enforce_terminal_status (:817) is symmetric on the question axis and says so at :825 to
+    // :830: a claimed needs_review with nothing CURRENT to answer is corrected to done or failed,
+    // and a claimed done or failed over a CURRENT form is corrected back to needs_review. The
+    // stop path does the same in the same direction (runner.py:531, which holds the topic at
+    // needs_review rather than recording it stopped when a form is live). So the terminal status
+    // and the form's currency are two names for one fact:
+    //
+    //     status === "needs_review"  <=>  a current, answerable form exists.
+    //
+    // Every other terminal status therefore implies the form is stale or gone, which is exactly
+    // the 409 at :1538 and the 404 at :1536. That is a DERIVATION off a named invariant, not a
+    // guess, and it is why this arm can be trusted from five fields.
+    //
+    // AND IT IS WHY `done` WITH A SUBMIT STAMP IS THE SHARPEST CASE. A clean rerun commits a new
+    // blog_versions row, which moves the form's anchor, while server/sync.py:546 to :551 spares
+    // ANSWERED evaluator rows from the post-revise delete. So the answered form survives in the
+    // record, the submit stamp survives with it, questions-state.ts modeOf (:60) tests `answered`
+    // BEFORE `stale` and returns "answered", and answer-questions.tsx:208 draws the Rerun button
+    // over a form the route refuses as stale.
     case "answer":
-      return !facts.client_approved;
+      return facts.status === "needs_review" && !facts.client_approved && !facts.live;
+    // POST .../comments/{id}/reply, server/app.py api_reply_blog_comment (:1898). Its docstring
+    // at :1912 states the absences and the reason: no demo refusal and no done gate, because
+    // those exist to protect an act that spends API credits on an article worth polishing, and a
+    // reply spends neither. Migration 011's admin_reply_comment (011:32) is the hosted twin and
+    // carries the same three refusals and no more: unknown topic (011:47), an empty body
+    // (011:53), and an unknown parent comment (011:62). Migration 013 exempts replies from the
+    // approved lock explicitly, at 013:18 and again in refuse_comment_when_approved's
+    // `new.parent_id is not null` early return (013:88).
+    //
+    // So NOTHING in the record refuses a reply, which is the finding rather than a shrug: it is
+    // what makes the missing admin grant on `approved` a real asymmetry against
+    // CLIENT_ACTIONS.approved, and not a permission the database would have refused anyway.
+    case "reply":
+      return true;
     // NOT GATED ON ANY FACT IN THIS RECORD, so it is modelled as accepted rather than guessed at.
     // The CMS push runs its own gate in server/cms/gate.py, and that gate turns on which VERSION
     // the client approved against which version is latest, which is not a field BlogStateFacts
@@ -486,8 +615,25 @@ type Situation = {
   facts: BlogStateFacts;
   /** Asserted, so a situation cannot quietly stop describing the state it claims to. */
   state: BlogState;
-  /** The single act that moves this article onward from here. */
-  moves: AdminAction;
+  /**
+   * The single act that moves this article onward, or "run" where nothing on the bench does.
+   *
+   * "run" IS A REAL ANSWER AND NOT AN EXCUSE, and the corrected `answer` model is what forced it
+   * onto this type. A rerun that crashes leaves `failed` under a submit stamp and one the operator
+   * stops leaves `stopped`, and both derive `answers_submitted`. Neither carries a current
+   * question form, because runner.py _enforce_terminal_status (:817) would have corrected the
+   * status back to needs_review if one existed, so the rerun is refused; neither is `done`, so
+   * every write act is refused too. The exit is generating the topic again, which is not a bench
+   * act and never was: `failed` and `stopped` proper have carried an empty bench since this file
+   * was written, for exactly the same reason.
+   *
+   * IT IS HELD TO A STRICTER PROPERTY THAN AN ACT IS, not a weaker one. Where a situation names
+   * an act, the test asserts the act is granted AND accepted. Where it names "run", the test
+   * asserts that NOTHING reaches the operator as a pressable control that the record would
+   * refuse, so the escape hatch cannot be used to wave through an offered-but-refused button. It
+   * is the honest liveness answer for these records rather than a hole in the invariant.
+   */
+  moves: AdminAction | "run";
 };
 
 const SITUATIONS: Situation[] = [
@@ -509,18 +655,26 @@ const SITUATIONS: Situation[] = [
     moves: "send",
   },
   {
-    // The same shape as (a) by a different road. A crashed rerun leaves the answers owed their
-    // revise, and dispatching it again is the act.
-    what: "the rerun crashed, so the answers are still owed their revise",
+    // NOT THE SAME SHAPE AS (a), WHICH IS WHAT ROUND 4 GOT WRONG HERE. This situation used to
+    // claim `answer` moved it, on the reasoning that a crashed rerun leaves the answers owed
+    // their revise. The record disagrees: a `failed` terminal status over a CURRENT form is
+    // corrected back to needs_review by runner.py _enforce_terminal_status (:825 to :830), so a
+    // form that survives beside a `failed` status is by construction not current, and
+    // server/app.py:1538 refuses the rerun as stale. The answers are spent, the draft they were
+    // meant to clarify is gone, and generating the topic again is the only thing left.
+    what: "the rerun crashed, leaving a spent form the revise route refuses as stale",
     facts: { status: "failed", answers_submitted: "t" },
     state: "answers_submitted",
-    moves: "answer",
+    moves: "run",
   },
   {
-    what: "the operator stopped the run before the rerun could apply the answers",
+    // The same reasoning by the stop path, which holds a topic at needs_review rather than
+    // recording it stopped whenever a form is still live (runner.py:531). A `stopped` status
+    // therefore also implies no current form.
+    what: "the operator stopped the run, and the form it left behind is no longer current",
     facts: { status: "stopped", answers_submitted: "t" },
     state: "answers_submitted",
-    moves: "answer",
+    moves: "run",
   },
   {
     what: "passed, unsent, and sitting on the refining bench",
@@ -562,6 +716,33 @@ test("every admin bench offers an act the layers under it will accept", () => {
     const state = blogState(situation.facts);
     assert.equal(state, situation.state, `${situation.what}: derives ${state}, not the state claimed`);
 
+    // The acts that actually reach the operator as a pressable control AND survive the record.
+    // Both halves of that matter and neither is enough: a grant the offer layers withhold is not
+    // a door, and a control the record refuses is not one either.
+    const usable = adminActions(state).filter(
+      (action) => isOffered(action, situation.facts) && lowerLayerAccepts(action, situation.facts),
+    );
+
+    if (situation.moves === "run") {
+      // NO BENCH ACT MOVES THIS RECORD, and the claim being checked is that the page is honest
+      // about it rather than that it is empty. `usable` may be zero here, so the liveness
+      // assertion below does not apply, and in its place this asserts the STRONGER thing: not one
+      // control renders that the record would then refuse. The honesty test enumerates the same
+      // property over every reachable record; this states it on the situation, where the
+      // sentence naming the real exit lives.
+      const offeredAndRefused = adminActions(state).filter(
+        (action) =>
+          isOffered(action, situation.facts) && !lowerLayerAccepts(action, situation.facts),
+      );
+      assert.deepEqual(
+        offeredAndRefused.filter((action) => !DECLARED_REFUSALS[`${state}:${action}`]),
+        [],
+        `${state} where ${situation.what}: the exit here is generating the topic again, so every ` +
+          `bench act must be withheld or must explain itself, and these do neither`,
+      );
+      continue;
+    }
+
     // THE GRANT AND THE ACCEPTANCE, ASSERTED SEPARATELY, because the two failures they catch are
     // opposite and the messages have to say which one happened. A missing grant is this table
     // withholding a control; a refused act is this table offering one that argues with the record.
@@ -578,9 +759,6 @@ test("every admin bench offers an act the layers under it will accept", () => {
 
     // The property itself, stated over the whole bench. It is implied by the pair above, and it is
     // written out because it is the sentence a reader needs: every article has a reachable act.
-    const usable = adminActions(state).filter((action) =>
-      lowerLayerAccepts(action, situation.facts),
-    );
     assert.ok(
       usable.length > 0,
       `${state} where ${situation.what}: every act on the bench (${adminActions(state).join(", ")}) ` +
@@ -636,8 +814,29 @@ test("the two situations inside answers_submitted want different acts", () => {
   assert.equal(
     lowerLayerAccepts("answer", rerunOwed),
     true,
-    "the revise route gates on approval alone, so it accepts exactly the not-done blogs the send refuses",
+    "the revise route needs a current form, and needs_review is exactly the status that has one",
   );
+
+  // ROUND 4, PINNED, and this is the assertion the previous fix could not have made. The revise
+  // route does NOT gate on approval alone: it refuses a stale form at server/app.py:1538, and a
+  // rerun that has landed has committed a new version, which is what makes the form stale. So the
+  // rerun is refused in exactly the situation the send is accepted, and the two acts partition
+  // this state rather than overlapping in it.
+  assert.equal(
+    lowerLayerAccepts("answer", rerunLanded),
+    false,
+    "the rerun has already run and its form is spent, so a second dispatch 409s as stale",
+  );
+  // AND THE CONTROL IS WITHHELD RATHER THAN LEFT TO ARGUE, which is the half that lives in the
+  // components. Round 4 granted `answer` here with nothing in front of it, on a comment claiming
+  // AnswerQuestions would find no form: it finds the answered one, because sync.py spares
+  // answered rows from the post-revise delete, and it draws the Rerun button over it.
+  assert.equal(
+    isOffered("answer", rerunLanded),
+    false,
+    "blog-stage.tsx must not mount the Rerun strip over a form the revise route refuses",
+  );
+  assert.equal(isOffered("answer", rerunOwed), true, "and it must mount it where the rerun works");
 });
 
 /**
@@ -715,11 +914,16 @@ const REACHABLE: Record<BlogState, BlogStateFacts[]> = {
  * layer that sits in FRONT of it. A bench grant is a permission, not a rendering, and two acts
  * already have a layer between the grant and the button.
  *
- * MODELLED HERE ONLY WHERE THIS PROCESS CAN EVALUATE IT. `answer` and `send` are discriminated by
- * their own renderers, which import React and cannot be called from a state-machine test, so their
- * refusals are DECLARED below rather than modelled. `edit` and `comments` are discriminated by a
- * predicate exported from blog-state.ts precisely so that this test can call it: a discriminating
- * layer nothing can check is how the last two rounds were defended.
+ * MODELLED HERE ONLY WHERE THIS PROCESS CAN EVALUATE IT. `send` is discriminated by its own
+ * renderer, which imports React and cannot be called from a state-machine test, so its refusal is
+ * DECLARED below rather than modelled. `edit`, `comments` and `answer` are discriminated by
+ * predicates exported from blog-state.ts precisely so that this test can call them: a
+ * discriminating layer nothing can check is how every previous round was defended.
+ *
+ * `answer` MOVED FROM THE DEFAULT ARM INTO A CALLED PREDICATE, and that move is the fix. It sat
+ * under `default: return true` on the strength of a comment saying AnswerQuestions withheld the
+ * control itself, which is exactly the shape of claim this function exists to stop accepting. The
+ * comment was wrong, nothing here could tell, and the suite went green over a button that 409s.
  */
 function isOffered(action: AdminAction, facts: BlogStateFacts): boolean {
   if (!adminCan(blogState(facts), action)) {
@@ -733,6 +937,11 @@ function isOffered(action: AdminAction, facts: BlogStateFacts): boolean {
     case "edit":
     case "comments":
       return adminWriteTierReady(facts);
+    // The same composition, for the verb whose layer was asserted rather than written.
+    // blog-stage.tsx ANDs adminAnswerTierReady into canAnswer, so the Rerun strip is mounted only
+    // where a current form exists for it to act on.
+    case "answer":
+      return adminAnswerTierReady(facts);
     default:
       return true;
   }
@@ -749,9 +958,12 @@ function isOffered(action: AdminAction, facts: BlogStateFacts): boolean {
  */
 const DECLARED_REFUSALS: Record<string, string> = {
   "answers_submitted:send":
-    "send-to-client.tsx blockedReason greys the button for every status that is not done and " +
-    "names the rerun as the act that comes first, so the operator is told what clears it rather " +
-    "than pressing a control that fails",
+    "send-to-client.tsx blockedReason (:325) greys the button for every status that is not done " +
+    "and names the act that comes first, and it names a DIFFERENT act per status, which is what " +
+    "makes one entry honest across four records: needs_review points at the rerun above, while " +
+    "failed and stopped say the record carries no passing draft and that generating the topic " +
+    "again is what produces one. The operator is told what clears it rather than pressing a " +
+    "control that fails",
   "changes_requested:send":
     "send-to-client.tsx replaces the button entirely with the count of suggestions still to " +
     "resolve, mirroring the open-suggestion WHERE clause at 009:190, so nothing is offered to " +
@@ -807,6 +1019,111 @@ test("no admin bench offers an act the layers under it refuse", () => {
         `exception is stale and would silently cover the next act granted there`,
     );
   }
+});
+
+/**
+ * THE SAME AUDIT, ON THE OTHER BENCH, WHICH NOTHING HAS EVER CHECKED.
+ *
+ * CLIENT_ACTIONS is keyed by BlogState exactly as ADMIN_ACTIONS is, and the layers under it gate
+ * on facts the state folds away exactly as the admin's do: portal_submit_answers reads the form's
+ * anchor, and portal_approve_blog, portal_suggest_change and portal_reply_comment all read the
+ * send stamp. Every test above this one asks questions about the client bench's ROW VALUES. Not
+ * one asks whether the layer beneath a client act would accept it, which is precisely the gap
+ * that let the admin bench ship broken four times.
+ *
+ * IT IS BUILT ON THE SAME REACHABLE TABLE, deliberately, so the two benches are audited against
+ * one enumeration of records rather than two that can drift apart. A record the admin audit
+ * considers and the client audit does not would be the same hole one surface over.
+ */
+function clientLowerLayerAccepts(action: ClientAction, facts: BlogStateFacts): boolean {
+  switch (action) {
+    // migration 014_form_staleness.sql, portal_submit_answers (:45). Its refusals:
+    //
+    //   not authenticated       014:71.  Structural, never a bench question.
+    //   malformed body          014:74.  The form builds it, not the bench.
+    //   unknown brand or topic  014:95 / :116.
+    //   wrong role              014:105. A property of the ACCOUNT, not the article, so no bench
+    //                           keyed by state can express it and none should try.
+    //   demo brand              014:109. A property of the CLIENT, as on the admin side.
+    //   no form at all          014:127.  MODELLED through the status, below.
+    //   THE FORM IS STALE       014:170.  Version anchor OR iteration, the same rule
+    //                           questions.py:375 computes and the same one server/app.py:1538
+    //                           enforces. MODELLED through the status, below.
+    //   ALREADY ANSWERED        014:179.  AUTHOR-AGNOSTIC: any reply on any question of the round
+    //                           refuses the whole submit. The `answers_submitted` stamp counts
+    //                           CLIENT replies only, so it implies this refusal but is not implied
+    //                           by it. MODELLED in the direction the stamp supports, and the
+    //                           residue is named: an OPERATOR-answered form would refuse a client
+    //                           submit while the stamp is still null. That record is transient
+    //                           rather than reachable, because an operator's answer dispatches its
+    //                           revise at submit time, which makes the topic live and derives
+    //                           `generating`, whose client bench is empty.
+    //   incomplete answers      014:207.  The form's own validation, not the bench's.
+    //
+    // The status derivation is the admin side's, unchanged and for the same reason: runner.py
+    // _enforce_terminal_status (:817, :825 to :830) makes `needs_review` and "a current answerable
+    // form exists" two names for one fact.
+    case "answer":
+      return facts.status === "needs_review" && !facts.answers_submitted;
+    // migration 005_client_review.sql, portal_approve_blog (:434): not sent (005:492), already
+    // approved (005:495), and a version anchor moving under the reader (005:501). The third is a
+    // fact about the REQUEST rather than the record, since the client posts the version they were
+    // shown, so it is named and not modelled.
+    case "approve":
+      return Boolean(facts.sent_to_client) && !facts.client_approved;
+    // portal_suggest_change (005:186): not sent (005:255), and ten suggestions already open
+    // (005:272). Migration 013's refuse_comment_when_approved trigger closes it on an approved
+    // article too, from the other side of the same insert. The ten-cap is modelled off
+    // changes_requested, which counts the same top-level open rows the cap counts.
+    case "suggest":
+      return (
+        Boolean(facts.sent_to_client) &&
+        !facts.client_approved &&
+        (facts.changes_requested ?? 0) < 10
+      );
+    // portal_reply_comment (005:307): not sent (005:375), no such parent comment (005:389), and a
+    // thread already long enough (005:399). The last two are facts about a COMMENT, and the rail
+    // renders no reply box where there is no comment to reply to, so the send stamp is the only
+    // one this record can carry. Migration 013 exempts replies from the approved lock by name.
+    case "reply":
+      return Boolean(facts.sent_to_client);
+  }
+}
+
+test("no client bench offers an act the layers under it refuse", () => {
+  // The enumeration that proves the claim rather than asserting it. Every state, every record
+  // that state can hold, every act its client bench grants.
+  const checked: string[] = [];
+
+  for (const state of ALL_STATES) {
+    for (const facts of REACHABLE[state]) {
+      assert.equal(blogState(facts), state, `${JSON.stringify(facts)} does not derive ${state}`);
+
+      for (const action of clientActions(state)) {
+        checked.push(`${state}:${action}`);
+        assert.ok(
+          clientLowerLayerAccepts(action, facts),
+          `${state} with ${JSON.stringify(facts)}: the portal offers "${action}" and the ` +
+            `definer function behind it refuses this exact record, so the client presses a ` +
+            `control that errors`,
+        );
+      }
+    }
+  }
+
+  // THE ENUMERATION IS THE FINDING, so it is asserted rather than left implicit. These six pairs
+  // are every client act the bench grants anywhere, and every one of them is accepted by its
+  // layer for every record its state can hold. The client bench does NOT carry the defect the
+  // admin bench carried four times, and this is the list that says so.
+  assert.deepEqual(checked, [
+    "has_questions:answer",
+    "client_review:approve",
+    "client_review:suggest",
+    "client_review:reply",
+    "changes_requested:reply",
+    "changes_requested:reply",
+    "approved:reply",
+  ]);
 });
 
 test("clientCanSee: the client never sees the team's half", () => {

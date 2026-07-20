@@ -4,6 +4,7 @@ import * as React from "react";
 import {
   Check,
   CircleDashed,
+  Laptop,
   Link2Off,
   Loader2,
   Reply,
@@ -58,6 +59,8 @@ export function CommentableArticle({
   comments,
   disabled,
   canResolve,
+  canReply,
+  deploymentLocked,
   remaining,
   onSubmit,
   onDismiss,
@@ -76,6 +79,16 @@ export function CommentableArticle({
    *  resolving is an Agent SDK session that only the local engine can run, so Resolve is the
    *  single act that has to go when the article is otherwise fully commentable. */
   canResolve: boolean;
+  /** Whether a reply may be filed in an existing thread. A THIRD axis, and it is not a degree of
+   *  either one above: `disabled` asks whether the article takes changes and `canResolve` asks
+   *  whether an engine exists, while a reply is neither a change nor a session. It survives on an
+   *  article the client has approved, where every other door here is shut, because that is where
+   *  the client's own bench still grants them `reply` and somebody has to be able to answer. */
+  canReply: boolean;
+  /** Whether the read-only rail is read-only because of the DEPLOYMENT rather than the article's
+   *  state. It selects which sentence a card owed an act prints, and picking the wrong one told
+   *  hosted operators the article was closed when it was open. */
+  deploymentLocked: boolean;
   /** How many more changes may be filed right now (the 3-in-flight cap minus in flight). */
   remaining: number;
   onSubmit: (draft: SelectionDraft) => Promise<void>;
@@ -198,6 +211,8 @@ export function CommentableArticle({
             unanchored={lost.has(comment.id)}
             capped={full}
             canResolve={canResolve}
+            canReply={canReply}
+            deploymentLocked={deploymentLocked}
             readOnly={disabled}
             onDismiss={onDismiss}
             onResolve={onResolve}
@@ -205,7 +220,18 @@ export function CommentableArticle({
           />
         ),
       })),
-    [shown, lost, full, canResolve, disabled, onDismiss, onResolve, onReply],
+    [
+      shown,
+      lost,
+      full,
+      canResolve,
+      canReply,
+      deploymentLocked,
+      disabled,
+      onDismiss,
+      onResolve,
+      onReply,
+    ],
   );
 
   const composer: RailComment | null =
@@ -342,6 +368,8 @@ function CommentCard({
   unanchored,
   capped,
   canResolve,
+  canReply,
+  deploymentLocked,
   readOnly,
   onDismiss,
   onResolve,
@@ -353,18 +381,28 @@ function CommentCard({
   /** Three applies are already live, so Resolve would be refused. */
   capped: boolean;
   /**
-   * The article takes no changes right now, so this card carries no doors at all.
+   * The article takes no CHANGES right now, so this card carries no change doors.
    *
    * A DIFFERENT QUESTION FROM `canResolve`, which asks whether an engine exists to run one act.
-   * This asks whether the ARTICLE is open, and when it is not, dismissing and replying are
-   * refused with it: the record says the client accepted these exact bytes, and an admin
-   * waving a suggestion away afterwards edits a conversation that is closed.
+   * This asks whether the ARTICLE is open, and when it is not, dismissing goes with it: the
+   * record says the client accepted these exact bytes, and an admin waving a suggestion away
+   * afterwards edits a conversation that is closed.
+   *
+   * REPLYING NO LONGER GOES WITH IT, and that is a correction rather than a loosening. The reply
+   * box used to sit inside this flag's block, so an approved article withheld it, while the
+   * client's own bench grants them `reply` in exactly that state and migration 013 exempts
+   * replies from the approved lock by name. The client could speak and nobody could answer. The
+   * box now rides on `canReply`, which the page composes from the bench and the deployment.
    */
   readOnly: boolean;
   /** An engine is behind this page, so a Claude session can actually run. False replaces the
    *  button with the reason: a card owed an act, offering neither the act nor an explanation
    *  for its absence, reads as a broken card rather than a deliberate one. */
   canResolve: boolean;
+  /** A reply may be filed in this thread. Independent of `readOnly` on purpose: see above. */
+  canReply: boolean;
+  /** The read-only above is the DEPLOYMENT's doing rather than the article's state. */
+  deploymentLocked: boolean;
   onDismiss: (comment: BlogComment) => void;
   onResolve: (comment: BlogComment) => void;
   onReply: (comment: BlogComment, body: string) => Promise<void>;
@@ -439,42 +477,52 @@ function CommentCard({
         </ul>
       ) : null}
 
+      {/* WHY THIS IS ONE BRANCH WITH TWO SENTENCES AND NOT TWO BRANCHES.
+          It used to be two, and the second one was unreachable. The card's `readOnly` is the
+          page's `!canComment`, and blog-stage.tsx passes canRunClaude to BOTH canComment and
+          canResolve, so `resolvable && !canResolve && !readOnly` reduces to `!x && x`. The
+          sentence naming where Resolve runs never rendered once. What rendered instead was the
+          state sentence below it, which on the hosted build is FALSE: the article is open, the
+          state will never reopen anything because nothing about the state is what refused, and
+          an operator sent to look at the tag beside the title finds a tag that disagrees.
+
+          So the two cases are told apart by WHY the card is read only rather than by a second
+          flag that turns out to be the first one negated. `deploymentLocked` is true exactly
+          where the state would have taken the change and the build refuses it, which makes the
+          two arms mutually exclusive by construction rather than by a coincidence of props.
+
+          THE HOSTED ARM PROMISES NOTHING IT CANNOT KEEP. Its predecessor offered dismiss and
+          reply, and on this build both answer 501: blogs/[topic]/comments/[id]/route.ts and
+          .../reply/route.ts are hostedWriteRefused like every other admin write. Naming an act
+          that fails is worse than naming none, so it names the machine instead. */}
       {readOnly && resolvable ? (
-        // A card owed an act, showing neither the act nor a reason for its absence, reads as
-        // broken. This says the absence is the article's state rather than a missing button,
-        // and it points at the tag that names which state: the header says "With client" or
-        // "Approved" and its tooltip says who owes the next act.
-        <p className="mt-1.5 flex gap-1.5 text-xs leading-relaxed text-muted-foreground">
-          <CircleDashed className="mt-0.5 size-3 shrink-0" aria-hidden />
-          This article is not open for changes right now, so this request is read only here. The
-          tag beside the title says where the article is and what would reopen it.
-        </p>
+        deploymentLocked ? (
+          <p className="mt-1.5 flex gap-1.5 text-xs leading-relaxed text-muted-foreground">
+            <Laptop className="mt-0.5 size-3 shrink-0" aria-hidden />
+            This request is open and this hosted view cannot act on it. Resolving it with Claude,
+            dismissing it and replying to it all run in the Canon app on your own machine.
+          </p>
+        ) : (
+          // A card owed an act, showing neither the act nor a reason for its absence, reads as
+          // broken. This says the absence is the article's state rather than a missing button,
+          // and it points at the tag that names which state: the header says "With client" or
+          // "Approved" and its tooltip says who owes the next act.
+          <p className="mt-1.5 flex gap-1.5 text-xs leading-relaxed text-muted-foreground">
+            <CircleDashed className="mt-0.5 size-3 shrink-0" aria-hidden />
+            This article is not open for changes right now, so this request is read only here. The
+            tag beside the title says where the article is and what would reopen it.
+          </p>
+        )
       ) : null}
 
-      {resolvable && !canResolve && !readOnly ? (
-        // HIDDEN RATHER THAN DISABLED, and the sentence is what makes the hiding legible. A
-        // greyed-out Resolve sends the operator hunting for the state that ungreys it, and on
-        // this build there is none to find: no engine will ever sit behind this page, so the
-        // wait is forever. Naming where the act does run turns a dead control into a
-        // direction, and naming that dismiss still works keeps a card with a live door from
-        // reading as an inert one.
-        //
-        // It promises DISMISS and nothing else, deliberately. Dismiss is the one act here
-        // with a definer function behind it, so it is the one act this sentence can vouch
-        // for without sending the operator at a control that answers 404. Reply IS offered:
-        // migration 011 added admin_reply_comment and its route, because the control was
-        // already on screen and answering a client was the one thing an operator most needed
-        // to do from here.
-        <p className="mt-1.5 flex gap-1.5 text-xs leading-relaxed text-muted-foreground">
-          <Sparkles className="mt-0.5 size-3 shrink-0" aria-hidden />
-          Resolve with Claude runs in the local app. You can still reply to this change here,
-          or dismiss it.
-        </p>
-      ) : null}
-
-      {readOnly ? null : (
+      {/* THE DOORS ROW SURVIVES A READ-ONLY ARTICLE NOW, because one of the doors on it is not a
+          change. Resolve and the row itself used to be gated together on `readOnly`, and the
+          reply box was inside that block, so an approved article withheld the one act every layer
+          underneath accepts. `canReply` carries the reply door on its own axis and Resolve keeps
+          both of its old conditions, so nothing that writes a version has been loosened. */}
+      {(resolvable && canResolve && !readOnly) || canReply ? (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          {resolvable && canResolve ? (
+          {resolvable && canResolve && !readOnly ? (
             <Button
               size="xs"
               variant="outline"
@@ -490,9 +538,9 @@ function CommentCard({
               Resolve with Claude
             </Button>
           ) : null}
-          <ReplyBox comment={comment} onReply={onReply} />
+          {canReply ? <ReplyBox comment={comment} onReply={onReply} /> : null}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

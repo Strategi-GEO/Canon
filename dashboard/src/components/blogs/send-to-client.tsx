@@ -77,6 +77,13 @@ export function SendToClient({
   // has to: blog-stage.tsx renders ReviewStamp for when the article went out and who approved
   // it, and BlogStateTag for where it sits, both outside this component and both unaffected by
   // anything below. So the hosted build keeps every fact about the send and loses only the act.
+  //
+  // AND THE PAGE NOW SAYS WHERE THE ACT WENT, which this return could not and should not. Every
+  // admin control on the stage disappears on this build, each behind its own gate like this one,
+  // so a sentence written here would be one of five saying the same thing, and it would appear
+  // only in the states that grant a send. blog-stage.tsx carries it once, keyed on the bench
+  // being non-empty, which is why an operator no longer reads the tag's instruction to send and
+  // then finds nothing and no explanation. Removing a control is right; going quiet is not.
   if (HOSTED_READONLY) {
     return null;
   }
