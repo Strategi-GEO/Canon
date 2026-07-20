@@ -40,6 +40,7 @@ from pathlib import Path
 
 APP_NAME = "Strategi Canon"
 CONFIG_PATH = Path.home() / ".strategi-canon.json"
+HERE = Path(__file__).resolve().parent
 IS_WINDOWS = sys.platform.startswith("win")
 IS_MAC = sys.platform == "darwin"
 IS_FROZEN = bool(getattr(sys, "frozen", False))
@@ -86,27 +87,88 @@ def tlog(msg: str) -> None:
 # PATH augmentation: Finder-launched apps get a minimal PATH
 # ---------------------------------------------------------------------------
 
+def bundled_runtimes_dir() -> Path | None:
+    """Where the Node and Python runtimes shipped inside the app live, or None
+    when this is a source checkout that has not run fetch_runtimes.py.
+
+    Bundling both is what removed "install Node 20+" and "install Python 3.11+"
+    from the recipient's prerequisites. See fetch_runtimes.py.
+
+    The build scripts copy the runtimes in themselves rather than handing them
+    to PyInstaller's --add-data, which resolves symlinks: Node's bin/npm points
+    at ../lib/node_modules/npm/bin/npm-cli.js and Python's bin/python3 points at
+    python3.12, and flattening either breaks the runtime. So look in the places
+    a plain copy puts them, not just PyInstaller's _MEIPASS."""
+    candidates: list[Path] = []
+    if IS_FROZEN:
+        exe_dir = Path(sys.executable).resolve().parent
+        if IS_MAC:
+            candidates.append(exe_dir.parent / "Resources" / "runtimes")  # .app/Contents/Resources
+        candidates.append(exe_dir / "runtimes")                           # onedir sibling (Windows)
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            candidates.append(Path(meipass) / "runtimes")
+    else:
+        candidates.append(HERE / "build_assets" / "runtimes")
+
+    return next((c for c in candidates if c.is_dir()), None)
+
+
+def bundled_node_bin() -> Path | None:
+    """Directory holding the bundled node/npm executables, if bundled."""
+    runtimes = bundled_runtimes_dir()
+    if runtimes is None:
+        return None
+    node_dir = runtimes / "node" if IS_WINDOWS else runtimes / "node" / "bin"
+    exe = node_dir / ("node.exe" if IS_WINDOWS else "node")
+    return node_dir if exe.exists() else None
+
+
+def bundled_python() -> Path | None:
+    """The bundled interpreter used to build the engine's .venv, if bundled."""
+    runtimes = bundled_runtimes_dir()
+    if runtimes is None:
+        return None
+    exe = runtimes / "python" / ("python.exe" if IS_WINDOWS else "bin/python3")
+    return exe if exe.exists() else None
+
+
 def augment_path() -> None:
-    """A macOS app launched from Finder inherits /usr/bin:/bin:/usr/sbin:/sbin,
-    so node, npm, and claude installed by Homebrew or npm are invisible to
-    shutil.which. Prepend the usual install locations that actually exist.
-    Windows GUI apps inherit the system PATH the installers already updated."""
-    if IS_WINDOWS:
-        return
-    home = Path.home()
-    candidates = [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        str(home / ".local" / "bin"),
-        str(home / ".claude" / "local"),          # Claude Code local install
-        str(home / ".npm-global" / "bin"),
-        str(home / "n" / "bin"),
-    ]
+    """Put the bundled runtimes first, then the usual hand-install locations.
+
+    A macOS app launched from Finder inherits /usr/bin:/bin:/usr/sbin:/sbin, so
+    node, npm, and claude installed by Homebrew or npm are invisible to
+    shutil.which. Prepend the locations that actually exist. Windows GUI apps
+    inherit the system PATH the installers already updated, but the bundled
+    runtime still goes in front there.
+
+    Bundled Node goes FIRST deliberately: the recipient may also have some other
+    Node on PATH, and the version we tested the dashboard against is the one
+    that should run it."""
+    entries: list[str] = []
+
+    node_bin = bundled_node_bin()
+    if node_bin is not None:
+        entries.append(str(node_bin))
+
+    if not IS_WINDOWS:
+        home = Path.home()
+        entries += [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            str(home / ".local" / "bin"),
+            str(home / ".claude" / "local"),      # Claude Code local install
+            str(home / ".npm-global" / "bin"),
+            str(home / "n" / "bin"),
+        ]
+
     current = os.environ.get("PATH", "").split(os.pathsep)
-    added = [c for c in candidates if c not in current and Path(c).is_dir()]
+    added = [e for e in entries if e not in current and Path(e).is_dir()]
     if added:
         os.environ["PATH"] = os.pathsep.join(added + current)
         tlog(f"PATH augmented with: {', '.join(added)}")
+    if node_bin is not None:
+        tlog(f"using bundled node from {node_bin}")
 
 
 # ---------------------------------------------------------------------------
@@ -216,9 +278,18 @@ def claude_account_email() -> str | None:
 # ---------------------------------------------------------------------------
 
 def find_system_python() -> str | None:
-    """Inside a PyInstaller app sys.executable is the app binary, so creating
-    the engine's .venv needs a real interpreter from PATH. Returns None when
-    none is found; only fatal if .venv does not already exist."""
+    """Return an interpreter able to create the engine's .venv, or None.
+
+    Inside a PyInstaller app sys.executable is the app binary, which cannot
+    create a venv, so a real interpreter is needed. The bundled one ships with
+    the app and is tried first: that is what lets a recipient who has never
+    installed Python run the engine. Falling back to PATH keeps source
+    checkouts and pre-bundling installs working."""
+    bundled = bundled_python()
+    if bundled is not None:
+        tlog(f"using bundled python at {bundled}")
+        return str(bundled)
+
     import shutil as _shutil
     for name in ("python3", "python") if not IS_WINDOWS else ("py", "python", "python3"):
         path = _shutil.which(name)

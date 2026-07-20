@@ -26,3 +26,10 @@ clients/*/uploads/
 # these unanchored rules catch a package directory added anywhere else later.
 node_modules/
 .next/
+
+# The starter install.sh generates. It hardcodes absolute paths to THIS machine's
+# tree and bundled runtimes, so committing one would hand every other teammate a
+# launcher pointing at a directory they do not have. The checked-in
+# "Start Canon.command" stays: it is machine-independent because it defers to
+# whatever python3 is on PATH.
+Start Canon (installed).command

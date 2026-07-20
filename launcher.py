@@ -595,6 +595,90 @@ def stop_process_tree(proc: subprocess.Popen, what: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Opening the dashboard: an app window where we can get one, a tab otherwise
+# ---------------------------------------------------------------------------
+
+# Chromium's --app= flag opens a URL in a window with no tab strip, no address
+# bar, and its own Dock/taskbar icon. For a teammate who did not ask to run a web
+# app, that is the difference between "a program" and "a localhost tab I am
+# afraid to close". Safari has no equivalent, so this is a best-effort upgrade
+# and never a requirement: every failure path below falls through to
+# webbrowser.open, which is what shipped before this existed.
+_CHROMIUM_CANDIDATES_MAC = (
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Arc.app/Contents/MacOS/Arc",
+)
+_CHROMIUM_CANDIDATES_NIX = ("google-chrome", "chromium", "chromium-browser", "brave-browser", "microsoft-edge")
+_CHROMIUM_CANDIDATES_WIN = (
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+)
+
+
+def find_chromium() -> str | None:
+    """A Chromium-family browser that supports --app=, or None."""
+    if IS_WINDOWS:
+        candidates = _CHROMIUM_CANDIDATES_WIN
+    elif sys.platform == "darwin":
+        candidates = _CHROMIUM_CANDIDATES_MAC
+    else:
+        candidates = _CHROMIUM_CANDIDATES_NIX
+    for candidate in candidates:
+        if os.path.sep in candidate or (IS_WINDOWS and ":" in candidate):
+            if os.path.isfile(candidate):
+                return candidate
+        else:
+            found = shutil.which(candidate)
+            if found:
+                return found
+    return None
+
+
+def open_dashboard_window(dash_url: str) -> None:
+    """Open the dashboard, preferring a chromeless app window.
+
+    The window gets its own user-data-dir so it never joins an existing Chrome
+    session. Without that, --app= reuses the running profile and the "window"
+    inherits whatever extensions, profile switching and startup tabs the
+    teammate's everyday browser carries, which is neither clean nor predictable.
+    The directory lives beside the other per-user state, not in the repo, because
+    the repo is scratch that a reinstall replaces.
+    """
+    exe = find_chromium()
+    if exe is None:
+        log(f"START: opening your browser at {dash_url}")
+        webbrowser.open(dash_url)
+        return
+
+    if IS_WINDOWS:
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        profile = Path(base) / "StrategiCanon" / "browser"
+    elif sys.platform == "darwin":
+        profile = Path.home() / "Library" / "Application Support" / "StrategiCanon" / "browser"
+    else:
+        profile = Path.home() / ".strategi-canon" / "browser"
+
+    try:
+        profile.mkdir(parents=True, exist_ok=True)
+        log(f"START: opening the dashboard in an app window ({Path(exe).name})")
+        subprocess.Popen(
+            [exe, f"--app={dash_url}", f"--user-data-dir={profile}", "--no-first-run",
+             "--no-default-browser-check"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=not IS_WINDOWS,
+        )
+    except (OSError, ValueError) as exc:
+        # A browser that will not launch is not a reason to fail the start: the
+        # dashboard is already up and reachable, and a tab serves just as well.
+        log(f"START: app window failed ({exc}); opening a normal browser tab instead")
+        webbrowser.open(dash_url)
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -664,8 +748,7 @@ def main() -> int:
             log(f"START: dashboard is up at {dash_url}")
 
             if not args.no_browser:
-                log(f"START: opening your browser at {dash_url}")
-                webbrowser.open(dash_url)
+                open_dashboard_window(dash_url)
 
             log("")
             log(f"  Dashboard   http://localhost:{args.dashboard_port}")

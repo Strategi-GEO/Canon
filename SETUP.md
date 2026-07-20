@@ -13,15 +13,47 @@ app (Windows) called **Strategi Canon**: no terminal, no commands.
 
 ## The short version
 
-1. Get the **Canon folder** from your admin (or clone the repo), with the
-   `server/.env` file they send placed inside its `server/` folder.
-2. Put **Strategi Canon.app** (macOS) or the **Strategi Canon** folder with
-   **Strategi Canon.exe** (Windows) inside that Canon folder, if your admin
-   did not ship it there already.
-3. Double-click **Strategi Canon.app** / **Strategi Canon.exe**.
-4. A colored dot appears in the menu bar / system tray. When it turns
-   **green**, your browser opens the dashboard: sign in with the dashboard
-   account your admin provisioned.
+Open Terminal once, paste three commands, and you are done. After this you
+never need the Terminal again: you start Canon by double-clicking, like any app.
+
+```bash
+gh auth login                                    # a browser window, one time
+gh repo clone Strategi-GEO/Canon ~/strategi-canon
+cd ~/strategi-canon && ./install.sh
+```
+
+`install.sh` does the rest: it downloads Canon's own copies of Node and Python,
+asks for the three database values your admin sends you, and creates a
+double-clickable starter. Run it again any time to update.
+
+Then, one time, install **Claude Code** and log in with your own account (see
+Prerequisites below). That is what pays for generation.
+
+Finally, double-click **Start Canon (installed).command** in the folder. A
+colored dot appears in the menu bar. When it turns **green**, your browser opens
+the dashboard: sign in with the account your admin provisioned.
+
+> **Why the Terminal, briefly.** macOS blocks apps downloaded through a browser
+> until you go and approve them in System Settings, and it does that even when
+> nothing is wrong. Files that arrive through `git` are not flagged that way, so
+> installing like this skips the whole detour. Three commands once, instead of a
+> security warning on every machine.
+
+If you have no `gh`, install it with `brew install gh`, or clone with plain
+`git clone https://github.com/Strategi-GEO/Canon.git ~/strategi-canon` and enter
+a GitHub token when asked.
+
+### If you cannot use the Terminal at all
+
+There are prebuilt zips on the repository's **Releases** page
+(`Strategi-Canon-macos.zip`, about 330 MB). Unzip it, put the `server/.env` file
+your admin sends you into the folder's `server/` directory, and open
+**Strategi Canon.app** inside. macOS will refuse the first launch; open
+**System Settings > Privacy & Security**, scroll to the bottom, and choose
+**Open Anyway**. That is needed once per machine, not once per launch.
+
+The installer route above avoids that step entirely, which is why it is the one
+this guide leads with.
 
 The dot is the whole interface:
 
@@ -49,21 +81,21 @@ are done; that stops the engine and the dashboard too.
    from <https://claude.com/claude-code>, open a terminal (macOS: Terminal;
    Windows: PowerShell), run `claude`, log in with **your own** account, then
    type `/exit`. You never need the terminal again after this.
-2. **Node 20+** from <https://nodejs.org/> (LTS installer). The dashboard
-   runs on it, and the engine spawns Node-based tools.
-3. **Python 3.11+** from <https://www.python.org/downloads/>. The packaged
-   app carries its own Python for the app itself, but the engine's
-   environment on your machine is built with your installed Python the first
-   time. (Windows: tick "Add python.exe to PATH" in the installer.)
-4. **From your admin:** the Canon folder (or repo URL) and the `server/.env`
+2. **From your admin:** the Canon folder (or repo URL) and the `server/.env`
    file, which goes inside the folder's `server/` directory. Firecrawl and
    DataForSEO research keys usually arrive automatically with your Claude
    Code MCP setup; if not, the admin gives you three values to set as
    environment variables (`FIRECRAWL_API_KEY`, `DATAFORSEO_USERNAME`,
    `DATAFORSEO_PASSWORD`).
 
-If any of these is missing, the dot simply turns **amber** and the menu tells
-you which one and how to fix it. Nothing breaks.
+That is the whole list. **You do not need to install Node or Python.** The app
+carries its own copies of both and uses them in preference to anything already
+on your machine, so there is nothing to install, nothing to keep updated, and
+no version to get wrong. This is also why the download is large (around 300 MB):
+those two runtimes are most of it.
+
+If either prerequisite is missing, the dot simply turns **amber** and the menu
+tells you which one and how to fix it. Nothing breaks.
 
 ## Signing in
 
@@ -77,7 +109,7 @@ as "Claude account: you@company.com".
 
 | Symptom | What it means | Fix |
 |---|---|---|
-| **Amber dot** | A prerequisite is missing (Node, Claude CLI, Python, or `server/.env`) | Open the menu: each problem is listed with its fix. Do the fix, then choose "Check again" |
+| **Amber dot** | A prerequisite is missing (Claude CLI or `server/.env`) | Open the menu: each problem is listed with its fix. Do the fix, then choose "Check again" |
 | **Red dot** | The engine or dashboard crashed | Choose "Restart". Still red? "Open logs" and read the end of `engine.log` or `dashboard.log`, or send them to the admin |
 | macOS says the app "cannot be opened" or is "damaged" | Gatekeeper blocking an unsigned app | Right-click the app > Open > Open (first time only). If it persists: `xattr -dr com.apple.quarantine "Strategi Canon.app"` in Terminal |
 | Windows "protected your PC" screen | SmartScreen on an unsigned exe | More info > Run anyway (first time only) |
@@ -100,6 +132,10 @@ a terminal or need to debug:
 - **macOS:** double-click `Start Canon.command` in the Canon folder, or run
   `python3 launcher.py`.
 - **Windows:** double-click `Start Canon.bat`, or run `py -3 launcher.py`.
+
+This fallback is the one path that **does** need Node and Python installed on
+your machine, because it runs outside the app and so cannot reach the runtimes
+bundled inside it. If you are using the tray app, ignore this appendix.
 
 It prints every step, opens the browser when ready, and Ctrl+C stops
 everything. Flags for tests and unusual setups: `--engine-port N`,
