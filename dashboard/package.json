@@ -3,21 +3,29 @@
   "version": "0.1.0",
   "private": true,
   "//engines": [
-    "THE FLOOR MOVED FROM 20.18.1 TO 24.18.0 AND THE TEST SCRIPT IS WHY. `npm test` runs",
-    "TypeScript through `node --test` with no build step and no loader flag, which relies on",
-    "node stripping the types itself, and that became unflagged only recently. A developer",
-    "sitting exactly on the old declared floor did not get a failing assertion, they got a",
-    "PARSE error, which reads as a broken repository rather than as an unmet requirement. A",
-    "floor that is wrong in that direction is worse than no floor, because npm reports it and",
-    "the report says the opposite of the truth.",
+    "THIS FIELD DESCRIBES WHAT THE APP NEEDS TO BUILD AND RUN, NOT WHAT `npm test` NEEDS, and",
+    "the difference is not academic: raising it to >=24.18.0 broke the Vercel deploy outright.",
+    "Vercel reads engines.node to choose the Node it builds with, and it can only satisfy a",
+    "range that overlaps a version it actually offers. >=20.18.1 resolves to the newest Node",
+    "Vercel has. >=24.18.0 resolved to nothing, so the deploy died with `Found invalid Node.js",
+    "Version` before it compiled a single file. The Next app itself never needed 24: it built",
+    "clean on the old floor and still does.",
     "",
-    "24.18.0 is not a guess and not the newest release. It is NODE_VERSION in",
-    "canon_app/fetch_runtimes.py, the exact runtime bundled into the shipped package, and it is",
-    "what .github/workflows/tests.yml pins for the same reason. Those three now agree, so a",
-    "developer whose node satisfies this file is running what CI runs and what ships."
+    "THE TEST REQUIREMENT IS REAL AND IT LIVES IN `pretest` INSTEAD. `npm test` runs TypeScript",
+    "through `node --test` with no build step and no loader flag, so it relies on node stripping",
+    "the types itself, which became unflagged only in 23.6. On an older node the suite does not",
+    "fail an assertion, it fails to PARSE, which reads as a broken repository rather than as an",
+    "unmet requirement. That was worth fixing and still is. It just cannot be fixed here, because",
+    "engines gates every consumer of this package including the one that only ever runs `next",
+    "build`. pretest gates exactly the script that has the requirement, and says so in words.",
+    "",
+    "24.18.0 remains the number that matters for tests: it is NODE_VERSION in",
+    "canon_app/fetch_runtimes.py, the runtime bundled into the shipped package, and it is what",
+    ".github/workflows/tests.yml pins. pretest, fetch_runtimes.py and tests.yml agree. This",
+    "field deliberately does not, and a future edit that aligns it will break the deploy again."
   ],
   "engines": {
-    "node": ">=24.18.0"
+    "node": ">=20.18.1"
   },
   "//scripts": [
     "THE TEST GLOB IS QUOTED ON PURPOSE AND THE QUOTES ARE THE PORTABLE PART. Unquoted,",
@@ -42,6 +50,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "pretest": "node -e \"const need=[23,6,0],got=process.versions.node.split('.').map(Number);for(let i=0;i<3;i++){if(got[i]>need[i])process.exit(0);if(got[i]<need[i]){console.error('\\n  npm test needs Node >= 23.6.0 and this is Node '+process.versions.node+'.\\n  The suites are TypeScript run straight through node --test, so an older\\n  node cannot strip the types and every file dies on a PARSE error that\\n  looks like a broken repo. Install Node 24.18.0, the version CI pins and\\n  the version canon_app/fetch_runtimes.py bundles, then rerun npm test.\\n  Note engines.node stays at 20.18.1 on purpose: the app builds there and\\n  Vercel cannot deploy a range it has no version for.\\n');process.exit(1)}}\"",
     "test": "node --test \"tests/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
