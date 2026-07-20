@@ -11,7 +11,43 @@ served by the same process at `/`.
 The engine is brand-agnostic. `CLAUDE.md` in this repo is the engine contract (HOW a blog
 is made); everything about WHO it is for lives under `clients/<slug>/`.
 
-## Quickstart
+---
+
+## Just want to RUN Canon? Read [SETUP.md](SETUP.md)
+
+If you are here to use the app rather than work on it, **[SETUP.md](SETUP.md) is the whole
+guide** and this file is not for you. The short version, run once in a terminal:
+
+```bash
+brew install gh                                  # skip if you have it
+gh auth login                                    # a browser window, one time
+gh repo clone Strategi-GEO/Canon ~/strategi-canon
+cd ~/strategi-canon && ./install.sh
+```
+
+`install.sh` downloads Canon's own copies of Node and Python, asks for the three database
+values your admin sends you, and writes a double-clickable starter. Run it again any time to
+update. After that you never need the terminal again: you start Canon by double-clicking it,
+and a colored dot in the menu bar tells you whether it is running.
+
+You also need the **Claude Code CLI, logged in with your own account**, because that is what
+pays for generation. See the billing warning below, and Prerequisites in SETUP.md.
+
+**Which file do I want?**
+
+| File | Read it if you | Covers |
+|---|---|---|
+| **[SETUP.md](SETUP.md)** | want to run the app | install, the menu-bar dot, troubleshooting |
+| **README.md** (this file) | are changing the code | architecture, the dev environment, internals |
+| **[CLAUDE.md](CLAUDE.md)** | are changing how blogs are made | the engine contract |
+
+---
+
+## Quickstart (DEVELOPERS)
+
+This is the from-source path, for working ON Canon. It is NOT how a teammate installs it:
+`install.sh` above supersedes this and carries its own Node and Python, so it needs neither
+of them already on the machine.
 
 ```
 cd geo-factory
