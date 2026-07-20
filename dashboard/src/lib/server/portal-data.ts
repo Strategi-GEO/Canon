@@ -1,5 +1,50 @@
-import { blogState, clientCanSee, type BlogState } from "@/lib/blog-state";
+import { blogState, clientCanSee, type BlogState, type BlogStateFacts } from "@/lib/blog-state";
 import { inList, pg } from "@/lib/server/postgrest";
+
+/**
+ * THE FACT SET EVERY PRODUCER OWES blogState, written as a type rather than as a promise.
+ *
+ * Two independent surfaces in this app build the facts a blog's state is derived from: this
+ * file, for the client portal, and app/api/clients/[slug]/blogs/route.ts, for the hosted admin
+ * list. They read the same record through the same PostgREST client and they call the same
+ * blogState, so a fact one supplies and the other omits is not a difference in what the two
+ * surfaces choose to show. It is one of them silently taking a fallback the other never takes,
+ * and then deriving a different state from an identical record.
+ *
+ * THAT HAS NOW HAPPENED TWICE, IN BOTH DIRECTIONS, which is why the fix is a type and not another
+ * pair of comments asserting that the two agree. `answers_submitted` reached the hosted route
+ * first and was missing here, so the portal read an answered hold as `has_questions` and put a
+ * client in front of a form they had already submitted. `change_round_open` reached the hosted
+ * route and was missing here, so blogState fell back to `(changes_requested ?? 0) > 0`, the open
+ * COUNT, which drops to zero the moment the team resolves the last suggestion while the round is
+ * still open. The portal then derived `client_review` where the hosted list derived
+ * `changes_requested`, and CLIENT_ACTIONS grants approve and suggest in the first and only reply
+ * in the second, so the client was offered an approval on an article whose change round had not
+ * closed and whose fix had not been delivered.
+ *
+ * `Required` IS THE WHOLE MECHANISM. BlogStateFacts declares every field optional on purpose, so
+ * a backend too old to report one degrades to the documented fallback instead of breaking. That
+ * optionality is right on the WIRE and wrong at a PRODUCER, where an absent field never means an
+ * older engine, it means nobody wrote the read. Making every key mandatory here turns a dropped
+ * fact into a compile error in the producer that dropped it, and turns adding a field to
+ * BlogStateFacts into a compile error in BOTH producers until each supplies it. Excess property
+ * checking closes the other direction, so a key the type does not know about cannot be quietly
+ * added to one literal either.
+ *
+ * `live` IS THE ONE EXEMPTION, and it is taken out of the TYPE rather than out of each literal,
+ * so the decision is made once, here, with its reason attached, instead of being re-derived at
+ * two call sites. Neither producer can answer it. Liveness lives in the engine's in-memory run
+ * registry, which server/app.py _blog_history reads off runner.RUNS; there is no liveness table
+ * in the schema, migration 009 states that in its own header, and both of these surfaces read the
+ * record over PostgREST and nothing else. Emitting `live: false` would be an assertion neither
+ * can make, because a teammate's local engine can own a topic at this moment and no query here
+ * can tell. Both therefore fall back to blogState's `facts.live ?? facts.status === "running"`,
+ * and the hosted route writes out at length what that fallback costs on a build with no engine.
+ *
+ * tests/state-facts-parity.test.ts reads the two literals out of the source and fails when they
+ * differ, which covers the one hole this type has: a producer that stops naming the type.
+ */
+export type ProducedStateFacts = Required<Omit<BlogStateFacts, "live">>;
 
 /**
  * The portal's data shapes, built server-side so the CLIENT-SAFE boundary is one place.
@@ -28,7 +73,12 @@ import { inList, pg } from "@/lib/server/postgrest";
  *   sent_to_client    topics.sent_to_client_at, the admin-review exit
  *   client_approved   topics.client_approved_at, the client's sign-off on exactly these bytes
  *   changes_requested top-level client suggestions still open or mid-apply
+ *   change_round_open whether any of those suggestions post-dates the send, which is the ROUND
  *   published         topics.published_at, granted to authenticated by migration 012
+ *
+ * THAT LIST IS NOT PROSE ANY MORE, it is ProducedStateFacts below, and the hosted admin list is
+ * held to the same type. Two of these facts reached this file late and each cost a real defect
+ * while it was missing; the type is what stops a third.
  *
  * THE SUBMIT IS A FACT NOW, AND IT USED TO BE TWO FAKES. This file previously simulated the
  * window between a client pressing Submit and the rerun's terminal line by rewriting the status
@@ -523,10 +573,26 @@ async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
     // in a thread as a fresh change request, and the state fold below would hold an article
     // at changes_requested on the strength of "thanks, that reads well". The blog route's
     // thread read has always applied this filter for the same reason.
-    pg<CommentRow[]>(
+    // PAGED, AND THE REASON IS THE ROUND rather than the list of suggestions this read has always
+    // fed. `change_round_open` is folded from these rows, and a change round is decided by
+    // whether ANY of them post-dates the send: drop one row and the round reads closed, the state
+    // falls to `client_review`, and the client is offered an approval on an article whose fix has
+    // not been delivered. Above PostgREST's row cap an unpaged read truncates SILENTLY, so that
+    // failure arrives as a wrong answer and never as an error. This read is also unbounded in the
+    // way the other editorial reads are not: it is every top-level client suggestion the brand has
+    // ever filed, kept forever, resolved and dismissed ones included, because the round test reads
+    // no comment state at all.
+    //
+    // THE `id` TIEBREAK IS THE PRECONDITION pgPaged DOCUMENTS, not decoration. Offset paging asks
+    // for the same sort once per page and trusts the two to agree, so a tied sort is free to order
+    // its ties differently at each boundary and drop a row at one while repeating it at the next.
+    // `created_at` alone ties whenever two suggestions land in the same instant, which a client
+    // filing a batch of them does. `(created_at, id)` is total, and it keeps the oldest-first order
+    // commentsByTopic and the detail payload both already assume.
+    pgPaged<CommentRow>(
       token,
       `blog_comments?select=id,topic_id,selected_text,instruction,state,created_at` +
-        `&client_id=eq.${clientId}&author=eq.client&parent_id=is.null&order=created_at.asc`,
+        `&client_id=eq.${clientId}&author=eq.client&parent_id=is.null&order=created_at.asc,id.asc`,
     ),
   ]);
   return { topics, versions, ledger, notes, children, replies, events, comments };
@@ -739,12 +805,37 @@ function foldTopics(data: BrandData): TopicFold[] {
     // was visible anyway, as `has_questions`, with a form under it that could not be submitted.
     const unansweredSpentHold = spentHold && !answered;
 
+    const topicComments = commentsByTopic.get(topic.id) ?? [];
+
     // Open suggestions the team still owes an answer on. `failed` is deliberately not counted:
     // an apply that broke is the team's retry, never a request the client is still waiting on,
     // and the client is never told it happened at all.
-    const openSuggestions = (commentsByTopic.get(topic.id) ?? []).filter(
+    const openSuggestions = topicComments.filter(
       (comment) => comment.state === "open" || comment.state === "applying",
     );
+
+    // THE ROUND, and it is a different question from the count above: has the client asked for
+    // anything SINCE the last send. The same fold the hosted list runs at
+    // app/api/clients/[slug]/blogs/route.ts and the same one the engine's _blog_history runs, to
+    // the row filters and all: top-level, client-authored, created after the send stamp. It reads
+    // no comment state whatsoever, so resolving, dismissing and a failed apply all leave the round
+    // standing, and moving sent_to_client_at forward is the single act that closes it.
+    //
+    // THE COUNT CANNOT STAND IN FOR THIS, which is exactly what the portal was doing by omitting
+    // the fact. blogState falls back to `(changes_requested ?? 0) > 0` where the round is absent,
+    // and the count goes to zero the instant the team resolves the last suggestion, so the portal
+    // dropped the article back to `client_review` while the change round was still open. That
+    // state grants the client approve and suggest, so they were invited to accept bytes that still
+    // did not carry the change they had asked for, and the admin list beside them, reading the
+    // same record, said `changes_requested`.
+    //
+    // `topicComments` IS THE UNFILTERED SET ON PURPOSE. It comes off a read already scoped to
+    // author=client and parent_id=is.null, which is where the hosted route applies those same two
+    // filters, so the two folds start from identical rows. Narrowing it to `openSuggestions` here
+    // would rebuild the count-shaped bug one layer down.
+    const sentAt = topic.sent_to_client_at;
+    const changeRoundOpen =
+      sentAt !== null && topicComments.some((comment) => comment.created_at > sentAt);
 
     const askedAt = form.reduce<string | null>(
       (min, row) => (min === null || row.created_at < min ? row.created_at : min),
@@ -769,14 +860,30 @@ function foldTopics(data: BrandData): TopicFold[] {
     // below reads the answer. The submit is now one of those facts rather than a rewrite of a
     // different one, and the status repair that remains is narrowed to the case the new state
     // does not reach, for the reason set out at the top of this file.
-    const state = blogState({
+    //
+    // TYPED, so the fact set cannot drift from the hosted list's again. ProducedStateFacts makes
+    // every key mandatory, so dropping one is a compile error here rather than a fallback taken
+    // silently at runtime. See the type at the top of this file for what each of the two previous
+    // drifts cost.
+    //
+    // ONE FACT IS DELIBERATELY NOT THE HOSTED LIST'S ANSWER, AND THE ASYMMETRY IS CORRECT. `status`
+    // carries the unansweredSpentHold repair, described in full above, and the hosted route makes
+    // no such repair. That is not drift, because the two surfaces are answering for different
+    // readers: a mirror claiming a question no CLIENT can answer would put a client in front of an
+    // empty, stale or already-spent form, while the operator reading the admin list is the person
+    // who can actually see that form and act on it, so repairing the status there would hide a
+    // hold from the one reader it is addressed to. Every other key below is the same fold as the
+    // hosted route's, row filters included, and any future divergence in one of them is a bug.
+    const stateFacts: ProducedStateFacts = {
       status: unansweredSpentHold ? "running" : status,
       answers_submitted: answeredAt,
       sent_to_client: topic.sent_to_client_at,
       client_approved: topic.client_approved_at,
       changes_requested: openSuggestions.length,
+      change_round_open: changeRoundOpen,
       published: topic.published_at,
-    });
+    };
+    const state = blogState(stateFacts);
 
     // clientCanSee decides this, with the TWO arms documented at the top of the file.
     //
@@ -795,7 +902,7 @@ function foldTopics(data: BrandData): TopicFold[] {
       shippedVersion,
       sentVersion,
       ledger: entry,
-      comments: commentsByTopic.get(topic.id) ?? [],
+      comments: topicComments,
       form,
       formVersion,
       childByParent,

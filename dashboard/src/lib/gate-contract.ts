@@ -1,0 +1,1476 @@
+/**
+ * THE ONE DEFINITION OF WHAT THE LAYERS BELOW THIS UI WILL ACTUALLY REFUSE.
+ *
+ * ADMIN_ACTIONS in blog-state.ts is keyed by BlogState. Every layer that PERFORMS one of those
+ * acts gates on the STATUS, on the approval, on the send, on the open suggestions and on the
+ * question form, which are facts the state deliberately folds away. Those are not the same key,
+ * nothing made the two agree, and so five separate rounds of patching each granted an act the
+ * layer below refused, in a new place every time: an empty bench, then a send migration 009
+ * refuses, then an edit and a comment the same migration refuses, then an answer POST /revise
+ * refuses, then an answer tier resting on an invariant the engine does not hold.
+ *
+ * THE TESTS NEVER CAUGHT ANY OF IT BECAUSE THEY MODELLED THE LOWER LAYERS BY HAND. The guard test
+ * restated, in TypeScript, conditions that live in SQL and in Python. Twice the restatement was
+ * wrong in a new place and the suite stayed green, because a green invariant over a hand model
+ * proves only that the model agrees with itself. THAT is the defect this file exists to remove.
+ * The bench is downstream of it.
+ *
+ * SO THIS IS NOT A BETTER MODEL. It is a table of clauses, each one carrying the VERBATIM source
+ * line that performs the refusal and the file and symbol it lives in, and
+ * `dashboard/tests/gate-contract.test.ts` re-derives all of it from the real SQL and the real
+ * Python on every run.
+ *
+ * ROUND SIX WAS THE CONTRACT ITSELF, AND IT IS WHY THIS FILE IS NOW LONG. The first version of
+ * this table fingerprinted THREE functions, and a reviewer demonstrated twice over that the same
+ * defect had simply moved into it. They added a brand new refusal to a gating function and the
+ * full suite stayed green, because that function was not one of the three. They then changed
+ * `_require_done` in server/app.py, which is the local engine's twin of admin_done_topic and
+ * gates edit, comments and send on the build that does the actual writing, and the full suite
+ * stayed green again, because it was in neither the source list nor the clause list. A contract
+ * that covers a fraction of a surface certifies an agreement it has not checked, which is the
+ * same failure as a hand model with better manners.
+ *
+ * A SECOND THING THE SAME REVIEW EXPOSED: IT WAS FINGERPRINTING TEXT NOBODY RUNS. The table
+ * pinned admin_done_topic to 009_admin_write_tier.sql. `create or replace function` takes no
+ * patch, so migration 013 restated the whole body under the same name to add the approved lock,
+ * and from that moment 009's copy is dead text the database does not execute. Every SQL source
+ * here is now checked against `latestSqlDefinition`, which finds the LAST migration to declare a
+ * symbol, so a future migration replacing one of these functions goes red instead of silently
+ * orphaning the clauses that rest on it.
+ *
+ * FOUR THINGS FAIL IN THE TEST AND THEY FAIL FOR DIFFERENT REASONS:
+ *
+ *   1. A CONDITION LOOKUP. The verbatim text recorded on a clause must still appear inside the
+ *      function it claims to come from. Edit the condition and the lookup misses.
+ *   2. A FINGERPRINT. Each source function carries a hash of its own normalized body, so a
+ *      refusal ADDED to a function nobody touched otherwise still moves the hash.
+ *   3. AN ACCOUNTING. Every raise inside every source function is either a clause or a NAMED
+ *      exemption, and the counts must agree. This is what makes the coverage claim checkable
+ *      rather than asserted: a novel refusal added to any listed function is reported by its own
+ *      text, not merely as "the hash moved".
+ *   4. A WITNESS. Every clause must demonstrate both a passing input and a refusing one. A
+ *      decide() quietly edited into a constant, which is how a table like this rots, fails here.
+ *
+ * WHAT THIS TABLE COVERS. Every function in supabase/migrations and in server/ that can refuse
+ * one of the six admin acts, on either build: the hosted definer functions, and the local
+ * engine's routes and the helpers they call. Each is listed in GATE_SOURCES with every one of its
+ * refusals accounted for. A refusal becomes a CLAUSE when the fact it turns on is on the wire
+ * this page already reads, and a documented EXEMPTION when it is not, with the reason beside it.
+ *
+ * FAILING CLOSED IS A RULE HERE AND NOT A DEFAULT. A clause whose fact the caller could not supply
+ * returns `unknowable`, and an action with an unknowable clause and no other passing door is NOT
+ * allowed. The previous rounds all failed OPEN: they guessed a fact they did not have, rendered a
+ * control on the guess, and the operator found out when the database raised. A control that is
+ * absent for a moment while the form loads is a smaller harm than a control that argues with the
+ * record, and it is the only honest thing to draw when the answer genuinely is not known yet.
+ *
+ * THE KNOWN FLOOR, STATED RATHER THAN IMPLIED. Each clause's `decide` is a hand written
+ * TypeScript restatement of a condition that lives in another language. The fingerprint pins the
+ * SOURCE TEXT and the accounting pins the SET OF REFUSALS; neither pins the CORRESPONDENCE
+ * between a condition and the decide() written beside it. The witness pairs narrow that gap and
+ * do not close it: they prove a decide() actually reads the fact it names and produces both
+ * answers, so a stubbed clause or one collapsed into a constant fails, while a decide() reading
+ * the right field with the wrong comparison would still pass. Closing the remainder needs the
+ * condition EVALUATED rather than restated, which means a live database and a running engine
+ * inside the dashboard's unit suite. That is the trade this file makes, and it is written here so
+ * nobody has to rediscover it by being wrong.
+ */
+import type { AdminAction, BlogStateFacts } from "@/lib/blog-state";
+
+/**
+ * The two fields of the question form that every door behind `answer` actually gates on.
+ *
+ * BOTH ARE ALREADY ON THE WIRE and that is what makes this fix possible without a backend change.
+ * `BlogQuestions` in types carries `stale` and `answered`, GET blogQuestions returns them, and
+ * `useBlogQuestions` already reads them for every topic in the library. The previous round derived
+ * the same question from the STATUS instead, off a stated biconditional between `needs_review` and
+ * a current answerable form, and the engine does not hold that biconditional: `revise_topic`'s
+ * three restore arms append a terminal line carrying `prev_terminal["status"]`, which on an
+ * article held for answers is `needs_review`, and they do it WITHOUT passing through
+ * `_enforce_terminal_status`, which is the only thing that would have re-derived the status from
+ * the form. A status copied from an earlier verdict is not a function of the form at all, so no
+ * predicate over the status can stand in for one.
+ */
+export type GateFormFacts = {
+  /** The form's version anchor or its iteration has moved. Both POST doors refuse a stale form. */
+  stale: boolean;
+  /** An answers.json exists for this iteration. POST /revise REQUIRES it; POST /answers ignores it. */
+  answered: boolean;
+};
+
+/**
+ * What the caller knows about the question form.
+ *
+ * "absent" and "unread" are two different answers and collapsing them is how a control gets
+ * offered over a 404. "absent" is the engine saying it holds no questions.json for this topic,
+ * which is a real fact and most topics. "unread" is this page not having heard back yet, or
+ * having heard an error, which is not a fact about anything and must never be treated as one.
+ */
+export type GateForm = GateFormFacts | "absent" | "unread";
+
+/**
+ * How many top-level comments on this article are mid-apply, or "unread" before the rail lands.
+ *
+ * TWO REFUSALS TURN ON THIS AND BOTH WERE INVISIBLE TO THE FIRST CONTRACT. Migration 010's
+ * admin_save_blog_content raises PORTAL:APPLYING when any top-level comment is in state
+ * 'applying', and server/app.py's comment route raises when the count has reached
+ * blog_edit.MAX_IN_FLIGHT. The stage page has ALWAYS held this number: it filters the comment
+ * rail for 'applying' and renders the remainder beside the composer. It simply never reached the
+ * gate, so the Edit control was granted while a refusal stood, and a hand written `applying > 0`
+ * disabled it one layer down. That is the restatement pattern in miniature: the page deciding for
+ * itself what migration 010 does.
+ *
+ * "unread" is the same rule as the form's. The rail is fetched, so before it lands the count is
+ * not a fact and the clauses over it answer `unknowable` rather than guessing zero.
+ */
+export type GateApplying = number | "unread";
+
+export type GateInput = {
+  record: BlogStateFacts;
+  form: GateForm;
+  /**
+   * OPTIONAL, AND THE THREE ANSWERS ARE THREE DIFFERENT QUESTIONS. Read this before omitting it.
+   *
+   * A NUMBER is the fact: this many changes are mid-apply right now.
+   *
+   * "unread" is a caller that MODELS this fact and has not heard back. It fails closed, exactly as
+   * an unread question form does: a page that cannot say how many applies are running must not
+   * claim there are none, and every earlier round of this defect failed OPEN by guessing.
+   *
+   * OMITTED is a caller that is not asking a moment question at all, and that is a real and
+   * separate case rather than a loophole. Both clauses over this fact are TRANSIENT: they name a
+   * condition that clears while the operator watches, an apply landing or a cap draining, and
+   * neither is a property of the record. A caller asking "will this RECORD take the act", which is
+   * what a bench truth table and send-to-client.tsx are both asking, has no moment to describe, so
+   * the transient clauses are skipped and the answer is about the record. `verdictOver` implements
+   * that, and a test pins both halves so the distinction cannot rot into an accident.
+   *
+   * THE COST IS NAMED RATHER THAN HIDDEN. A caller that SHOULD have supplied the count and forgot
+   * gets the record answer, so an Edit control can render while an apply is in flight and the save
+   * comes back a 409. That is a transient refusal with a sentence on it, the behaviour this page
+   * had before the fact reached the gate at all, and it is the price of not forcing every caller
+   * to invent a moment. gate-contract.test.ts asserts blog-stage.tsx passes the count, which is
+   * where forgetting it would actually matter.
+   */
+  applying?: GateApplying;
+};
+
+/** What one clause says about one record. `unknowable` is a real answer and never a failure. */
+export type ClauseVerdict = "pass" | "refuse" | "unknowable";
+
+export type GateSourceId =
+  | "admin_brand_id"
+  | "admin_refuse_demo"
+  | "admin_done_topic"
+  | "admin_send_blog_to_client"
+  | "admin_save_blog_content"
+  | "admin_add_comment"
+  | "admin_reply_comment"
+  | "refuse_version_when_approved"
+  | "refuse_comment_when_approved"
+  | "client_or_404"
+  | "topic_or_404"
+  | "require_done"
+  | "require_not_approved"
+  | "require_not_with_client"
+  | "api_answers"
+  | "api_revise_answered"
+  | "api_save_blog_content"
+  | "api_add_blog_comment"
+  | "api_send_blog_to_client"
+  | "api_reply_blog_comment"
+  | "assert_publishable"
+  | "cms_record_blog"
+  | "edit_refuse_if_approved"
+  | "edit_refuse_live_run"
+  | "edit_refuse_moved_record"
+  | "edit_add_comment"
+  | "edit_mark_sent";
+
+/**
+ * A refusal this contract has read and deliberately gives no clause.
+ *
+ * AN EXEMPTION IS A DECISION AND THE POINT OF WRITING IT DOWN IS THAT A GAP IS NOT. Before this
+ * existed, the difference between "we read this refusal and no control can predict it" and
+ * "nobody ever looked at this function" was invisible, and the reviewer's first experiment landed
+ * squarely inside that invisibility. Now every raise in every listed function is one or the other,
+ * by name, and the accounting test refuses to let a third category exist.
+ */
+export type GateExemption = {
+  /** Stable id, used in the accounting test's failure message. */
+  id: string;
+  /**
+   * A distinctive VERBATIM fragment of the refusal, as it reads in the source.
+   *
+   * `null` means this refusal is a SENTINEL RETURN rather than a raise: blog_edit.mark_sent
+   * answers None for an approved article and for an open client suggestion. The extractor finds
+   * raises only, so a sentinel is excluded from the count and rests on the fingerprint over the
+   * whole body, plus the clause covering the same fact from the route above it.
+   */
+  raises: string | null;
+  /** Why no clause. For whoever is deciding whether to add one. */
+  why: string;
+};
+
+/**
+ * A function in the SQL or the Python that refuses admin writes, and the fingerprint of its body
+ * as it stood when this contract was last reconciled with it.
+ *
+ * THE FINGERPRINT IS NOT A VERSION NUMBER AND MUST NEVER BE BUMPED TO CLEAR A RED BUILD. It is the
+ * hash of the normalized body, so a moved fingerprint means the refusals in that function are not
+ * the refusals this table describes. The correct response is to read the diff and reconcile the
+ * clauses; updating the hash alone re-creates the exact silence that let five rounds ship.
+ */
+export type GateSource = {
+  /**
+   * Repo relative, from the geo-factory root.
+   *
+   * For SQL this must be the migration that CURRENTLY defines the symbol, which is the LAST one
+   * to declare it and not the one that introduced it. The test asserts exactly that, because a
+   * contract pinned to a superseded copy fingerprints text the database never runs.
+   */
+  file: string;
+  symbol: string;
+  kind: "sql" | "python";
+  /** sha256 of the comment stripped, whitespace collapsed body, first 16 hex chars. */
+  fingerprint: string;
+  /** Which of the six acts this function stands in front of. */
+  gates: readonly AdminAction[];
+  /** Why this function is a gate at all, in one sentence, for whoever the red build wakes up. */
+  what: string;
+  /** Refusals read and given no clause, each with its reason. */
+  exemptions: readonly GateExemption[];
+};
+
+export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
+  // -------------------------------------------------------------------------
+  // The hosted build: definer functions in supabase/migrations.
+  // -------------------------------------------------------------------------
+  admin_brand_id: {
+    file: "supabase/migrations/009_admin_write_tier.sql",
+    symbol: "admin_brand_id",
+    kind: "sql",
+    fingerprint: "4244b6ce54f51e7d",
+    gates: ["edit", "comments", "send", "reply"],
+    what:
+      "Resolves the brand for every admin write on the hosted build, and refuses a caller who is " +
+      "not an admin or is asking about a brand that is not there.",
+    exemptions: [
+      {
+        id: "brand_not_authenticated",
+        raises: "PORTAL:AUTH:not authenticated",
+        why:
+          "Identity, not the record. A signed out session has no page to render this control on, " +
+          "so there is nothing for a clause to withhold.",
+      },
+      {
+        id: "brand_unknown_to_admin",
+        raises: "PORTAL:NOTFOUND:no such brand for this account",
+        why:
+          "The same answer for a brand out of scope and a brand that does not exist, deliberately, " +
+          "so a clause predicting it would leak which of the two it was.",
+      },
+      {
+        id: "brand_row_missing",
+        raises: "PORTAL:NOTFOUND:no such brand for this account",
+        why:
+          "The second arm of the same refusal, for a slug with no clients row. Exempt for the " +
+          "reason above, and unreachable from a page already rendering the brand's article.",
+      },
+    ],
+  },
+  admin_refuse_demo: {
+    file: "supabase/migrations/009_admin_write_tier.sql",
+    symbol: "admin_refuse_demo",
+    kind: "sql",
+    fingerprint: "6075b22ff075e6f7",
+    gates: ["edit", "comments", "send"],
+    what:
+      "Refuses every admin write against a demo brand, whose blogs are placeholder text written " +
+      "with no research and never delivered.",
+    exemptions: [
+      {
+        id: "brand_is_demo",
+        raises: "PORTAL:DEMO:this brand is a demo fixture",
+        why:
+          "Subsumed by the demoMode term blog-stage.tsx ANDs into every flag. A demo brand is a " +
+          "property of the CLIENT and not a place an article sits, so it is not a record fact and " +
+          "does not belong in a clause keyed by one.",
+      },
+    ],
+  },
+  // Migration 013 replaced 009's admin_done_topic wholesale to add the approved lock, so 013 is
+  // the definition the database runs and 009's copy is dead text. The first version of this
+  // contract pinned 009 and would have stayed green through any edit to the live one.
+  admin_done_topic: {
+    file: "supabase/migrations/013_approved_lock.sql",
+    symbol: "admin_done_topic",
+    kind: "sql",
+    fingerprint: "25e031cf00f9ea20",
+    gates: ["edit", "comments", "send"],
+    what:
+      "Resolves a topic for any admin write, raises PORTAL:NOTDONE unless topic_rollup.status is " +
+      "exactly 'done', then PORTAL:LOCKED on an approved article. admin_save_blog_content, " +
+      "admin_add_comment and the send all route through it, so it is the shared gate under " +
+      "`edit`, `comments` and `send` on the hosted build.",
+    exemptions: [
+      {
+        id: "done_topic_not_found",
+        raises: "PORTAL:NOTFOUND:no such blog for this account",
+        why:
+          "Resolution rather than a gate. The stage page is rendering this topic's article, so a " +
+          "topic the record cannot find is not a condition any control on this page can be in.",
+      },
+    ],
+  },
+  admin_send_blog_to_client: {
+    file: "supabase/migrations/009_admin_write_tier.sql",
+    symbol: "admin_send_blog_to_client",
+    kind: "sql",
+    fingerprint: "93a1c241d5fe1044",
+    gates: ["send"],
+    what:
+      "The hosted send. Its one refusal of its own is an open or applying client suggestion, and " +
+      "it is asserted in the UPDATE's own WHERE rather than in a counted pre-check, so zero rows " +
+      "updated IS the refusal.",
+    exemptions: [],
+  },
+  // Migration 010 replaced 009's copy to fix the blank test and add the applying refusal.
+  admin_save_blog_content: {
+    file: "supabase/migrations/010_admin_write_tier_fixes.sql",
+    symbol: "admin_save_blog_content",
+    kind: "sql",
+    fingerprint: "000ad5e45bb09a1f",
+    gates: ["edit"],
+    what:
+      "The hosted save. Beyond the shared gate it refuses a blank or oversized body, an article " +
+      "with a change mid-apply, and a base version that is no longer the latest.",
+    exemptions: [
+      {
+        id: "save_blank_body",
+        raises: "PORTAL:BLANK:an empty article cannot be saved",
+        why:
+          "About the PAYLOAD rather than the record. No state and no fact on the wire could " +
+          "predict what the operator is about to type, and a control withheld on one would be " +
+          "refusing the act of clearing the box.",
+      },
+      {
+        id: "save_body_too_large",
+        raises: "PORTAL:TOOLARGE:the article is over 1 MB",
+        why: "The payload again, for the same reason as the blank body above.",
+      },
+      {
+        id: "save_base_version_stale",
+        raises: "PORTAL:STALE:this article changed while you were editing",
+        why:
+          "The base version the editor opened from is not on this page's wire: the blogs read " +
+          "returns no version_no, so the comparison cannot be made here. A genuine gap rather " +
+          "than a category error, and closing it needs a version on the wire.",
+      },
+    ],
+  },
+  admin_add_comment: {
+    file: "supabase/migrations/010_admin_write_tier_fixes.sql",
+    symbol: "admin_add_comment",
+    kind: "sql",
+    fingerprint: "12a85520b460b244",
+    gates: ["comments"],
+    what:
+      "The hosted change request. It inserts 'open' rather than 'applying' because a definer " +
+      "function cannot start the Claude session, and beyond the shared gate it refuses only an " +
+      "empty selection or an empty instruction.",
+    exemptions: [
+      {
+        id: "comment_blank_selection",
+        raises: "PORTAL:BLANK:select the text this change applies to",
+        why: "The payload, decided when the operator presses send and not before.",
+      },
+      {
+        id: "comment_blank_instruction",
+        raises: "PORTAL:BLANK:say what should change about the selected text",
+        why: "The payload, as above.",
+      },
+    ],
+  },
+  admin_reply_comment: {
+    file: "supabase/migrations/011_admin_reply_comment.sql",
+    symbol: "admin_reply_comment",
+    kind: "sql",
+    fingerprint: "7b182e3a043e279c",
+    gates: ["reply"],
+    what:
+      "The hosted reply. It carries NO done gate and NO approved gate by design, which is what " +
+      "makes `reply` the one act with no record condition: a reply commits no version and " +
+      "resolves nothing.",
+    exemptions: [
+      {
+        id: "reply_topic_not_found",
+        raises: "PORTAL:NOTFOUND:no such blog for this account",
+        why: "Resolution rather than a gate, exactly as admin_done_topic's own NOTFOUND is.",
+      },
+      {
+        id: "reply_blank_body",
+        raises: "PORTAL:BLANK:a reply needs something in it",
+        why: "The payload, decided at the moment of sending.",
+      },
+      {
+        id: "reply_parent_not_found",
+        raises: "PORTAL:NOTFOUND:no such change request on this blog",
+        why:
+          "A property of ONE comment rather than of the article, and this contract is keyed by " +
+          "article. The rail already withholds a reply box on a row it does not hold.",
+      },
+    ],
+  },
+  refuse_version_when_approved: {
+    file: "supabase/migrations/013_approved_lock.sql",
+    symbol: "refuse_version_when_approved",
+    kind: "sql",
+    fingerprint: "fd43951309748652",
+    gates: ["edit", "comments"],
+    what:
+      "The trigger on blog_versions. Every path that commits a version passes it, in both " +
+      "languages, which is why the lock lives here rather than in each writer.",
+    exemptions: [],
+  },
+  refuse_comment_when_approved: {
+    file: "supabase/migrations/013_approved_lock.sql",
+    symbol: "refuse_comment_when_approved",
+    kind: "sql",
+    fingerprint: "fd5c2836cefaf6f6",
+    gates: ["comments"],
+    what:
+      "The trigger on blog_comments, TOP-LEVEL ROWS ONLY. An operator comment is born 'applying' " +
+      "and runs Claude at once, so it is an edit wearing a comment's clothes; a reply carries " +
+      "parent_id and returns early, which is the whole of why `reply` survives an approval.",
+    exemptions: [],
+  },
+
+  // -------------------------------------------------------------------------
+  // The local engine: server/app.py, server/cms/gate.py, server/blog_edit.py.
+  // -------------------------------------------------------------------------
+  client_or_404: {
+    file: "server/app.py",
+    symbol: "_client_or_404",
+    kind: "python",
+    fingerprint: "4ea483dedc489e82",
+    gates: ["answer", "edit", "comments", "send", "reply"],
+    what: "The engine's twin of admin_brand_id: the brand must exist and be inside the caller's scope.",
+    exemptions: [
+      {
+        id: "engine_client_unknown",
+        raises: 'detail=f"unknown client {slug!r}"',
+        why:
+          "Identity and existence, not the record, and answered identically for out of scope and " +
+          "not there so a clause predicting it would leak the difference.",
+      },
+    ],
+  },
+  topic_or_404: {
+    file: "server/app.py",
+    symbol: "_topic_or_404",
+    kind: "python",
+    fingerprint: "dfdabc791ae049bc",
+    gates: ["answer", "edit", "comments", "send", "reply"],
+    what:
+      "The engine's topic resolver, and the traversal guard with it: an unknown slug and a " +
+      "smuggled path get one answer.",
+    exemptions: [
+      {
+        id: "engine_topic_unknown",
+        raises: 'detail=f"no blog {topic_slug!r} for client {slug!r}"',
+        why: "Resolution rather than a gate: this page is rendering the topic's article.",
+      },
+    ],
+  },
+  // THE TWIN THE FIRST CONTRACT MISSED. A reviewer changed `if status != "done":` here to admit
+  // 'stopped' and 'failed' and the whole suite stayed green, because this function was in neither
+  // GATE_SOURCES nor ALL_GATE_CLAUSES while its hosted counterpart was in both.
+  require_done: {
+    file: "server/app.py",
+    symbol: "_require_done",
+    kind: "python",
+    fingerprint: "59d42c81d38f2dca",
+    gates: ["edit", "comments", "send"],
+    what:
+      "The local engine's admin_done_topic: a 409 unless the topic's terminal verdict is done. " +
+      "api_save_blog_content, api_add_blog_comment and api_send_blog_to_client each call it, so " +
+      "it is the single gate under `edit`, `comments` and `send` on the build that does the " +
+      "actual writing.",
+    exemptions: [],
+  },
+  require_not_approved: {
+    file: "server/app.py",
+    symbol: "_require_not_approved",
+    kind: "python",
+    fingerprint: "6302d2452a9c26e4",
+    gates: ["answer", "edit", "comments", "send"],
+    what:
+      "The HTTP half of the approved lock, and the widest gate in the engine: it stands in front " +
+      "of the answer routes as well as the three write routes, because an answer dispatches a " +
+      "revise that rewrites the draft and commits a version.",
+    exemptions: [],
+  },
+  require_not_with_client: {
+    file: "server/app.py",
+    symbol: "_require_not_with_client",
+    kind: "python",
+    fingerprint: "1d2bd5cccc74298e",
+    gates: ["edit", "comments"],
+    what:
+      "409 while the article is out with the client and they have asked for nothing back. Writing " +
+      "then commits a version that topics.sent_version_id does not point at, so the approval " +
+      "landing next describes bytes nobody is reading.",
+    exemptions: [],
+  },
+  api_answers: {
+    file: "server/app.py",
+    symbol: "api_answers",
+    kind: "python",
+    fingerprint: "062cc325fe8295b8",
+    gates: ["answer"],
+    what:
+      "The submit door behind the `answer` verb. It 404s when no form exists and 409s a stale " +
+      "one, and it never once consults answeredness, which is what lets a held topic's form be " +
+      "submitted again after a crashed revise.",
+    exemptions: [
+      {
+        id: "answers_role",
+        raises: 'detail="answering requires a commenter or admin role"',
+        why:
+          "Identity. This is the one write a non-admin may make, and the role is not a fact about " +
+          "the article.",
+      },
+      {
+        id: "answers_demo",
+        raises: "detail=runner.demo_refusal_detail(slug)",
+        why: "Subsumed by the demoMode term, exactly as admin_refuse_demo is.",
+      },
+      {
+        id: "answers_live_run",
+        raises: "answer once it finishes so the revise is not",
+        why:
+          "Subsumed: a live run derives `generating`, whose bench is empty, and `live` is on the " +
+          "wire for exactly that reason.",
+      },
+      {
+        id: "answers_unanswered_questions",
+        raises: '"unanswered": exc.ids,',
+        why:
+          "The payload. Which boxes the operator left empty is decided as they press submit, and " +
+          "the panel reports it inline against the questions themselves.",
+      },
+      {
+        id: "answers_form_vanished_at_write",
+        raises: "status_code=404, detail=str(exc)) run_id = uuid",
+        why:
+          "The same NoQuestions as the clause above it, re-raised from write_answers after the " +
+          "form was read. It is the TOCTOU remainder of a check the clause already makes, so a " +
+          "second clause over the same fact would decide nothing new.",
+      },
+    ],
+  },
+  api_revise_answered: {
+    file: "server/app.py",
+    symbol: "api_revise_answered",
+    kind: "python",
+    fingerprint: "b4ae2f67ca71a018",
+    gates: ["answer"],
+    what:
+      "The rerun door behind the `answer` verb. It 404s when no form exists, 409s a stale one, " +
+      "and 409s a form nobody has answered, because a rerun with nothing to apply is a wasted " +
+      "session.",
+    exemptions: [
+      {
+        id: "revise_demo",
+        raises: "detail=runner.demo_refusal_detail(slug)",
+        why: "Subsumed by the demoMode term.",
+      },
+      {
+        id: "revise_live_run",
+        raises: "rerun once it finishes so the revise is",
+        why: "Subsumed by `generating`, as api_answers' own live-run refusal is.",
+      },
+      {
+        id: "revise_claimed_elsewhere",
+        raises: "another engine already claimed this rerun",
+        why:
+          "A fact about ANOTHER machine's engine, held in the record for seconds and released " +
+          "when that dispatch settles. Nothing on this page's wire reports it, and a control " +
+          "withheld on it would flicker rather than inform.",
+      },
+    ],
+  },
+  api_save_blog_content: {
+    file: "server/app.py",
+    symbol: "api_save_blog_content",
+    kind: "python",
+    fingerprint: "3357c4f1ff13b258",
+    gates: ["edit"],
+    what:
+      "The engine's save route. Beyond the three shared helpers it refuses a demo brand, a live " +
+      "run, and the payload.",
+    exemptions: [
+      {
+        id: "save_route_demo",
+        raises: "detail=runner.demo_refusal_detail(slug)",
+        why: "Subsumed by the demoMode term.",
+      },
+      {
+        id: "save_route_live_run",
+        raises: "edit once it finishes so the engine's",
+        why: "Subsumed by `generating`.",
+      },
+      {
+        id: "save_route_blank",
+        raises: 'detail="an empty article cannot be saved',
+        why: "The payload, as the hosted function's own blank refusal is.",
+      },
+      {
+        id: "save_route_too_large",
+        raises: 'status_code=413, detail="the article is over 1 MB',
+        why: "The payload.",
+      },
+    ],
+  },
+  api_add_blog_comment: {
+    file: "server/app.py",
+    symbol: "api_add_blog_comment",
+    kind: "python",
+    fingerprint: "e7d127e84dc3db9b",
+    gates: ["comments"],
+    what:
+      "The engine's change request route, which files the comment AND starts the Claude session, " +
+      "so it carries an in-flight cap the hosted function has no need of.",
+    exemptions: [
+      {
+        id: "comment_route_demo",
+        raises: "detail=runner.demo_refusal_detail(slug)",
+        why: "Subsumed by the demoMode term.",
+      },
+      {
+        id: "comment_route_live_run",
+        raises: "edit once it finishes so the engine's",
+        why: "Subsumed by `generating`.",
+      },
+      {
+        id: "comment_route_blank",
+        raises: 'detail="a comment needs both the selected text and an instruction"',
+        why: "The payload.",
+      },
+    ],
+  },
+  api_send_blog_to_client: {
+    file: "server/app.py",
+    symbol: "api_send_blog_to_client",
+    kind: "python",
+    fingerprint: "e1bde83a85bc314b",
+    gates: ["send"],
+    what:
+      "The engine's send route. Its one refusal of its own is the open client suggestion, which " +
+      "it reports from mark_sent answering None rather than from a count it ran first.",
+    exemptions: [
+      {
+        id: "send_route_demo",
+        raises: "detail=runner.demo_refusal_detail(slug)",
+        why: "Subsumed by the demoMode term.",
+      },
+    ],
+  },
+  api_reply_blog_comment: {
+    file: "server/app.py",
+    symbol: "api_reply_blog_comment",
+    kind: "python",
+    fingerprint: "559820b4530bc729",
+    gates: ["reply"],
+    what:
+      "The engine's reply route, and its docstring states the two absences in so many words: no " +
+      "demo refusal and no done gate, because a reply spends nothing.",
+    exemptions: [
+      {
+        id: "reply_route_blank",
+        raises: 'detail="a reply needs something in it"',
+        why: "The payload.",
+      },
+      {
+        id: "reply_route_parent_unknown",
+        raises: 'detail=f"no comment {comment_id!r} on {topic!r}"',
+        why: "A property of one comment rather than of the article, as the hosted twin's is.",
+      },
+    ],
+  },
+  // WHAT ACTUALLY REFUSES A PUBLISH. The first contract declared `publish` to carry zero clauses,
+  // reason given as "it changes nothing about the article". That is true of the article and false
+  // of the act: this gate refuses any blog whose terminal status is not the literal string
+  // "done", and it says at length why the refusal is server side rather than a disabled button.
+  assert_publishable: {
+    file: "server/cms/gate.py",
+    symbol: "assert_publishable",
+    kind: "python",
+    fingerprint: "5fc1ccf593d02441",
+    gates: ["publish"],
+    what:
+      "The only-push-finished-blogs check, and the only thing standing between an unvetted draft " +
+      "and a CMS post an editor can approve. It refuses a demo client, a topic with no committed " +
+      "body, a topic with no status feed, and any status that is not exactly 'done'.",
+    exemptions: [
+      {
+        id: "publish_demo",
+        raises: "is a demo client. Demo blogs are placeholder text",
+        why: "Subsumed by the demoMode term.",
+      },
+      {
+        id: "publish_no_body",
+        raises: "No blog on disk for",
+        why:
+          "Whether the record holds a committed version is not on this page's wire. It is also " +
+          "not a condition a published or approved article can be in, and those two states are " +
+          "the whole of the bench that grants `publish`.",
+      },
+      {
+        id: "publish_no_status_feed",
+        raises: "has no status feed, so the engine cannot confirm it finished",
+        why:
+          "A topic with no status feed folds to the `unknown` state, whose bench is empty, so the " +
+          "control is already withheld by the layer above this one.",
+      },
+    ],
+  },
+  cms_record_blog: {
+    file: "server/cms/gate.py",
+    symbol: "_record_blog",
+    kind: "python",
+    fingerprint: "b7e089f910d5fe5f",
+    gates: ["publish"],
+    what:
+      "Chooses WHICH committed bytes a push ships: the latest version normally, and the version " +
+      "the client actually approved once there is an approval. It refuses rather than guesses " +
+      "when the two have come apart.",
+    exemptions: [
+      {
+        id: "publish_approved_version_unknown",
+        raises: "the record does not say which",
+        why:
+          "An integrity fault inside the record, over columns this page's wire does not carry " +
+          "(sent_version_id and the version list). A clause would answer `unknowable` for every " +
+          "approved article and, failing closed, would remove the Publish control from the one " +
+          "state whose entire purpose is to offer it. Publishing is also the one act that changes " +
+          "nothing about the article, so an attempt that is refused costs the operator a sentence " +
+          "rather than a mistake, and that sentence names both versions and asks for a decision. " +
+          "The trade is made deliberately here rather than by omission.",
+      },
+      {
+        id: "publish_approved_version_mismatch",
+        raises: "is the latest in the record, so the approval and",
+        why: "The other arm of the same integrity fault, exempt for the reason above.",
+      },
+    ],
+  },
+  edit_refuse_if_approved: {
+    file: "server/blog_edit.py",
+    symbol: "_refuse_if_approved",
+    kind: "python",
+    fingerprint: "fbf3eea7685f260b",
+    gates: ["edit", "comments"],
+    what:
+      "The engine module's own approved lock, in front of the trigger, so an operator reads a " +
+      "sentence naming the approval instead of an unmapped database exception.",
+    exemptions: [],
+  },
+  edit_refuse_live_run: {
+    file: "server/blog_edit.py",
+    symbol: "_refuse_live_run",
+    kind: "python",
+    fingerprint: "df36bf4671600ba8",
+    gates: ["edit", "comments"],
+    what:
+      "Refuses an apply whose session started before a run took ownership of the same files, " +
+      "checked after the session rather than before it.",
+    exemptions: [
+      {
+        id: "apply_live_run",
+        raises: "started before this change was",
+        why:
+          "Subsumed by `generating`, and checked AFTER the Claude session has already run, so no " +
+          "control could have withheld itself on it in the first place.",
+      },
+    ],
+  },
+  edit_refuse_moved_record: {
+    file: "server/blog_edit.py",
+    symbol: "_refuse_moved_record",
+    kind: "python",
+    fingerprint: "514b6f80167032f4",
+    gates: ["edit", "comments"],
+    what:
+      "Refuses a write whose base version is no longer the record's latest, which is how a " +
+      "teammate's engine committing in the same window avoids being silently reverted.",
+    exemptions: [
+      {
+        id: "apply_record_moved",
+        raises: "raise EditError(CONFLICT_ERROR)",
+        why:
+          "The base version is not on this page's wire, the same gap admin_save_blog_content's " +
+          "PORTAL:STALE leaves, and closing it needs a version_no in the blogs read.",
+      },
+    ],
+  },
+  edit_add_comment: {
+    file: "server/blog_edit.py",
+    symbol: "add_comment",
+    kind: "python",
+    fingerprint: "7d05f2035e971c74",
+    gates: ["comments"],
+    what:
+      "Inserts the operator's comment in state 'applying', which is what makes filing one an edit " +
+      "rather than a note, and calls the approved lock before it does.",
+    exemptions: [
+      {
+        id: "add_comment_topic_unknown",
+        raises: 'raise EditError(f"no topic {topic_slug!r} for client {client_slug!r}")',
+        why: "Resolution rather than a gate, as _topic_or_404's own is.",
+      },
+    ],
+  },
+  edit_mark_sent: {
+    file: "server/blog_edit.py",
+    symbol: "mark_sent",
+    kind: "python",
+    fingerprint: "64246bfa6184c19b",
+    gates: ["send"],
+    what:
+      "The engine's send. It raises nothing at all: both of its refusals answer None, and the " +
+      "open-suggestion one lives in the UPDATE's own WHERE so a portal write cannot land between " +
+      "a count and a stamp.",
+    exemptions: [
+      {
+        id: "mark_sent_approved_sentinel",
+        raises: null,
+        why:
+          "A sentinel return rather than a raise, over the same fact the approved clauses already " +
+          "carry. It is the lock ITSELF for this act: sending inserts nothing, so neither trigger " +
+          "in migration 013 fires on it, and the UPDATE would clear the very approval the lock " +
+          "protects.",
+      },
+      {
+        id: "mark_sent_open_suggestion_sentinel",
+        raises: null,
+        why:
+          "The other sentinel: zero rows updated IS the refusal, and the send clause below carries " +
+          "the same fact from the route that turns the None into a 409.",
+      },
+    ],
+  },
+};
+
+export type GateClause = {
+  /** Stable id, used in test names and in the refusal a control reports. */
+  id: string;
+  source: GateSourceId;
+  /**
+   * 1-indexed line in the source file where `condition` sits, as of the last reconciliation.
+   *
+   * DOCUMENTATION FIRST AND AN ASSERTION SECOND. The drift test checks it, and it reports a MOVED
+   * line and a MISSING condition as two different failures with two different instructions,
+   * because they mean opposite things: a moved line is an unrelated edit above and the fix is to
+   * update the number, while a missing condition is the gate itself changing and the fix is to
+   * reconcile this table. Folding them into one message is how a person learns to bump numbers
+   * without reading them.
+   */
+  line: number;
+  /** The refusal's condition, VERBATIM from the file. The drift test looks this up literally. */
+  condition: string;
+  /**
+   * A distinctive VERBATIM fragment of the raise this condition guards, for the accounting test.
+   * Null where the refusal is a sentinel return rather than a raise.
+   */
+  raises: string | null;
+  /** What the layer raises when the condition holds, so a withheld control can say why. */
+  refusal: string;
+  /**
+   * Whether this condition clears on its own while the operator watches.
+   *
+   * WHY THIS LIVES ON THE CLAUSE AND NOT IN THE COMPONENT. blog-stage.tsx has a stated rule that a
+   * control refused by the STATE is gone rather than greyed, with a stated exception for
+   * conditions to wait out: a Claude apply already in flight, the engine's one-session cap. That
+   * distinction is a property of the REFUSAL, not of the control, and left in the component it
+   * becomes a second private opinion about what the layers below do. The page would be keeping its
+   * own list of which refusals are worth waiting for, and the moment a new one is added the list
+   * is silently short, which is the shape of every round of this defect.
+   */
+  transient: boolean;
+  /** This clause evaluated over the facts the caller actually has. */
+  decide: (input: GateInput) => ClauseVerdict;
+  /**
+   * One input this clause must PASS and one it must REFUSE.
+   *
+   * WHAT THIS BUYS AND WHAT IT DOES NOT. The fingerprint pins the source text and the accounting
+   * pins the set of refusals; neither can see whether the decide() beside a condition computes
+   * that condition. A decide() edited into `() => "pass"` to clear a red build satisfies both, and
+   * that is exactly how this table would rot. The witness makes that edit fail, because a constant
+   * cannot produce two answers. It does NOT prove the comparison is the right one, which is the
+   * known floor stated at the top of this file.
+   */
+  witness: { passes: GateInput; refuses: GateInput };
+};
+
+/**
+ * One route into an act.
+ *
+ * `answer` HAS TWO AND EVERY OTHER VERB HAS ONE, which is the whole reason doors exist rather than
+ * a flat clause list per action. blog-state.ts already documents `answer` as two acts behind one
+ * verb: submit the answers, or dispatch the rerun for answers the client already filed. They are
+ * separate routes with DIFFERENT and partly OPPOSITE conditions, because POST /revise requires
+ * `answered` and POST /answers does not care. A flat AND over both would refuse every record, and
+ * a flat OR over both would grant on a clause the other route refuses. An action is allowed when
+ * SOME door passes every one of its own clauses, which is what "there is a way through" means.
+ */
+export type GateDoor = {
+  id: string;
+  /** What pressing this door does, for the person reading a withheld control's reason. */
+  what: string;
+  clauses: readonly GateClause[];
+};
+
+/** A record that passes everything, so a witness can vary one fact and mean exactly that fact. */
+const CLEAN: GateInput = {
+  record: {
+    status: "done",
+    client_approved: null,
+    sent_to_client: null,
+    changes_requested: 0,
+    change_round_open: false,
+  },
+  form: { stale: false, answered: true },
+  applying: 0,
+};
+
+/** The same input with one record fact changed. Keeps every witness a one-variable statement. */
+function withRecord(patch: Partial<BlogStateFacts>): GateInput {
+  return { ...CLEAN, record: { ...CLEAN.record, ...patch } };
+}
+
+const APPROVED_AT = "2026-07-19T10:00:00Z";
+
+const DONE_TOPIC: GateClause = {
+  id: "topic_is_done",
+  source: "admin_done_topic",
+  line: 136,
+  condition: "if v_status is distinct from 'done'::topic_status then",
+  raises: "PORTAL:NOTDONE:this blog is %, not done",
+  refusal: "PORTAL:NOTDONE",
+  transient: false,
+  // The status IS on the wire, so this one is always decidable. It is also the clause rounds two
+  // and three got wrong by granting acts in `answers_submitted`, a state derived from the client's
+  // submit stamp rather than from the status, and therefore spanning both 'needs_review' before
+  // the rerun and 'done' after it.
+  decide: ({ record }) => (record.status === "done" ? "pass" : "refuse"),
+  witness: { passes: CLEAN, refuses: withRecord({ status: "needs_review" }) },
+};
+
+// THE SAME RULE ON THE BUILD THAT DOES THE WRITING, and its absence was the reviewer's second
+// demonstration. Recorded as its own clause rather than folded into DONE_TOPIC because it is a
+// different function in a different language: either can change without the other, and a single
+// clause would have to name one file and go quiet about the other.
+const DONE_TOPIC_ENGINE: GateClause = {
+  id: "topic_is_done_engine",
+  source: "require_done",
+  line: 1645,
+  condition: 'if status != "done":',
+  raises: "not done; {act} is for shipped blogs only",
+  refusal: "409 this blog is not done, and the stage is for shipped blogs",
+  transient: false,
+  decide: ({ record }) => (record.status === "done" ? "pass" : "refuse"),
+  witness: { passes: CLEAN, refuses: withRecord({ status: "failed" }) },
+};
+
+const NOT_APPROVED_SQL: GateClause = {
+  id: "not_approved_sql",
+  source: "admin_done_topic",
+  line: 143,
+  condition: "if v_approved is not null then",
+  raises: "PORTAL:LOCKED:the client approved this article on %, so it is locked. %",
+  refusal: "PORTAL:LOCKED",
+  transient: false,
+  decide: ({ record }) => (record.client_approved ? "refuse" : "pass"),
+  witness: { passes: CLEAN, refuses: withRecord({ client_approved: APPROVED_AT }) },
+};
+
+const NOT_APPROVED_VERSION_TRIGGER: GateClause = {
+  id: "not_approved_version_trigger",
+  source: "refuse_version_when_approved",
+  line: 53,
+  condition: "if v_approved is not null then",
+  raises: "PORTAL:LOCKED:the client approved this article on %, so it is locked and cannot be",
+  refusal: "PORTAL:LOCKED, from the trigger every version-committing path passes",
+  transient: false,
+  decide: ({ record }) => (record.client_approved ? "refuse" : "pass"),
+  witness: { passes: CLEAN, refuses: withRecord({ client_approved: APPROVED_AT }) },
+};
+
+const NOT_APPROVED_COMMENT_TRIGGER: GateClause = {
+  id: "not_approved_comment_trigger",
+  source: "refuse_comment_when_approved",
+  line: 92,
+  condition: "if v_approved is not null then",
+  raises: "PORTAL:LOCKED:this article was approved on % and is locked",
+  refusal: "PORTAL:LOCKED, from the trigger on top-level comments",
+  transient: false,
+  decide: ({ record }) => (record.client_approved ? "refuse" : "pass"),
+  witness: { passes: CLEAN, refuses: withRecord({ client_approved: APPROVED_AT }) },
+};
+
+const NOT_APPROVED_ENGINE: GateClause = {
+  id: "not_approved_engine",
+  source: "require_not_approved",
+  line: 1669,
+  condition: "if approved is not None:",
+  raises: "detail=blog_edit.locked_detail(approved, act))",
+  refusal: "409 the client approved this article, so it is locked",
+  transient: false,
+  decide: ({ record }) => (record.client_approved ? "refuse" : "pass"),
+  witness: { passes: CLEAN, refuses: withRecord({ client_approved: APPROVED_AT }) },
+};
+
+const NOT_APPROVED_EDIT_MODULE: GateClause = {
+  id: "not_approved_edit_module",
+  source: "edit_refuse_if_approved",
+  line: 140,
+  condition: "if approved is not None:",
+  raises: "raise EditError(locked_detail(approved, act))",
+  refusal: "EditError, the engine module's own lock in front of the trigger",
+  transient: false,
+  decide: ({ record }) => (record.client_approved ? "refuse" : "pass"),
+  witness: { passes: CLEAN, refuses: withRecord({ client_approved: APPROVED_AT }) },
+};
+
+/**
+ * OUT WITH THE CLIENT, WHICH IS A SEND WITH NO ROUND OPEN.
+ *
+ * The condition recorded is the EARLY RETURN rather than the raise, because that is where the
+ * decision is made: _require_not_with_client raises unconditionally once it gets past this line.
+ * `_with_client_since` answers None both for an article that was never sent and for one whose
+ * client has since asked for something, which is exactly blogState's split between `client_review`
+ * and `changes_requested`, so the two facts this reads are the two the wire already carries.
+ */
+const NOT_WITH_CLIENT: GateClause = {
+  id: "not_with_client",
+  source: "require_not_with_client",
+  line: 1746,
+  condition: "if sent_at is None:",
+  raises: "was sent to the client on",
+  refusal: "409 the client is reading the exact version that was sent",
+  transient: false,
+  decide: ({ record }) => (record.sent_to_client && !record.change_round_open ? "refuse" : "pass"),
+  witness: {
+    passes: CLEAN,
+    refuses: withRecord({ sent_to_client: APPROVED_AT, change_round_open: false }),
+  },
+};
+
+/**
+ * THE SEND'S ONE REFUSAL OF ITS OWN, on both builds, and it is a WHERE clause rather than a count.
+ *
+ * `changes_requested` on the wire counts top-level client comments in state 'open' or 'applying',
+ * which is precisely the set the UPDATE's `not exists` subquery excludes. The clause is recorded
+ * against the SQL, and its engine twin below against the route that reads mark_sent's None.
+ */
+const SEND_NO_OPEN_SUGGESTIONS_SQL: GateClause = {
+  id: "send_no_open_suggestions_sql",
+  source: "admin_send_blog_to_client",
+  line: 201,
+  condition: "if v_rows = 0 then",
+  raises: "PORTAL:OPENSUGGESTIONS:the client",
+  refusal: "PORTAL:OPENSUGGESTIONS",
+  transient: false,
+  decide: ({ record }) => ((record.changes_requested ?? 0) > 0 ? "refuse" : "pass"),
+  witness: { passes: CLEAN, refuses: withRecord({ changes_requested: 2 }) },
+};
+
+const SEND_NO_OPEN_SUGGESTIONS_ENGINE: GateClause = {
+  id: "send_no_open_suggestions_engine",
+  source: "api_send_blog_to_client",
+  line: 2045,
+  condition: "if state is None:",
+  raises: "the client's suggestions are still open; resolve or dismiss each",
+  refusal: "409 the client's suggestions are still open",
+  transient: false,
+  decide: ({ record }) => ((record.changes_requested ?? 0) > 0 ? "refuse" : "pass"),
+  witness: { passes: CLEAN, refuses: withRecord({ changes_requested: 1 }) },
+};
+
+/**
+ * A SAVE WAITS FOR AN APPLY, AND THIS CLAUSE IS WHY THE EDIT CONTROL GREYS RATHER THAN VANISHES.
+ *
+ * The stage page always held this number and always disabled the Edit button on it with a hand
+ * written `applying > 0`, one layer below a canEdit that knew nothing about the refusal. The
+ * number now reaches the gate, and `transient` carries the shape of the control so the page no
+ * longer decides for itself what migration 010 does.
+ */
+const NO_APPLY_IN_FLIGHT: GateClause = {
+  id: "no_apply_in_flight",
+  source: "admin_save_blog_content",
+  line: 113,
+  condition: "where topic_id = v_tid and parent_id is null and state = 'applying') then",
+  raises: "PORTAL:APPLYING:a change is being applied to this article",
+  refusal: "PORTAL:APPLYING, so the save waits for the apply to land",
+  transient: true,
+  decide: ({ applying }) => applyingCount(applying, (count) => count === 0),
+  witness: { passes: CLEAN, refuses: { ...CLEAN, applying: 1 } },
+};
+
+/**
+ * THREE APPLIES AT ONCE IS THE CAP, and the composer already renders the remainder beside itself.
+ * blog_edit.MAX_IN_FLIGHT is 3, and the count is taken on the RECORD rather than in one machine's
+ * memory, because two engines share it.
+ */
+const COMMENT_CAP: GateClause = {
+  id: "comment_in_flight_cap",
+  source: "api_add_blog_comment",
+  line: 1803,
+  condition:
+    "if await asyncio.to_thread(blog_edit.in_flight_count, slug, topic) >= blog_edit.MAX_IN_FLIGHT:",
+  raises: "changes are already in flight for",
+  refusal: "409 the engine's three-apply cap is full; wait for one to land",
+  transient: true,
+  decide: ({ applying }) => applyingCount(applying, (count) => count < 3),
+  witness: { passes: CLEAN, refuses: { ...CLEAN, applying: 3 } },
+};
+
+/**
+ * PUBLISH IS NOT UNGATED, and the first version of this contract said it was.
+ *
+ * server/cms/gate.py refuses any blog whose terminal status is not the literal string "done", and
+ * it argues at length that the refusal must be server side because a CMS draft is directly
+ * approvable and the CMS cannot tell a blog that scored 96 from one that hit the iteration cap.
+ * The bench grants `publish` in `approved` and `published`, both of which normally carry a done
+ * status, so this clause is quiet on the happy path and withholds the control on exactly the
+ * records where the push would come back a 409.
+ */
+const PUBLISH_TOPIC_IS_DONE: GateClause = {
+  id: "publish_topic_is_done",
+  source: "assert_publishable",
+  line: 229,
+  condition: 'if status != "done":',
+  raises: "not done. Only a blog the engine shipped",
+  refusal: "409 only a blog the engine shipped may reach the CMS",
+  transient: false,
+  decide: ({ record }) => (record.status === "done" ? "pass" : "refuse"),
+  witness: { passes: CLEAN, refuses: withRecord({ status: "needs_review" }) },
+};
+
+const FORM_EXISTS_FOR_ANSWERS: GateClause = {
+  id: "answers_form_exists",
+  source: "api_answers",
+  line: 1454,
+  condition: "except questions_mod.NoQuestions as exc:",
+  raises: "status_code=404, detail=str(exc)) if state[",
+  refusal: "404 no questions on this topic",
+  transient: false,
+  decide: ({ form }) => formPresence(form),
+  witness: { passes: CLEAN, refuses: { ...CLEAN, form: "absent" } },
+};
+
+const FORM_NOT_STALE_FOR_ANSWERS: GateClause = {
+  id: "answers_form_not_stale",
+  source: "api_answers",
+  line: 1457,
+  condition: 'if state["stale"]:',
+  raises: "these questions describe iteration",
+  refusal: "409 these questions describe an earlier iteration",
+  transient: false,
+  decide: ({ form }) => formFlag(form, (f) => !f.stale),
+  witness: { passes: CLEAN, refuses: { ...CLEAN, form: { stale: true, answered: true } } },
+};
+
+const FORM_EXISTS_FOR_REVISE: GateClause = {
+  id: "revise_form_exists",
+  source: "api_revise_answered",
+  line: 1536,
+  condition: "except questions_mod.NoQuestions as exc:",
+  raises: "status_code=404, detail=str(exc)) if state[",
+  refusal: "404 no questions on this topic",
+  transient: false,
+  decide: ({ form }) => formPresence(form),
+  witness: { passes: CLEAN, refuses: { ...CLEAN, form: "absent" } },
+};
+
+const FORM_NOT_STALE_FOR_REVISE: GateClause = {
+  id: "revise_form_not_stale",
+  source: "api_revise_answered",
+  line: 1538,
+  condition: 'if state["stale"]:',
+  raises: "these questions describe an earlier draft of",
+  refusal: "409 a revise has already replaced the draft these questions ask about",
+  transient: false,
+  decide: ({ form }) => formFlag(form, (f) => !f.stale),
+  witness: { passes: CLEAN, refuses: { ...CLEAN, form: { stale: true, answered: true } } },
+};
+
+const FORM_ANSWERED_FOR_REVISE: GateClause = {
+  id: "revise_form_answered",
+  source: "api_revise_answered",
+  line: 1544,
+  condition: 'if not state["answered"]:',
+  raises: "have no answers yet, so a rerun has nothing",
+  refusal: "409 the questions have no answers yet, so a rerun has nothing to apply",
+  transient: false,
+  decide: ({ form }) => formFlag(form, (f) => f.answered),
+  witness: { passes: CLEAN, refuses: { ...CLEAN, form: { stale: false, answered: false } } },
+};
+
+/** Every clause this contract knows, so the drift test can walk them without walking the doors. */
+export const ALL_GATE_CLAUSES: readonly GateClause[] = [
+  DONE_TOPIC,
+  DONE_TOPIC_ENGINE,
+  NOT_APPROVED_SQL,
+  NOT_APPROVED_VERSION_TRIGGER,
+  NOT_APPROVED_COMMENT_TRIGGER,
+  NOT_APPROVED_ENGINE,
+  NOT_APPROVED_EDIT_MODULE,
+  NOT_WITH_CLIENT,
+  SEND_NO_OPEN_SUGGESTIONS_SQL,
+  SEND_NO_OPEN_SUGGESTIONS_ENGINE,
+  NO_APPLY_IN_FLIGHT,
+  COMMENT_CAP,
+  PUBLISH_TOPIC_IS_DONE,
+  FORM_EXISTS_FOR_ANSWERS,
+  FORM_NOT_STALE_FOR_ANSWERS,
+  FORM_EXISTS_FOR_REVISE,
+  FORM_NOT_STALE_FOR_REVISE,
+  FORM_ANSWERED_FOR_REVISE,
+];
+
+/**
+ * THE TABLE. Keyed by the same AdminAction the bench hands out, so the two compose rather than
+ * compete: `adminCan` says whether the article's PLACE permits the act, and this says whether the
+ * RECORD will take it. Both must hold, and neither is a restatement of the other.
+ *
+ * `reply` IS THE ONLY VERB THAT CARRIES NO CLAUSE, and the empty list is a statement rather than a
+ * gap. Migration 011's admin_reply_comment carries no done gate and no approved gate, migration
+ * 013 exempts a reply by name at 013:18 with a `new.parent_id is not null` early return at 013:88,
+ * and server/app.py's reply route states both absences in its own docstring. A reply commits no
+ * version and resolves nothing, so there is no record condition left for it to fail. Both of its
+ * sources are still listed in GATE_SOURCES and still fingerprinted, so a done gate added to either
+ * goes red here rather than shipping as an offered-but-refused control.
+ *
+ * `publish` USED TO SIT IN THAT SENTENCE AND IT DID NOT BELONG THERE. The reason given was that a
+ * push changes nothing about the article, which is true and is a claim about the ARTICLE rather
+ * than about the act: server/cms/gate.py refuses a publish outright unless the terminal status is
+ * exactly "done". It now carries that clause.
+ */
+export const ADMIN_GATE_DOORS: Record<AdminAction, readonly GateDoor[]> = {
+  answer: [
+    {
+      id: "submit_answers",
+      what: "file answers to the evaluator's questions, which dispatches the surgical revise",
+      clauses: [NOT_APPROVED_ENGINE, FORM_EXISTS_FOR_ANSWERS, FORM_NOT_STALE_FOR_ANSWERS],
+    },
+    {
+      id: "rerun_with_answers",
+      what: "dispatch the rerun for answers the client already filed from their portal",
+      clauses: [
+        NOT_APPROVED_ENGINE,
+        FORM_EXISTS_FOR_REVISE,
+        FORM_NOT_STALE_FOR_REVISE,
+        FORM_ANSWERED_FOR_REVISE,
+      ],
+    },
+  ],
+  edit: [
+    {
+      id: "save_blog_content",
+      what: "save the article body",
+      clauses: [
+        DONE_TOPIC,
+        DONE_TOPIC_ENGINE,
+        NOT_APPROVED_SQL,
+        NOT_APPROVED_ENGINE,
+        NOT_APPROVED_EDIT_MODULE,
+        NOT_APPROVED_VERSION_TRIGGER,
+        NOT_WITH_CLIENT,
+        NO_APPLY_IN_FLIGHT,
+      ],
+    },
+  ],
+  comments: [
+    {
+      id: "add_comment",
+      what: "file a change request",
+      clauses: [
+        DONE_TOPIC,
+        DONE_TOPIC_ENGINE,
+        NOT_APPROVED_SQL,
+        NOT_APPROVED_ENGINE,
+        NOT_APPROVED_EDIT_MODULE,
+        NOT_APPROVED_COMMENT_TRIGGER,
+        NOT_WITH_CLIENT,
+        COMMENT_CAP,
+      ],
+    },
+  ],
+  send: [
+    {
+      id: "send_to_client",
+      what: "release the article to the client",
+      clauses: [
+        DONE_TOPIC,
+        DONE_TOPIC_ENGINE,
+        NOT_APPROVED_SQL,
+        NOT_APPROVED_ENGINE,
+        SEND_NO_OPEN_SUGGESTIONS_SQL,
+        SEND_NO_OPEN_SUGGESTIONS_ENGINE,
+      ],
+    },
+  ],
+  publish: [
+    { id: "publish_to_cms", what: "push the article to the CMS", clauses: [PUBLISH_TOPIC_IS_DONE] },
+  ],
+  reply: [{ id: "reply_in_thread", what: "reply inside an existing thread", clauses: [] }],
+};
+
+export type GateVerdict =
+  /** Some door passes every one of its clauses. `door` is the one that does. */
+  | { allowed: true; door: GateDoor }
+  /**
+   * No door passes. `blocking` is the clause to show a person: the first REFUSING clause of the
+   * door that got furthest, or an unknowable one when nothing outright refused.
+   *
+   * `undecidable` separates "the record refuses this" from "nobody has told us yet", because they
+   * want different words on screen and, more importantly, because only the first is stable. A
+   * control withheld for an undecidable reason comes back on its own when the read lands.
+   */
+  | { allowed: false; undecidable: boolean; blocking: GateClause | null };
+
+/**
+ * Whether the layers under this UI will take the act, given what the caller actually knows.
+ *
+ * The search is over doors and it stops at the first that passes cleanly. Where none does, the
+ * refusal reported is the first hard refusal encountered, in door order, because a hard refusal
+ * names a real condition of the record and an unknowable names only a read in flight. Reporting
+ * the unknowable in preference would tell an operator to wait for something that is never coming.
+ */
+export function adminGateVerdict(action: AdminAction, input: GateInput): GateVerdict {
+  return verdictOver(action, input, () => true);
+}
+
+/**
+ * The boolean a control is gated on.
+ *
+ * FAIL CLOSED, and the single expression below is the whole of that promise: anything other than a
+ * passing door is false. Every previous round of this defect failed open by guessing a fact it did
+ * not hold, so the guess is what had to go, not the row it was written into.
+ */
+export function adminGateAllows(action: AdminAction, input: GateInput): boolean {
+  return adminGateVerdict(action, input).allowed;
+}
+
+/**
+ * What a control should DO about this act, which is a finer question than whether it may proceed.
+ *
+ * `mount` ignores the transient clauses. A control refused only by a condition that clears on its
+ * own belongs on the page, greyed, naming the wait: blog-stage.tsx has said so for a long time and
+ * used to implement it with its own predicate over the comment rail. `waitingOn` is the transient
+ * clause holding it shut, so the tooltip can carry the layer's own reason rather than a sentence
+ * the page invented.
+ *
+ * `act` is `adminGateAllows` and stays the thing any request is gated on. A greyed control that
+ * somehow fires still has to pass it.
+ */
+export type GateStanding = {
+  mount: boolean;
+  waitingOn: GateClause | null;
+  act: boolean;
+};
+
+export function adminGateStanding(action: AdminAction, input: GateInput): GateStanding {
+  const permanent = verdictOver(action, input, (clause) => !clause.transient);
+  if (!permanent.allowed) {
+    return { mount: false, waitingOn: null, act: false };
+  }
+  const full = adminGateVerdict(action, input);
+  if (full.allowed) {
+    return { mount: true, waitingOn: null, act: true };
+  }
+  // Every permanent clause passed, so whatever blocks the full verdict is transient or unknowable.
+  return { mount: true, waitingOn: full.blocking, act: false };
+}
+
+/** The one search, run over whichever clauses the caller cares about. */
+function verdictOver(
+  action: AdminAction,
+  input: GateInput,
+  include: (clause: GateClause) => boolean,
+): GateVerdict {
+  const doors = ADMIN_GATE_DOORS[action];
+  let firstRefusal: GateClause | null = null;
+  let sawUnknowable = false;
+  // A caller that supplied no moment is asking a record question, so the clauses that describe a
+  // moment have nothing to say to it. See GateInput.applying for why this is a case and not a
+  // loophole, and note that "unread" is NOT this case: it fails closed.
+  const momentless = input.applying === undefined;
+
+  for (const door of doors) {
+    let doorOk = true;
+    for (const clause of door.clauses) {
+      if (!include(clause) || (momentless && clause.transient)) {
+        continue;
+      }
+      const verdict = clause.decide(input);
+      if (verdict === "pass") {
+        continue;
+      }
+      doorOk = false;
+      if (verdict === "refuse") {
+        firstRefusal = firstRefusal ?? clause;
+      } else {
+        sawUnknowable = true;
+      }
+    }
+    if (doorOk) {
+      return { allowed: true, door };
+    }
+  }
+
+  return {
+    allowed: false,
+    undecidable: firstRefusal === null && sawUnknowable,
+    blocking: firstRefusal,
+  };
+}
+
+/** A form the caller has not read is not a fact, so it decides nothing either way. */
+function formPresence(form: GateForm): ClauseVerdict {
+  if (form === "unread") {
+    return "unknowable";
+  }
+  return form === "absent" ? "refuse" : "pass";
+}
+
+/**
+ * The applying count, with an unsupplied or unread rail deciding nothing.
+ *
+ * The absent case is `undefined` rather than a sentinel string, because a caller that never passed
+ * the field and a page whose read is in flight are the same thing to a clause: neither is a fact,
+ * so neither may open a control.
+ */
+function applyingCount(
+  applying: GateApplying | undefined,
+  holds: (count: number) => boolean,
+): ClauseVerdict {
+  if (applying === undefined || applying === "unread") {
+    return "unknowable";
+  }
+  return holds(applying) ? "pass" : "refuse";
+}
+
+/** Same rule one level in: an absent form fails a flag test because there is no flag to test. */
+function formFlag(form: GateForm, holds: (facts: GateFormFacts) => boolean): ClauseVerdict {
+  if (form === "unread") {
+    return "unknowable";
+  }
+  if (form === "absent") {
+    return "refuse";
+  }
+  return holds(form) ? "pass" : "refuse";
+}

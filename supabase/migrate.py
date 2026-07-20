@@ -595,6 +595,18 @@ def upload_resources(conn, corpus, env, client_id):
     # will. Size is the one property of an upload that cannot be misdeclared, so it
     # carries this alone. Migration 015 states the same reasoning at more length.
     #
+    # file_size_limit caps ONE object and nothing else, so it is not the whole story and
+    # this comment must not read as though it were. Migration 017 adds the per-brand
+    # AGGREGATE bound, a trigger on storage.objects reading resource_prefix_max_objects()
+    # and resource_prefix_max_bytes(), because a write seat can otherwise PUT distinct
+    # 25 MiB objects under its own prefix without end and never index one, and an object
+    # nobody indexed is invisible to every reader this product has. That trigger governs
+    # THIS push too: RLS bypass is not trigger bypass, so the secret key below is bounded
+    # by the same numbers the portal is. The measured corpus is 5 files and about 12.8 MB,
+    # far under both caps, so a Storage upload failing with "which is its limit of" means
+    # the corpus outgrew a default nobody revisited, and the fix is the literal in
+    # supabase/schema.sql rather than an exemption here.
+    #
     # This payload governs CREATION only. Storage answers "already exists" for a bucket
     # that is already there and changes nothing about it, so a project that predates
     # this line gets its cap from migration 015's update rather than from here.

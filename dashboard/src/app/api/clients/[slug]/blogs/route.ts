@@ -2,6 +2,10 @@ import { unauthenticated, verifyRequest } from "@/lib/server/auth";
 import { byteCompare, clientId, ledgerSlugs } from "@/lib/server/clients";
 import { detail, failure, json } from "@/lib/server/http";
 import { inList, pg } from "@/lib/server/postgrest";
+// TYPE ONLY, so nothing of the portal's module reaches this route's runtime. The type is defined
+// beside the OTHER producer rather than duplicated here on purpose: a shared shape kept in two
+// places is the same promise-instead-of-mechanism that let these two fact sets drift twice.
+import type { ProducedStateFacts } from "@/lib/server/portal-data";
 
 type TopicRow = {
   id: string;
@@ -186,6 +190,11 @@ export async function GET(
     // STATE. It reads no comment state at all, so resolving, dismissing and a failed apply all
     // leave the round standing, and only a re-send moving sent_to_client_at forward closes it.
     //
+    // THERE IS A SECOND FOLD OF THIS EXACT FACT, in lib/server/portal-data.ts, over rows the
+    // portal read has already scoped to author=client and parent_id=is.null. The two must stay
+    // the same fold: the portal shipped without this fact at all, fell back to the count, and
+    // derived client_review where this route derived changes_requested from an identical record.
+    //
     // Keying the state off the open COUNT is what dead-ended the loop: resolving the last
     // suggestion returned the article to client_review, where the admin has no Send button, so
     // the fix they had just made could never be delivered and the client could approve the
@@ -267,12 +276,32 @@ export async function GET(
           ? { status: rollup.status, score: rollup.score, iterations: rollup.iterations }
           : { status: "unknown", score: null, iterations: null };
       const entry = led.get(topic.slug);
+
+      // THE STATE FACTS, LIFTED OUT OF THE WIRE OBJECT AND TYPED, because these seven keys are a
+      // contract with the other producer and the rest of the object is not. ProducedStateFacts
+      // makes every key mandatory, so this literal and portal-data.ts's must carry the same set or
+      // one of them stops compiling. It has drifted twice, both times by a key living here and not
+      // there, and both times the portal silently took a blogState fallback this route never took.
+      // Spread into the payload below so the wire shape is unchanged.
+      const stateFacts: ProducedStateFacts = {
+        status: folded.status,
+        sent_to_client: topic.sent_to_client_at,
+        client_approved: topic.client_approved_at,
+        changes_requested: openByTopic.get(topic.id) ?? 0,
+        change_round_open: roundOpen.has(topic.id),
+        // An ISO stamp rather than a boolean, matching the engine's field and every other
+        // human-act date here, so a card can show the receipt without a second call.
+        answers_submitted: answeredAt.get(topic.id) ?? null,
+        // Null is "no record of a push", never "not published": nothing recorded a publish
+        // before 012. cms_status is always null on this build, see the select above.
+        published: topic.published_at,
+      };
+
       return {
         topic: entry?.topic || version.h1_title || topic.title || topic.slug,
         topic_slug: topic.slug,
         created: entry?.generated_at || version.committed_at,
         score: folded.score,
-        status: folded.status,
         iterations: folded.iterations,
         shipped: entry !== undefined,
         // The engine's inference: done, with no score, means no evaluator ever saw it, and an
@@ -288,20 +317,15 @@ export async function GET(
         // The optimistic lock the hosted editor sends back. See the engine's _blog_history.
         version_no: version.version_no,
         roadmap_index: rowIndex.get(topic.slug) ?? null,
-        sent_to_client: topic.sent_to_client_at,
-        client_approved: topic.client_approved_at,
-        changes_requested: openByTopic.get(topic.id) ?? 0,
-        change_round_open: roundOpen.has(topic.id),
-        // An ISO stamp rather than a boolean, matching the engine's field and every other
-        // human-act date here, so a card can show the receipt without a second call.
-        answers_submitted: answeredAt.get(topic.id) ?? null,
-        // Null is "no record of a push", never "not published": nothing recorded a publish
-        // before 012. cms_status is always null on this build, see the select above.
-        published: topic.published_at,
+        // THE SEVEN STATE FACTS, built and typed above. They land here rather than being written
+        // out inline so that one type governs both producers of this fact set.
+        ...stateFacts,
         cms_status: null,
         // `live` IS DELIBERATELY ABSENT FROM THIS OBJECT, and it is the one fact the engine's
-        // twin emits that this route does not. server/app.py _blog_history sets it from
-        // runner.RUNS, an in-memory registry of the runs that uvicorn process owns right now.
+        // twin emits that neither of this app's two producers does. ProducedStateFacts omits it
+        // for both of them at once, with the shared half of the reason attached to the type;
+        // repeated here is the half specific to this route. server/app.py _blog_history sets it
+        // from runner.RUNS, an in-memory registry of the runs that uvicorn process owns right now.
         // Nothing equivalent is reachable from here: there is no liveness table in the schema,
         // migration 009 states that in its own header and names topic_rollup.status as the only
         // DB-visible stand-in, and this route reads the record over PostgREST and nothing else.

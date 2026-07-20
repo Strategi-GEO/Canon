@@ -11,6 +11,7 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    "allowImportingTsExtensions": true,
     "jsx": "react-jsx",
     "incremental": true,
     "plugins": [
@@ -31,12 +32,27 @@
     "**/*.mts"
   ],
   "//exclude": [
-    "tests/ is excluded because Node's own test runner needs the explicit .ts extension on its",
-    "imports to strip types at runtime, and tsc refuses that extension unless",
-    "allowImportingTsExtensions is on, which conflicts with how Next builds this app. Excluding",
-    "the directory is the smaller compromise: the tests run under `node --test tests/`, the app",
-    "compiles unchanged, and neither has to bend for the other. The tests still type-check in",
-    "practice because they import the real module and would fail loudly on a shape change."
+    "tests/ USED TO BE EXCLUDED HERE AND THE EXCLUSION WAS THE DEFECT. The reasoning it carried",
+    "was that Node's own test runner needs the explicit .ts extension on its imports to strip",
+    "types at runtime, that tsc refuses that extension unless allowImportingTsExtensions is on,",
+    "and that the option conflicts with how Next builds this app. The last clause is the false",
+    "one: allowImportingTsExtensions requires only that the compiler emits nothing, which is",
+    "exactly what noEmit above already guarantees, and Next compiles this app through its own",
+    "bundler rather than through tsc, so nothing in the build ever reads the flag. The option is",
+    "now on and the directory is checked.",
+    "",
+    "WHAT THE EXCLUSION COST, which is the reason this note is longer than the rule it replaces.",
+    "The closing sentence of the old comment claimed the tests still type-check in practice",
+    "because they import the real module and would fail loudly on a shape change. They do not and",
+    "they did not. No test file in this repo had ever been seen by tsc, so `npx tsc --noEmit`",
+    "reported clean over three real type errors in tests/blog-state.test.ts, and a guard test that",
+    "is not checking what it claims to check is a guard that goes green for the wrong reason. That",
+    "is how the bench defect this suite exists to catch survived five consecutive rounds of fixes",
+    "with the suite green over every one of them.",
+    "",
+    "node_modules stays excluded for the ordinary reason: it is third-party output, skipLibCheck",
+    "already covers its declarations, and checking it would be minutes of work per run to find",
+    "nothing this repo can act on."
   ],
-  "exclude": ["node_modules", "tests"]
+  "exclude": ["node_modules"]
 }

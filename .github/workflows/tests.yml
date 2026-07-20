@@ -1,0 +1,97 @@
+# Runs the guard suites on every push and every pull request.
+#
+# WHY THIS IS A SEPARATE WORKFLOW AND NOT A STEP IN build-canon-app.yml. That workflow triggers
+# on workflow_dispatch and on `v*` tags, and on nothing else. A test step living there would run
+# only when somebody cut a release, which is close to never and always far too late: the defects
+# these suites guard are introduced by ordinary commits on ordinary days, so the gate has to run
+# on ordinary commits. A check that fires after the mistake has already been packaged is a
+# postmortem, not a gate.
+#
+# THE SECOND REASON IS THE SHAPE OF THAT JOB. It is a matrix across macOS and Windows that fetches
+# roughly 262 MB of Node and CPython, runs PyInstaller, and packages a release. Hanging a
+# ten-second test suite off the end of a multi-minute build means waiting minutes for a signal
+# that was ready almost immediately, and it would run the identical suite twice for no new
+# information: every one of these checks is pure logic over source files, with nothing in it that
+# reads the platform. One ubuntu runner tells us everything two slower ones would.
+#
+# THE RELEASE PATH IS STILL GATED, AND THAT IS WHAT workflow_call IS FOR. build-canon-app.yml
+# calls this same file and makes its build job depend on it, so a tagged release cannot be
+# packaged out of a tree whose tests are red. The suite is defined ONCE, here, and both entry
+# points run that one definition rather than two copies that drift apart. That is also why the
+# push trigger below is scoped to branches: on a tag this workflow runs through the call instead,
+# so a release gets one test run rather than two.
+name: Tests
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_call:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 24 and 3.12 are not arbitrary: they are what canon_app/fetch_runtimes.py bundles into the
+      # shipped package (NODE_VERSION 24.18.0, PYTHON_VERSION 3.12.13). Testing on the runtimes
+      # teammates actually run is the whole point, and a suite green on a version nobody ships is
+      # a suite that can be green about the wrong language.
+      #
+      # The Node floor matters for a second reason. These tests are TypeScript executed directly
+      # by `node --test`, which relies on Node stripping the types itself, and that became
+      # unflagged only in recent Node. An older runner would not fail the assertions, it would
+      # refuse to parse the files at all.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
+
+      # The state machine suites. Every one of these decides what a person is allowed to do to a
+      # real article, so a red result here blocks the job and therefore blocks a release.
+      - name: Dashboard tests
+        working-directory: dashboard
+        run: npm test
+
+      # TYPECHECKING THE TESTS IS HALF THE VALUE AND IT IS NEW. tests/ used to be excluded from
+      # tsconfig.json, so no test file in this repo had ever been seen by tsc: `npx tsc --noEmit`
+      # reported clean over real type errors, and a guard test that does not compile cleanly is a
+      # guard that is not checking what it claims to check. That is how a bench defect survived
+      # five consecutive rounds of fixes with the suite green over every one of them. The
+      # exclusion is gone and this step is what keeps it gone.
+      - name: Typecheck, including the tests
+        working-directory: dashboard
+        run: npm run typecheck
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      # THESE THREE ARE HERMETIC AND THAT IS WHY THEY ARE HERE. Each was run against a tree
+      # containing only git-visible files, with no server/.env and no DATABASE_URL, and each
+      # passed. They read source, they do not open sockets, and they need no credential.
+      #
+      # tests/config_check.py IS DELIBERATELY ABSENT, and its absence is a known gap rather than
+      # an oversight. It reaches a live database: revise_topic calls _approved_refusal before its
+      # demo-client refusal fires, that walks db.topic_id into server/db.py pool(), and with no
+      # DATABASE_URL the check does not fail an assertion, it dies with a RuntimeError. Adding it
+      # here would make this workflow red on arrival on every runner, and a workflow that is
+      # always red teaches everyone to ignore it, which costs more than the one check it adds.
+      # It becomes CI-safe the moment that ordering is fixed in server/runner.py, and it should
+      # be added to this step on the same commit that fixes it.
+      - name: Python guard checks
+        run: |
+          set -euo pipefail
+          python tests/portal_check.py
+          python tests/cms_check.py
+          python tests/env_check.py

@@ -17,12 +17,21 @@
  * cannot see the article then at all, and that is a VISIBILITY rule over one state rather than
  * a second state machine that could drift from the first.
  *
- * WHY needs_review IS has_questions AND NEEDS NO EXTRA INPUT. The engine contract defines
- * needs_review as exactly one thing: this blog has questions that are current, on disk and
- * answerable. server/runner.py _enforce_terminal_status corrects a claimed needs_review with
- * no current form back to done or failed by its score, so the status cannot be held while the
- * form is absent, stale, unreadable or already answered. That makes the status itself the
- * question signal, and this function needs no separate questions read to know one is owed.
+ * WHY needs_review IS has_questions, AND THE EXACT LIMIT OF WHAT THAT BUYS. The engine contract
+ * defines needs_review as one thing: this blog has questions that are current, on disk and
+ * answerable. server/runner.py _enforce_terminal_status corrects a claimed needs_review with no
+ * current form back to done or failed by its score, so the status is a good enough signal to
+ * LABEL the article with, which is all this state is used for here.
+ *
+ * IT IS NOT GOOD ENOUGH TO OPEN A DOOR WITH, and reading it as though it were is what shipped the
+ * fifth round of one defect. The correction runs in _enforce_terminal_status, and revise_topic's
+ * three restore arms do not go through it: each appends a terminal line carrying
+ * `prev_terminal["status"]`, which on an article held for answers is `needs_review`, so a SPENT or
+ * STALE form can sit beside that status with nothing having re-derived it. The biconditional
+ * "needs_review exactly when a current answerable form exists" is therefore FALSE in the direction
+ * that matters, and no predicate over the status can stand in for reading the form. Anything that
+ * decides whether a WRITE will be accepted belongs in gate-contract.ts, which carries the source
+ * lines that perform the refusals and is checked against them on every test run.
  *
  * THE FACTS THIS TAKES ARE ALREADY ON THE WIRE from both backends. server/app.py _blog_history
  * and the hosted app/api/clients/[slug]/blogs/route.ts return the same five fields, so this is
@@ -241,9 +250,11 @@ export type AdminAction =
    * control that does not split.
    *
    * THE GRANT IS NOT ENOUGH ON ITS OWN, and believing it was is what shipped the fourth round of
-   * this bug. Both doors behind this verb need a CURRENT question form, and the state cannot see
-   * whether one exists. adminAnswerTierReady below is the layer that can, and blog-stage.tsx
-   * composes it with this grant exactly as it composes adminWriteTierReady with `edit`.
+   * this bug, and then the fifth. Both doors behind this verb gate on the question form's OWN
+   * `stale` and `answered` flags, which the state cannot see and which no predicate over the
+   * status can stand in for. gate-contract.ts holds those two doors as clauses carrying the
+   * verbatim source lines that perform the refusals, and blog-stage.tsx composes this grant with
+   * `adminGateAllows("answer", ...)` over the form the page has actually read.
    */
   | "answer"
   /** Edit the markdown directly, and select a passage to have Claude change it. */
@@ -303,16 +314,18 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   // away is the whole point of the state, because the client must read one steady thing across
   // their own Submit, so the fold is right and the BENCH is where the difference has to come back.
   //
-  // GRANTING FOUR IS NOT A FUDGE, BECAUSE EVERY ONE OF THEM NOW HAS A LAYER THAT DISCRIMINATES ON
-  // THE SAME FACT THIS TABLE CANNOT SEE. A GRANT HERE IS A PERMISSION, NEVER A RENDERING.
-  // `answer` passes through adminAnswerTierReady below, which reads the status the way the revise
-  // route reads the form: in (a) the status is needs_review, the form is current, and the Rerun
-  // strip renders and works; in (b) it is not, so blog-stage.tsx withholds the strip.
-  // `send` renders SendToClient, whose blockedReason reads the status: in (b) it sends, and in (a)
-  // it greys the control and names the rerun as the act that comes first.
-  // `edit` and `comments` pass through adminWriteTierReady below, which reads the same status
-  // migration 009's admin_done_topic reads: in (b) it is 'done' and both controls render and
-  // work, and in (a) it is not and blog-stage.tsx withholds them.
+  // GRANTING FOUR IS NOT A FUDGE, BECAUSE EVERY ONE OF THEM NOW PASSES THROUGH A GATE CLAUSE
+  // CARRYING THE SOURCE LINE THAT WOULD REFUSE IT. A GRANT HERE IS A PERMISSION, NEVER A
+  // RENDERING, and the discrimination lives in gate-contract.ts rather than in a sentence here.
+  // `answer` passes through the two doors that verb actually has, gated on the FORM's `stale` and
+  // `answered` flags, which are the fields POST /answers and POST /revise read: in (a) the form is
+  // current and unanswered or current and answered, and one of the two doors takes it; in (b) the
+  // form is gone or spent and both refuse, so blog-stage.tsx withholds the strip.
+  // `edit`, `comments` and `send` pass through the DONE_TOPIC clause, which carries migration
+  // 009's own `if v_status is distinct from 'done'::topic_status then`: in (b) the status is
+  // 'done' and all three render and work, and in (a) it is not and blog-stage.tsx withholds them.
+  // SendToClient's blockedReason still names the rerun, because a greyed control with a real next
+  // act is better than an absent one where the condition clears on its own.
   // Each situation gets the controls its record can take, and the rest are either absent or say
   // what to do instead.
   //
@@ -362,7 +375,7 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   // makes `edit` safe. `generating` is derived above every stamp including this one, so while a
   // run owns the artifact the state is `generating` and this list is never consulted. The old fear
   // of an edit racing the pass about to rewrite the same bytes describes a moment this table
-  // cannot be asked about. What makes `edit` safe in (a) is adminWriteTierReady withholding it.
+  // cannot be asked about. What makes `edit` safe in (a) is the DONE_TOPIC clause withholding it.
   answers_submitted: ["answer", "edit", "comments", "send"],
   // The refining bench. This is the one state where the admin shapes the article freely.
   internal_review: ["edit", "comments", "send"],
@@ -405,79 +418,39 @@ export function adminCan(state: BlogState, action: AdminAction): boolean {
 }
 
 /**
- * WHETHER THE RECORD ITSELF WILL TAKE AN ADMIN WRITE, which is a question the table above cannot
- * be asked and must stop pretending to answer.
+ * WHETHER THE RECORD ITSELF WILL TAKE AN ADMIN WRITE LIVES IN gate-contract.ts, NOT HERE.
  *
- * THE STRUCTURAL DEFECT THIS CLOSES, because it has now shipped three times in a row and every
- * previous fix was an edit to one row. ADMIN_ACTIONS is keyed by STATE. Every layer beneath it
- * gates on STATUS: migration 009's admin_done_topic (:143) raises PORTAL:NOTDONE unless
- * topic_rollup.status is exactly 'done', and admin_save_blog_content (:352) and admin_add_comment
- * (:299) both resolve through it. Those two keys are not the same key, and `answers_submitted`
- * is exactly where they come apart: it is derived from the client's submit stamp rather than from
- * the status, so it spans 'needs_review' before the rerun and 'done' after it. NO STATIC ROW CAN
- * BE CORRECT FOR BOTH, so any fix that only changes the row moves the defect rather than removing
- * it. It read `[]` and stranded the article, then ["edit", "comments", "send"] and handed the
- * pre-rerun operator three controls the database refuses, then gained `answer` and left `edit` and
- * `comments` refused in that same window.
+ * Two predicates used to sit at this spot, `adminWriteTierReady` and `adminAnswerTierReady`, and
+ * they are gone rather than moved. Each was a second statement, in TypeScript, of a rule that
+ * lives in SQL or in Python, and a second statement of a rule is the defect this whole area kept
+ * reproducing. `adminWriteTierReady` restated migration 009. `adminAnswerTierReady` restated
+ * server/app.py, and it restated it WRONG: it derived the question form from the status, off a
+ * biconditional between `needs_review` and a current answerable form that the engine does not
+ * hold, because revise_topic's three restore arms append a terminal line carrying
+ * `prev_terminal["status"]` without ever passing it through `_enforce_terminal_status`. A status
+ * copied forward from an earlier verdict is not a function of the form at all.
  *
- * SO THE DISCRIMINATION MOVES TO A SECOND LAYER, WHICH IS THE ARCHITECTURE THIS FILE ALREADY HAS
- * RATHER THAN A NEW ONE. `answer` and `send` were never broken by the state fold, and the reason
- * is that each already has a layer between the grant and the button: AnswerQuestions reads the
- * question form and draws its Rerun strip only while one is live, and SendToClient's blockedReason
- * reads the status and greys the control with a sentence naming the rerun. `edit` and `comments`
- * were the two acts granted with nothing in front of them. This is that missing layer, and
- * blog-stage.tsx composes it with the bench exactly as it composes HOSTED_READONLY.
+ * WHY THE REPLACEMENT IS NOT A THIRD PREDICATE. The problem was never which row or which condition
+ * was written; it was that nothing made the TypeScript and the layer below agree, so a
+ * disagreement was silent and five rounds of patching each found a new place to be silent in. The
+ * gate contract records, for every refusal, the verbatim source line that performs it and a
+ * fingerprint of the enclosing function, and dashboard/tests/gate-contract.test.ts re-derives both
+ * from the real files on every run. Change admin_done_topic in SQL and touch no TypeScript and the
+ * suite goes red naming the clauses that rested on it. That is a mechanism; a predicate here would
+ * have been another claim.
  *
- * WHY NOT SPLIT THE STATE INSTEAD, which is the other honest shape. A split would put the
- * difference where a reader sees it without a comment, and it would put it on the CLIENT wire,
- * where there is no difference at all. portal-data.ts's clientReadsDraft tests `state ===
- * "has_questions" || state === "answers_submitted"` to decide whether the client is served the
- * anchored draft, and nothing outside this file holds a Record<BlogState, ...>, so TypeScript
- * would not flag the omission: a split would silently stop serving the draft to the client who
- * had just answered, taking their own answers off their screen moments after they filed them.
+ * THIS FILE STILL OWNS THE OTHER HALF, and the two compose rather than compete. ADMIN_ACTIONS says
+ * whether the article's PLACE permits an act. The gate contract says whether the RECORD will take
+ * it. Both must hold, neither restates the other, and neither is allowed to answer the other's
+ * question. That is why the state is not split in two to make the fold go away: portal-data.ts's
+ * clientReadsDraft tests `has_questions || answers_submitted` to decide whether the client is
+ * served the anchored draft, and nothing outside this file holds a Record<BlogState, ...>, so
+ * TypeScript would not flag the omission. A split would silently stop serving the draft to the
+ * client who had just answered, taking their own answers off their screen moments after they
+ * filed them.
  *
- * IT NAMES THE MIGRATION'S RULE AND NOT A STATE, deliberately, so it stays correct for every
- * state rather than for the one that exposed it. Any future bench granting `edit` or `comments`
- * in a state that can carry a not-done status inherits the discrimination instead of rediscovering
- * this bug.
+ * See dashboard/src/lib/gate-contract.ts.
  */
-export function adminWriteTierReady(facts: BlogStateFacts): boolean {
-  return facts.status === "done";
-}
-
-/**
- * WHETHER A QUESTION FORM IS CURRENT ENOUGH FOR EITHER DOOR BEHIND `answer` TO WORK, which is the
- * layer that verb was believed to have and did not.
- *
- * WHAT THE ROUTES ACTUALLY REQUIRE. Both doors run through server/questions.py's staleness test:
- * POST /answers refuses a stale form at server/app.py:1457 and POST /revise refuses one at
- * :1538, both with a 409, and both 404 at :1536 when there is no form at all. Staleness is the
- * form's version anchor OR its iteration having moved (questions.py:375). Neither of those is a
- * field on this record, so the previous fix asserted in a comment that AnswerQuestions read the
- * form and withheld the control itself. It reads the form and renders the control anyway:
- * questions-state.ts modeOf (:60) tests `answered` before `stale`, so an answered stale form
- * takes the "answered" branch and draws the Rerun button.
- *
- * SO IT IS DERIVED FROM THE STATUS, OFF AN INVARIANT THE ENGINE ENFORCES RATHER THAN OFF A GUESS.
- * server/runner.py _enforce_terminal_status (:817) is symmetric on the question axis and says so
- * at :825 to :830: a claimed needs_review with nothing current to answer is corrected to done or
- * failed by its score, and a claimed done or failed over a CURRENT form is corrected back to
- * needs_review. The stop path holds a topic at needs_review for the same reason (runner.py:531)
- * rather than recording it stopped over a live form. The two facts are therefore one fact:
- *
- *     status === "needs_review"  <=>  a current, answerable question form exists.
- *
- * That makes the record able to answer a question about the form after all, and it makes this
- * predicate correct for every state rather than for the one that exposed it.
- *
- * IT NAMES THE RULE AND NOT A STATE, exactly as adminWriteTierReady does and for the same reason.
- * `has_questions` is needs_review by construction, so this is transparent there and costs that
- * state nothing. `answers_submitted` is where it bites, because that state spans four statuses
- * and only one of them still holds a form anyone can rerun.
- */
-export function adminAnswerTierReady(facts: BlogStateFacts): boolean {
-  return facts.status === "needs_review";
-}
 
 /**
  * What the CLIENT may do, and separately whether they can see the article at all.

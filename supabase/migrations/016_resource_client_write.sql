@@ -71,11 +71,12 @@ security definer
 set search_path = public
 as $$
 declare
-  v_cid   uuid;
-  v_path  text;
-  v_other text;
-  v_out   jsonb;
-  v_con   text;
+  v_cid    uuid;
+  v_path   text;
+  v_other  text;
+  v_out    jsonb;
+  v_con    text;
+  v_stored bigint;
 begin
   if auth.uid() is null then
     raise exception 'PORTAL:AUTH:not authenticated';
@@ -148,6 +149,50 @@ begin
     raise exception 'PORTAL:DUPLICATEBYTES:this file is already stored for this brand as %; upload it once under the name you want', v_other;
   end if;
 
+  -- REFUSAL THREE: the declared size disagrees with the size Storage recorded.
+  --
+  -- WHY THIS ONE EXISTS AT ALL. Every number in this call arrives from the browser. The upload
+  -- went straight to Storage, because Vercel's 4.5 MB body cap makes proxying a 25 MiB file
+  -- impossible, so no server of ours weighed the bytes, and the TOOLARGE check above is
+  -- therefore a check on a CLAIM rather than on a file. 015's own comment names the resulting
+  -- move out loud: PUT at the project default, then call this function declaring 1024 bytes.
+  -- storage.objects.metadata carries the size storage-api measured itself, so comparing the two
+  -- costs one indexed lookup and no bytes at all, and it turns the claim into something the
+  -- record can contradict.
+  --
+  -- WHAT IT PROVES AND WHAT IT DOES NOT. A match proves this row describes the object it points
+  -- at. It proves NOTHING about p_sha256, which is computed in the browser and re-read by
+  -- nothing; migration 017 part 3 argues why re-hashing is the wrong spend and states the same
+  -- limit as a comment on the column, so a reader finds it in the schema rather than here.
+  --
+  -- INVISIBLE IS A PASS, AND THAT IS THE WHOLE REASON THIS IS SAFE TO ADD. The note below this
+  -- function has always refused to require that the object exist, because a definer function's
+  -- reach into storage.objects depends on whether its owner bypasses RLS and this file cannot
+  -- verify that without running: read the absence as a missing object and every upload is
+  -- refused and the feature is dead. That reasoning is untouched. v_stored stays null when the
+  -- row is missing AND when the row is merely unreachable, the two are indistinguishable, and
+  -- both pass. Only a row this function can SEE, carrying a size that DISAGREES, is refused, so
+  -- the check can never fail in the dead direction.
+  --
+  -- The nested block is a subtransaction, so a lookup that RAISES for a privilege reason leaves
+  -- through the same door as one that returns nothing, rather than aborting the call. -1 marks a
+  -- visible row whose metadata has no size yet, which happens while an upload is still in
+  -- flight, and it passes for the same reason: it is an absence of evidence.
+  begin
+    select coalesce((o.metadata->>'size')::bigint, -1) into v_stored
+      from storage.objects o
+     where o.bucket_id = 'resources'
+       and o.name = p_client_slug || '/' || p_sha256;
+  exception
+    when others then
+      v_stored := null;
+      raise warning 'portal_resource_add: could not read storage.objects for %/% (%: %); the declared size is NOT cross-checked', p_client_slug, p_sha256, sqlstate, sqlerrm;
+  end;
+
+  if v_stored is not null and v_stored >= 0 and v_stored <> p_size_bytes then
+    raise exception 'PORTAL:BADBODY:the stored object is % bytes and this call declared %; upload the file again', v_stored, p_size_bytes;
+  end if;
+
   insert into client_resources
     (client_id, name, object_path, sha256, size_bytes, content_type)
   values
@@ -182,6 +227,19 @@ $$;
 -- upload is refused and the feature is dead. An index row with no bytes behind it is a lesser
 -- fault, scoped to the brand that created it, visible in their own list, and removable by the
 -- same delete they already have.
+--
+-- REFUSAL THREE ABOVE DOES NOT WEAKEN THAT, and the distinction is worth being exact about
+-- because the two look alike. It reads the same row and reaches the same uncertainty, and it
+-- resolves it the other way round: an object it cannot see is ADMITTED, so the missing case and
+-- the unreachable case both pass and neither can kill the feature. What it refuses is only a row
+-- it CAN see whose recorded size contradicts the caller. Existence is still not required; a size
+-- that is present and wrong is simply no longer accepted.
+--
+-- AND IT STILL DOES NOT CHECK THE DIGEST. p_sha256 is shape-checked and nothing more, here or
+-- anywhere else in the portal path. Migration 017 part 3 argues why re-hashing every object is
+-- the wrong spend against a threat model that is a member of the tenant swapping their own
+-- document, and states the limit as a comment on client_resources.sha256 so a reader meets it in
+-- the schema rather than in a migration.
 
 -- Postgres grants EXECUTE to PUBLIC by default, so revoke first and then grant to
 -- `authenticated` alone. Skipping the revoke would make this an unauthenticated write

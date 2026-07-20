@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { FieldError } from "@/components/clients/engine-error";
 import { ApiError, api } from "@/lib/api";
+import { adminGateAllows } from "@/lib/gate-contract";
 import { HOSTED_READONLY } from "@/lib/hosted";
 import { formatAbsolute, formatRelative } from "@/lib/format";
 import type { BlogReviewState, BlogStatus } from "@/types";
@@ -333,6 +334,15 @@ function blockedReason(status: BlogStatus, demoMode: boolean): string | null {
   if (demoMode) {
     return "This brand is in demo mode. Demo blogs are placeholder text generated without research, so they are never delivered to a client.";
   }
+  // THE GATE DECIDES WHETHER TO BLOCK; THE STATUS ONLY PICKS THE SENTENCE. Those are two different
+  // jobs and this function used to do both by enumerating statuses, which meant an unrecognised one
+  // fell through the list and returned null, leaving the button pressable over a record migration
+  // 009 refuses. gate-contract.ts carries admin_done_topic's own condition and
+  // dashboard/tests/gate-contract.test.ts holds it against the SQL, so the decision is made once
+  // and the branches below choose words rather than permissions.
+  if (adminGateAllows("send", { record: { status }, form: "unread" })) {
+    return null;
+  }
   if (status === "needs_review") {
     return "The answers are in and the rerun that applies them has not run yet, so there is no clarified draft to send. Start it with Rerun above: this button comes back the moment the rerun lands.";
   }
@@ -342,5 +352,9 @@ function blockedReason(status: BlogStatus, demoMode: boolean): string | null {
   if (status === "stopped") {
     return "This brand's session was stopped before this article reached a verdict, so the record carries no passing draft to send. Generating this topic again is what produces one, and this button comes back once a run lands at done.";
   }
-  return null;
+  // A STATUS THE GATE REFUSES AND THIS FUNCTION HAS NO SENTENCE FOR. Reaching here used to mean
+  // returning null and offering the button, which is how an unknown status became a press that
+  // fails. The generic reason is the honest one: the record is not done, and it names the shape of
+  // what would clear it without pretending to know which road this record took.
+  return `This article's last run recorded a status of "${status}", and only a blog the engine has landed at done can be delivered. Generating this topic again is what produces one, and this button comes back once a run lands at done.`;
 }

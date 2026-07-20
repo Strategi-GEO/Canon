@@ -573,6 +573,146 @@ def test_a_stopped_revise_on_an_unfinished_topic_is_stopped():
 
 
 # ---------------------------------------------------------------------------
+# _stop_line_if_unterminated: the question-form carve-out
+#
+# The tests above reach the write site through revise_topic and run_batch, which is the right
+# way to pin the guard but the wrong way to pin the carve-out: a cancellation only ever gets a
+# topic into ONE of the four form states, so the boundaries the contract calls "the rule" would
+# go untested. These four call the write site DIRECTLY with a form seeded into each state in
+# turn, because the arms are what the wording in CLAUDE.md is about and a carve-out whose
+# boundaries are prose is a carve-out that drifts.
+# ---------------------------------------------------------------------------
+
+def _seed_current_form(out, slug, iteration=1):
+    """An UNANSWERED, iteration-matched form: the one state that holds a blog.
+
+    The mirror image of _seed_answered_form above, and the difference is the whole carve-out:
+    no answers.json beside it, so nobody has been summoned yet and the summons is still live.
+    """
+    (out / "questions.json").write_text(json.dumps({
+        "slug": slug, "iter": iteration, "score": 96,
+        "questions": [{"id": "q1", "question": "Does Deccan Herald carry the 33 percent claim?",
+                       "why": "C21 rests on it", "area": "Sourcing"}],
+    }), encoding="utf-8")
+
+
+def _seed_unterminated(out, slug, iteration=1):
+    """A topic mid-flight: a running line and no terminal one. That gap IS the stop window."""
+    _append(out, slug, status="running", note="evaluating", iter=iteration)
+
+
+def test_a_stop_on_a_current_form_is_held_for_the_answer():
+    """THE CARVE-OUT ITSELF, and nothing else in this file reached it.
+
+    The evaluator wrote the form and the lead had not yet appended its terminal line, so the stop
+    lands in the gap every asking topic spends real time inside. Recording `stopped` there leaves
+    a topic api_answers still ACCEPTS an answer for, on a status whose admin bench is empty, so
+    the form is live and no surface offers the door to it: the dead end with no door, reached from
+    the form's side instead of the status's.
+    """
+    with _Roots():
+        out = runner.output_dir("brand", "topic-0")
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "blog.md").write_text("a draft the evaluator asked about", encoding="utf-8")
+        _seed_unterminated(out, "topic-0")
+        _seed_current_form(out, "topic-0")
+
+        check("an unanswered iteration-matched form reads as current",
+              runner._questions_state("brand", "topic-0") == "current",
+              f"got {runner._questions_state('brand', 'topic-0')!r}")
+
+        wrote = runner._stop_line_if_unterminated(
+            "brand", "topic-0", out, 0, "the operator stopped this brand")
+        terminals = _terminals(out)
+
+        check("a stop with no verdict on the topic writes its terminal line", wrote is True)
+        check("exactly one terminal line, as on every other stop path",
+              len(terminals) == 1, f"got {terminals}")
+        check("a stop landing on a live form is held, not stopped",
+              terminals and terminals[0]["status"] == "needs_review", f"got {terminals}")
+        check("the NEEDS_REVIEW marker is written beside the hold",
+              (out / "NEEDS_REVIEW").is_file())
+        check("no score is invented for a loop that never finished",
+              runner._summarize("topic-0", _lines(out))["score"] is None)
+
+
+def test_a_stop_with_no_form_is_stopped():
+    """The ordinary stop, pinned at the write site so the carve-out has a floor.
+
+    Nobody was asked anything, so `stopped` is the honest word and no marker is written. The
+    marker assertion is the load-bearing half: a NEEDS_REVIEW file left beside a stopped topic
+    is the app disagreeing with itself on disk.
+    """
+    with _Roots():
+        out = runner.output_dir("brand", "topic-1")
+        out.mkdir(parents=True, exist_ok=True)
+        _seed_unterminated(out, "topic-1")
+
+        runner._stop_line_if_unterminated(
+            "brand", "topic-1", out, 0, "the operator stopped this brand")
+        terminals = _terminals(out)
+
+        check("a stop with nothing to answer is stopped",
+              len(terminals) == 1 and terminals[0]["status"] == "stopped", f"got {terminals}")
+        check("no NEEDS_REVIEW marker on the ordinary stop arm",
+              not (out / "NEEDS_REVIEW").is_file())
+
+
+def test_a_stop_on_a_stale_form_is_stopped():
+    """A BOUNDARY, and the one the Ship criteria wording had to be narrowed to exclude.
+
+    The form asks about iteration 1 while the blog moved to iteration 2, so api_answers refuses
+    the submit outright. Holding here summons a person the app will then turn away, which is the
+    same dead end the carve-out exists to prevent, arrived at by being too generous.
+    """
+    with _Roots():
+        out = runner.output_dir("brand", "topic-2")
+        out.mkdir(parents=True, exist_ok=True)
+        _seed_unterminated(out, "topic-2", iteration=2)
+        _seed_current_form(out, "topic-2", iteration=1)
+
+        check("a form describing a superseded draft reads as stale",
+              runner._questions_state("brand", "topic-2") == "stale",
+              f"got {runner._questions_state('brand', 'topic-2')!r}")
+
+        runner._stop_line_if_unterminated(
+            "brand", "topic-2", out, 0, "the operator stopped this brand")
+        terminals = _terminals(out)
+
+        check("a stop on a form the app refuses is stopped, never held",
+              len(terminals) == 1 and terminals[0]["status"] == "stopped", f"got {terminals}")
+        check("no NEEDS_REVIEW marker on the stale arm",
+              not (out / "NEEDS_REVIEW").is_file())
+
+
+def test_a_stop_on_an_already_answered_form_is_stopped():
+    """The other boundary, and it groups with stale on a DIFFERENT ground worth pinning.
+
+    The app does not refuse an answered form: its answers are recorded and a revise was already
+    dispatched for them, so it summons nobody NEW. Holding here would strand the blog behind a
+    question that has already been answered once.
+    """
+    with _Roots():
+        out = runner.output_dir("brand", "topic-3")
+        out.mkdir(parents=True, exist_ok=True)
+        _seed_unterminated(out, "topic-3")
+        _seed_answered_form(out, "topic-3")
+
+        check("an answered form does not read as current",
+              runner._questions_state("brand", "topic-3") == "answered",
+              f"got {runner._questions_state('brand', 'topic-3')!r}")
+
+        runner._stop_line_if_unterminated(
+            "brand", "topic-3", out, 0, "the operator stopped this brand")
+        terminals = _terminals(out)
+
+        check("a stop on a spent form is stopped, never held a second time",
+              len(terminals) == 1 and terminals[0]["status"] == "stopped", f"got {terminals}")
+        check("no NEEDS_REVIEW marker on the answered arm",
+              not (out / "NEEDS_REVIEW").is_file())
+
+
+# ---------------------------------------------------------------------------
 # facts_gen
 # ---------------------------------------------------------------------------
 
@@ -628,6 +768,10 @@ def main():
                  test_a_crashed_revise_does_not_fail_a_done_blog,
                  test_a_crashed_revise_does_not_leave_a_spent_form_holding_the_blog,
                  test_a_stopped_revise_on_an_unfinished_topic_is_stopped,
+                 test_a_stop_on_a_current_form_is_held_for_the_answer,
+                 test_a_stop_with_no_form_is_stopped,
+                 test_a_stop_on_a_stale_form_is_stopped,
+                 test_a_stop_on_an_already_answered_form_is_stopped,
                  test_a_stopped_facts_build_leaves_no_hollow_fact_base):
         print(f"\n{test.__name__}")
         test()

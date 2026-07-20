@@ -37,11 +37,17 @@ import { useBlogComments } from "@/components/blogs/use-blog-comments";
 import { brandHref } from "@/lib/orgs-context";
 import {
   adminActions,
-  adminAnswerTierReady,
   adminCan,
-  adminWriteTierReady,
   blogState,
+  type BlogState,
 } from "@/lib/blog-state";
+import {
+  adminGateAllows,
+  adminGateStanding,
+  type GateApplying,
+  type GateForm,
+  type GateInput,
+} from "@/lib/gate-contract";
 import { formatAbsolute, formatCount, formatRelative } from "@/lib/format";
 import { useBlogQuestions } from "@/lib/use-blog-questions";
 import { ApiError, api } from "@/lib/api";
@@ -55,6 +61,43 @@ const TABS: { name: OutputFile; label: string }[] = [
   { name: "eval.md", label: "Eval" },
   { name: "dossier.md", label: "Dossier" },
 ];
+
+/**
+ * Whether the comment rail is FETCHED for a state, which is a question about reading and never
+ * about writing.
+ *
+ * The rail is READ even where the admin may not act on it, and that is deliberate. A client's
+ * suggestions are the whole reason an article comes back, so an admin looking at a blog that is
+ * out for review, approved or published has to be able to see what was said about it. Leaving the
+ * hook idle in those states would render an empty margin beside the article, which claims nobody
+ * has asked for anything: strictly worse than being unable to act, because it is wrong rather than
+ * merely limited. What the state decides is whether those cards carry doors, and that is
+ * `canComment`, not this.
+ *
+ * IT READS THE BENCH ALONE, AND IT USED TO READ `canComment`, WHICH IS NOW A CYCLE. Two refusals
+ * in the gate turn on how many changes are mid-apply, that count comes from this rail, and the
+ * flag this used to depend on now comes out of the gate. Cutting the dependency is also the more
+ * correct shape on its own terms: the gate decides whether the record will take a WRITE, and
+ * gating a READ on a write refusal is a category error. The practical difference is that the rail
+ * is now fetched in a few states where every write is refused, which costs one GET and buys the
+ * margin its contents.
+ *
+ * `answers_submitted` IS DELIBERATELY NOT REACHED BY THIS TEST, and the line it draws is a SEND
+ * rather than "with the team". Every state that reaches it is at or past a send, which is the only
+ * way a client suggestion can exist: clientActions offers `suggest` in client_review alone.
+ * `answers_submitted` carries no send stamp by construction, because a send outranks it in
+ * blogState's ladder, so there is no client conversation for the margin to omit.
+ *
+ * THE STATES ARE NAMED BY THE GRANT RATHER THAN LISTED BY HAND. blog-state.ts hands `reply` to
+ * client_review, approved and published, and `comments` to the bench states, which is exactly the
+ * set this used to spell out. Reading it off the bench ties the fetch to the reason for the fetch,
+ * so a future state that gains either door gets its rail read without anyone remembering to come
+ * back here. HOSTED_READONLY is deliberately not consulted, because reading is exactly what that
+ * build is for.
+ */
+function commentRailVisible(state: BlogState): boolean {
+  return adminCan(state, "comments") || adminCan(state, "reply");
+}
 
 /**
  * One blog's own page: the admin-review stage.
@@ -192,6 +235,30 @@ function StageBody({
     reloadQuestions();
   }, [onChanged, reloadQuestions]);
 
+  /**
+   * THE QUESTION FORM AS THE GATE CONTRACT NEEDS IT, which is the two fields POST /answers and
+   * POST /revise actually read and nothing else.
+   *
+   * THREE OUTCOMES, AND FLATTENING ANY TWO OF THEM IS A DEFECT. A topic missing from the map has
+   * not been read yet, and "not read yet" is not a fact about anything: the contract answers
+   * `unknowable` for it and every control that depends on the form is withheld until the read
+   * lands. A present entry with a null payload is the engine's own 404, which IS a fact and means
+   * there is no form. An entry carrying the engine's error is NOT a 404 and must never be read as
+   * one, because a page that cannot say whether a form exists must not claim there is none, so it
+   * degrades to "unread" and withholds rather than to "absent" and refuses with a reason it did
+   * not earn.
+   */
+  const questionForm = React.useMemo<GateForm>(() => {
+    const entry = byTopic.get(topicSlug);
+    if (entry === undefined || entry.error !== null) {
+      return "unread";
+    }
+    if (entry.payload === null) {
+      return "absent";
+    }
+    return { stale: entry.payload.stale, answered: entry.payload.answered };
+  }, [byTopic, topicSlug]);
+
   // Where this blog sits with the client: sent, approved, and how many suggestions are
   // still open. Read beside the summary rather than derived from it, because a resolve or
   // a dismiss moves this state and refetching the whole blogs list for one chip is noise.
@@ -260,65 +327,120 @@ function StageBody({
    * the CLIENT and not a place an article sits. Its blogs are precoded placeholder text, so no
    * act on this page means anything for one, whatever state the record is in.
    *
-   * adminWriteTierReady IS THE DISCRIMINATING LAYER `edit` AND `comments` NEVER HAD, and its
-   * absence is the defect that shipped three times. `send` has had one since it was written, in
-   * SendToClient's blockedReason reading the status, and `answer` has had one in AnswerQuestions
-   * reading the form. These two were granted off the state bench with nothing in front of them, so
-   * in the one state whose status is not fixed by its own definition, `answers_submitted`, both
-   * controls rendered over a record migration 009 refuses: the Edit button saved into a
-   * PORTAL:NOTDONE and the selection composer filed a comment into the same one. blog-state.ts
-   * carries the full reasoning, including why the state is not split in two instead.
+   * THE GATE CONTRACT IS THE DISCRIMINATING LAYER, AND IT IS NOT A PREDICATE THIS FILE OR
+   * blog-state.ts WRITES. It evaluates gate-contract.ts's clauses, each of which carries the
+   * verbatim source line that performs the refusal, and dashboard/tests/gate-contract.test.ts
+   * re-derives those lines and a fingerprint of every gating function from the migrations,
+   * server/app.py, server/cms/gate.py and server/blog_edit.py on every run. Change a gate in SQL
+   * and touch no TypeScript and that suite goes red. Five earlier rounds of this defect were each
+   * a hand-written restatement of one of those rules, and each was silent when it was wrong, which
+   * is why the restatement itself had to go rather than its contents.
    *
-   * READ OFF `blog` RATHER THAN OFF `state`, on purpose and unavoidably. The status is exactly the
-   * fact the state folds away, so composing the bench with the record is the only way to get it
-   * back, and reaching for `state` here would reproduce the bug one line lower down.
+   * THE RECORD IS PASSED, NOT THE STATE, on purpose and unavoidably. The status is exactly the
+   * fact the state folds away, so handing the contract the record is the only way to get it back,
+   * and reaching for `state` here would reproduce the bug one line lower down.
+   *
+   * THE COMMENT RAIL IS FETCHED BEFORE ANY OF THESE FLAGS NOW, and that order is forced rather
+   * than stylistic. Two refusals turn on how many changes are mid-apply: migration 010's
+   * admin_save_blog_content raises PORTAL:APPLYING on the save, and the engine's comment route
+   * raises at blog_edit.MAX_IN_FLIGHT. Both belong in the gate, the gate needs the count, and the
+   * count comes from the rail, so the rail cannot wait on a flag the gate produces.
    */
-  const canEdit =
-    !demoMode && !HOSTED_READONLY && adminCan(state, "edit") && adminWriteTierReady(blog);
+  const commentsVisible = commentRailVisible(state);
+  // Read once per visit, then watched only while an apply this operator started is settling.
+  // A client's suggestion arriving is NOT watched for: it lands in the bell at the next read
+  // of the blogs library, which is what a refresh is for.
+  const comments = useBlogComments(brandSlug, topicSlug, commentsVisible);
   /**
-   * NO HOSTED_READONLY TERM HERE, DELIBERATELY, and canEdit above carries one. They differ because
-   * this flag has a second consumer: commentsVisible reads it to decide whether the rail is
-   * FETCHED, and an admin on the hosted build must still be able to read what the client asked
-   * for. Folding the deployment axis in here would empty the margin beside the article on the
-   * build that exists mostly to read them. The write half of this axis is canRunClaude below,
-   * which is what the composer and the resolve doors are gated on.
+   * HOW MANY CHANGES ARE MID-APPLY, or "unread" when nobody has told this page yet.
+   *
+   * THE THREE OUTCOMES ARE THE FORM'S THREE, for the same reason. A rail that has not landed, or
+   * that came back an error, is not a fact about anything, and a page that cannot say how many
+   * applies are running must not claim there are none: the contract answers `unknowable` and the
+   * control is withheld until the read lands. A rail nobody is fetching, because this state has no
+   * conversation to show, is a real zero: `commentsVisible` is false exactly where no client
+   * suggestion can exist and no operator apply is in flight.
    */
-  const canComment = !demoMode && adminCan(state, "comments") && adminWriteTierReady(blog);
-  const canSend = !demoMode && adminCan(state, "send");
-  const canPublish = !demoMode && adminCan(state, "publish");
+  const applyingFact = React.useMemo<GateApplying>(() => {
+    if (!commentsVisible) {
+      return 0;
+    }
+    if (comments.error !== null || comments.checking) {
+      return "unread";
+    }
+    return comments.comments.filter((comment) => comment.state === "applying").length;
+  }, [commentsVisible, comments.error, comments.checking, comments.comments]);
+  const applying = applyingFact === "unread" ? 0 : applyingFact;
+
+  const gateInput: GateInput = { record: blog, form: questionForm, applying: applyingFact };
   /**
-   * adminAnswerTierReady IS THE LAYER `answer` WAS BELIEVED TO HAVE AND DID NOT, and its absence
-   * is round four of the same defect the two flags above closed in round three.
+   * EDIT IS A STANDING RATHER THAN A BOOLEAN, and the difference is the greyed button.
    *
-   * The claim it replaces was that AnswerQuestions discriminates on its own, finding no form once
-   * the revise's finally-arm has cleared it. The panel reads the RECORD rather than the disk, and
-   * server/sync.py spares answered evaluator rows from the post-revise delete, so the form
-   * survives; questions-state.ts modeOf tests `answered` before `stale`, so an answered stale form
-   * takes the answered branch and draws "Rerun with their answers"; and server/app.py:1538 refuses
-   * that rerun as stale. The control rendered and 409'd on every record in `answers_submitted`
-   * except the one where the rerun has genuinely not run.
+   * This file's rule is that a control refused by the STATE is gone rather than greyed, with a
+   * stated exception for conditions that clear on their own, an apply already in flight among
+   * them. That exception used to be implemented HERE, as a hand written `applying > 0` on the
+   * button's disabled prop, sitting under a canEdit that knew nothing about the refusal it was
+   * restating. The contract now carries which of its clauses are transient, so the page reads the
+   * shape of the control off the layer that performs the refusal instead of deciding it alone.
+   */
+  const editStanding = adminGateStanding("edit", gateInput);
+  const canEdit = !demoMode && !HOSTED_READONLY && adminCan(state, "edit") && editStanding.mount;
+  /**
+   * NO HOSTED_READONLY TERM HERE, DELIBERATELY, and canEdit above carries one. The write half of
+   * this axis is canRunClaude below, which is what the composer and the resolve doors are gated
+   * on, and an admin on the hosted build must still be able to read what the client asked for.
+   */
+  const commentStanding = adminGateStanding("comments", gateInput);
+  const canComment = !demoMode && adminCan(state, "comments") && commentStanding.mount;
+  /**
+   * SEND AND PUBLISH CARRY THE CONTRACT TERM NOW, and their not carrying one was its own round of
+   * this defect. The binding test in gate-contract.test.ts iterated three of the six acts, so
+   * these two were free to keep private opinions and did: the send's real refusals live in
+   * migration 009's admin_send_blog_to_client and server/app.py's send route, and the publish's
+   * live in server/cms/gate.py, which refuses any push whose terminal status is not exactly
+   * "done". The contract was declaring `publish` unconditional at the time.
    *
-   * READ OFF `blog` RATHER THAN OFF `state`, for the same unavoidable reason canEdit is: the
-   * status is the fact the state folds away, and the form's currency is derivable from the status
-   * and from nothing else this page holds.
+   * BOTH ARE GONE RATHER THAN GREYED, which is what `mount` answers here: every clause behind them
+   * is permanent, so there is nothing to wait out. The child components keep their own reason
+   * sentences for the operator, and those sentences are now downstream of a decision made here.
+   */
+  const canSend = !demoMode && adminCan(state, "send") && adminGateAllows("send", gateInput);
+  const canPublish =
+    !demoMode && adminCan(state, "publish") && adminGateAllows("publish", gateInput);
+  /**
+   * THE `answer` VERB IS TWO DOORS AND BOTH GATE ON THE FORM, NEVER ON THE STATUS. Rounds four and
+   * five of one defect were both this flag, and the second one is why nothing here restates a rule
+   * any more.
    *
-   * THE !HOSTED_READONLY TERM IS THE DEPLOYMENT AXIS, and this was the last admin write flag
-   * without one: canEdit, canReply and canRunClaude all carry it. The claim that stood in its
-   * place was that AnswerQuestions gates itself, which is the SAME shape of claim this flag's own
-   * paragraph above records as round four of a defect, and it is weaker here than it looks: the
-   * gate being relied on lives in another file, on the record axis rather than the deployment one,
-   * so it answers a different question and cannot stand in for this one. A discriminating layer
-   * asserted in a comment is the same as no layer, which is this file's whole thesis.
+   * Round four believed AnswerQuestions discriminated on its own by finding no form once the
+   * revise's finally-arm cleared it. The panel reads the RECORD rather than the disk, server/sync.py
+   * spares answered evaluator rows from the post-revise delete, and questions-state.ts modeOf tests
+   * `answered` before `stale`, so an answered stale form took the answered branch and drew "Rerun
+   * with their answers" over a form server/app.py:1538 refuses. Round five moved the decision here
+   * and derived it from `status === "needs_review"`, off a stated biconditional between that status
+   * and a current answerable form. revise_topic's three restore arms append a terminal line
+   * carrying `prev_terminal["status"]` without passing it through _enforce_terminal_status, so a
+   * spent or stale form sits beside that status routinely and the biconditional is false.
    *
-   * What the term closes is not hypothetical. There is no hosted answers route and no hosted
-   * revise route at all, so on the hosted build both doors this control opens lead nowhere: an
-   * answer submit and the Rerun that follows it have nothing to reach. Offering a control the
-   * build cannot serve is the same offered-but-refused shape canRunClaude closes for the
-   * composer, and the honest reading is that this flag was safe by accident rather than by
-   * construction.
+   * SO THE PAGE ASKS THE FORM, WHICH IT WAS ALREADY HOLDING. `stale` and `answered` are the two
+   * fields POST /answers and POST /revise actually read, GET blogQuestions has always returned
+   * them, and useBlogQuestions above already fetched them for this topic. The fact was on the wire
+   * the whole time and every round so far reached for a proxy instead of it.
+   *
+   * AN UNREAD FORM WITHHOLDS THE CONTROL RATHER THAN GUESSING IT. `questionForm` is "unread" until
+   * the read lands, the contract answers `unknowable`, and `adminGateAllows` fails closed. Every
+   * previous round failed OPEN, and a control absent for the moment a read is in flight is a
+   * smaller harm than one that argues with the record.
+   *
+   * THE !HOSTED_READONLY TERM IS THE DEPLOYMENT AXIS, which is a different question from the record
+   * axis the contract answers and cannot be folded into it. There is no hosted answers route and no
+   * hosted revise route at all, so on that build both doors lead nowhere.
    */
   const canAnswer =
-    !demoMode && !HOSTED_READONLY && adminCan(state, "answer") && adminAnswerTierReady(blog);
+    !demoMode &&
+    !HOSTED_READONLY &&
+    adminCan(state, "answer") &&
+    adminGateAllows("answer", gateInput);
   /**
    * REPLYING IN AN EXISTING THREAD, which is a door of its own now and not a corner of `comments`.
    *
@@ -332,8 +454,19 @@ function StageBody({
    * build, while this feeds a control that writes. blogs/[topic]/comments/[id]/reply/route.ts
    * answers 501 hostedWriteRefused, so offering the box there would be the deployment-axis twin of
    * the bench defect this file keeps closing.
+   *
+   * THE CONTRACT TERM IS HERE EVEN THOUGH `reply` CARRIES NO CLAUSE TODAY, and that is the point
+   * rather than a redundancy. Migration 011's admin_reply_comment has no done gate and no approved
+   * gate, migration 013 exempts a reply by name, and the engine's reply route says both absences in
+   * its docstring, so the contract's door for this verb is deliberately empty. Asking anyway means
+   * the day a gate is added to any of those three, the clause lands in one table and this control
+   * follows it. An act exempted by hand here would have to be remembered instead.
    */
-  const canReply = !demoMode && !HOSTED_READONLY && (canComment || adminCan(state, "reply"));
+  const canReply =
+    !demoMode &&
+    !HOSTED_READONLY &&
+    adminGateAllows("reply", gateInput) &&
+    (canComment || adminCan(state, "reply"));
 
   /**
    * WHAT STILL NEEDS AN ENGINE, and it is a SEPARATE AXIS that stays separate.
@@ -355,46 +488,12 @@ function StageBody({
   const canRunClaude = !HOSTED_READONLY && canComment;
 
   /**
-   * The rail is READ even where the admin may not act on it, and that is deliberate.
-   *
-   * A client's suggestions are the whole reason an article comes back, so an admin looking at a
-   * blog that is out for review, approved or published has to be able to see what was said about
-   * it. Leaving the hook idle in those states would render an empty margin beside the article,
-   * which claims nobody has asked for anything: strictly worse than being unable to act, because
-   * it is wrong rather than merely limited. What the state decides is whether those cards carry
-   * doors, and that is `canComment` below, not this.
-   *
-   * `answers_submitted` IS DELIBERATELY NOT REACHED BY THIS TEST, and the line it draws is a SEND
-   * rather than "with the team". Every state that reaches it is at or past a send, which is the
-   * only way a client suggestion can exist: clientActions offers `suggest` in client_review alone.
-   * `answers_submitted` carries no send stamp by construction, because a send outranks it in
-   * blogState's ladder, so there is no client conversation for the margin to omit. Adding it
-   * would buy a fetch that can only come back empty, and it would put this out of step with
-   * has_questions and generating, which sit in exactly the same position and are also absent.
-   *
-   * THE THREE STATES ARE NOW NAMED BY THE GRANT RATHER THAN LISTED BY HAND, and it is the same
-   * three: blog-state.ts hands `reply` to client_review, approved and published, which is exactly
-   * the set this list used to spell out. Reading it off the bench ties the fetch to the reason for
-   * the fetch, so a future state that gains a reply door gets its rail read without anyone
-   * remembering to come back here, and one that loses the door stops paying for a rail nobody can
-   * use. HOSTED_READONLY is deliberately not consulted, because reading is exactly what that build
-   * is for: this is `adminCan` and not `canReply`.
-   */
-  const commentsVisible = canComment || adminCan(state, "reply");
-
-  /**
    * The draft the editor is actually holding, and null the moment the state stops permitting an
    * edit. A client approving while this page sits open locks the article for everyone, this side
    * included, so a textarea left standing over that promises a save the engine refuses. Dropping
    * back to the read view says so by construction, and the tag beside the title says why.
    */
   const editorDraft = canEdit ? editDraft : null;
-
-  // Read once per visit, then watched only while an apply this operator started is settling.
-  // A client's suggestion arriving is NOT watched for: it lands in the bell at the next read
-  // of the blogs library, which is what a refresh is for.
-  const comments = useBlogComments(brandSlug, topicSlug, commentsVisible);
-  const applying = comments.comments.filter((comment) => comment.state === "applying").length;
 
   // Announce each comment that settles, once, and re-read the article it changed. The ref
   // carries the states already seen, so a poll that returns the same settled comment twice
@@ -687,14 +786,22 @@ function StageBody({
                   state allows one but this moment does not. That split is the whole rule on
                   this page: an in-flight Claude apply clears by itself, so the button stays and
                   explains itself, while an approved article never reopens and a greyed control
-                  over it would be an invitation to look for a way in. */}
+                  over it would be an invitation to look for a way in.
+
+                  BOTH HALVES COME FROM THE CONTRACT NOW. `canEdit` above is its `mount`, and
+                  this is its `act`: the disabled term used to read `applying > 0`, which is this
+                  page restating migration 010's PORTAL:APPLYING condition in its own words one
+                  layer below a canEdit that knew nothing about it. A restatement is silent when
+                  it is wrong, which is every round of this defect, so the condition is read off
+                  the clause and the sentence beside it is the layer's own reason. */}
               {canEdit && tab === "blog.md" && editorDraft === null ? (
                 <EditButton
-                  disabled={articleText === null || applying > 0}
+                  disabled={articleText === null || !editStanding.act}
                   reason={
-                    applying > 0
-                      ? "A Claude change is being applied. Edit once it lands, so the two writes cannot race."
-                      : null
+                    editStanding.waitingOn === null
+                      ? null
+                      : "A Claude change is being applied. Edit once it lands, so the two writes " +
+                        "cannot race."
                   }
                   onClick={() => setEditDraft(articleText)}
                 />

@@ -5,11 +5,31 @@
   "engines": {
     "node": ">=20.18.1"
   },
+  "//scripts": [
+    "THE TEST GLOB IS QUOTED ON PURPOSE AND THE QUOTES ARE THE PORTABLE PART. Unquoted,",
+    "tests/*.test.ts is expanded by the SHELL, which works under sh on macOS and Linux and does",
+    "not work at all under the cmd.exe that npm uses on Windows, where the pattern would reach",
+    "node as a literal filename and the run would die on a file that does not exist. Quoted, the",
+    "shell passes the pattern through untouched and node's own test runner expands it, which it",
+    "does identically on all three platforms.",
+    "",
+    "THE DIRECTORY FORM IS NOT AN OPTION HERE, which is worth recording because it is the obvious",
+    "thing to reach for. node --test tests/ picks up tests/gate-extract.ts, a helper that defines",
+    "no tests, and the run fails outright rather than skipping it. Matching *.test.ts is what",
+    "keeps helpers and tests in one directory without the helpers being treated as suites.",
+    "",
+    "WHY THESE TWO SCRIPTS EXIST AT ALL. Before them there was no test script in this file and no",
+    "test step in CI, so the suites ran only when a person remembered the exact node incantation.",
+    "A mechanism nobody runs is the same as no mechanism, which is precisely the lesson the state",
+    "machine defect these suites guard had already taught twice."
+  ],
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --test \"tests/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

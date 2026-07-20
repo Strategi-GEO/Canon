@@ -32,7 +32,23 @@ on:
       - "v*"
 
 jobs:
+  # THE RELEASE IS GATED ON THE TESTS, and this job is the whole of that gate. It runs the suite
+  # defined in tests.yml rather than a second copy of it, so the checks a release must pass are
+  # the same checks every push already runs, and there is no way for the two to drift apart into
+  # a tag build that is green about something the branch build is red about.
+  #
+  # WHY IT IS A CALL AND NOT A STEP INSIDE `build`. The build below is a macOS and Windows matrix
+  # with fail-fast disabled, so a test step placed inside it would run twice, on two slow runners,
+  # and a red result on one leg would leave the other still grinding through a package nobody can
+  # ship. Hoisting it to its own job means the suite runs once, on one cheap runner, and `needs`
+  # stops both legs before either fetches 262 MB of runtimes for a tree that already failed.
+  test:
+    uses: ./.github/workflows/tests.yml
+
   build:
+    # A red suite stops the package here, before any artifact exists to be mistaken for a good
+    # one. The release job downstream depends on this build, so the gate reaches the release too.
+    needs: test
     strategy:
       fail-fast: false
       matrix:

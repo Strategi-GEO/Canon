@@ -152,6 +152,15 @@ create policy resources_bucket_visible on storage.buckets for select to authenti
 -- to relabel the file. Size is the opposite, being the one property of an upload that cannot be
 -- misdeclared to Storage, so the size cap is the load-bearing control and it carries this alone.
 --
+-- WHAT THIS LINE DOES NOT CAP, NAMED HERE SO IT IS NOT MISTAKEN FOR A FULL ANSWER.
+-- file_size_limit governs ONE object in ONE upload and says nothing about how many objects
+-- there are, so a write seat can PUT distinct 25 MiB objects under its own prefix without end.
+-- Migration 017 adds the per-brand bound that closes that, a trigger on storage.objects reading
+-- resource_prefix_max_objects() and resource_prefix_max_bytes(). The two paragraphs above also
+-- name the second half of the move, indexing an upload as 1024 bytes, and 016's portal_resource_add
+-- now cross-checks the declared size against the size Storage recorded wherever it can see the
+-- object row, so that half is answered where the claim is made rather than here.
+--
 -- An UPDATE and not an INSERT, because supabase/migrate.py owns creating this bucket and a
 -- second creator here would race it. Where the row is absent this updates nothing, which is
 -- correct rather than a failure: on a fresh project schema.sql runs BEFORE upload_resources

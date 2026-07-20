@@ -18,11 +18,9 @@ import assert from "node:assert/strict";
 
 import {
   adminActions,
-  adminAnswerTierReady,
   adminCan,
   adminTag,
   adminUrgency,
-  adminWriteTierReady,
   blogState,
   clientActions,
   clientCan,
@@ -33,6 +31,7 @@ import {
   type BlogStateFacts,
   type ClientAction,
 } from "../src/lib/blog-state.ts";
+import { adminGateAllows, type GateForm } from "../src/lib/gate-contract.ts";
 
 const ALL_STATES: BlogState[] = [
   "generating",
@@ -439,170 +438,85 @@ test("no state that only an admin act can leave is left with an empty admin benc
 });
 
 /**
- * WHAT THE LAYERS UNDER THIS TABLE WILL ACTUALLY ACCEPT.
+ * WHAT THE LAYERS UNDER THIS TABLE WILL ACTUALLY ACCEPT, ASKED OF THE CONTRACT RATHER THAN
+ * RESTATED HERE.
  *
- * THE TEST THAT WOULD HAVE CAUGHT THE SECOND VERSION OF THE DEAD END, which every test above it
- * missed. `answers_submitted` first read `[]`, which stranded the article, and the fix read
- * ["edit", "comments", "send"]. The row-value test went green on that, the empty-bench partition
- * went green on it, and the sharper send claim went green on it, because all three ask questions
- * about THIS FILE. None of them can ask the only question that decides whether an operator can
- * move the article: does anything underneath accept the act being offered.
+ * A HAND MODEL USED TO SIT AT THIS SPOT AND IT WAS THE DEFECT, NOT THE GUARD. It restated, in
+ * TypeScript, the refusals that live in migration 009 and in server/app.py, each with a file and
+ * line citation, on a premise written out at length: that nothing in this process can reach
+ * Postgres, so a modelled gate was the only gate available. THE PREMISE IS FALSE. This process
+ * cannot reach Postgres and it can trivially reach the SQL FILE, which is where the rule is
+ * written, and reading the rule beats re-typing it.
  *
- * THE ANSWER WAS NO, ON ALL THREE ACTS. Migration 009's admin_done_topic reads topic_rollup.status
- * and raises PORTAL:NOTDONE unless it is exactly 'done', and the send (:180), the comment (:299)
- * and the content save (:352) all pass through it. So on a blog whose client had answered and
- * whose rerun had not run, the status was still `needs_review` and the database refused the whole
- * bench. The dead end had not been removed, it had been moved down a layer and given three
- * buttons.
+ * WHAT THE RESTATEMENT COST. It was wrong twice and this suite stayed green both times, because a
+ * green invariant over a hand model proves only that the model agrees with itself. Round four
+ * modelled the revise route as one condition out of seven and certified a control that 409s. Round
+ * five replaced it with a derivation off the stated biconditional
+ * "status === needs_review <=> a current answerable form exists", which the engine does not hold:
+ * revise_topic's three restore arms append a terminal line carrying prev_terminal["status"]
+ * without passing it through _enforce_terminal_status, so a spent or stale form sits beside
+ * needs_review routinely. That derivation was written into THIS FILE as the model, so the model
+ * and the code under test shared one wrong belief and agreed perfectly.
  *
- * SO THIS TEST IS OVER FACT RECORDS, NOT OVER STATES, and that is the point rather than a detail.
- * One state covers two situations that differ only in the status underneath it, which is precisely
- * the fact the state folds away and precisely the fact every layer below keys on. A test indexed
- * by state cannot express the difference, and a test indexed by state is what the file already had
- * three of.
+ * SO THE MODEL IS GONE AND THE CONTRACT ANSWERS INSTEAD. gate-contract.ts holds each refusal as a
+ * clause carrying the verbatim source line that performs it, and tests/gate-contract.test.ts
+ * re-derives those lines and a fingerprint of every gating function from
+ * supabase/migrations/009_admin_write_tier.sql and server/app.py on every run. Change the gate in
+ * SQL and touch no TypeScript and that suite goes red. This file no longer has an opinion about
+ * what the database does, which is the only way it can stop being wrong about it.
  *
- * THE MODEL BELOW IS HAND-WRITTEN AND THEREFORE CAN DRIFT. That is accepted with the trade named:
- * nothing in this process can reach Postgres, so the alternative to a modelled gate is no gate
- * checked at all, which is the state that shipped the bug twice. Each rule cites the file and line
- * it mirrors so a reader can go and check it, and each takes the STRICTER of the two surfaces
- * where they differ, because a bench has to work for an operator on the hosted build as well as on
- * the local engine, and an act only one of them accepts is not a door.
- *
- * ROUND 4 SHIPPED A GREEN RUN OVER A WRONG MODEL, WHICH IS WORSE THAN NO MODEL AT ALL, and that
- * is the failure this rewrite is here to close. `answer` was modelled as `!facts.client_approved`
- * on the strength of one line of server/app.py, and the real route is seven refusals deep. So the
- * test certified a control that 409s, in the exact state the whole file exists to get right, and
- * the certification is what made the fourth round look finished.
- *
- * SO EVERY CONDITION BELOW IS ENUMERATED, NOT SUMMARISED, AND CARRIES ITS OWN file:line. A rule
- * with one citation covering four refusals is how a missing refusal hides: the reader checks the
- * line, finds it says what the comment says, and never learns that three more lines follow it.
- * The provenance is per condition so a drift check is a diff rather than a re-derivation.
- *
- * CONDITIONS THIS RECORD CANNOT EXPRESS ARE NAMED WHERE THEY ARE DROPPED, never silently omitted.
- * BlogStateFacts carries five fields and a route can refuse on facts none of them holds. Where a
- * refusal is unmodellable the comment says so and says why dropping it is safe, which is a claim
- * a reviewer can attack. An unstated omission is not.
+ * WHAT REMAINS BELOW IS THE DELIVERY LADDER, AND IT IS NOT A RESTATEMENT. The approved lock, the
+ * out-with-client refusal and the open-suggestion WHERE clause all turn on the send, approval and
+ * change-round stamps, which are the very facts blogState is computed FROM. They are not facts the
+ * state folds away, so there is no second key for them to come apart on, and gate-contract.ts
+ * names each of them as deliberately out of its scope for that reason. Checking them here is
+ * checking that this file agrees with itself about its own inputs, which is a fair thing for this
+ * file to do and the only thing it is still qualified to say.
  */
-function lowerLayerAccepts(action: AdminAction, facts: BlogStateFacts): boolean {
+function lowerLayerAccepts(
+  action: AdminAction,
+  facts: BlogStateFacts,
+  form: GateForm,
+): boolean {
+  // The status and the question form, from the one definition that is checked against the SQL and
+  // the Python. Nothing here re-derives either.
+  if (!adminGateAllows(action, { record: facts, form })) {
+    return false;
+  }
+  // A live run derives `generating`, whose bench is empty, so this can never actually be reached.
+  // It is written anyway, because a bench that depended on an unreachable case staying unreachable
+  // is the shape of guard this whole area keeps learning not to trust.
+  if (facts.live) {
+    return false;
+  }
   switch (action) {
-    // POST /api/clients/{slug}/blogs/{topic}/content, server/app.py api_save_blog_content, and
-    // POST .../comments, api_add_blog_comment. Their refusals, in the order each route runs them:
-    //
-    //   demo brand                app.py:1968 / :1778.       NOT MODELLED: demoMode is a property
-    //                             of the CLIENT and is not a BlogStateFacts field. blog-stage.tsx
-    //                             ANDs it into every flag on the page, so it can never be the
-    //                             thing that makes a bench dishonest.
-    //   unknown topic             app.py:1970 / :1780.       Unreachable: the page is rendered
-    //                             from a topic the same record produced.
-    //   status is not 'done'      app.py:1971 / :1781 via _require_done (:1640), and on the
-    //                             hosted build migration 009's admin_done_topic (009:145, restated
-    //                             013:137) raising PORTAL:NOTDONE from admin_save_blog_content
-    //                             (009:352) and admin_add_comment (009:299). MODELLED.
-    //   client approved           app.py:1976 / :1787 via _require_not_approved (:1652), plus
-    //                             013's refuse_version_when_approved and
-    //                             refuse_comment_when_approved triggers, plus 013:141 inside
-    //                             admin_done_topic. MODELLED, and it is subsumed by the status
-    //                             test only by accident, so it is written out.
-    //   out with the client       app.py:1982 / :1796 via _require_not_with_client (:1716), which
-    //                             is "sent AND no change round open", exactly blogState's
-    //                             `client_review`. MODELLED.
-    //   a run is live             app.py:1983 / :1797. Modelled through `live`, which derives
-    //                             `generating`, whose bench is empty, so it can never be reached.
+    // The approved lock (migration 013's refuse_version_when_approved and
+    // refuse_comment_when_approved, plus _require_not_approved) and the out-with-client refusal
+    // (_require_not_with_client, which is "sent AND no change round open", exactly blogState's
+    // `client_review`). Both read stamps blogState is computed from.
     case "edit":
     case "comments":
       return (
-        facts.status === "done" &&
         !facts.client_approved &&
-        !(facts.sent_to_client && !(facts.change_round_open ?? (facts.changes_requested ?? 0) > 0)) &&
-        !facts.live
+        !(facts.sent_to_client && !(facts.change_round_open ?? (facts.changes_requested ?? 0) > 0))
       );
-    // POST .../send, server/app.py api_send_blog_to_client:
-    //
-    //   demo brand                app.py:2028. Not modelled, as above.
-    //   unknown topic             app.py:2030. Unreachable, as above.
-    //   status is not 'done'      app.py:2031 via _require_done (:1640), and 009:180 resolving
-    //                             through admin_done_topic (009:145). MODELLED.
-    //   client approved           app.py:2042 via _require_not_approved (:1652), and 013:141
-    //                             inside the same admin_done_topic. MODELLED.
-    //   open client suggestions   mark_sent's own WHERE clause, answered as None and turned into
-    //                             a 409 at app.py:2045, mirrored on the hosted build by 009:202.
-    //                             A WHERE clause rather than a pre-check, so zero rows IS the
-    //                             refusal. MODELLED through changes_requested, which counts
-    //                             exactly the top-level client comments in state open or
-    //                             applying that the clause tests.
+    // The approved lock again, plus mark_sent's open-suggestion WHERE clause, mirrored on the
+    // hosted build by 009:202. A WHERE clause rather than a pre-check, so zero rows IS the
+    // refusal, and `changes_requested` counts exactly the top-level client comments in state open
+    // or applying that the clause tests.
     case "send":
-      return (
-        facts.status === "done" &&
-        !facts.client_approved &&
-        (facts.changes_requested ?? 0) === 0
-      );
-    // POST .../revise, server/app.py api_revise_answered, THE ROUTE ROUND 4 MODELLED WITH ONE
-    // CONDITION OUT OF SEVEN. In the order the route runs them:
-    //
-    //   demo brand                app.py:1526. Not modelled, as above.
-    //   unknown topic             app.py:1528. Unreachable, as above.
-    //   client approved           app.py:1532 via _require_not_approved (:1652). MODELLED.
-    //   no question form at all   app.py:1534 to :1536, NoQuestions raised by
-    //                             questions.describe_questions (server/questions.py:336) becomes
-    //                             a 404. MODELLED, see the status derivation below.
-    //   THE FORM IS STALE         app.py:1538. questions.py:375 computes it as the form's version
-    //                             anchor having moved OR its iteration having moved. MODELLED,
-    //                             and its absence is the entire round-4 defect.
-    //   the form is unanswered    app.py:1544. NOT REACHABLE while `answers_submitted` is set:
-    //                             that stamp means every question of the newest evaluator round
-    //                             carries a CLIENT reply (server/app.py:1280 to :1301 and the
-    //                             hosted twin at blogs/route.ts:208 to :219), while
-    //                             questions.py:376 computes `answered` author-agnostically over
-    //                             the same round, so the stamp implies the flag. Named rather
-    //                             than dropped, because the implication is the reason and it is
-    //                             not obvious.
-    //   a run is live             app.py:1550. Derives `generating`, as above.
-    //   the rerun is claimed      app.py:1558, client_answers.claim. Another machine's engine is
-    //                             mid-rerun on this topic. NOT MODELLED: no field carries it, it
-    //                             is transient, and it clears itself when that task settles.
-    //
-    // THE STALE ARM IS DERIVED FROM THE STATUS RATHER THAN RESTATED, which is what makes it
-    // checkable at all from a record that carries no form anchor. server/runner.py
-    // _enforce_terminal_status (:817) is symmetric on the question axis and says so at :825 to
-    // :830: a claimed needs_review with nothing CURRENT to answer is corrected to done or failed,
-    // and a claimed done or failed over a CURRENT form is corrected back to needs_review. The
-    // stop path does the same in the same direction (runner.py:531, which holds the topic at
-    // needs_review rather than recording it stopped when a form is live). So the terminal status
-    // and the form's currency are two names for one fact:
-    //
-    //     status === "needs_review"  <=>  a current, answerable form exists.
-    //
-    // Every other terminal status therefore implies the form is stale or gone, which is exactly
-    // the 409 at :1538 and the 404 at :1536. That is a DERIVATION off a named invariant, not a
-    // guess, and it is why this arm can be trusted from five fields.
-    //
-    // AND IT IS WHY `done` WITH A SUBMIT STAMP IS THE SHARPEST CASE. A clean rerun commits a new
-    // blog_versions row, which moves the form's anchor, while server/sync.py:546 to :551 spares
-    // ANSWERED evaluator rows from the post-revise delete. So the answered form survives in the
-    // record, the submit stamp survives with it, questions-state.ts modeOf (:60) tests `answered`
-    // BEFORE `stale` and returns "answered", and answer-questions.tsx:208 draws the Rerun button
-    // over a form the route refuses as stale.
+      return !facts.client_approved && (facts.changes_requested ?? 0) === 0;
+    // Both doors behind this verb refuse an approved article, and the answer door is where that
+    // matters: an answer dispatches a surgical revise, which rewrites the draft and commits a
+    // version, so it is a full edit reached through the answer door. `approved` is a state whose
+    // bench grants no `answer`, so this is belt and braces rather than the thing that saves it.
     case "answer":
-      return facts.status === "needs_review" && !facts.client_approved && !facts.live;
-    // POST .../comments/{id}/reply, server/app.py api_reply_blog_comment (:1898). Its docstring
-    // at :1912 states the absences and the reason: no demo refusal and no done gate, because
-    // those exist to protect an act that spends API credits on an article worth polishing, and a
-    // reply spends neither. Migration 011's admin_reply_comment (011:32) is the hosted twin and
-    // carries the same three refusals and no more: unknown topic (011:47), an empty body
-    // (011:53), and an unknown parent comment (011:62). Migration 013 exempts replies from the
-    // approved lock explicitly, at 013:18 and again in refuse_comment_when_approved's
-    // `new.parent_id is not null` early return (013:88).
-    //
-    // So NOTHING in the record refuses a reply, which is the finding rather than a shrug: it is
-    // what makes the missing admin grant on `approved` a real asymmetry against
-    // CLIENT_ACTIONS.approved, and not a permission the database would have refused anyway.
+      return !facts.client_approved;
+    // NOT GATED ON ANY FACT IN THIS RECORD. Migration 011's admin_reply_comment carries no done
+    // gate and no approved gate, 013 exempts a reply by name, and the CMS push turns on which
+    // VERSION the client approved against which is latest, which BlogStateFacts does not carry.
+    // Modelling a rule this record cannot express would be inventing a refusal.
     case "reply":
-      return true;
-    // NOT GATED ON ANY FACT IN THIS RECORD, so it is modelled as accepted rather than guessed at.
-    // The CMS push runs its own gate in server/cms/gate.py, and that gate turns on which VERSION
-    // the client approved against which version is latest, which is not a field BlogStateFacts
-    // carries. Modelling a rule this record cannot express would be inventing a refusal.
     case "publish":
       return true;
   }
@@ -613,6 +527,18 @@ type Situation = {
   /** What has happened to this article, in a sentence, for the assertion message. */
   what: string;
   facts: BlogStateFacts;
+  /**
+   * The question form this record carries, STATED rather than derived from the status.
+   *
+   * DERIVING IT WAS THE FIFTH ROUND OF THIS DEFECT. The comment under `moves` below used to argue
+   * that a `failed` or `stopped` record cannot carry a current form, because
+   * _enforce_terminal_status would have corrected the status back to needs_review if one existed.
+   * That resolver is exactly what revise_topic's three restore arms skip: each appends a terminal
+   * line carrying prev_terminal["status"], so the status is copied forward and never re-derived
+   * from the form. A situation therefore has to say which form it holds, because the record it
+   * describes does not imply one.
+   */
+  form: GateForm;
   /** Asserted, so a situation cannot quietly stop describing the state it claims to. */
   state: BlogState;
   /**
@@ -643,6 +569,10 @@ const SITUATIONS: Situation[] = [
     // needs_review because the form is on disk and iteration-matched.
     what: "the client answered from their portal and no rerun has run",
     facts: { status: "needs_review", answers_submitted: "t" },
+    // Current and answered, which is what makes the RERUN door the live one: POST /revise wants a
+    // form that is not stale and IS answered, and this is the only situation in the table with
+    // both.
+    form: { stale: false, answered: true },
     state: "answers_submitted",
     moves: "answer",
   },
@@ -651,6 +581,11 @@ const SITUATIONS: Situation[] = [
     // leaves the article pinned here by the sticky submit stamp, and only a send moves it.
     what: "the rerun landed clean and left the article pinned by the sticky submit stamp",
     facts: { status: "done", answers_submitted: "t" },
+    // ROUND 4, PINNED AS A FORM RATHER THAN INFERRED FROM A STATUS. The clean rerun committed a
+    // new blog_versions row, which moves the form's anchor, and server/sync.py spares ANSWERED
+    // evaluator rows from its post-revise delete, so the spent form survives and is stale. Both
+    // doors behind `answer` refuse it, which is why the send is the act here.
+    form: { stale: true, answered: true },
     state: "answers_submitted",
     moves: "send",
   },
@@ -664,6 +599,7 @@ const SITUATIONS: Situation[] = [
     // meant to clarify is gone, and generating the topic again is the only thing left.
     what: "the rerun crashed, leaving a spent form the revise route refuses as stale",
     facts: { status: "failed", answers_submitted: "t" },
+    form: { stale: true, answered: true },
     state: "answers_submitted",
     moves: "run",
   },
@@ -673,12 +609,14 @@ const SITUATIONS: Situation[] = [
     // therefore also implies no current form.
     what: "the operator stopped the run, and the form it left behind is no longer current",
     facts: { status: "stopped", answers_submitted: "t" },
+    form: { stale: true, answered: true },
     state: "answers_submitted",
     moves: "run",
   },
   {
     what: "passed, unsent, and sitting on the refining bench",
     facts: { status: "done" },
+    form: "absent",
     state: "internal_review",
     moves: "send",
   },
@@ -688,24 +626,28 @@ const SITUATIONS: Situation[] = [
     // act" rather than "the send is accepted".
     what: "the client's suggestions are still open",
     facts: { status: "done", sent_to_client: "t", changes_requested: 2, change_round_open: true },
+    form: "absent",
     state: "changes_requested",
     moves: "comments",
   },
   {
     what: "every suggestion resolved, the round still open, the fix owed a delivery",
     facts: { status: "done", sent_to_client: "t", changes_requested: 0, change_round_open: true },
+    form: "absent",
     state: "changes_requested",
     moves: "send",
   },
   {
     what: "the client approved these exact bytes",
     facts: { status: "done", sent_to_client: "t", client_approved: "t" },
+    form: "absent",
     state: "approved",
     moves: "publish",
   },
   {
     what: "already in the CMS, where a re-push updates the same post",
     facts: { status: "done", sent_to_client: "t", client_approved: "t", published: "t" },
+    form: "absent",
     state: "published",
     moves: "publish",
   },
@@ -720,7 +662,9 @@ test("every admin bench offers an act the layers under it will accept", () => {
     // Both halves of that matter and neither is enough: a grant the offer layers withhold is not
     // a door, and a control the record refuses is not one either.
     const usable = adminActions(state).filter(
-      (action) => isOffered(action, situation.facts) && lowerLayerAccepts(action, situation.facts),
+      (action) =>
+        isOffered(action, situation.facts, situation.form) &&
+        lowerLayerAccepts(action, situation.facts, situation.form),
     );
 
     if (situation.moves === "run") {
@@ -732,7 +676,8 @@ test("every admin bench offers an act the layers under it will accept", () => {
       // sentence naming the real exit lives.
       const offeredAndRefused = adminActions(state).filter(
         (action) =>
-          isOffered(action, situation.facts) && !lowerLayerAccepts(action, situation.facts),
+          isOffered(action, situation.facts, situation.form) &&
+          !lowerLayerAccepts(action, situation.facts, situation.form),
       );
       assert.deepEqual(
         offeredAndRefused.filter((action) => !DECLARED_REFUSALS[`${state}:${action}`]),
@@ -752,7 +697,7 @@ test("every admin bench offers an act the layers under it will accept", () => {
         `and the admin bench does not carry it, so the operator has no way to move it`,
     );
     assert.ok(
-      lowerLayerAccepts(situation.moves, situation.facts),
+      lowerLayerAccepts(situation.moves, situation.facts, situation.form),
       `${state} where ${situation.what}: "${situation.moves}" is on the bench and the layer below ` +
         `refuses it for this exact record, so the control is offered and cannot work`,
     );
@@ -784,6 +729,15 @@ test("the two situations inside answers_submitted want different acts", () => {
   // empty list AND on the ["edit", "comments", "send"] that replaced it.
   const rerunOwed: BlogStateFacts = { status: "needs_review", answers_submitted: "t" };
   const rerunLanded: BlogStateFacts = { status: "done", answers_submitted: "t" };
+  // THE FORMS ARE STATED, NOT INFERRED FROM THE STATUSES ABOVE, and that is round five's whole
+  // correction. This test used to hold that `needs_review` implied a current form and every other
+  // status implied a spent or absent one, off a biconditional the engine does not enforce:
+  // revise_topic's restore arms copy a terminal line forward without ever re-deriving it from the
+  // form. Situation (a)'s form is current and answered because the portal recorded answers and
+  // dispatched nothing; situation (b)'s is stale because the clean rerun committed a new version
+  // and moved the anchor, while sync.py spared the answered row from its delete.
+  const owedForm: GateForm = { stale: false, answered: true };
+  const landedForm: GateForm = { stale: true, answered: true };
 
   assert.equal(blogState(rerunOwed), "answers_submitted");
   assert.equal(blogState(rerunLanded), "answers_submitted", "one state, deliberately, for the client's sake");
@@ -792,11 +746,11 @@ test("the two situations inside answers_submitted want different acts", () => {
   // reads the fold and a blog mid question loop is not done, so sending it would deliver an
   // article whose answers nobody has applied.
   assert.equal(
-    lowerLayerAccepts("send", rerunOwed),
+    lowerLayerAccepts("send", rerunOwed, owedForm),
     false,
     "migration 009 refuses a send on a blog that is not done, which is why a second act is needed",
   );
-  assert.equal(lowerLayerAccepts("send", rerunLanded), true);
+  assert.equal(lowerLayerAccepts("send", rerunLanded, landedForm), true);
 
   // So the bench has to carry the rerun as well, and `answer` is what that control is called:
   // AnswerQuestions renders the Rerun strip for a client-answered form, and blog-stage.tsx mounts
@@ -812,9 +766,9 @@ test("the two situations inside answers_submitted want different acts", () => {
     "and situation (b) still needs the send, which is why the row carries both rather than swapping one for the other",
   );
   assert.equal(
-    lowerLayerAccepts("answer", rerunOwed),
+    lowerLayerAccepts("answer", rerunOwed, owedForm),
     true,
-    "the revise route needs a current form, and needs_review is exactly the status that has one",
+    "the revise route needs a form that is not stale and IS answered, which is this one exactly",
   );
 
   // ROUND 4, PINNED, and this is the assertion the previous fix could not have made. The revise
@@ -823,7 +777,7 @@ test("the two situations inside answers_submitted want different acts", () => {
   // rerun is refused in exactly the situation the send is accepted, and the two acts partition
   // this state rather than overlapping in it.
   assert.equal(
-    lowerLayerAccepts("answer", rerunLanded),
+    lowerLayerAccepts("answer", rerunLanded, landedForm),
     false,
     "the rerun has already run and its form is spent, so a second dispatch 409s as stale",
   );
@@ -832,11 +786,15 @@ test("the two situations inside answers_submitted want different acts", () => {
   // AnswerQuestions would find no form: it finds the answered one, because sync.py spares
   // answered rows from the post-revise delete, and it draws the Rerun button over it.
   assert.equal(
-    isOffered("answer", rerunLanded),
+    isOffered("answer", rerunLanded, landedForm),
     false,
     "blog-stage.tsx must not mount the Rerun strip over a form the revise route refuses",
   );
-  assert.equal(isOffered("answer", rerunOwed), true, "and it must mount it where the rerun works");
+  assert.equal(
+    isOffered("answer", rerunOwed, owedForm),
+    true,
+    "and it must mount it where the rerun works",
+  );
 });
 
 /**
@@ -870,6 +828,28 @@ test("the two situations inside answers_submitted want different acts", () => {
  * fails, and an entry that no record exercises fails too, so the table cannot rot into a list of
  * excuses covering acts nobody offers any more.
  */
+/**
+ * EVERY SHAPE THE QUESTION FORM CAN BE IN, walked against every record below.
+ *
+ * THE CROSS PRODUCT IS THE POINT, and assuming the form from the status is precisely the mistake
+ * round five made. The status does not fix the form: revise_topic's restore arms copy a terminal
+ * line forward without re-deriving it, so a `needs_review` record can carry a form that is
+ * current, spent, stale or gone. Enumerating one plausible form per record would rebuild that
+ * assumption inside the test, so every record is audited against all of them and the bench has to
+ * be honest for each.
+ *
+ * "unread" is in the list because a page that has not heard back yet is a real situation on every
+ * record, and it is the one every previous round guessed its way through.
+ */
+const AUDIT_FORMS: [string, GateForm][] = [
+  ["absent", "absent"],
+  ["unread", "unread"],
+  ["current and unanswered", { stale: false, answered: false }],
+  ["current and answered", { stale: false, answered: true }],
+  ["stale and unanswered", { stale: true, answered: false }],
+  ["stale and answered", { stale: true, answered: true }],
+];
+
 const REACHABLE: Record<BlogState, BlogStateFacts[]> = {
   // Both roads into a live run: a first run with no terminal line behind it, and a re-run whose
   // registry liveness beats the stale terminal status the fold still reports.
@@ -910,41 +890,28 @@ const REACHABLE: Record<BlogState, BlogStateFacts[]> = {
 };
 
 /**
- * WHAT ACTUALLY REACHES THE OPERATOR AS A PRESSABLE CONTROL, which is the bench filtered by every
- * layer that sits in FRONT of it. A bench grant is a permission, not a rendering, and two acts
- * already have a layer between the grant and the button.
+ * WHAT ACTUALLY REACHES THE OPERATOR AS A PRESSABLE CONTROL, which is the bench filtered by the
+ * gate the record has to pass. A bench grant is a permission, never a rendering.
  *
- * MODELLED HERE ONLY WHERE THIS PROCESS CAN EVALUATE IT. `send` is discriminated by its own
- * renderer, which imports React and cannot be called from a state-machine test, so its refusal is
- * DECLARED below rather than modelled. `edit`, `comments` and `answer` are discriminated by
- * predicates exported from blog-state.ts precisely so that this test can call them: a
- * discriminating layer nothing can check is how every previous round was defended.
+ * IT IS THE SAME EXPRESSION blog-stage.tsx COMPOSES, and that is the whole design rather than a
+ * convenience: `adminCan(state, action) && adminGateAllows(action, {record, form})` is what the
+ * page evaluates for canEdit, canComment and canAnswer, so this test exercises the real decision
+ * instead of a description of it. Round four defended `answer` with a comment claiming
+ * AnswerQuestions withheld the control itself, and nothing here could tell that the comment was
+ * wrong; round five moved the claim into a predicate and got it wrong in a new place.
  *
- * `answer` MOVED FROM THE DEFAULT ARM INTO A CALLED PREDICATE, and that move is the fix. It sat
- * under `default: return true` on the strength of a comment saying AnswerQuestions withheld the
- * control itself, which is exactly the shape of claim this function exists to stop accepting. The
- * comment was wrong, nothing here could tell, and the suite went green over a button that 409s.
+ * `send` IS THE ONE ACT STILL DECLARED RATHER THAN EVALUATED, because SendToClient stays mounted
+ * on the bench grant and greys itself, so its refusal is a rendering decision in a React component
+ * this process cannot call. DECLARED_REFUSALS is where that is written down and checked for rot.
  */
-function isOffered(action: AdminAction, facts: BlogStateFacts): boolean {
+function isOffered(action: AdminAction, facts: BlogStateFacts, form: GateForm): boolean {
   if (!adminCan(blogState(facts), action)) {
     return false;
   }
-  switch (action) {
-    // blog-stage.tsx composes the bench with adminWriteTierReady for exactly these two, which is
-    // the layer they were missing. Calling the real function rather than restating its rule is the
-    // point: a discriminating layer this test cannot evaluate is a claim, and a claim in a comment
-    // is what defended both previous rounds.
-    case "edit":
-    case "comments":
-      return adminWriteTierReady(facts);
-    // The same composition, for the verb whose layer was asserted rather than written.
-    // blog-stage.tsx ANDs adminAnswerTierReady into canAnswer, so the Rerun strip is mounted only
-    // where a current form exists for it to act on.
-    case "answer":
-      return adminAnswerTierReady(facts);
-    default:
-      return true;
+  if (action === "send") {
+    return true;
   }
+  return adminGateAllows(action, { record: facts, form });
 }
 
 /**
@@ -987,24 +954,27 @@ test("no admin bench offers an act the layers under it refuse", () => {
         `${JSON.stringify(facts)} is filed under ${state} and does not derive it`,
       );
 
+      for (const [formName, form] of AUDIT_FORMS) {
       for (const action of adminActions(state)) {
-        if (!isOffered(action, facts)) {
+        if (!isOffered(action, facts, form)) {
           // A layer in front of the bench already withheld this control, so nothing was offered
           // and there is nothing to be honest or dishonest about.
           continue;
         }
-        if (lowerLayerAccepts(action, facts)) {
+        if (lowerLayerAccepts(action, facts, form)) {
           continue;
         }
         const key = `${state}:${action}`;
         exercised.add(key);
         assert.ok(
           DECLARED_REFUSALS[key],
-          `${state} with ${JSON.stringify(facts)}: "${action}" renders for this record and the ` +
+          `${state} with ${JSON.stringify(facts)} and a form that is ${formName}: "${action}" ` +
+            `renders for this record and the ` +
             `layer beneath it refuses it, so the operator is handed a control that argues with ` +
             `the record. Either withhold it, put a discriminating layer in front of it, or ` +
             `declare it in DECLARED_REFUSALS with the reason the refusal is the right experience`,
         );
+      }
       }
     }
   }

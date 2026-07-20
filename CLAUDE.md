@@ -188,9 +188,10 @@ from reading subagent tool output into its own context.
 - **Agent W** appends: write | revise, gates, links start / end.
 - **Agent E** appends: eval start / end, plus the score on the end line.
 - **The lead** appends: the terminal line ONLY (`done` | `needs_review` | `failed`), written last.
-- **The backend** appends exactly one terminal line the lead never writes: `stopped`. See
-  Stopping a run. It is the one terminal state whose defining condition is that the lead is
-  already dead, so a rule making the lead write it is a rule that never fires.
+- **The backend** appends the terminal line the lead never writes when a stop lands: `stopped`,
+  or `needs_review` in the one narrow case set out under Stopping a run. See that section. This
+  is the one place a terminal line is written with the lead already dead, so a rule making the
+  lead write it is a rule that never fires.
 
 Line shape, exactly:
 ```
@@ -569,7 +570,10 @@ and not style advice.
 the session ends, in `run_topic` and `revise_topic` both, from the table above and from
 `_resolve_needs_review` alone. A run that was STOPPED never reaches that resolver: it has no
 verdict to correct, and passing it through would launder it into `done` or `failed` by a score
-that describes a loop which never ran. A `needs_review` with no question on disk, or with one the
+that describes a loop which never ran. That exclusion is about the SCORE axis and only that axis.
+The question axis needs no score at all, so a stop that lands on a current form is held at the
+WRITE SITE, in `_stop_line_if_unterminated`, and never through this resolver. See Stopping a run
+for the window and its boundaries. A `needs_review` with no question on disk, or with one the
 app already refuses as stale, unreadable, or already answered, is corrected to `done` or `failed`
 by its score, because such a form summons nobody. A `needs_review` WITH A CURRENT QUESTION is NOT
 corrected, at ANY score including 96 and including no score at all: `needs_review` is no longer the
@@ -643,7 +647,9 @@ stop would make the operator press it five times while the queue raced them.
 **`stopped` MEANS the operator ended the run before the loop finished, so no score describes the
 blog, and it means nothing else.** It is not a failure: `failed` says the engine could not produce the blog, and
 conflating the two lies in the status tiles about work the engine did fine. It is not a
-summons either: no question was asked, and the operator is the one who acted.
+summons either, in every ordinary case: no question was asked, and the operator is the one who
+acted. THE ONE EXCEPTION IS A FORM THE EVALUATOR HAD ALREADY WRITTEN BEFORE THE STOP LANDED,
+set out in full below, and it is an exception to the summons and to nothing else.
 
 What a stop does, per topic:
 - **Finished blogs are KEPT.** A topic that already wrote its terminal line keeps that line,
@@ -677,6 +683,77 @@ something no one wrote and no evaluator scored. A cancel that skipped the restor
 revised draft where a 96 stood: no file was deleted and the blog was ruined anyway, which is
 the outcome this rule exists to make impossible. Restoring only `blog.md` reproduces the same
 ruin one level down, leaving the restored draft next to the discarded revise's `eval.md`.
+
+**A STOP THAT LANDS ON A LIVE QUESTION FORM IS `needs_review`, AND IT IS THE ONLY STOP THAT IS.**
+The window is narrow and exactly specified. The evaluator writes `questions.json` through
+`.claude/questions.py` and the session lead appends its terminal line LAST, so every topic that
+asks something spends real time carrying a current form and no verdict. A stop landing in that gap
+finds no terminal line in its slice, which is the same condition under which the backend writes a
+line at all. Where the form on disk is `current`, `server/runner.py` `_stop_line_if_unterminated`
+writes `needs_review` and the `NEEDS_REVIEW` file beside it. Where the form is absent, stale,
+unreadable or already answered, and on every other stop, it writes `stopped`. A second path
+reaches the same arm and is governed by the same sentence: a topic that already ended
+`needs_review` is offered back to the operator, because the roadmap withholds only `done` topics,
+so re-queueing it and stopping the brand before the semaphore admits it would otherwise land a
+`stopped` line on top of a hold that was correct an hour ago.
+
+**THE STOP RULE'S GROUND FAILS INSIDE THAT WINDOW, WHICH IS WHY THE RULE DOES NOT REACH IT.** The
+rule in Ship criteria reads "there is no question in it", and it is that ground, not the word
+`stopped`, that does the work: a stop is not `needs_review` BECAUSE nobody was asked anything.
+Inside this window somebody was asked, by the evaluator, before the operator acted, and nothing
+about a stop un-asks a question. The prohibition the rule actually carries survives intact and is
+not weakened by a syllable here: no agent writes `questions.json` on a stop's behalf, and the
+engine on this path only READS a form that was already on disk. Nothing manufactures a question.
+The `needs_review` definition is a definition BY THE FORM and never by the cause. It says the
+status means questions that are current, on disk, and answerable, at ANY score, and that it means
+NOTHING ELSE, so the cause of the halt cannot be what disqualifies a topic which satisfies that
+definition word for word.
+
+**THE ALTERNATIVE IS THE DEAD END WITH NO DOOR, ARRIVED AT FROM THE OTHER SIDE.** The definition
+forbids a hold with no form because such a form summons nobody; this is its mirror, a form nobody
+can be summoned to, and it is worse because the person is real and the task is live. Recording
+`stopped` over a current form leaves a topic the engine still ACCEPTS an answer for, since
+`api_answers` refuses a stale form, a live run, a demo client and an approved article, and never
+once reads the terminal status, while no surface offers that answer: `adminActions` grants
+`answer` to `has_questions` alone, `blogState` maps a `stopped` status to the `stopped` state whose
+bench is empty, and `clientCanSee` is false for `stopped`. The article's only remaining exit is a
+full regeneration that discards the frozen dossier, the draft and the score, which are precisely
+what a stop is documented above to KEEP.
+
+**A THIRD ARGUMENT ONCE STOOD HERE AND IS WITHDRAWN. THE CARVE-OUT DOES NOT REST ON IT.** An
+earlier draft of this section called the surface a witness, citing `adminAnswerTierReady` in
+`dashboard/src/lib/blog-state.ts` as deriving the answer tier from the status alone, off a stated
+invariant that `needs_review` holds exactly when a current, answerable form exists. That predicate
+is DELETED, and the invariant under it was never true: `revise_topic`'s three restore arms append a
+terminal line carrying `prev_terminal["status"]` without passing it through
+`_enforce_terminal_status`, so a status copied forward from an earlier verdict can read
+`needs_review` beside a form that is spent. A status copied forward is not a function of the form
+at all. Do not reinstate the sentence, and do not reinstate the predicate: the replacement is
+`dashboard/src/lib/gate-contract.ts`, which records the verbatim refusing source line rather than
+restating the rule a third time.
+
+**WHAT FAILED IS THE CONVERSE OF WHAT THE CARVE-OUT CLAIMS, WHICH IS WHY NOTHING ABOVE MOVES.** The
+false half is `needs_review` implying a current form, and a copied-forward status is exactly its
+counterexample. The carve-out asserts the other direction, that a form reading `current` when a
+stop lands earns the hold, and no copied-forward status bears on that direction at all. The two
+arguments above carry the rule without help: `api_answers` accepts an answer for a record whose
+every surface offers no door to it, and a live form under a `stopped` status is the dead end with
+no door read from the form's side. Both are properties of code anyone can run and neither is an
+invariant anyone merely stated, which is the standard the withdrawn sentence failed to meet.
+`tests/stop_check.py` pins all four arms.
+
+**THIS LICENSES NOTHING ELSE, AND THE BOUNDARIES ARE THE RULE.** A stop on a topic with no form is
+`stopped`. A stop on a stale, unreadable or already answered form is `stopped`, because the app
+refuses all three and a form nobody can submit summons nobody. A stop on a topic that already
+carries a terminal line writes no line at all, and that guard is checked BEFORE the form is ever
+read, so a blog that reached `done` microseconds earlier stays `done`. The SCORE axis is untouched:
+a stopped topic still never reaches `_resolve_needs_review`, no score is ever inferred for it, and
+a held topic is held at whatever score it has or at none. A read of the form that raises costs the
+topic its hold and never its line, falling back to `stopped`, because a topic with no terminal line
+hangs the SSE stream forever and that is the larger harm. The lead's position is unchanged in both
+directions: it never claims `stopped`, and it never claims `needs_review` for a stop either. This
+carve-out is enforced at the write site in Python, where a rule that would otherwise live only in
+an agent's instructions cannot be talked out of.
 
 The stop line is also what releases liveness, so the 409 on roadmap edits lifts the moment it
 is written. A killed session with no stop line leaves the SSE stream open forever and the
@@ -718,9 +795,17 @@ checks it. The four old causes resolve like this:
   human question in it, so summoning a human for it summons them to nothing.
 - **The 4-iteration cap** is `needs_review` only if the evaluator asked something. A loop that
   stalled below 95 and has nothing to ask is `failed`.
-- **An operator stop** is `stopped`, never `needs_review` and never `failed`. There is no
-  question in it and no failure in it. No `NEEDS_REVIEW` file is written and no agent writes
-  `questions.json` on a stop's behalf.
+- **An operator stop** is `stopped`, never `failed`, and never `needs_review` EXCEPT where the
+  form the evaluator wrote is on disk and reads `current` at the moment the stop lands. A form
+  that is ABSENT, STALE, UNREADABLE or ALREADY ANSWERED is `stopped` like every other stop, and
+  the exception does not stretch to cover it: the app refuses a stale or unreadable form outright,
+  and an answered one has already summoned its person, so holding on any of them is the dead end
+  with no door the `needs_review` definition forbids. There is never a failure
+  in it, and in the ordinary case there is no question in it either, so no `NEEDS_REVIEW` file is
+  written. No agent writes `questions.json` on a stop's behalf, and that holds without exception:
+  the one carve-out is the engine READING a form the evaluator wrote before the operator acted,
+  never anything creating one. It is set out in full under Stopping a run, it is the only stop
+  that is not `stopped`, and its boundaries are stated there because they are the rule.
 
 Never mark a blog done to clear the queue, and never mark a blog done to clear a question. A
 passing blog WITH a current question is `needs_review`, and that is not a contradiction: the

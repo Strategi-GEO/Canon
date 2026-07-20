@@ -57,6 +57,18 @@ drop function if exists portal_resource_remove(text, text) cascade;
 drop function if exists portal_approve_blog(text, text, uuid) cascade;
 drop function if exists portal_approve_blog(text, text) cascade;
 
+-- 017's three. The two refuse_* functions back constraint triggers on tables this file already
+-- drops above, so cascade reaches them for free; they are listed anyway, because a function this
+-- file creates is a function this file owns and a teardown that skips one leaves a stale body
+-- behind the day its signature changes. enforce_resources_prefix_quota is different and MUST be
+-- here: its trigger sits on storage.objects, which this file never drops, so nothing else in the
+-- teardown reaches it.
+drop function if exists refuse_org_slug_collision()          cascade;
+drop function if exists refuse_self_org_collision()          cascade;
+drop function if exists enforce_resources_prefix_quota()     cascade;
+drop function if exists resource_prefix_max_objects()        cascade;
+drop function if exists resource_prefix_max_bytes()          cascade;
+
 drop type   if exists topic_status cascade;
 drop type   if exists run_stage    cascade;
 drop type   if exists stage_event  cascade;
@@ -142,6 +154,106 @@ create table clients (
 
 create index clients_org on clients (org_id);
 
+-- ---------------------------------------------------------------------------
+-- The org/brand slug invariant (017, folded in here)
+-- ---------------------------------------------------------------------------
+-- NO ROW IN clients WITH org_id NULL AND deleted_at NULL MAY HAVE A slug EQUAL TO ANY
+-- orgs.slug. server/clients.py argues the why at length above `_self_org_clients`, and the
+-- shape of it is this: a brand with org_id null synthesises its own slug as its org,
+-- server/cms/routes.py turns that synthesised slug into STRATEGI_CMS_WRITE_KEY_<ORG>, and the
+-- CMS derives the destination tenant FROM THE KEY. A brand `acme` with no org of its own is
+-- handed the real org `acme`'s key, one client's blog lands in another client's CMS, and
+-- neither side can notice, because the payload is forbidden from carrying a contradicting
+-- org_id.
+--
+-- IT IS NOT A UNIQUE INDEX and no index can express it. An index spans one table and these
+-- slugs live in two, and the invariant is not "the two namespaces are disjoint": a brand `acme`
+-- whose org_id points at the org `acme` is the ordinary flagship case and is SAFE, because the
+-- org_id is the operator's own statement that these are one tenant and the key that resolves is
+-- that org's own. A union index forbids exactly that. The predicate is conditional on org_id,
+-- so the check is too.
+--
+-- CONSTRAINT TRIGGERS, DEFERRED, because `_upsert_org` inserts the orgs row and THEN points the
+-- client's org_id at it inside one transaction. Checked immediately, the orgs insert is judged
+-- while the client still reads org_id null, so a legal final state fails at its halfway point.
+-- Deferred to commit, either write order reaches the same answer.
+--
+-- SCOPED TO LIVE ROWS ON BOTH SIDES, which is what server/clients.py does, so this forbids
+-- nothing the application allows. A soft-deleted brand cannot publish, cannot resolve a key and
+-- cannot start a run, so its slug is dead weight in the org namespace and refusing to let an org
+-- reuse it would strand that name forever for a row nobody can see. THE EXPOSURE IS AT UNDELETE
+-- TIME, not at delete time, which is why the clients trigger lists deleted_at in its UPDATE OF
+-- columns: a row that becomes live is re-checked at the moment it becomes live. There is no
+-- undelete endpoint (server/clients.py: "reviving a dead slug is a decision for a human with
+-- database access"), so a hand-written UPDATE is the exact caller this guard is for.
+--
+-- NEITHER TRIGGER VALIDATES EXISTING ROWS. Postgres checks a trigger only on rows written after
+-- it exists, so a collision already in the record survives and is caught at read time by
+-- server/clients.py's `synthesised_org_collides`, immediately before a key is resolved.
+create or replace function refuse_org_slug_collision() returns trigger
+  language plpgsql security definer set search_path = public as $$
+declare
+  v_brand text;
+begin
+  select c.slug into v_brand
+    from clients c
+   where c.slug = new.slug
+     and c.org_id is null
+     and c.deleted_at is null
+   limit 1;
+
+  if v_brand is not null then
+    raise exception using
+      errcode = '23514',
+      message = format(
+        'the organisation slug %L is already the slug of the brand %L, which has no '
+        'organisation of its own', new.slug, v_brand),
+      detail  = 'The two would resolve the same CMS write key, so one brand''s blog would '
+                'publish into the other''s CMS and neither side of the request could notice.',
+      hint    = 'Rename the organisation, or give that brand this organisation first.';
+  end if;
+  return null;
+end $$;
+
+create or replace function refuse_self_org_collision() returns trigger
+  language plpgsql security definer set search_path = public as $$
+begin
+  -- Only a LIVE brand with NO org can break the invariant, so an org-bearing or soft-deleted
+  -- brand leaves here. That early exit is what makes watching deleted_at cheap.
+  if new.org_id is not null or new.deleted_at is not null then
+    return null;
+  end if;
+
+  if exists (select 1 from orgs o where o.slug = new.slug) then
+    raise exception using
+      errcode = '23514',
+      message = format(
+        'the brand slug %L is already an organisation slug, so a brand with no organisation '
+        'of its own would resolve that organisation''s CMS write key', new.slug),
+      detail  = 'The brand would publish into that organisation''s CMS, and neither side of '
+                'the request could notice, because the CMS derives the tenant from the key.',
+      hint    = 'Give this brand an explicit organisation, or rename the organisation holding '
+                'that slug. If this is an undelete, the collision was inert only while the '
+                'brand was deleted.';
+  end if;
+  return null;
+end $$;
+
+-- UPDATE OF is a fire list, not a change test: the check is queued when the column appears in
+-- the SET list, moved or not. slug is documented immutable and is listed anyway, because
+-- "immutable" describes the application and this guard exists for the writers that are not it.
+drop trigger if exists clients_no_org_slug_collision on clients;
+create constraint trigger clients_no_org_slug_collision
+  after insert or update of slug, org_id, deleted_at on clients
+  deferrable initially deferred
+  for each row execute function refuse_self_org_collision();
+
+drop trigger if exists orgs_no_client_slug_collision on orgs;
+create constraint trigger orgs_no_client_slug_collision
+  after insert or update of slug on orgs
+  deferrable initially deferred
+  for each row execute function refuse_org_slug_collision();
+
 -- The portal seam. Created EMPTY now so the schema is not rewritten when the
 -- client portal lands. Without it there is no mapping from auth.users to a
 -- client, and no RLS policy can be written against client_id at all.
@@ -202,6 +314,30 @@ create table client_resources (
   uploaded_at  timestamptz not null default now(),
   unique (client_id, name)
 );
+
+-- sha256 READS LIKE AN INTEGRITY GUARANTEE AND IS NOT ONE, so it says so in the database rather
+-- than only in a migration. The digest is computed in the BROWSER and shape-checked thereafter
+-- and never again: SHA256_RE in the upload-url route and the identical regex in
+-- portal_resource_add both prove 64 hex characters and nothing more, and no code in the portal
+-- path re-reads the bytes to hash them. Re-hashing every object server-side is the complete
+-- answer and the wrong trade, because it spends a full read of the corpus against a threat model
+-- that is a logged-in member of the SAME tenant swapping one of their OWN documents, which that
+-- member may simply do through the front door by deleting and re-uploading. Migration 017 part 3
+-- argues it in full. What IS checked instead is the size, cross-checked in portal_resource_add
+-- against the size Storage recorded, which costs one indexed lookup and closes the declare-it-as-
+-- 1024-bytes move that the browser-direct upload opened.
+comment on column client_resources.sha256 is
+  'The sha256 the CLIENT asserted, computed in the browser. It is a content address and a '
+  'deduplication key, NOT an integrity guarantee: nothing in the portal upload path re-reads '
+  'the stored bytes to check it, so this column pins the KEY an object lives at and never the '
+  'CONTENT behind it. supabase/migrate.py''s own push is the one path that verifies the digest '
+  'by reading the object back. See migration 017 part 3.';
+
+comment on column client_resources.size_bytes is
+  'The size the client declared, cross-checked against the size Storage recorded whenever '
+  'portal_resource_add can see the object row. Where it cannot, this is the client''s claim '
+  'alone. The per-object cap that no caller can route around is storage.buckets.file_size_limit '
+  '(015), not this column.';
 
 -- clients/<slug>/uploads/ : the archived roadmap CSVs.
 -- Measured: 39 files, all .csv, ~157 KB total. This is a SECURITY CONTROL, not
@@ -1582,11 +1718,12 @@ security definer
 set search_path = public
 as $$
 declare
-  v_cid   uuid;
-  v_path  text;
-  v_other text;
-  v_out   jsonb;
-  v_con   text;
+  v_cid    uuid;
+  v_path   text;
+  v_other  text;
+  v_out    jsonb;
+  v_con    text;
+  v_stored bigint;
 begin
   if auth.uid() is null then
     raise exception 'PORTAL:AUTH:not authenticated';
@@ -1643,6 +1780,40 @@ begin
     raise exception 'PORTAL:DUPLICATEBYTES:this file is already stored for this brand as %; upload it once under the name you want', v_other;
   end if;
 
+  -- THE DECLARED SIZE, CROSS-CHECKED AGAINST WHAT STORAGE MEASURED. Every number here arrives
+  -- from the browser, and the TOOLARGE check above is therefore a check on a CLAIM rather than
+  -- on a file: the upload went straight to Storage, so no server of ours weighed the bytes, and
+  -- a client can PUT at the project default and then index it as 1024 bytes.
+  -- storage.objects.metadata carries the size storage-api measured, so comparing the two costs
+  -- one indexed lookup and no bytes at all.
+  --
+  -- INVISIBLE IS A PASS, and that is what makes this safe to add. The note below this function
+  -- refuses to REQUIRE the object's existence, because a definer function's reach into
+  -- storage.objects depends on whether its owner bypasses RLS: read an absence as a missing
+  -- object and every upload is refused and the feature is dead. v_stored stays null for a
+  -- missing row AND for an unreachable one, the two are indistinguishable, and both pass. Only a
+  -- row this function can SEE, carrying a size that DISAGREES, is refused. The nested block is a
+  -- subtransaction, so a lookup that RAISES for a privilege reason leaves through that same
+  -- door. -1 marks a visible row whose metadata has no size yet, which happens while an upload
+  -- is in flight, and it passes as an absence of evidence.
+  --
+  -- A match proves this row describes the object it points at. It proves NOTHING about
+  -- p_sha256; see the comment on client_resources.sha256 above.
+  begin
+    select coalesce((o.metadata->>'size')::bigint, -1) into v_stored
+      from storage.objects o
+     where o.bucket_id = 'resources'
+       and o.name = p_client_slug || '/' || p_sha256;
+  exception
+    when others then
+      v_stored := null;
+      raise warning 'portal_resource_add: could not read storage.objects for %/% (%: %); the declared size is NOT cross-checked', p_client_slug, p_sha256, sqlstate, sqlerrm;
+  end;
+
+  if v_stored is not null and v_stored >= 0 and v_stored <> p_size_bytes then
+    raise exception 'PORTAL:BADBODY:the stored object is % bytes and this call declared %; upload the file again', v_stored, p_size_bytes;
+  end if;
+
   insert into client_resources
     (client_id, name, object_path, sha256, size_bytes, content_type)
   values
@@ -1673,7 +1844,12 @@ $$;
 -- into storage.objects depends on whether its owner bypasses RLS, and the failure direction is
 -- the bad one: an empty read for a permissions reason refuses every upload and kills the
 -- feature. An index row with no bytes behind it is a lesser fault, scoped to the brand that
--- created it and removable by the delete they already have.
+-- created it and removable by the delete they already have. The size cross-check above does not
+-- weaken that: it reads the same row and resolves the same uncertainty the other way round, so
+-- an object it cannot see is ADMITTED and only a visible row with a contradicting size is
+-- refused. Existence is still not required; a size that is present and wrong is simply no longer
+-- accepted. The DIGEST remains unchecked in this path by design, argued on the sha256 column
+-- comment above.
 
 revoke all on function portal_resource_add(text, text, text, bigint, text) from public, anon;
 grant execute on function portal_resource_add(text, text, text, bigint, text) to authenticated;
@@ -1983,6 +2159,130 @@ create policy resources_delete_scoped on storage.objects for delete to authentic
     bucket_id = 'resources'
     and auth_can_write_client_slug((storage.foldername(name))[1])
   );
+
+-- ---------------------------------------------------------------------------
+-- The per-brand bound on the bucket (017 part 2, folded in here)
+-- ---------------------------------------------------------------------------
+-- file_size_limit above caps ONE object in ONE upload and says nothing about how many objects
+-- there are. A member with a write seat satisfies resources_insert_scoped for every key under
+-- their own slug, and the keys are content-addressed, so distinct bytes are distinct keys with
+-- nothing to collide against. That member can PUT 25 MiB at a time without end and never call
+-- portal_resource_add once.
+--
+-- UNINDEXED OBJECTS ARE THE WHOLE PROBLEM. Everything in this product reads the INDEX:
+-- client_resources drives the portal list, sync.materialize_client, the signed-URL route and the
+-- admin console. An object nobody indexed appears in none of them and is UNRECLAIMABLE by any
+-- path the product offers, because portal_resource_remove is keyed on a client_resources row and
+-- there is no row. So the bound goes on storage.objects and not on client_resources: every
+-- indexed resource has an object, so bounding the bucket bounds both, and it is the only one of
+-- the two that reaches what nobody declared.
+--
+-- THE TWO NUMBERS ARE DEFAULTS, NOT REQUIREMENTS, and they are functions so there is one place
+-- to change each. The measured corpus is 5 files and about 12.8 MB across two brands, largest
+-- file 12.8 MB, so these sit roughly fifty times above it by count and eighty times by bytes:
+-- far enough that no legitimate client meets one, near enough that the abuse case stops being
+-- unbounded. They are not redundant. The BYTE cap is what anyone actually cares about and what
+-- binds in practice; the OBJECT cap is what still holds when the byte sum cannot be computed and
+-- what bounds a flood of tiny objects that costs little and makes the bucket unlistable.
+create or replace function resource_prefix_max_objects() returns bigint
+  language sql immutable as $$ select 250::bigint $$;
+
+create or replace function resource_prefix_max_bytes() returns bigint
+  language sql immutable as $$ select 1073741824::bigint $$;   -- 1 GiB
+
+comment on function resource_prefix_max_objects() is
+  'Per-brand object cap for the resources bucket. Enforced by resources_prefix_quota.';
+comment on function resource_prefix_max_bytes() is
+  'Per-brand byte cap for the resources bucket. Enforced by resources_prefix_quota.';
+
+create or replace function enforce_resources_prefix_quota() returns trigger
+  language plpgsql security definer set search_path = public as $$
+declare
+  v_prefix   text;
+  v_objects  bigint;
+  v_bytes    bigint;
+  v_max_obj  bigint := resource_prefix_max_objects();
+  v_max_byte bigint := resource_prefix_max_bytes();
+begin
+  -- Scoped to this bucket FIRST, for the same reason every policy above is: a rule written for
+  -- this feature must not quietly govern every bucket this project adds later.
+  if new.bucket_id is distinct from 'resources' then
+    return new;
+  end if;
+
+  v_prefix := (storage.foldername(new.name))[1];
+  if v_prefix is null then
+    -- A key with no folder segment belongs to no brand, so no per-brand bound applies.
+    -- resources_insert_scoped already refuses such a key for every `authenticated` caller, so
+    -- the only writer reaching this line is the secret key, which is ours.
+    return new;
+  end if;
+
+  -- THE FIGURES COME FROM THE ROWS ALREADY PRESENT, so the object being inserted is in neither,
+  -- and the effective ceiling is one object and one file_size_limit above the stated caps. That
+  -- is deliberate: a BEFORE INSERT trigger sees a row whose metadata storage-api has not written
+  -- yet, so NEW carries no trustworthy size, and a quota computed from a caller-supplied number
+  -- is not a quota. A 25 MiB overshoot on a 1 GiB cap is noise.
+  --
+  -- `o.name <> new.name` because storage-api can re-insert a key already present, and counting
+  -- it twice would refuse a re-upload of something the brand already owns. coalesce is on the
+  -- ELEMENT as well as the sum: metadata lands after the upload does, so an in-flight object
+  -- contributes null and would otherwise null the whole sum and disable the byte cap for as long
+  -- as any upload is open.
+  begin
+    select count(*),
+           coalesce(sum(coalesce((o.metadata->>'size')::bigint, 0)), 0)
+      into v_objects, v_bytes
+      from storage.objects o
+     where o.bucket_id = 'resources'
+       and (storage.foldername(o.name))[1] = v_prefix
+       and o.name <> new.name;
+  exception
+    when others then
+      -- A QUOTA MUST NEVER TAKE DOWN AN UPLOAD FOR A REASON THAT IS NOT A QUOTA. Whether this
+      -- function can read storage.objects depends on whether its OWNER bypasses RLS on a table
+      -- owned by supabase_storage_admin, the same uncertainty portal_resource_add names. If the
+      -- read raises, the object is admitted, which is exactly the behaviour before this existed.
+      -- The warning carries the SQLSTATE, because a silent degradation is a control that is not
+      -- there and nobody knows it.
+      raise warning
+        'resources_prefix_quota could not read storage.objects for prefix % (%: %); the object '
+        'is admitted and the per-brand bound is NOT in force', v_prefix, sqlstate, sqlerrm;
+      return new;
+  end;
+
+  if v_objects >= v_max_obj then
+    raise exception using
+      errcode = '53400',
+      message = format(
+        'the brand %L already holds %s objects in the resources bucket, which is its limit of %s',
+        v_prefix, v_objects, v_max_obj),
+      hint = 'Delete resources this brand no longer needs, or raise '
+             'resource_prefix_max_objects() in supabase/schema.sql.';
+  end if;
+
+  if v_bytes >= v_max_byte then
+    raise exception using
+      errcode = '53400',
+      message = format(
+        'the brand %L already holds %s bytes in the resources bucket, which is its limit of %s',
+        v_prefix, v_bytes, v_max_byte),
+      hint = 'Delete resources this brand no longer needs, or raise '
+             'resource_prefix_max_bytes() in supabase/schema.sql.';
+  end if;
+
+  return new;
+end $$;
+
+-- BEFORE and not AFTER, and a plain trigger rather than a constraint trigger: this is a resource
+-- bound on one statement, checked before the statement does anything, which is the only point at
+-- which refusing it is cheap. IT GOVERNS THE SECRET KEY TOO, correctly: RLS bypass is not
+-- trigger bypass, so migrate.py's own bulk push is bounded by the same numbers, and a quota the
+-- operator's tooling is exempt from is a quota discovered by an operator's mistake.
+drop trigger if exists resources_prefix_quota on storage.objects;
+create trigger resources_prefix_quota
+  before insert on storage.objects
+  for each row execute function enforce_resources_prefix_quota();
 
 -- NO UPDATE POLICY, DELIBERATELY. An UPDATE on storage.objects governs overwriting a key
 -- (x-upsert) and moving one. Objects here are content-addressed at `<slug>/<sha256>`, so
