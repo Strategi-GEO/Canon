@@ -65,29 +65,28 @@ the MCP credentials `.mcp.json` interpolates must all survive).
 
 Because the SDK spawns the `claude` CLI, **whatever that CLI authenticates with is what
 pays for a real run.** If the CLI on the machine is logged into a Claude subscription
-rather than reading `ANTHROPIC_API_KEY`, every real blog consumes that person's
+rather than reading `ANTHROPIC_API_KEY`, every blog consumes that person's
 subscription quota, and runs start failing when it is exhausted. A shared deployment
 should set `ANTHROPIC_API_KEY` so usage is billed to the org's API account and not to
-whoever happened to log the CLI in. Mock mode and the `demo` client spend nothing either
-way.
+whoever happened to log the CLI in.
 
-Start in mock mode first. It needs no API key and no MCP servers:
+Start the app with `./run.sh` (engine plus dashboard together) or, for just the server on
+port 8000, `scripts/dev-serve.sh`:
 
 ```
-GEO_MOCK=1 .venv/bin/uvicorn server.app:app
+./run.sh
 ```
 
-Open http://127.0.0.1:8000, pick `demo`, tick rows, generate, and watch the live stages.
-Everything it writes leads with "Demo content. Generated without research or API calls. Not
-for publication."
+Open http://127.0.0.1:8000, pick a client, tick rows, generate, and watch the live stages.
+**Every client runs the full agent chain and spends real Claude and MCP quota**, so leave a
+run alone until it finishes.
 
-Real mode needs these environment variables (names are exactly what `server/runner.py`
+A run needs these environment variables (names are exactly what `server/runner.py`
 reads):
 
 | Variable | Required | What it does |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | strongly recommended | Consumed by the `claude` CLI subprocess the SDK spawns. Without it the CLI falls back to its own login; see the billing warning above. |
-| `GEO_MOCK` | no | `1` switches the whole server to mock mode. Env only; a request can never choose it. |
 | `GEO_MODEL`, `GEO_MAX_TURNS`, `GEO_MAX_BUDGET_USD`, `GEO_RETRIES` | no | Model override, turn cap (default 250), per-session budget cap, died-session retries (default 1). |
 
 Plus the MCP credentials for one of the two transports below.
@@ -132,10 +131,10 @@ both options. That failure is deliberately loud: a session missing Firecrawl wou
 notice and stop, it would invent sources. `runner.check_real_mode_ready()` reports the same
 thing without spawning anything, so the API can refuse at submit time.
 
-For debugging a single row without the web UI:
+For debugging a single row without the web UI (this spends real quota like any other run):
 
 ```
-.venv/bin/python -m server.runner --client demo --row 0 --mock
+.venv/bin/python -m server.runner --client <slug> --row 0
 ```
 
 Static config checks, which spawn no CLI and generate no blog:
@@ -218,17 +217,16 @@ geo-factory/
   web/
     index.html              the entire UI, one file, served at /
   tests/
-    concurrency-proof.md    mock-mode evidence for the concurrency claims
+    concurrency-proof.md    recorded evidence for the concurrency claims
     concurrency_check.py    the analysis script behind that proof
-    config_check.py         static checks: MCP transport, SDK options, no secrets, demo is mock
+    config_check.py         static checks: MCP transport, SDK options, no secrets
     clean-draft.md, dirty-draft.md, frontend-check.py
   clients/
-    demo/                   the demo org: always mock, precoded blogs, zero API calls
     vacation-village/
     <slug>/
       client.md             domain, market, industry reference (human approved)
       canonical-facts.md    binding facts, verified URLs, do-not-claim list (human approved)
-      gates.json            word band, banned phrases, entity names, claim patterns, demo_mode
+      gates.json            word band, banned phrases, entity names, claim patterns
       roadmap.csv           read-only topic queue; the app never writes it back
       generated.csv         append-only ledger of shipped blogs; created at onboarding
       uploads/              archived roadmap uploads, kept verbatim, never mutated
@@ -240,8 +238,7 @@ geo-factory/
 **Preflight.** A client whose `canonical-facts.md` is missing or still contains the
 literal token `PLACEHOLDER` refuses to run: the API returns 409 at submit time and
 `runner.run_topic` raises before any SDK session spawns. Every blog inherits that file, so
-an unreviewed one would silently poison the whole queue. Mock mode skips preflight, and so
-does a `demo_mode` client, because neither reads the facts file at all.
+an unreviewed one would silently poison the whole queue.
 
 **`generated.csv`** is an append-only ledger under each client, created at onboarding so no
 client needs a migration step. It records **only blogs that shipped**, appended per topic as
@@ -260,35 +257,9 @@ first row is always treated as a header and skipped. There is no header detectio
 column override, because operator sheets are positionally stable and matching on header text
 only invents ways to map the wrong column.
 
-## The demo org
-
-`clients/demo/` is the demo client, and it is **never a real client**. Its `gates.json`
-carries one extra flag:
-
-```json
-{"demo_mode": true}
-```
-
-That single flag is the whole definition. `runner.is_demo_client()` reads it and
-`runner.should_mock()` makes the topic mock, so:
-
-- **The demo org is always mock, in every environment**, including a production deployment
-  holding real credentials. It cannot spend an API call or a token, with or without
-  `GEO_MOCK`, with or without `--mock`.
-- Its blogs are **precoded**: deterministic from `md5(topic_slug)` and templated from the
-  uploaded topic, covers text, and target prompts, so any CSV an operator uploads demos
-  correctly. There is no fixed topic list.
-- They are **saved to `clients/demo/output/<topic-slug>/blog.md` exactly like a real blog**,
-  so the preview drawer, the status table, and the ledger all behave identically.
-- Every demo artifact leads with the marker **"Demo content. Generated without research or
-  API calls. Not for publication."** and its Sources section says plainly that it has none.
-  A demo blog is realistic in shape but can never be mistaken for a researched one.
-- `GET /api/clients` reports `"demo_mode": true` for it, so the UI labels it and an operator
-  always knows which client is the demo.
-
-Onboarding any other client is the normal, real procedure: the four files above, a
-human-approved `canonical-facts.md` that passes preflight, and the full pipeline (research,
-write, gates, links, eval). No client without `demo_mode` is affected by any of this.
+Onboarding a client is the normal, real procedure: the four files above, a human-approved
+`canonical-facts.md` that passes preflight, and the full pipeline (research, write, gates,
+links, eval). Every client runs that full chain and spends real quota.
 
 ## The pipeline per blog
 
@@ -335,22 +306,12 @@ If a session dies without a terminal line, the runner retries with a fresh sessi
 writes the `failed` terminal line itself. The server tails these files and streams them to
 the browser over SSE at `/api/runs/{run_id}/events`.
 
-## Mock mode
+## Concurrency evidence
 
-`GEO_MOCK=1` fakes the agents, never the plumbing. No API key, no MCP servers, no SDK
-sessions, but every status line is appended by running `.claude/status.py` as a real
-subprocess, the SSE tailer reads real files, and the semaphore and client lock govern
-dispatch exactly as in production. Each slug gets a deterministic plan derived from
-`md5(topic_slug)`: about a third pass on iteration 1, most by 2 or 3, and a narrow band
-hits the 4-iteration cap and terminates `needs_review`, so the amber path is testable.
-
-This is the same path the `demo` client always takes. Mock mode is chosen when `GEO_MOCK=1`,
-or `--mock` is passed, or the client sets `demo_mode` in its `gates.json`.
-
-See `tests/concurrency-proof.md` for the recorded evidence: 7 topics against the cap of 5
-measured max concurrency of exactly 5, and topic 6 started 60 ms after the first slot
-freed, 3.3 seconds before the slowest first-wave topic finished, disproving any
-batch-of-five barrier.
+See `tests/concurrency-proof.md` for the recorded evidence that the semaphore and client
+lock behave as claimed: 7 topics against the cap of 5 measured max concurrency of exactly 5,
+and topic 6 started 60 ms after the first slot freed, 3.3 seconds before the slowest
+first-wave topic finished, disproving any batch-of-five barrier.
 
 ## Gates
 
@@ -392,8 +353,7 @@ The engine refuses to post anything whose terminal status is not exactly `done`,
 409 with the state it found. A `needs_review` blog is never pushed. That refusal is in
 `server/cms/gate.py` and it is the real guard: a CMS draft is directly approvable by an
 editor, so the CMS cannot tell a vetted piece from an unvetted one. The button greying itself
-out is a courtesy on top. Demo clients are refused outright, because a demo blog is templated
-placeholder text and its "not for publication" marker is prose no CMS can read.
+out is a courtesy on top.
 
 ### The write key
 
@@ -542,11 +502,11 @@ Honest list, verified against the code as of 2026-07-16:
 - **No CSV write-back, BY DESIGN.** The roadmap is read-only input; progress and terminal
   status live in the output dirs, never in the CSV.
 - **No multi-worker or multi-host scaling, BY DESIGN.** See the single-worker warning.
-- **Real-mode run not validated end to end yet** at the time of writing. Mock mode has
-  been, with recorded evidence in `tests/concurrency-proof.md`, and the demo client's
-  always-mock path has been. The real path (SDK sessions, live MCP servers, live Firecrawl
-  and DataForSEO) is written, preflighted, and statically checked by
-  `tests/config_check.py`, but no real blog has been generated. `config_check.py` verifies
+- **Real-mode run not validated end to end yet** at the time of writing. The concurrency
+  plumbing has recorded evidence in `tests/concurrency-proof.md`. The real path (SDK
+  sessions, live MCP servers, live Firecrawl and DataForSEO) is written, preflighted, and
+  statically checked by `tests/config_check.py`, but no real blog has been generated.
+  `config_check.py` verifies
   the transport resolves, the options the SDK gets are the intended ones, and every field
   name still exists on the installed SDK; it cannot verify the credentials work.
 - **One-client-at-a-time is asserted, not proven over HTTP.** `CLIENT_LOCK` wraps the
