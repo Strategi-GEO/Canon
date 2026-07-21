@@ -204,18 +204,6 @@ def assert_publishable(runner, client_slug, topic_slug):
     check and the bytes cannot come apart: whatever this returns is what the
     gate approved, and both come from the same record.
     """
-    # A demo blog reaches status "done" like any other, because demo mode runs the
-    # same terminal-status path. It is templated placeholder text written with zero
-    # research and zero API calls, and the marker saying so is prose in the body
-    # that a CMS has no way to read. So "done" alone does NOT make it publishable,
-    # and the status check below would happily pass it. Refuse the client outright.
-    if runner.is_demo_client(client_slug):
-        raise PublishRefused(
-            f"'{client_slug}' is a demo client. Demo blogs are placeholder text "
-            f"generated without research, so they never reach a CMS.",
-            status="demo",
-        )
-
     blog_md = _blog_text_for(runner, client_slug, topic_slug)
     if blog_md is None:
         raise PublishRefused(f"No blog on disk for '{topic_slug}'.")

@@ -57,7 +57,6 @@ MAX_SWEEP_ATTEMPTS = 3
 #   * answered = every form row has a reply child (describe_questions)
 #   * stale = the form's version anchor OR its asked_iter has moved (describe_questions' twin)
 #   * needs_review = the last non-running status line by ordinal (topic_rollup's fold)
-# Demo brands are excluded here AND refused again inside revise_topic, belt and braces.
 _PENDING_SQL = """
 with form as (
   select n.topic_id,
@@ -72,7 +71,7 @@ with form as (
 select c.slug, t.slug, t.id
 from form f
 join topics  t on t.id = f.topic_id and t.deleted_at is null
-join clients c on c.id = t.client_id and c.deleted_at is null and not c.demo_mode
+join clients c on c.id = t.client_id and c.deleted_at is null
 where not exists (
         select 1 from review_notes q
         where q.topic_id = f.topic_id and q.author = 'evaluator'

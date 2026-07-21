@@ -151,26 +151,6 @@ def has_canonical_facts(client_slug, clients_root=None):
     return canonical_facts_path(client_slug, clients_root).is_file()
 
 
-def is_demo_client(client_slug, clients_root=None):
-    """True when the client's gates.json sets demo_mode. That one flag is the
-    whole definition of the demo org: there is no hardcoded slug list here, so
-    the config stays the single source of truth."""
-    return load_client_config(client_slug, clients_root).get("demo_mode") is True
-
-
-def demo_refusal_detail(client_slug):
-    """The one sentence every demo refusal carries, API 409s and engine PreflightErrors alike.
-
-    One copy on purpose: the routes refuse at the boundary and run_batch and revise_topic
-    refuse again underneath them, and two wordings of the same refusal is how an operator
-    comes to believe two different rules exist.
-    """
-    return (
-        f"demo-fixture client {client_slug!r}: mock mode is removed, and a demo fixture "
-        f"must never spend real API credits. Real clients run the full pipeline."
-    )
-
-
 _STATUS_MODULE = None
 
 
@@ -458,7 +438,7 @@ def _stop_line_if_unterminated(client_slug, topic_slug, out_dir, baseline, note,
       that was correct an hour ago.
 
     WHAT MADE IT A DEAD END RATHER THAN A DEMOTION. The engine still ACCEPTS an answer for that
-    form: api_answers refuses a stale form, a live run, a demo client and an approved article,
+    form: api_answers refuses a stale form, a live run and an approved article,
     and never once reads the terminal status. No surface offers one. The admin bench is
     adminActions, which grants "answer" to has_questions alone, and blogState maps a stopped
     status to the stopped state, whose bench is empty. clientCanSee is false for stopped, so the
@@ -1555,8 +1535,7 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
     # clients whose runs really did fail preflight. Pulling this call down into the try instead
     # is the same harm from the other side: an approved topic would then get "failed" written
     # over the done it already earned, which is the demotion the paragraphs above spend their
-    # length preventing. So run_topic keeps this order, and a demo client never arrives here at
-    # all, because run_batch refuses one before it dispatches a single topic.
+    # length preventing. So run_topic keeps this order.
     #
     # A NEW GUARD GOES ABOVE THIS LINE ONLY IF IT READS DISK OR ARGUMENTS AND NEEDS NO TERMINAL
     # LINE. Anything that reads the record belongs at or below this call.
@@ -1975,42 +1954,6 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=Non
     prev_blog = out_dir / PREV_BLOG_NAME
     clients_root = REPO_ROOT / "clients"
     append_status = _status_module().append_status
-
-    # THE DEMO REFUSAL, AND IT RUNS FIRST BECAUSE IT COSTS NOTHING TO ANSWER. It used to sit
-    # below, inside the try and inside CLIENT_LOCK, which put it BELOW the approved lock, and
-    # that ordering was the defect this block exists to state rather than merely to fix.
-    #
-    # THE INVARIANT: NOTHING ON A REFUSAL PATH MAY TOUCH THE DATABASE UNTIL EVERY REFUSAL THAT
-    # CAN BE DECIDED WITHOUT IT HAS ALREADY BEEN EVALUATED. is_demo_client reads one flag out of
-    # the client's gates.json on disk, so it is decidable from arguments and the filesystem
-    # alone. The approved lock below it is not: it walks blog_edit.approved_at into db.topic_id,
-    # db.client_id and server/db.py pool(), so it needs a DATABASE_URL and a database that
-    # answers. Checking the expensive one first meant a demo fixture opened a real connection
-    # before anything refused it, which is the opposite of what the demo contract promises, and
-    # against an unreachable DSN it did not fail fast either: it hung the full pool timeout and
-    # died on psycopg_pool.PoolTimeout. A refusal that has to reach the network to say no is not
-    # a cheap refusal. If you add another guard here, put it above this line only when it reads
-    # disk or arguments, and below the approved lock when it reads the record.
-    #
-    # HOISTING THIS ONE CHANGES NOTHING FOR A REAL CLIENT, which is why it is the one that moved.
-    # is_demo_client is False for every real client, so for them this line is a no-op and the
-    # approved lock still fires exactly where and when it did. The only caller whose answer moves
-    # is a demo fixture, which used to be told the topic was approved and is now told it is a
-    # demo fixture, and that is the correct sentence for it.
-    #
-    # OUTSIDE THE TRY, deliberately, for the same reason the approved lock below is: the
-    # PreflightError arm appends a terminal FAILED line, and a demo fixture refused before it
-    # started has no session to fail. It is also above register_revise_run, so no run is
-    # registered and no watch view can be open on it, which is why this one needs no re-stated
-    # verdict line to close a stream the way the approved lock does.
-    #
-    # The two refusals still below, the missing blog.md and the canonical-facts preflight, read
-    # only disk and by that measure could move up here too. They stay where they are on purpose:
-    # a real client hitting either of them today gets a terminal FAILED line out of the try, and
-    # hoisting them above it would silently take that line away. Their reason is unchanged, so
-    # moving them would trade a documented defect for an undocumented one.
-    if is_demo_client(client_slug, clients_root):
-        raise PreflightError(demo_refusal_detail(client_slug))
 
     # THE APPROVED LOCK, BEFORE THE RUN IS EVEN REGISTERED, and outside the try for the reason
     # run_topic states at length: this function's PreflightError arm appends a terminal FAILED
@@ -2547,14 +2490,6 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
     the final gather barrier would report every topic only after the slowest one
     landed, which is exactly the batch behavior this runner does not have.
     """
-    # THE DEMO REFUSAL, FIRST, before the baselines, the lock, the materialize and above all
-    # the facts phase. A demo fixture must never spend real API credits, and a demo client
-    # with no canonical-facts.md must never reach ensure_facts, which would open a real
-    # session to build a fact base for a fake brand. The API route already 409s this; the
-    # raise here is what holds when something bypasses the route.
-    if is_demo_client(client_slug):
-        raise PreflightError(demo_refusal_detail(client_slug))
-
     async def guarded(position, row):
         topic_slug = row.get("topic_slug") or slugify(row.get("topic", ""))
         # The roadmap row index when the row carries one, so a ledger records

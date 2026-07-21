@@ -6,7 +6,6 @@ WHAT A CLIENT IS, in the record (supabase/schema.sql):
   clients.canonical_facts  BINDING facts. NOT written here. See create_client.
   clients.gates            gates.json as jsonb, MINUS the "organisation" key: the org is
                            modelled as clients.org_id -> orgs, never duplicated into gates
-  clients.demo_mode        the demo switch, mirrored inside gates for the disk copy
   client_resources         the client knowledge base index; bytes live in Storage
 
 The disk tree clients/<slug>/ is SCRATCH, laid down from the record by
@@ -152,7 +151,7 @@ def exists(slug):
 # blog version, which is the record's answer to what _blog_count used to glob off disk.
 _CLIENT_SELECT = """
     select c.slug, c.name, c.domain, c.industry, c.description,
-           c.demo_mode, c.created_at,
+           c.created_at,
            exists (select 1 from roadmap_sheets r where r.client_id = c.id)
              as has_roadmap,
            (c.canonical_facts is not null) as has_canonical_facts,
@@ -170,7 +169,7 @@ _CLIENT_SELECT = """
 
 
 def _client_from_row(row):
-    (slug, name, domain, industry, description, demo_mode,
+    (slug, name, domain, industry, description,
      created_at, has_roadmap, has_facts, resource_count, blog_count,
      org_slug, org_name) = row
     return {
@@ -186,7 +185,6 @@ def _client_from_row(row):
         "domain": domain or "",
         "industry": industry or "",
         "description": description or "",
-        "demo_mode": bool(demo_mode),
         "has_roadmap": bool(has_roadmap),
         "has_canonical_facts": bool(has_facts),
         "resource_count": resource_count,
@@ -460,7 +458,7 @@ def _upsert_org(org_config, for_client=None):
         (org_config["slug"], org_config["name"]), fetch="val")
 
 
-def create_client(name, domain, industry, description="", demo_mode=False,
+def create_client(name, domain, industry, description="",
                   organisation_name=None):
     name = str(name or "").strip()
     slug = slugify_client(name)
@@ -492,14 +490,12 @@ def create_client(name, domain, industry, description="", demo_mode=False,
     domain = str(domain or "").strip()
 
     # gates.json as it will be materialized to disk, MINUS "organisation": the org lives
-    # in org_id and is never duplicated into gates. demo_mode is mirrored here because
-    # runner.is_demo_client reads the disk copy of gates.json, which is built from this.
+    # in org_id and is never duplicated into gates.
     config = {
         "client": slug,
         "name": name,
         "domain": domain,
         "industry": industry,
-        "demo_mode": bool(demo_mode),
         "word_band": dict(HOUSE_WORD_BAND),
         # Empty, not seeded with a guess: the house banned-phrase list already covers the
         # generic AI phrases, and this list is only for phrases from THIS brand's own copy,
@@ -526,11 +522,11 @@ def create_client(name, domain, industry, description="", demo_mode=False,
         db.q(
             """insert into clients
                  (org_id, slug, name, domain, industry, description, client_md,
-                  demo_mode, gates)
-               values (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)""",
+                  gates)
+               values (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)""",
             (org_id, slug, name, domain, industry, str(description or ""),
              _client_md(name, domain, industry, slug),
-             bool(demo_mode), json.dumps(config, ensure_ascii=False)),
+             json.dumps(config, ensure_ascii=False)),
             fetch="none")
     except Exception as exc:
         # Two concurrent creates both pass the pre-check; the unique constraint catches
