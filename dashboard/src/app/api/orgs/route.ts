@@ -15,7 +15,7 @@ export async function GET(request: Request) {
   }
   try {
     const listed = await listClients(user.token);
-    return json({ geo_mock: false, orgs: groupOrgs(listed.map((entry) => entry.shape)) });
+    return json({ orgs: groupOrgs(listed.map((entry) => entry.shape)) });
   } catch (cause) {
     return failure(cause);
   }

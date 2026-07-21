@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { BrandRoute } from "@/components/shell/brand-route";
 import { CreateForBrand } from "@/components/create/create-for-brand";
 import { HOSTED_READONLY } from "@/lib/hosted";
-import { brandHref, useOrgs } from "@/lib/orgs-context";
+import { brandHref } from "@/lib/orgs-context";
 
 /**
  * The ONLY place a blog starts, and it is reachable only from inside a brand.
@@ -17,8 +17,6 @@ import { brandHref, useOrgs } from "@/lib/orgs-context";
  * would have to ask which brand first, which is this page.
  */
 export default function CreatePage() {
-  const { geoMock } = useOrgs();
-
   return (
     <BrandRoute>
       {({ org, brand }) => (
@@ -46,7 +44,6 @@ export default function CreatePage() {
                 // behind a fetch of its own.
                 hasCanonicalFacts={brand.has_canonical_facts}
                 resourceCount={brand.resource_count}
-                geoMock={geoMock}
               />
               <LocalEngineNote />
             </>

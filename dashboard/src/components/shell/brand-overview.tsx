@@ -7,14 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import { brandHref, useOrgs } from "@/lib/orgs-context";
+import { brandHref } from "@/lib/orgs-context";
 import { useRoadmap } from "@/lib/use-roadmap";
 import { IndustryBadge, PreflightNote } from "@/components/clients/client-meta";
 import { displayDomain } from "@/components/clients/brand-card";
 import { ReadOnlyText } from "@/components/clients/editable-text";
 import { FactsCard } from "@/components/clients/facts-card";
 import { RoadmapPanel } from "@/components/clients/roadmap-panel";
-import { mockReasonOf } from "@/components/roadmap/generation-copy";
 import { RoadmapGenerationStatus } from "@/components/roadmap/generation-status";
 import { SessionCard } from "@/components/session/session-card";
 import { resourceTypeLabel } from "@/components/clients/resource-type";
@@ -27,7 +26,6 @@ import type { BlogSummary, Client, Resource } from "@/types";
  * canonical URL and the sidebar's active section can always match the address bar.
  */
 export function BrandOverview({ orgSlug, brand }: { orgSlug: string; brand: Client }) {
-  const { geoMock } = useOrgs();
   const client = brand;
 
   // Fetched ONCE here and handed to both cards that need it. The roadmap card and the stats
@@ -82,7 +80,6 @@ export function BrandOverview({ orgSlug, brand }: { orgSlug: string; brand: Clie
         orgSlug={orgSlug}
         brandSlug={client.slug}
         brandName={client.name}
-        mock={mockReasonOf(geoMock)}
       />
 
       <div className="mt-6 grid gap-4 lg:grid-cols-3">

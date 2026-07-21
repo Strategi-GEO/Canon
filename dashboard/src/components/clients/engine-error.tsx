@@ -6,9 +6,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-/** The command that starts the engine in mock mode, so no operator guesses at it. */
+/** The command that starts the engine, so no operator guesses at it. */
 export const START_COMMAND =
-  "GEO_MOCK=1 .venv/bin/uvicorn server.app:app --port 8000";
+  ".venv/bin/uvicorn server.app:app --port 8000";
 
 /**
  * Flattens an ApiError body into the engine's own sentences.

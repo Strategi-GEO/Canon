@@ -189,14 +189,6 @@
   .conn { font-size: 13px; color: var(--amber-ink); }
   .conn:empty { display: none; }
 
-  /* Global mock warning. Amber, not the accent: this is a status, and a loud one. */
-  .mockbanner {
-    max-width: var(--w); margin: 0 auto 18px; padding: 12px 16px;
-    background: var(--amber-bg); border: 1px solid var(--amber-ink);
-    border-radius: 8px; color: var(--amber-ink); font-size: 13px; line-height: 1.5;
-  }
-  .mockbanner b { font-weight: 700; }
-
   /* History */
   details.history { margin-top: 14px; }
   details.history summary { cursor: pointer; font-size: 13px; color: var(--muted); }
@@ -375,14 +367,6 @@
   <p class="tagline">Pick a client, load its roadmap, tick topics, watch each blog ship at 95 or land in review.</p>
 </header>
 
-<!-- Only the demo org is meant to produce fake output. GEO_MOCK=1 fakes every
-     client while still saving into that client's real folder and ledger, so it
-     gets a banner nobody can miss rather than a line in a log. -->
-<div class="mockbanner" id="mockBanner" role="alert" hidden>
-  <b>GEO_MOCK is on.</b> Every client, not just the demo org, is producing fake
-  precoded output and saving it as if it were real. Restart without GEO_MOCK to
-  generate genuine blogs.
-</div>
 
 <main>
 
@@ -554,7 +538,6 @@ async function loadClients() {
   const wrap = $("clientCards");
   try {
     const data = await apiJson("/api/clients");
-    $("mockBanner").hidden = !data.geo_mock;
     wrap.innerHTML = "";
     if (!data.clients.length) {
       wrap.innerHTML = '<span class="count">No clients found under clients/.</span>';
@@ -566,8 +549,7 @@ async function loadClients() {
       btn.setAttribute("aria-pressed", "false");
       let warn = "";
       if (c.preflight && !c.preflight.ok) {
-        warn = '<span class="warn">' + escapeHtml(c.preflight.reason || "Preflight failed.") +
-          " Real mode will refuse this client; mock runs only.</span>";
+        warn = '<span class="warn">' + escapeHtml(c.preflight.reason || "Preflight failed.") + "</span>";
       }
       btn.innerHTML =
         '<span class="cname">' + escapeHtml(c.name) + "</span>" +

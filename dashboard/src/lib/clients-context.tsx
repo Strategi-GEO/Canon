@@ -22,8 +22,6 @@ type ClientsState = {
   clients: Client[];
   activeSlug: string | null;
   activeClient: Client | null;
-  /** The global mock switch, reported by the engine alongside the org grouping. */
-  geoMock: boolean;
   loading: boolean;
   /** The engine's own reason the list could not load, or null when it loaded. */
   error: ApiError | null;
@@ -34,7 +32,7 @@ type ClientsState = {
 const ClientsContext = React.createContext<ClientsState | null>(null);
 
 export function ClientsProvider({ children }: { children: React.ReactNode }) {
-  const { brands, findBrand, geoMock, loading, error, refresh } = useOrgs();
+  const { brands, findBrand, loading, error, refresh } = useOrgs();
   const pathname = usePathname();
   const router = useRouter();
 
@@ -57,13 +55,12 @@ export function ClientsProvider({ children }: { children: React.ReactNode }) {
       clients: brands,
       activeSlug,
       activeClient: brands.find((client) => client.slug === activeSlug) ?? null,
-      geoMock,
       loading,
       error,
       setActiveSlug,
       refresh,
     };
-  }, [brands, activeSlug, geoMock, loading, error, setActiveSlug, refresh]);
+  }, [brands, activeSlug, loading, error, setActiveSlug, refresh]);
 
   return <ClientsContext.Provider value={value}>{children}</ClientsContext.Provider>;
 }

@@ -36,7 +36,6 @@ export function NoFactBaseDialog({
   onOpenChange,
   brandName,
   resourcesHref,
-  mock,
   onProceed,
 }: {
   open: boolean;
@@ -44,8 +43,6 @@ export function NoFactBaseDialog({
   brandName: string;
   /** This brand's Resources tab. The route owns the URL; this component never builds one. */
   resourcesHref: string;
-  /** True when this brand's runs call nothing live, so the cost sentence must not claim spend. */
-  mock: boolean;
   /** Submits the run exactly as pressing Generate does on a brand that needs no warning. */
   onProceed: () => void;
 }) {
@@ -61,7 +58,7 @@ export function NoFactBaseDialog({
           <AlertDialogTitle>{brandName} has no fact base yet</AlertDialogTitle>
           <AlertDialogDescription>
             The engine builds <span className="machine">canonical-facts.md</span> for {brandName}{" "}
-            before it writes a single blog in this run. {costLine(mock)}
+            before it writes a single blog in this run. {costLine()}
           </AlertDialogDescription>
         </AlertDialogHeader>
 
@@ -113,14 +110,7 @@ export function NoFactBaseDialog({
 /**
  * What building the fact base actually costs, which is the one thing this dialog owes the
  * operator before they answer it.
- *
- * Mock is stated as plainly as real, and for the same reason the roadmap dialog does it: an
- * operator who believes a demo run spends their personal quota will not press the button that
- * demo mode exists for, and one who believes a real run is free finds out afterwards.
  */
-function costLine(mock: boolean): string {
-  if (mock) {
-    return "This brand's runs are mock, so it is built without a live call and nothing is spent.";
-  }
+function costLine(): string {
   return "That is a long step on its own, and it spends your Claude subscription quota before the first blog starts.";
 }

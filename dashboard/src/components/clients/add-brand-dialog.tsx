@@ -18,7 +18,6 @@ import { Label } from "@/components/ui/label";
 import { ApiError, api } from "@/lib/api";
 import { HOSTED_READONLY } from "@/lib/hosted";
 import { cn } from "@/lib/utils";
-import { useOrgs } from "@/lib/orgs-context";
 import { useDescribe } from "@/lib/describe-context";
 import { FieldError } from "@/components/clients/engine-error";
 import { createClient } from "@/components/clients/wire";
@@ -80,7 +79,6 @@ export function AddBrandDialog({
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
 
-  const { geoMock } = useOrgs();
   const { start: startDescribe } = useDescribe();
   const { industries, error: industriesError } = useIndustries(open);
   const listId = React.useId();
@@ -116,11 +114,8 @@ export function AddBrandDialog({
       // Start the description draft the instant the brand exists, so the operator never has to
       // type one or press Draft with Claude. The session lives in DescribeProvider above every
       // route, so it survives closing this dialog and the redirect that follows, and the draft
-      // lands on the brand's page for review. Skipped under mock, where describe can only return
-      // a placeholder that must not be saved.
-      if (!geoMock) {
-        void startDescribe(brand.slug);
-      }
+      // lands on the brand's page for review.
+      void startDescribe(brand.slug);
       setOpen(false);
       reset();
       onCreated?.(brand);

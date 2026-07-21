@@ -43,7 +43,6 @@ export function SelectState({
   resourcesHref,
   hasCanonicalFacts,
   resourceCount,
-  geoMock,
   roadmap,
   roadmapError,
   loading,
@@ -72,7 +71,6 @@ export function SelectState({
   hasCanonicalFacts: boolean;
   /** Files in this brand's Resources/, from the same client record. The fact base's input. */
   resourceCount: number;
-  geoMock: boolean;
   roadmap: RoadmapResponse | null;
   roadmapError: ApiError | null;
   loading: boolean;
@@ -472,7 +470,9 @@ export function SelectState({
       <Card>
         <CardContent className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
           <div className="min-w-56 flex-1">
-            <RunNotice geoMock={geoMock} />
+            <p className="text-xs text-muted-foreground">
+              Real run. Each blog researches live sources and costs API credits.
+            </p>
             {error ? <EngineErrorNote error={error} className="mt-2" /> : null}
           </div>
           <div className="flex shrink-0 items-center gap-3">
@@ -505,7 +505,6 @@ export function SelectState({
         onOpenChange={setWarning}
         brandName={brandName}
         resourcesHref={resourcesHref}
-        mock={geoMock}
         onProceed={() => void generate()}
       />
     </div>
@@ -601,25 +600,6 @@ function DuplicateWall({
         </Button>
       </CardContent>
     </Card>
-  );
-}
-
-/** Never let an operator start a real batch thinking it is mock. */
-function RunNotice({ geoMock }: { geoMock: boolean }) {
-  if (geoMock) {
-    // GEO_MOCK is global: it makes real brands produce fake output too, so promising a real
-    // run here would be a lie in the operator's favour and a nasty surprise later.
-    return (
-      <p className="text-xs text-muted-foreground">
-        <span className="machine">GEO_MOCK</span> is on for the whole engine. This real brand
-        produces mock blogs, no API calls, nothing is spent.
-      </p>
-    );
-  }
-  return (
-    <p className="text-xs text-muted-foreground">
-      Real run. Each blog researches live sources and costs API credits.
-    </p>
   );
 }
 

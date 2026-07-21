@@ -6,9 +6,9 @@
  * WHY THIS IS GLOBAL AND NOT A BRAND CARD. The queue is repo-wide: CLIENT_LOCK admits one
  * session at a time across every brand, so the answer to "why has my session not started" is
  * almost always another brand's session. A brand-scoped surface cannot say that, because the
- * fact lives outside the brand. The topbar already owns global engine state, the connection
- * indicator and the mock banner, so the queue belongs in the same place rather than in a
- * seventh nav item or a route that does not exist.
+ * fact lives outside the brand. The topbar already owns global engine state and the connection
+ * indicator, so the queue belongs in the same place rather than in a seventh nav item or a
+ * route that does not exist.
  *
  * It is STATUS, not an action: no accent, no button chrome at rest. It has to open something,
  * so it is a control, but it carries the weight of the connection indicator next to it and

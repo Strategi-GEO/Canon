@@ -5,7 +5,6 @@ import { usePathname, useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { Sidebar } from "@/components/shell/sidebar";
 import { Topbar } from "@/components/shell/topbar";
-import { GeoMockBanner } from "@/components/shell/geo-mock-banner";
 import { CommandPaletteProvider } from "@/components/shell/command-palette";
 import { DocumentTitle } from "@/components/shell/document-title";
 import { RunNotifier } from "@/components/session/run-notifier";
@@ -156,7 +155,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Sidebar />
                 <div className="flex min-h-dvh flex-col lg:pl-60">
                   <Topbar />
-                  <GeoMockBanner />
                   <main className="flex-1 px-4 py-6 sm:px-6 sm:py-8">{children}</main>
                 </div>
               </CommandPaletteProvider>

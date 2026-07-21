@@ -144,7 +144,7 @@ function OrganisationBootstrap() {
  */
 function AddBrandToOrgForm({ joiningOrg }: { joiningOrg: string }) {
   const router = useRouter();
-  const { refresh, findBrand, orgs, geoMock } = useOrgs();
+  const { refresh, findBrand, orgs } = useOrgs();
   const { start: startDescribe } = useDescribe();
 
   const [name, setName] = React.useState("");
@@ -197,11 +197,8 @@ function AddBrandToOrgForm({ joiningOrg }: { joiningOrg: string }) {
 
       // Start the description draft the instant the brand exists, so the operator never has to
       // type one or press Draft with Claude. The session runs in DescribeProvider above every
-      // route, so it survives this redirect and lands on the brand's page for review. Skipped
-      // under mock, where describe can only return a placeholder that must not be saved.
-      if (!geoMock) {
-        void startDescribe(client.slug);
-      }
+      // route, so it survives this redirect and lands on the brand's page for review.
+      void startDescribe(client.slug);
 
       await refresh();
       const located = findBrand(client.slug);

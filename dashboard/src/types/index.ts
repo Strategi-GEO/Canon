@@ -56,16 +56,10 @@ export type Org = {
 };
 
 export type OrgsResponse = {
-  geo_mock: boolean;
   orgs: Org[];
 };
 
-/**
- * geo_mock is a global switch, not a per client flag: when it is on, real clients produce
- * fake output too. It rides on the client list so every page can see it.
- */
 export type ClientsResponse = {
-  geo_mock: boolean;
   clients: Client[];
 };
 
@@ -287,8 +281,6 @@ export type RoadmapGenJob = {
   rows: number | null;
   /** The engine's own sentence when state is "failed". Shown verbatim, never paraphrased. */
   error: string | null;
-  /** True when nothing real was called, so nothing was spent. */
-  mock: boolean;
 };
 
 /**
@@ -323,8 +315,6 @@ export type FactsGenJob = {
   report: string | null;
   /** The engine's own sentence when state is "failed". Shown verbatim, never paraphrased. */
   error: string | null;
-  /** True when nothing real was called, so nothing was spent. */
-  mock: boolean;
   /**
    * The blog run that triggered this build, so a view watching one run can tell whether the
    * build in front of it belongs to that run or to some earlier one. Null when the engine

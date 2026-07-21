@@ -6,7 +6,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { formatCount } from "@/lib/format";
-import { useOrgs } from "@/lib/orgs-context";
 import { useRuns } from "@/lib/runs-context";
 import { useRoadmap } from "@/lib/use-roadmap";
 import { useRoadmapGen } from "@/lib/use-roadmap-gen";
@@ -16,7 +15,6 @@ import { EngineDown } from "@/components/clients/engine-error";
 import { RoadmapUploader } from "@/components/create/roadmap-uploader";
 import { GenerateRoadmapDialog } from "@/components/roadmap/generate-roadmap-dialog";
 import { RoadmapDownloadButton } from "@/components/roadmap/roadmap-download-button";
-import { mockReasonOf, type MockReason } from "@/components/roadmap/generation-copy";
 import { RoadmapGeneration } from "@/components/roadmap/roadmap-generation";
 import { RoadmapPreviewDialog } from "@/components/roadmap/roadmap-preview-dialog";
 import { roadmapStats } from "@/components/roadmap/roadmap-stats";
@@ -54,7 +52,6 @@ export function RoadmapOverview({
 }) {
   const roadmap = useRoadmap(brandSlug);
   const gen = useRoadmapGen(brandSlug);
-  const { geoMock } = useOrgs();
   const [blogs, setBlogs] = React.useState<BlogSummary[]>([]);
 
   React.useEffect(() => {
@@ -100,8 +97,6 @@ export function RoadmapOverview({
     }
   }, [genState, reload]);
 
-  const mock = mockReasonOf(geoMock);
-
   // Both reads start on mount and settle together, and the page cannot answer either of its
   // questions until they do: whether there is a roadmap, and whether one is being generated.
   // Rendering the empty state before the second lands would flash a live Generate button over
@@ -135,12 +130,11 @@ export function RoadmapOverview({
       <div className="w-full">
         {/* Above the empty state rather than inside it: a generation in flight is the answer to
             "why is there no roadmap", and it outlives the emptiness it explains. */}
-        <RoadmapGeneration brandSlug={brandSlug} brandName={brandName} mock={mock} gen={gen} />
+        <RoadmapGeneration brandSlug={brandSlug} brandName={brandName} gen={gen} />
         <NoRoadmap
           brandSlug={brandSlug}
           brandName={brandName}
           brandDomain={brandDomain}
-          mock={mock}
           generateLocked={generating || locked}
           generateLockedReason={generateLockedReason}
           onUploaded={roadmap.set}
@@ -190,7 +184,6 @@ export function RoadmapOverview({
                 brandSlug={brandSlug}
                 brandName={brandName}
                 brandDomain={brandDomain}
-                mock={mock}
                 locked={generating || locked}
                 lockedReason={generateLockedReason}
                 onStarted={gen.adopt}
@@ -205,7 +198,7 @@ export function RoadmapOverview({
           add the next month, so the button is offered here and not only on the empty state. This
           card renders the running or just-finished generation, whose report is the account of how
           the newest month was planned. */}
-      <RoadmapGeneration brandSlug={brandSlug} brandName={brandName} mock={mock} gen={gen} />
+      <RoadmapGeneration brandSlug={brandSlug} brandName={brandName} gen={gen} />
 
       {locked ? (
         <Card className="mt-6 border-review/25 bg-review-bg">
@@ -430,7 +423,6 @@ function NoRoadmap({
   brandSlug,
   brandName,
   brandDomain,
-  mock,
   generateLocked,
   generateLockedReason,
   onUploaded,
@@ -440,7 +432,6 @@ function NoRoadmap({
   brandSlug: string;
   brandName: string;
   brandDomain: string;
-  mock: MockReason | null;
   generateLocked: boolean;
   generateLockedReason?: string;
   onUploaded: React.ComponentProps<typeof RoadmapUploader>["onUploaded"];
@@ -493,7 +484,6 @@ function NoRoadmap({
               brandSlug={brandSlug}
               brandName={brandName}
               brandDomain={brandDomain}
-              mock={mock}
               locked={generateLocked}
               lockedReason={generateLockedReason}
               onStarted={onStarted}

@@ -19,7 +19,6 @@ import {
   NO_DENOMINATOR,
   SURVIVES_REFRESH,
   workingLine,
-  type MockReason,
 } from "@/components/roadmap/generation-copy";
 import { ApiError, api } from "@/lib/api";
 import { formatCount, formatElapsed } from "@/lib/format";
@@ -37,12 +36,10 @@ import type { RoadmapGenJob } from "@/types";
 export function RoadmapGeneration({
   brandSlug,
   brandName,
-  mock,
   gen,
 }: {
   brandSlug: string;
   brandName: string;
-  mock: MockReason | null;
   /** Held by the tab, because the tab also has to re-read the CSV when this lands. */
   gen: RoadmapGenState;
 }) {
@@ -66,7 +63,7 @@ export function RoadmapGeneration({
   }
 
   if (job.state === "running") {
-    return <Running job={job} brandName={brandName} mock={mock} now={now} />;
+    return <Running job={job} brandName={brandName} now={now} />;
   }
 
   return <Settled job={job} brandSlug={brandSlug} onDismissed={gen.clear} />;
@@ -80,12 +77,10 @@ export function RoadmapGeneration({
 function Running({
   job,
   brandName,
-  mock,
   now,
 }: {
   job: RoadmapGenJob;
   brandName: string;
-  mock: MockReason | null;
   now: Date | null;
 }) {
   const elapsed = now === null ? null : formatElapsed(job.started, now);
@@ -116,7 +111,7 @@ function Running({
         </div>
 
         <p className="mt-2 max-w-2xl text-xs leading-relaxed text-muted-foreground">
-          {workingLine(mock, brandName)} {NO_DENOMINATOR}
+          {workingLine(brandName)} {NO_DENOMINATOR}
         </p>
         <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-muted-foreground">
           {SURVIVES_REFRESH} The roadmap and its report appear here when it lands.
@@ -294,15 +289,6 @@ function Inputs({ job }: { job: RoadmapGenJob }) {
           {job.piece_count} {job.piece_count === 1 ? "piece" : "pieces"}
         </dd>
       </div>
-      {job.mock ? (
-        // Said on the artifact itself, not only on the button that made it. A mock roadmap
-        // that reads as a researched one is the single most expensive confusion available
-        // here: every blog for this brand would then be written from invented topics.
-        <div className="flex items-baseline gap-1.5">
-          <dt className="sr-only">Mode</dt>
-          <dd className="text-review">mock rows, nothing live was called</dd>
-        </div>
-      ) : null}
       {job.notes.trim() !== "" ? (
         <div className="flex min-w-0 basis-full items-baseline gap-1.5">
           <dt className="shrink-0">Notes</dt>

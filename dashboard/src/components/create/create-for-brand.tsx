@@ -53,7 +53,6 @@ export function CreateForBrand({
   brandName,
   hasCanonicalFacts,
   resourceCount,
-  geoMock,
 }: {
   orgSlug: string;
   brandSlug: string;
@@ -65,7 +64,6 @@ export function CreateForBrand({
    */
   hasCanonicalFacts: boolean;
   resourceCount: number;
-  geoMock: boolean;
 }) {
   const [roadmap, setRoadmap] = React.useState<RoadmapResponse | null>(null);
   const [roadmapError, setRoadmapError] = React.useState<ApiError | null>(null);
@@ -315,7 +313,6 @@ export function CreateForBrand({
       resourcesHref={brandHref(orgSlug, brandSlug, "/resources")}
       hasCanonicalFacts={hasCanonicalFacts}
       resourceCount={resourceCount}
-      geoMock={geoMock}
       roadmap={roadmap}
       roadmapError={roadmapError}
       // The run list is part of being loaded, not a detail behind it: rendering a tickable
