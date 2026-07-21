@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
   ArrowRight,
@@ -30,11 +31,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
 import { clientCan, clientCanSee } from "@/lib/blog-state";
 import { ApiError, api, detailText, isStaleVersion } from "@/portal/api";
 import { formatDate, formatRelative, readingTime } from "@/portal/format";
 import { brandHref } from "@/portal/nav";
+import { cn } from "@/lib/utils";
 import { usePortal } from "@/portal/portal-context";
 import { useBlogDetail } from "@/portal/use-blog-detail";
 import type { PortalAnswerView, PortalBlogCard, ReplyBody, SuggestBody } from "@/portal/types";
@@ -58,37 +61,33 @@ import type { PortalAnswerView, PortalBlogCard, ReplyBody, SuggestBody } from "@
  */
 
 /**
- * The four sections a client's library has, from the canonical state and nothing else.
+ * The library's groups, from the canonical state and nothing else. Written once and shared by the
+ * overview statistics and the blogs tabs, so the two can never count the same article differently.
  *
- * Written once and shared by both list views, because the two used to filter with their own
- * copies of the same four predicates. THE BUCKETS ARE BY WHO OWES WHAT, which is why
- * changes_requested sits with a spent hold rather than beside client_review: an article whose
- * change request is with the team asks the client for nothing, however recently they were
- * reading it, and putting it under "ready to post" would ask them to approve past their own
- * outstanding note. `published` sits with `approved` because both are locked and both are only
- * to be read; the tag on each card is what distinguishes them.
+ * THE PARTITION IS TOTAL: every card portal-data.ts sends lands in exactly one group, so nothing a
+ * client can see ever falls out of the library. Which TAB a group belongs to is decided by the
+ * reader below, not here:
+ *   needsAnswers  has_questions        -> Needs answers tab, "Waiting on you"
+ *   answered      answers_submitted    -> Needs answers tab, tagged "Answered" (ready for our rerun)
+ *   clientReview  client_review        -> Ready to post tab, "Ready for your review"
+ *   withTeam      changes_requested,   -> Ready to post tab, "With our team"
+ *                 + the generating slivers
+ *   signedOff     approved, published  -> Approved tab; the tag on each card says which
+ *
+ * `answered` is split out from the other with-the-team states DELIBERATELY, at the operator's
+ * request: the client answered the review questions, so it sits beside the questions it settles
+ * rather than beside a change request that is the team's to work. The !clientCanSee arm still
+ * catches the `generating` slivers portal-data.ts keeps visible, so they are grouped, never lost.
  */
-function bucket(blogs: PortalBlogCard[]) {
+function partition(blogs: PortalBlogCard[]) {
   return {
-    // OWED, and answering is the only debt here. `answers_submitted` is deliberately absent:
-    // the client has already paid it, and a card in "Waiting on you" asking them to answer
-    // questions they answered is the exact complaint the state was added to end.
-    action: blogs.filter((blog) => blog.state === "has_questions"),
-    ready: blogs.filter((blog) => blog.state === "client_review"),
-    // `answers_submitted` IS NAMED HERE and the naming is not optional. The old arm read
-    // "changes_requested or anything the client cannot see", which worked while every
-    // with-the-team row was a row clientCanSee refused. clientCanSee now ADMITS
-    // answers_submitted, so that arm silently stopped catching it, and a state in no bucket is
-    // not a mislabelled card: it is a card that disappears from the library entirely, in front
-    // of the client who just answered it. The !clientCanSee arm still stands for the two
-    // `generating` slivers portal-data.ts keeps visible.
+    needsAnswers: blogs.filter((blog) => blog.state === "has_questions"),
+    answered: blogs.filter((blog) => blog.state === "answers_submitted"),
+    clientReview: blogs.filter((blog) => blog.state === "client_review"),
     withTeam: blogs.filter(
-      (blog) =>
-        blog.state === "changes_requested" ||
-        blog.state === "answers_submitted" ||
-        !clientCanSee(blog.state),
+      (blog) => blog.state === "changes_requested" || !clientCanSee(blog.state),
     ),
-    done: blogs.filter((blog) => blog.state === "approved" || blog.state === "published"),
+    signedOff: blogs.filter((blog) => blog.state === "approved" || blog.state === "published"),
   };
 }
 
@@ -221,21 +220,100 @@ export function OrgChooser({ org: orgSlug }: { org: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Brand overview
+// Brand overview: STATISTICS, not a second copy of the blogs list. The old overview and the
+// blogs library rendered the same sections, which is the duplication this split removes. Every
+// tile links into the blogs tab (or the roadmap) that holds the articles it counts, so the
+// overview answers "how many" and one click answers "which".
 // ---------------------------------------------------------------------------
+
+type StatTone = "owed" | "ready" | "ship" | "muted";
+
+const STAT_TONES: Record<StatTone, { surface: string; value: string }> = {
+  owed: { surface: "bg-review-bg ring-review/20", value: "text-review" },
+  ready: { surface: "bg-primary/5 ring-primary/20", value: "text-primary" },
+  ship: { surface: "bg-ship-bg ring-ship/20", value: "text-ship" },
+  muted: { surface: "bg-card ring-foreground/10", value: "text-foreground" },
+};
+
+function StatTile({
+  value,
+  label,
+  hint,
+  tone,
+  href,
+}: {
+  value: number;
+  label: string;
+  hint?: string;
+  tone: StatTone;
+  href?: string;
+}) {
+  const t = STAT_TONES[tone];
+  const body = (
+    <>
+      <span className={cn("font-serif text-3xl leading-none tabular-nums", t.value)}>{value}</span>
+      <span className="mt-2 block text-sm font-medium text-foreground">{label}</span>
+      {hint ? <span className="mt-0.5 block text-xs text-muted-foreground">{hint}</span> : null}
+    </>
+  );
+  const shell = cn("block rounded-xl p-5 ring-1", t.surface);
+  if (href === undefined) {
+    return <div className={shell}>{body}</div>;
+  }
+  return (
+    <Link
+      href={href}
+      className={cn(
+        shell,
+        "outline-none transition-shadow hover:shadow-md hover:shadow-black/5",
+        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+      )}
+    >
+      {body}
+    </Link>
+  );
+}
 
 export function BrandOverview({ org, brand: brandSlug }: { org: string; brand: string }) {
   const { blogs, brands, loading, error, refresh, isSingleBrand } = usePortal();
+  const single = isSingleBrand(org);
+
+  // The roadmap drives the "Planned" count, the one figure not derivable from the blog cards. It
+  // is SECONDARY: a brand with no roadmap, or a transient read error, drops that single tile
+  // rather than blocking the whole overview. The result is TAGGED WITH ITS BRAND rather than
+  // reset in the effect: switching brands then reads as null (its own fetch has not landed yet)
+  // without a synchronous setState, and a failed read for the new brand never shows the old
+  // brand's count.
+  const [plannedFor, setPlannedFor] = React.useState<{ brand: string; count: number } | null>(null);
+  React.useEffect(() => {
+    const controller = new AbortController();
+    api
+      .roadmap(brandSlug, controller.signal)
+      .then((data) => {
+        if (!controller.signal.aborted) {
+          setPlannedFor({ brand: brandSlug, count: data.rows.filter((row) => !row.delivered).length });
+        }
+      })
+      .catch(() => {
+        // No roadmap in place, or a transient failure. The tile hides itself; nothing on the
+        // overview depends on it.
+      });
+    return () => controller.abort();
+  }, [brandSlug]);
+  const planned = plannedFor !== null && plannedFor.brand === brandSlug ? plannedFor.count : null;
 
   if (error !== null) {
     return <ErrorCard message="Could not load this brand" detail={detailText(error)} onRetry={refresh} />;
   }
   if (loading) {
     return (
-      <div className="space-y-4" aria-busy>
+      <div className="space-y-6" aria-busy>
         <div className="h-6 w-48 animate-pulse rounded bg-muted" />
-        <div className="h-24 animate-pulse rounded-xl bg-muted" />
-        <div className="h-40 animate-pulse rounded-xl bg-muted" />
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {[0, 1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="h-28 animate-pulse rounded-xl bg-muted" />
+          ))}
+        </div>
       </div>
     );
   }
@@ -246,99 +324,136 @@ export function BrandOverview({ org, brand: brandSlug }: { org: string; brand: s
   }
 
   const mine = blogs.filter((blog) => blog.brand === brand.slug && blog.org === org);
-  const { action, ready, withTeam, done } = bucket(mine);
-  const recent = done.slice(0, 3);
+  const { needsAnswers, answered, clientReview, withTeam } = partition(mine);
+  const approvedCount = mine.filter((blog) => blog.state === "approved").length;
+  const publishedCount = mine.filter((blog) => blog.state === "published").length;
+  const inProgress = answered.length + withTeam.length;
+
+  const blogsBase = brandHref(org, brand.slug, single, "/blogs");
+  const roadmapHref = brandHref(org, brand.slug, single, "/roadmap");
+
+  const attention = [
+    needsAnswers.length > 0
+      ? needsAnswers.length === 1
+        ? "1 article waiting on your answers"
+        : `${needsAnswers.length} articles waiting on your answers`
+      : null,
+    clientReview.length > 0
+      ? clientReview.length === 1
+        ? "1 ready for you to approve"
+        : `${clientReview.length} ready for you to approve`
+      : null,
+  ].filter(Boolean);
 
   return (
-    <div className="space-y-10">
+    <div className="space-y-8">
       <div>
         <h1 className="font-serif text-2xl tracking-tight">{brand.name}</h1>
-        {action.length > 0 ? (
-          <p className="mt-1 text-sm text-review">
-            {action.length === 1
-              ? "1 article is waiting on you"
-              : `${action.length} articles are waiting on you`}
-          </p>
-        ) : null}
+        <p className={cn("mt-1 text-sm", attention.length > 0 ? "text-review" : "text-muted-foreground")}>
+          {attention.length > 0
+            ? attention.join(" · ")
+            : mine.length > 0
+              ? "Nothing needs your attention right now."
+              : "Articles appear here as our team prepares and delivers them."}
+        </p>
       </div>
 
-      {action.length > 0 ? (
-        <section className="space-y-3" aria-label="Waiting on you">
-          <SectionHeading tone="review" count={action.length}>
-            Waiting on you
-          </SectionHeading>
-          <div className="space-y-3">
-            {action.map((blog) => (
-              <ActionCard key={blog.topic_slug} card={blog} showBrand={false} />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {ready.length > 0 ? (
-        <section className="space-y-3" aria-label="Ready to post">
-          <SectionHeading count={ready.length}>Ready to post</SectionHeading>
-          <div className="space-y-3">
-            {ready.map((blog) => (
-              <ReadyCard key={blog.topic_slug} card={blog} showBrand={false} />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {action.length + ready.length === 0 ? (
-        withTeam.length + done.length > 0 ? (
-          <div className="flex items-center gap-2 rounded-lg border border-ship/20 bg-ship-bg px-4 py-3 text-sm text-ship">
-            <CheckCircle2 className="size-4 shrink-0" aria-hidden />
-            Nothing needs your attention right now.
-          </div>
-        ) : (
-          <p className="rounded-lg border bg-card px-4 py-3 text-sm text-muted-foreground">
-            Articles appear here as our team prepares and delivers them.
-          </p>
-        )
-      ) : null}
-
-      {withTeam.length > 0 ? (
-        <section className="space-y-3" aria-label="In progress">
-          <SectionHeading>In progress with our team</SectionHeading>
-          <div className="space-y-2">
-            {withTeam.map((blog) => (
-              <FrozenRow key={blog.topic_slug} card={blog} showBrand={false} />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {recent.length > 0 ? (
-        <section className="space-y-3" aria-label="Recently approved">
-          <div className="flex items-baseline justify-between">
-            <SectionHeading>Recently approved</SectionHeading>
-            <Link
-              href={brandHref(org, brand.slug, isSingleBrand(org), "/blogs")}
-              className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-            >
-              All blogs
-              <ArrowRight className="size-3.5" aria-hidden />
-            </Link>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {recent.map((blog) => (
-              <ApprovedCard key={blog.topic_slug} card={blog} showBrand={false} />
-            ))}
-          </div>
-        </section>
-      ) : null}
+      <section className="space-y-3" aria-label="At a glance">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <StatTile
+            value={needsAnswers.length}
+            label="Need your answers"
+            hint="Questions only you can settle"
+            tone="owed"
+            href={`${blogsBase}?tab=needs-answers`}
+          />
+          <StatTile
+            value={clientReview.length}
+            label="Ready to post"
+            hint="Waiting for your review"
+            tone="ready"
+            href={`${blogsBase}?tab=ready`}
+          />
+          <StatTile
+            value={inProgress}
+            label="With our team"
+            hint="Answered, or being worked on"
+            tone="muted"
+            href={blogsBase}
+          />
+          <StatTile
+            value={approvedCount}
+            label="Approved"
+            hint="Signed off, on the way to your site"
+            tone="ship"
+            href={`${blogsBase}?tab=approved`}
+          />
+          <StatTile
+            value={publishedCount}
+            label="Published"
+            hint="Live on your site"
+            tone="ship"
+            href={`${blogsBase}?tab=approved`}
+          />
+          {planned !== null ? (
+            <StatTile
+              value={planned}
+              label="Planned"
+              hint="On the roadmap, not yet written"
+              tone="muted"
+              href={roadmapHref}
+            />
+          ) : null}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {mine.length === 1 ? "1 article in your library" : `${mine.length} articles in your library`}
+          {planned !== null && planned > 0 ? `, ${planned} more planned` : ""}.
+        </p>
+      </section>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Blogs library
+// Blogs library: three tabs over the same partition, the horizontal bar the operator asked for.
+// The tab a group sits in is decided HERE, once; partition() above is only the states. The tab
+// bar replaces the old stacked sections that made this page a copy of the overview.
 // ---------------------------------------------------------------------------
+
+const BLOG_TABS = ["needs-answers", "ready", "approved"] as const;
+type BlogTab = (typeof BLOG_TABS)[number];
+
+function isBlogTab(value: string | null): value is BlogTab {
+  return value !== null && (BLOG_TABS as readonly string[]).includes(value);
+}
+
+/** A small count beside a tab label. Absent at zero: a tab that wants nothing says nothing. */
+function TabCount({ n }: { n: number }) {
+  if (n === 0) {
+    return null;
+  }
+  return (
+    <span className="ml-1.5 rounded-full bg-foreground/10 px-1.5 py-0.5 text-[0.6875rem] font-medium tabular-nums text-muted-foreground">
+      {n}
+    </span>
+  );
+}
+
+function EmptyTab({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="mx-auto max-w-md rounded-xl border bg-card p-8 text-center">
+      <Inbox className="mx-auto size-6 text-muted-foreground" aria-hidden />
+      <p className="mt-3 text-sm font-medium">{title}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{body}</p>
+    </div>
+  );
+}
 
 export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: string }) {
   const { blogs, brands, loading, error, refresh } = usePortal();
+  const router = useRouter();
+  const pathname = usePathname();
+  const params = useSearchParams();
 
   if (error !== null) {
     return <ErrorCard message="Could not load the blogs" detail={detailText(error)} onRetry={refresh} />;
@@ -346,7 +461,7 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
   if (loading) {
     return (
       <div className="space-y-4" aria-busy>
-        <div className="h-24 animate-pulse rounded-xl bg-muted" />
+        <div className="h-8 w-72 animate-pulse rounded-lg bg-muted" />
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <div className="h-32 animate-pulse rounded-xl bg-muted" />
           <div className="h-32 animate-pulse rounded-xl bg-muted" />
@@ -357,88 +472,174 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
   }
 
   const brand = brands.find((entry) => entry.slug === brandSlug && entry.org === org);
-  const mine = blogs.filter((blog) => blog.brand === brandSlug && blog.org === org);
-  const { action, ready, withTeam, done } = bucket(mine);
-
   if (brand === undefined) {
     return <BrandUnavailable />;
   }
 
+  const mine = blogs.filter((blog) => blog.brand === brandSlug && blog.org === org);
+
+  // A brand with nothing at all skips the tab bar entirely: three empty tabs read as broken,
+  // where one honest "nothing yet" reads as new.
+  if (mine.length === 0) {
+    return (
+      <div className="mx-auto max-w-md rounded-xl border bg-card p-8 text-center">
+        <Inbox className="mx-auto size-6 text-muted-foreground" aria-hidden />
+        <p className="mt-3 text-sm font-medium">Nothing here yet</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Articles appear here as our team prepares and delivers them.
+        </p>
+      </div>
+    );
+  }
+
+  const { needsAnswers, answered, clientReview, withTeam, signedOff } = partition(mine);
+  const needsCount = needsAnswers.length + answered.length;
+  const readyCount = clientReview.length + withTeam.length;
+  const doneCount = signedOff.length;
+
+  // The active tab defaults to whatever most wants attention, but a ?tab= from a link always
+  // wins: the overview tiles deep-link straight to the group they count, and the "With our team"
+  // tile links with NO tab, which this fallback then resolves to the tab that actually holds
+  // those articles (needs-answers when answers are in, ready otherwise).
+  const fallback: BlogTab = needsCount > 0 ? "needs-answers" : readyCount > 0 ? "ready" : "approved";
+  const requested = params.get("tab");
+  const active: BlogTab = isBlogTab(requested) ? requested : fallback;
+
+  const setTab = (value: string) => {
+    const next = new URLSearchParams(params.toString());
+    next.set("tab", value);
+    // replace, not push: flipping a tab is not a place in history to press Back through.
+    router.replace(`${pathname}?${next.toString()}`, { scroll: false });
+  };
+
   return (
-    <div className="space-y-10">
-      {action.length > 0 ? (
-        <section className="space-y-3" aria-label="Waiting on you">
-          <SectionHeading tone="review" count={action.length}>
-            Waiting on you
-          </SectionHeading>
-          <p className="text-xs text-muted-foreground">
-            Our editorial review needs a few answers only you can give. Each one takes a
-            minute, and the article stays on hold until it has them.
-          </p>
-          <div className="space-y-3">
-            {action.map((blog) => (
-              <ActionCard key={blog.topic_slug} card={blog} showBrand={false} />
-            ))}
-          </div>
-        </section>
-      ) : null}
+    <Tabs value={active} onValueChange={setTab} className="gap-6">
+      <TabsList variant="line" className="w-full justify-start gap-4">
+        <TabsTrigger value="needs-answers" className="flex-none">
+          Needs answers
+          <TabCount n={needsCount} />
+        </TabsTrigger>
+        <TabsTrigger value="ready" className="flex-none">
+          Ready to post
+          <TabCount n={readyCount} />
+        </TabsTrigger>
+        <TabsTrigger value="approved" className="flex-none">
+          Approved
+          <TabCount n={doneCount} />
+        </TabsTrigger>
+      </TabsList>
 
-      {ready.length > 0 ? (
-        <section className="space-y-3" aria-label="Ready to post">
-          <SectionHeading count={ready.length}>Ready to post</SectionHeading>
-          <p className="text-xs text-muted-foreground">
-            Our team has finished these articles. Read each one, then approve it, or select
-            any text in it to leave a note for the team.
-          </p>
-          <div className="space-y-3">
-            {ready.map((blog) => (
-              <ReadyCard key={blog.topic_slug} card={blog} showBrand={false} />
-            ))}
-          </div>
-        </section>
-      ) : null}
+      {/* NEEDS ANSWERS: the questions flow. Open questions on top, then articles the client has
+          already answered, tagged "Answered", so an answered article stays here rather than
+          vanishing the moment it is off the client's plate. */}
+      <TabsContent value="needs-answers" className="space-y-8">
+        {needsAnswers.length > 0 ? (
+          <section className="space-y-3" aria-label="Waiting on you">
+            <SectionHeading tone="review" count={needsAnswers.length}>
+              Waiting on you
+            </SectionHeading>
+            <p className="text-xs text-muted-foreground">
+              Our editorial review needs a few answers only you can give. Each one takes a
+              minute, and the article stays on hold until it has them.
+            </p>
+            <div className="space-y-3">
+              {needsAnswers.map((blog) => (
+                <ActionCard key={blog.topic_slug} card={blog} showBrand={false} />
+              ))}
+            </div>
+          </section>
+        ) : null}
 
-      {action.length + ready.length === 0 && withTeam.length + done.length > 0 ? (
-        <div className="flex items-center gap-2 rounded-lg border border-ship/20 bg-ship-bg px-4 py-3 text-sm text-ship">
-          <CheckCircle2 className="size-4 shrink-0" aria-hidden />
-          Nothing needs your attention right now.
-        </div>
-      ) : null}
+        {answered.length > 0 ? (
+          <section className="space-y-3" aria-label="Answered">
+            <SectionHeading count={answered.length}>Answered, with our team</SectionHeading>
+            <p className="text-xs text-muted-foreground">
+              You have answered these, so each is marked Answered and ready for our team to work
+              your answers in. You will see it again if we need anything further, or once it is
+              ready for your review.
+            </p>
+            <div className="space-y-2">
+              {answered.map((blog) => (
+                <FrozenRow key={blog.topic_slug} card={blog} showBrand={false} />
+              ))}
+            </div>
+          </section>
+        ) : null}
 
-      {withTeam.length > 0 ? (
-        <section className="space-y-3" aria-label="In progress">
-          <SectionHeading>In progress with our team</SectionHeading>
-          <div className="space-y-2">
-            {withTeam.map((blog) => (
-              <FrozenRow key={blog.topic_slug} card={blog} showBrand={false} />
-            ))}
-          </div>
-        </section>
-      ) : null}
+        {needsCount === 0 ? (
+          <EmptyTab
+            title="No open questions"
+            body="When our editorial review needs something only you can answer, it appears here."
+          />
+        ) : null}
+      </TabsContent>
 
-      {done.length > 0 ? (
-        <section className="space-y-3" aria-label="Signed off">
-          {/* One section for approved and published both. The client's question here is "which
-              articles are finished", and the tag on each card answers the finer one. */}
-          <SectionHeading>Signed off</SectionHeading>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {done.map((blog) => (
-              <ApprovedCard key={blog.topic_slug} card={blog} showBrand={false} />
-            ))}
-          </div>
-        </section>
-      ) : null}
+      {/* READY TO POST: the review-and-approve flow. Articles ready for the client on top, then
+          the ones back with the team (a change the client asked for, or a rerun still in flight). */}
+      <TabsContent value="ready" className="space-y-8">
+        {clientReview.length > 0 ? (
+          <section className="space-y-3" aria-label="Ready for your review">
+            <SectionHeading count={clientReview.length}>Ready for your review</SectionHeading>
+            <p className="text-xs text-muted-foreground">
+              Our team has finished these articles. Read each one, then approve it, or select any
+              text in it to leave a note for the team.
+            </p>
+            <div className="space-y-3">
+              {clientReview.map((blog) => (
+                <ReadyCard key={blog.topic_slug} card={blog} showBrand={false} />
+              ))}
+            </div>
+          </section>
+        ) : null}
 
-      {mine.length === 0 ? (
-        <div className="mx-auto max-w-md rounded-xl border bg-card p-8 text-center">
-          <Inbox className="mx-auto size-6 text-muted-foreground" aria-hidden />
-          <p className="mt-3 text-sm font-medium">Nothing here yet</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Articles appear here as our team prepares and delivers them.
-          </p>
-        </div>
-      ) : null}
-    </div>
+        {withTeam.length > 0 ? (
+          <section className="space-y-3" aria-label="With our team">
+            <SectionHeading count={withTeam.length}>With our team</SectionHeading>
+            <p className="text-xs text-muted-foreground">
+              These are being worked on, including any changes you asked for. You will see each
+              one here again once it is ready for you to review and approve.
+            </p>
+            <div className="space-y-2">
+              {withTeam.map((blog) => (
+                <FrozenRow key={blog.topic_slug} card={blog} showBrand={false} />
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {readyCount === 0 ? (
+          <EmptyTab
+            title="Nothing ready to post"
+            body="Finished articles appear here for your review before they go live."
+          />
+        ) : null}
+      </TabsContent>
+
+      {/* APPROVED: everything the client has signed off. Approved and published both, because the
+          client's question here is "which articles are done", and the tag on each card answers
+          the finer one, approved-and-on-its-way versus already live. */}
+      <TabsContent value="approved" className="space-y-3">
+        {signedOff.length > 0 ? (
+          <section className="space-y-3" aria-label="Signed off">
+            <SectionHeading count={signedOff.length}>Signed off</SectionHeading>
+            <p className="text-xs text-muted-foreground">
+              Everything you have approved. The tag on each article shows whether it is approved
+              and on its way, or already live on your site.
+            </p>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {signedOff.map((blog) => (
+                <ApprovedCard key={blog.topic_slug} card={blog} showBrand={false} />
+              ))}
+            </div>
+          </section>
+        ) : (
+          <EmptyTab
+            title="Nothing approved yet"
+            body="Articles you approve, and ones already live on your site, collect here."
+          />
+        )}
+      </TabsContent>
+    </Tabs>
   );
 }
 

@@ -646,12 +646,13 @@ const CLIENT_TAGS: Record<BlogState, StateTag> = {
     tone: "owed",
     detail: "We need your answer on a couple of points before this article can go further.",
   },
-  // "Questions answered" rather than "In progress", because this client DID something and a
-  // label that forgets it reads as though the answers went nowhere. It is a receipt as much as a
-  // state, and it says nothing about what our side is doing with them, which is not theirs to
-  // read.
+  // "Answered" rather than "In progress", because this client DID something and a label that
+  // forgets it reads as though the answers went nowhere. It is a receipt as much as a state: the
+  // article is now the team's to rerun, and the client library groups it under Needs answers with
+  // exactly this tag so an answered article reads as done-on-their-side, not still owed. The label
+  // says nothing about what our side is doing with them, which is not theirs to read.
   answers_submitted: {
-    label: "Questions answered",
+    label: "Answered",
     tone: "waiting",
     detail: "Thanks, we have your answers. Our team is working them into this article now.",
   },
