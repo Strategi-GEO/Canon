@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { brandHref } from "@/lib/orgs-context";
 import type { Client } from "@/types";
-import { DemoBadge, IndustryBadge, PreflightNote } from "@/components/clients/client-meta";
+import { IndustryBadge, PreflightNote } from "@/components/clients/client-meta";
 
 /**
  * One BRAND: the engine's unit of work, and the only place blogs can be created.
@@ -45,7 +45,6 @@ export function BrandCard({ orgSlug, brand }: { orgSlug: string; brand: Client }
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {brand.demo_mode ? <DemoBadge /> : null}
             {/* Points where the card goes. Motion is suppressed globally under reduced motion. */}
             <ArrowRight
               className="size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary"

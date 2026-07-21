@@ -43,7 +43,6 @@ export function SelectState({
   resourcesHref,
   hasCanonicalFacts,
   resourceCount,
-  demoMode,
   geoMock,
   roadmap,
   roadmapError,
@@ -73,7 +72,6 @@ export function SelectState({
   hasCanonicalFacts: boolean;
   /** Files in this brand's Resources/, from the same client record. The fact base's input. */
   resourceCount: number;
-  demoMode: boolean;
   geoMock: boolean;
   roadmap: RoadmapResponse | null;
   roadmapError: ApiError | null;
@@ -455,7 +453,7 @@ export function SelectState({
             incomplete={incomplete}
             onToggle={toggle}
             onToggleAll={toggleAll}
-            upload={{ brandSlug, demoMode, onUploaded }}
+            upload={{ brandSlug, onUploaded }}
             rowRefs={rowRefs}
           />
         )}
@@ -474,7 +472,7 @@ export function SelectState({
       <Card>
         <CardContent className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
           <div className="min-w-56 flex-1">
-            <RunNotice demoMode={demoMode} geoMock={geoMock} />
+            <RunNotice geoMock={geoMock} />
             {error ? <EngineErrorNote error={error} className="mt-2" /> : null}
           </div>
           <div className="flex shrink-0 items-center gap-3">
@@ -507,7 +505,7 @@ export function SelectState({
         onOpenChange={setWarning}
         brandName={brandName}
         resourcesHref={resourcesHref}
-        mock={demoMode || geoMock}
+        mock={geoMock}
         onProceed={() => void generate()}
       />
     </div>
@@ -606,15 +604,8 @@ function DuplicateWall({
   );
 }
 
-/** Never let an operator start a real batch thinking it is a demo. */
-function RunNotice({ demoMode, geoMock }: { demoMode: boolean; geoMock: boolean }) {
-  if (demoMode) {
-    return (
-      <p className="text-xs text-muted-foreground">
-        Demo brand. Blogs are precoded, no API calls, nothing is spent.
-      </p>
-    );
-  }
+/** Never let an operator start a real batch thinking it is mock. */
+function RunNotice({ geoMock }: { geoMock: boolean }) {
   if (geoMock) {
     // GEO_MOCK is global: it makes real brands produce fake output too, so promising a real
     // run here would be a lie in the operator's favour and a nasty surprise later.

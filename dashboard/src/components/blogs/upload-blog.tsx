@@ -44,14 +44,12 @@ export function UploadBlog({
   brandSlug,
   row,
   state,
-  demoMode,
   onUploaded,
 }: {
   brandSlug: string;
   row: RoadmapRow;
   /** How this row reads right now, which decides whether uploading is offered at all. */
   state: RowState;
-  demoMode: boolean;
   /** Fires once the article is committed, so the caller can refetch its rows and blogs. */
   onUploaded: (result: UploadBlogResult) => void;
 }) {
@@ -81,7 +79,7 @@ export function UploadBlog({
     return null;
   }
 
-  const blocked = blockedReason(state, demoMode);
+  const blocked = blockedReason(state);
 
   return (
     <>
@@ -377,10 +375,7 @@ function GateReport({ result }: { result: UploadBlogResult }) {
 }
 
 /** Why this row cannot take an upload, or null when it can. Mirrors the engine's refusals. */
-function blockedReason(state: RowState, demoMode: boolean): string | null {
-  if (demoMode) {
-    return "This brand is in demo mode. Demo blogs are placeholder text, so a real article would sit behind a fixture that is never published.";
-  }
+function blockedReason(state: RowState): string | null {
   if (state === "in_progress") {
     return "This topic is generating right now. Upload once the run finishes, so the engine's own writes are not raced.";
   }

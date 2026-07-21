@@ -59,7 +59,6 @@ type PickMode = {
    */
   upload: {
     brandSlug: string;
-    demoMode: boolean;
     /** Fires after an article lands, so the caller refetches rows and blogs. */
     onUploaded: () => void;
   };
@@ -260,7 +259,6 @@ type Remove = {
 
 type Upload = {
   brandSlug: string;
-  demoMode: boolean;
   onUploaded: () => void;
 };
 
@@ -392,7 +390,6 @@ function Row({
               brandSlug={upload.brandSlug}
               row={row}
               state={state}
-              demoMode={upload.demoMode}
               onUploaded={upload.onUploaded}
             />
           ) : null}

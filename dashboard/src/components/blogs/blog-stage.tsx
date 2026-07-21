@@ -9,7 +9,6 @@ import {
   Copy,
   Download,
   FileUp,
-  FlaskConical,
   Globe,
   Laptop,
   Pencil,
@@ -122,13 +121,11 @@ export function BlogStage({
   brandSlug,
   brandName,
   topicSlug,
-  demoMode,
 }: {
   orgSlug: string;
   brandSlug: string;
   brandName: string;
   topicSlug: string;
-  demoMode: boolean;
 }) {
   const [blogs, setBlogs] = React.useState<BlogSummary[] | null>(null);
   const [listError, setListError] = React.useState<ApiError | null>(null);
@@ -187,7 +184,6 @@ export function BlogStage({
         brandSlug={brandSlug}
         brandName={brandName}
         blog={blog}
-        demoMode={demoMode}
         onChanged={() => void loadBlogs()}
       />
     </TooltipProvider>
@@ -199,14 +195,12 @@ function StageBody({
   brandSlug,
   brandName,
   blog,
-  demoMode,
   onChanged,
 }: {
   orgSlug: string;
   brandSlug: string;
   brandName: string;
   blog: BlogSummary;
-  demoMode: boolean;
   /** Re-reads the summary list: a save, a send, or an applied change moved it. */
   onChanged: () => void;
 }) {
@@ -354,10 +348,6 @@ function StageBody({
    * and one already in the CMS. Those are four situations with four different sets of doors, so
    * one flag over all of them offered an edit that rewrote bytes somebody was mid-review of.
    *
-   * demoMode is ANDed in rather than modelled as a state, because a demo brand is a property of
-   * the CLIENT and not a place an article sits. Its blogs are precoded placeholder text, so no
-   * act on this page means anything for one, whatever state the record is in.
-   *
    * THE GATE CONTRACT IS THE DISCRIMINATING LAYER, AND IT IS NOT A PREDICATE THIS FILE OR
    * blog-state.ts WRITES. It evaluates gate-contract.ts's clauses, each of which carries the
    * verbatim source line that performs the refusal, and dashboard/tests/gate-contract.test.ts
@@ -428,14 +418,14 @@ function StageBody({
    * shape of the control off the layer that performs the refusal instead of deciding it alone.
    */
   const editStanding = adminGateStanding("edit", gateInput);
-  const canEdit = !demoMode && !HOSTED_READONLY && adminCan(state, "edit") && editStanding.mount;
+  const canEdit = !HOSTED_READONLY && adminCan(state, "edit") && editStanding.mount;
   /**
    * NO HOSTED_READONLY TERM HERE, DELIBERATELY, and canEdit above carries one. The write half of
    * this axis is canRunClaude below, which is what the composer and the resolve doors are gated
    * on, and an admin on the hosted build must still be able to read what the client asked for.
    */
   const commentStanding = adminGateStanding("comments", gateInput);
-  const canComment = !demoMode && adminCan(state, "comments") && commentStanding.mount;
+  const canComment = adminCan(state, "comments") && commentStanding.mount;
   /**
    * SEND AND PUBLISH CARRY THE CONTRACT TERM NOW, and their not carrying one was its own round of
    * this defect. The binding test in gate-contract.test.ts iterated three of the six acts, so
@@ -448,9 +438,8 @@ function StageBody({
    * is permanent, so there is nothing to wait out. The child components keep their own reason
    * sentences for the operator, and those sentences are now downstream of a decision made here.
    */
-  const canSend = !demoMode && adminCan(state, "send") && adminGateAllows("send", gateInput);
-  const canPublish =
-    !demoMode && adminCan(state, "publish") && adminGateAllows("publish", gateInput);
+  const canSend = adminCan(state, "send") && adminGateAllows("send", gateInput);
+  const canPublish = adminCan(state, "publish") && adminGateAllows("publish", gateInput);
   /**
    * THE `answer` VERB IS TWO DOORS AND BOTH GATE ON THE FORM, NEVER ON THE STATUS. Rounds four and
    * five of one defect were both this flag, and the second one is why nothing here restates a rule
@@ -481,7 +470,6 @@ function StageBody({
    * hosted revise route at all, so on that build both doors lead nowhere.
    */
   const canAnswer =
-    !demoMode &&
     !HOSTED_READONLY &&
     adminCan(state, "answer") &&
     adminGateAllows("answer", gateInput);
@@ -507,7 +495,6 @@ function StageBody({
    * follows it. An act exempted by hand here would have to be remembered instead.
    */
   const canReply =
-    !demoMode &&
     !HOSTED_READONLY &&
     adminGateAllows("reply", gateInput) &&
     (canComment || adminCan(state, "reply"));
@@ -695,7 +682,7 @@ function StageBody({
               next to an explained state is legible; a dead control next to it is a puzzle.
 
               THE DISABLED PATTERN SURVIVES INSIDE these components, and only for the reasons
-              that clear on their own: demo mode, a Claude apply already in flight, the engine's
+              that clear on their own: a Claude apply already in flight, the engine's
               one-session cap. Those are conditions to wait out, so a button that comes back is
               the honest shape for them. A state is not a condition to wait out.
 
@@ -708,7 +695,6 @@ function StageBody({
               topicSlug={topicSlug}
               topic={blog.topic}
               status={blog.status}
-              demoMode={demoMode}
             />
           ) : null}
           {/* THE STAMP IS A FACT, NOT A CONTROL, so it survives the gating that removes the
@@ -725,7 +711,6 @@ function StageBody({
               topicSlug={topicSlug}
               brandName={brandName}
               status={blog.status}
-              demoMode={demoMode}
               review={reviewState}
               onSent={(sent) => {
                 // The POST answers with the review state it produced, so the chip flips on the
@@ -747,14 +732,6 @@ function StageBody({
         </div>
       </div>
 
-      {demoMode ? (
-        <p className="mt-3 flex gap-2 text-xs leading-relaxed text-muted-foreground">
-          <FlaskConical className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-          This is a demo brand, so the article is precoded placeholder text: nothing here
-          can be edited with Claude or sent to a client.
-        </p>
-      ) : null}
-
       {/* THE HOSTED BUILD OWES THE OPERATOR THIS SENTENCE, and until now it said nothing at all.
           Every admin write route on this build answers 501 hostedWriteRefused, and every control
           is REMOVED rather than greyed: SendToClient returns null, PublishAction returns null,
@@ -773,8 +750,7 @@ function StageBody({
           KEYED ON THE BENCH BEING NON-EMPTY rather than on a list of states, so it appears exactly
           where something was withheld and stays away from `generating`, `failed`, `stopped` and
           `unknown`, which offer nothing on either build and would be told they are missing acts
-          they never had. demoMode is deliberately not ANDed out: a demo brand on the hosted build
-          is refused twice over, and both refusals are true. */}
+          they never had. */}
       {HOSTED_READONLY && adminActions(state).length > 0 ? (
         <p className="mt-3 flex gap-2 text-xs leading-relaxed text-muted-foreground">
           <Laptop className="mt-0.5 size-3.5 shrink-0" aria-hidden />

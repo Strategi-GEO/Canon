@@ -244,7 +244,6 @@ function OrgRows({
           aria-hidden
         />
         <span className="min-w-0 flex-1 truncate">{org.name}</span>
-        {!nested && org.brands[0]?.demo_mode ? <DemoBadge /> : null}
         {/* The count is what tells an operator a multi-brand org is worth expanding, before
             they click it and find out. A single-brand org states its one brand too, because
             "1" and a missing number are different facts. */}
@@ -279,23 +278,9 @@ function OrgRows({
               >
                 {brand.name}
               </span>
-              {brand.demo_mode ? <DemoBadge /> : null}
             </CommandItem>
           ))
         : null}
     </>
-  );
-}
-
-/**
- * Muted grey, never the accent. A demo brand produces precoded fake blogs and can never
- * spend an API call, so the badge marks a limitation rather than a feature, and it must be
- * impossible to mistake for a real brand.
- */
-function DemoBadge() {
-  return (
-    <span className="machine shrink-0 rounded border border-border bg-muted px-1 py-px text-[0.625rem] leading-tight text-muted-foreground">
-      Demo
-    </span>
   );
 }

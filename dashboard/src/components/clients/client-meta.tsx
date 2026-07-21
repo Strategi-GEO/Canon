@@ -1,38 +1,9 @@
 "use client";
 
-import { FlaskConical, ShieldAlert } from "lucide-react";
+import { ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { Preflight } from "@/types";
-
-/**
- * A demo client can never spend an API call, so it must never be mistaken for a real one.
- * The badge stays muted and off the accent: it marks a limitation, not a feature.
- */
-export function DemoBadge() {
-  return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Badge variant="outline" className="gap-1 text-muted-foreground">
-            <FlaskConical data-icon="inline-start" aria-hidden />
-            Demo
-          </Badge>
-        </TooltipTrigger>
-        <TooltipContent>
-          Demo mode: this client produces precoded fake blogs with zero API calls. Every
-          file it writes is marked demo content. It can never run the real pipeline.
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
-}
 
 /**
  * The preflight gate refuses a real run when canonical-facts.md is missing or still holds

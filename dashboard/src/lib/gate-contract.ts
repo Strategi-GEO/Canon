@@ -160,7 +160,6 @@ export type ClauseVerdict = "pass" | "refuse" | "unknowable";
 
 export type GateSourceId =
   | "admin_brand_id"
-  | "admin_refuse_demo"
   | "admin_done_topic"
   | "admin_send_blog_to_client"
   | "admin_save_blog_content"
@@ -326,26 +325,6 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
         why:
           "The second arm of the same refusal, for a slug with no clients row. Exempt for the " +
           "reason above, and unreachable from a page already rendering the brand's article.",
-      },
-    ],
-  },
-  admin_refuse_demo: {
-    file: "supabase/migrations/009_admin_write_tier.sql",
-    symbol: "admin_refuse_demo",
-    kind: "sql",
-    fingerprint: "6075b22ff075e6f7",
-    gates: ["edit", "comments", "send"],
-    what:
-      "Refuses every admin write against a demo brand, whose blogs are placeholder text written " +
-      "with no research and never delivered.",
-    exemptions: [
-      {
-        id: "brand_is_demo",
-        raises: "PORTAL:DEMO:this brand is a demo fixture",
-        why:
-          "Subsumed by the demoMode term blog-stage.tsx ANDs into every flag. A demo brand is a " +
-          "property of the CLIENT and not a place an article sits, so it is not a record fact and " +
-          "does not belong in a clause keyed by one.",
       },
     ],
   },
@@ -629,7 +608,7 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/app.py",
     symbol: "api_answers",
     kind: "python",
-    fingerprint: "062cc325fe8295b8",
+    fingerprint: "22b454eb2ce45f04",
     gates: ["answer"],
     what:
       "The submit door behind the `answer` verb. It 404s when no form exists and 409s a stale " +
@@ -642,11 +621,6 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
         why:
           "Identity. This is the one write a non-admin may make, and the role is not a fact about " +
           "the article.",
-      },
-      {
-        id: "answers_demo",
-        raises: "detail=runner.demo_refusal_detail(slug)",
-        why: "Subsumed by the demoMode term, exactly as admin_refuse_demo is.",
       },
       {
         id: "answers_live_run",
@@ -676,18 +650,13 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/app.py",
     symbol: "api_revise_answered",
     kind: "python",
-    fingerprint: "b4ae2f67ca71a018",
+    fingerprint: "ac872ad086d322c0",
     gates: ["answer"],
     what:
       "The rerun door behind the `answer` verb. It 404s when no form exists, 409s a stale one, " +
       "and 409s a form nobody has answered, because a rerun with nothing to apply is a wasted " +
       "session.",
     exemptions: [
-      {
-        id: "revise_demo",
-        raises: "detail=runner.demo_refusal_detail(slug)",
-        why: "Subsumed by the demoMode term.",
-      },
       {
         id: "revise_live_run",
         raises: "rerun once it finishes so the revise is",
@@ -707,17 +676,12 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/app.py",
     symbol: "api_save_blog_content",
     kind: "python",
-    fingerprint: "3357c4f1ff13b258",
+    fingerprint: "1740c9ef095753b6",
     gates: ["edit"],
     what:
-      "The engine's save route. Beyond the three shared helpers it refuses a demo brand, a live " +
-      "run, and the payload.",
+      "The engine's save route. Beyond the three shared helpers it refuses a live run and the " +
+      "payload.",
     exemptions: [
-      {
-        id: "save_route_demo",
-        raises: "detail=runner.demo_refusal_detail(slug)",
-        why: "Subsumed by the demoMode term.",
-      },
       {
         id: "save_route_live_run",
         raises: "edit once it finishes so the engine's",
@@ -739,17 +703,12 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/app.py",
     symbol: "api_add_blog_comment",
     kind: "python",
-    fingerprint: "b50dc00b44e46ed5",
+    fingerprint: "11148807c94999f6",
     gates: ["comments"],
     what:
       "The engine's change request route, which files the comment AND starts the Claude session, " +
       "so it carries an in-flight cap the hosted function has no need of.",
     exemptions: [
-      {
-        id: "comment_route_demo",
-        raises: "detail=runner.demo_refusal_detail(slug)",
-        why: "Subsumed by the demoMode term.",
-      },
       {
         id: "comment_route_live_run",
         raises: "edit once it finishes so the engine's",
@@ -786,7 +745,7 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/app.py",
     symbol: "api_resolve_blog_comment",
     kind: "python",
-    fingerprint: "9eb9e58a676265d5",
+    fingerprint: "ed94283d6cc2c7f1",
     gates: ["comments"],
     what:
       "Spends a Claude session on ONE waiting comment. The client's suggestions arrive 'open' " +
@@ -794,11 +753,6 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
       "starts one, and a committed version comes out of it. That is why it carries the same done, " +
       "approved and with-client gates as filing, plus the in-flight cap riding inside its flip.",
     exemptions: [
-      {
-        id: "resolve_route_demo",
-        raises: "detail=runner.demo_refusal_detail(slug)",
-        why: "Subsumed by the demoMode term, as every other demo refusal on these routes is.",
-      },
       {
         id: "resolve_route_live_run",
         raises: "resolve once it finishes so the engine's",
@@ -857,18 +811,12 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/app.py",
     symbol: "api_send_blog_to_client",
     kind: "python",
-    fingerprint: "e1bde83a85bc314b",
+    fingerprint: "33ef76b3a14badcc",
     gates: ["send"],
     what:
       "The engine's send route. Its one refusal of its own is the open client suggestion, which " +
       "it reports from mark_sent answering None rather than from a count it ran first.",
-    exemptions: [
-      {
-        id: "send_route_demo",
-        raises: "detail=runner.demo_refusal_detail(slug)",
-        why: "Subsumed by the demoMode term.",
-      },
-    ],
+    exemptions: [],
   },
   api_reply_blog_comment: {
     file: "server/app.py",
@@ -877,8 +825,8 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     fingerprint: "559820b4530bc729",
     gates: ["reply"],
     what:
-      "The engine's reply route, and its docstring states the two absences in so many words: no " +
-      "demo refusal and no done gate, because a reply spends nothing.",
+      "The engine's reply route, and its docstring states the absence in so many words: no done " +
+      "gate, because a reply spends nothing.",
     exemptions: [
       {
         id: "reply_route_blank",
@@ -971,18 +919,13 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/cms/gate.py",
     symbol: "assert_publishable",
     kind: "python",
-    fingerprint: "5fc1ccf593d02441",
+    fingerprint: "6c0e709494aba15e",
     gates: ["publish"],
     what:
       "The only-push-finished-blogs check, and the only thing standing between an unvetted draft " +
-      "and a CMS post an editor can approve. It refuses a demo client, a topic with no committed " +
-      "body, a topic with no status feed, and any status that is not exactly 'done'.",
+      "and a CMS post an editor can approve. It refuses a topic with no committed body, a topic " +
+      "with no status feed, and any status that is not exactly 'done'.",
     exemptions: [
-      {
-        id: "publish_demo",
-        raises: "is a demo client. Demo blogs are placeholder text",
-        why: "Subsumed by the demoMode term.",
-      },
       {
         id: "publish_no_body",
         raises: "No blog on disk for",

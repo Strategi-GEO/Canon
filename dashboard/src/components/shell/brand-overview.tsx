@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { brandHref, useOrgs } from "@/lib/orgs-context";
 import { useRoadmap } from "@/lib/use-roadmap";
-import { DemoBadge, IndustryBadge, PreflightNote } from "@/components/clients/client-meta";
+import { IndustryBadge, PreflightNote } from "@/components/clients/client-meta";
 import { displayDomain } from "@/components/clients/brand-card";
 import { ReadOnlyText } from "@/components/clients/editable-text";
 import { FactsCard } from "@/components/clients/facts-card";
@@ -82,7 +82,7 @@ export function BrandOverview({ orgSlug, brand }: { orgSlug: string; brand: Clie
         orgSlug={orgSlug}
         brandSlug={client.slug}
         brandName={client.name}
-        mock={mockReasonOf(geoMock, client.demo_mode)}
+        mock={mockReasonOf(geoMock)}
       />
 
       <div className="mt-6 grid gap-4 lg:grid-cols-3">
@@ -144,7 +144,6 @@ function BrandHeader({ orgSlug, client }: { orgSlug: string; client: Client }) {
               </a>
             ) : null}
             <IndustryBadge industry={client.industry} />
-            {client.demo_mode ? <DemoBadge /> : null}
           </div>
         </div>
 

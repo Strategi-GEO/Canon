@@ -23,15 +23,14 @@ export default function RoadmapPage() {
               roadmap, a half open delete confirm, or a generation dialog holding another
               brand's URL, into another's.
 
-              The domain and the demo flag are passed rather than looked up: the ROUTE owns
-              which brand this is, and a dialog that resolved its own would be one refactor
-              away from prefilling the wrong company's site into a live research session. */}
+              The domain is passed rather than looked up: the ROUTE owns which brand this is,
+              and a dialog that resolved its own would be one refactor away from prefilling the
+              wrong company's site into a live research session. */}
           <RoadmapOverview
             key={brand.slug}
             brandSlug={brand.slug}
             brandName={brand.name}
             brandDomain={brand.domain}
-            demoMode={brand.demo_mode}
           />
         </div>
       )}

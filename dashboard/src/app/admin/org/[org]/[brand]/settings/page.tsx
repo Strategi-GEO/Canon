@@ -271,12 +271,6 @@ function DangerZone({ client }: { client: Client }) {
         <pre className="machine mt-3 overflow-x-auto rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-foreground">
           clients/{client.slug}/
         </pre>
-        {client.demo_mode ? (
-          <p className="mt-3 text-xs text-muted-foreground">
-            This brand is in demo mode, so everything under that path is precoded fake output
-            written with zero API calls.
-          </p>
-        ) : null}
       </CardContent>
     </Card>
   );

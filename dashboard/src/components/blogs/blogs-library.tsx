@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   FileText,
-  FlaskConical,
   MessageCircleQuestion,
   RotateCw,
   Search,
@@ -69,7 +68,6 @@ export function BlogsLibrary(props: {
   orgSlug: string;
   brandSlug: string;
   brandName: string;
-  demoMode: boolean;
 }) {
   return (
     // One provider for the whole library. Radix requires it above every Tooltip, and context
@@ -99,12 +97,10 @@ function Library({
   orgSlug,
   brandSlug,
   brandName,
-  demoMode,
 }: {
   orgSlug: string;
   brandSlug: string;
   brandName: string;
-  demoMode: boolean;
 }) {
   const router = useRouter();
   const [blogs, setBlogs] = React.useState<BlogSummary[] | null>(null);
@@ -352,21 +348,6 @@ function Library({
           </Button>
         </div>
       </div>
-
-      {demoMode ? (
-        // Persistent, not dismissible. A demo artifact that gets mistaken for a researched
-        // blog is the one failure demo mode exists to prevent.
-        <Card className="mb-4">
-          <CardContent className="flex gap-2 py-3">
-            <FlaskConical className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              {brandName} is a demo brand. These blogs are precoded, written with no research
-              and no API calls behind them, and every file is marked demo content at the top.
-              They are not for publication.
-            </p>
-          </CardContent>
-        </Card>
-      ) : null}
 
       <WaitingOnYou signals={waiting} />
 

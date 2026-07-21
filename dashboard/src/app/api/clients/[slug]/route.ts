@@ -37,8 +37,8 @@ export async function GET(
  * A null field means "not sent" and is left alone, so a PATCH carrying one key cannot blank
  * the others, matching the engine's update_client exactly.
  *
- * FOUR FIELDS, AND THE SIGNATURE IS THE SECURITY BOUNDARY. gates, client_md, canonical_facts,
- * demo_mode and org_id are not writable from here. That is not an oversight of scope: 003
+ * FOUR FIELDS, AND THE SIGNATURE IS THE SECURITY BOUNDARY. gates, client_md, canonical_facts
+ * and org_id are not writable from here. That is not an oversight of scope: 003
  * spent a whole migration revoking READ access to gates, client_md and canonical_facts from
  * `authenticated`, and a write path into a column the caller may not read would be strictly
  * more powerful than the read path that was deliberately closed.

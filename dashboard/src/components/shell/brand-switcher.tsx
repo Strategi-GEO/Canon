@@ -70,11 +70,6 @@ export function BrandSwitcher({
                 aria-hidden
               />
               <span className="min-w-0 flex-1 truncate">{brand.name}</span>
-              {brand.demo_mode ? (
-                <span className="machine shrink-0 rounded border border-border bg-muted px-1 py-px text-[0.625rem] leading-tight text-muted-foreground">
-                  Demo
-                </span>
-              ) : null}
             </Link>
           </DropdownMenuItem>
         ))}

@@ -45,7 +45,6 @@ export type ClientShape = {
   domain: string;
   industry: string;
   description: string;
-  demo_mode: boolean;
   has_roadmap: boolean;
   has_canonical_facts: boolean;
   resource_count: number;
@@ -62,14 +61,13 @@ type ClientRow = {
   domain: string | null;
   industry: string | null;
   description: string | null;
-  demo_mode: boolean;
   created_at: string | null;
   preflight_ok: boolean;
   org: { slug: string; name: string } | null;
 };
 
 const CLIENT_SELECT =
-  "id,slug,name,domain,industry,description,demo_mode,created_at,preflight_ok,org:orgs(slug,name)";
+  "id,slug,name,domain,industry,description,created_at,preflight_ok,org:orgs(slug,name)";
 
 /** server/clients.py _client_from_row, translated field for field. */
 function shapeClient(
@@ -86,7 +84,6 @@ function shapeClient(
     domain: row.domain || "",
     industry: row.industry || "",
     description: row.description || "",
-    demo_mode: Boolean(row.demo_mode),
     has_roadmap: flags.hasRoadmap,
     has_canonical_facts: flags.hasFacts,
     resource_count: flags.resources,
