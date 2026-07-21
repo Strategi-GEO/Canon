@@ -57,11 +57,6 @@ def main():
     check("duplicate copy names the action",
           "Deselect them to continue." in text, "missing")
 
-    # The demo org must be labelled, never silent.
-    check("demo_mode label", "demo_mode" in text, "missing")
-    check("demo badge copy",
-          "Precoded blogs, no API calls." in text, "missing")
-
     # The positional column rule replaced detection: the rule is stated and the
     # override UI is gone for good.
     check("fixed column rule stated",

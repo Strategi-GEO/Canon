@@ -208,24 +208,7 @@ python3 .claude/status.py --out <output_dir> --slug <slug> --stage eval --event 
 Before starting a topic, refuse to run if `clients/<slug>/canonical-facts.md` is missing or
 still contains the literal token `PLACEHOLDER`. Every blog for that client inherits this
 file, so an unreviewed one silently poisons the whole queue. On refusal, write the terminal
-status `failed` with a note naming the reason. Mock mode may skip preflight.
-
-## Demo mode
-A client whose `gates.json` says `"demo_mode": true` is ALWAYS mock: in every environment,
-including a production deployment holding real credentials. A topic runs mock when `GEO_MOCK=1`
-(the global test switch) OR when the client's `gates.json` says demo_mode. Such a client skips
-preflight, exactly as mock already does, and it can never spend an API call or a token.
-
-Its blogs are precoded: short, deterministic, generated with zero API calls, and templated from
-whatever topic the operator uploads, so demo mode works with an arbitrary CSV rather than a
-fixed list. They are saved to `outputs/<slug>/<topic-slug>/blog.md` exactly like a real
-blog, so the preview drawer, the status table and the ledger all behave identically. Determinism
-comes from a hash of the topic slug, never from randomness.
-
-Every demo blog carries a visible marker at the top naming it demo content generated without
-research or API calls and not for publication, and the status table shows the client is in demo
-mode. A demo artifact must never be mistakable for a researched blog. A client WITHOUT demo_mode
-is a real client: full pipeline, human-approved `canonical-facts.md`, no exceptions.
+status `failed` with a note naming the reason.
 
 ## Tooling: Firecrawl and DataForSEO ONLY
 No other fetch or search tool. If neither can confirm something, it is not a fact.
@@ -714,7 +697,7 @@ definition word for word.
 forbids a hold with no form because such a form summons nobody; this is its mirror, a form nobody
 can be summoned to, and it is worse because the person is real and the task is live. Recording
 `stopped` over a current form leaves a topic the engine still ACCEPTS an answer for, since
-`api_answers` refuses a stale form, a live run, a demo client and an approved article, and never
+`api_answers` refuses a stale form, a live run and an approved article, and never
 once reads the terminal status, while no surface offers that answer: `adminActions` grants
 `answer` to `has_questions` alone, `blogState` maps a `stopped` status to the `stopped` state whose
 bench is empty, and `clientCanSee` is false for `stopped`. The article's only remaining exit is a
