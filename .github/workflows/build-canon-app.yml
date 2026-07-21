@@ -1,7 +1,18 @@
 # Builds a SELF-SUFFICIENT Strategi Canon package for macOS and Windows.
 #
-# - workflow_dispatch: build both, upload the zips as workflow artifacts.
-# - tag v*: same, plus a GitHub release carrying both zips.
+# - workflow_dispatch: build both, upload the zips as workflow artifacts for a
+#   human to inspect. That upload is best-effort: see the continue-on-error note.
+# - tag v*: build both, attach each zip DIRECTLY to a GitHub release.
+#
+# WHY THE TAG PATH DOES NOT GO THROUGH upload-artifact. Each package is roughly
+# half a gigabyte of bundled runtimes, and the Actions ARTIFACT storage quota is
+# small and shared across the org. The first tag build hit it: both legs built
+# and packaged cleanly, then died on upload-artifact with "Artifact storage quota
+# has been hit", which also starved the download-artifact the old release job
+# depended on. Release ASSETS are stored separately and are not charged against
+# that quota, so each matrix leg now uploads its own zip to the release and there
+# is no artifact hop to starve. The dispatch path still uses upload-artifact, but
+# best-effort, so a full quota cannot red a build that genuinely succeeded.
 #
 # WHAT CHANGED AND WHY. This workflow used to ship only "Strategi Canon.app".
 # That app is a LAUNCHER: it starts the engine and the dashboard that live beside
@@ -47,8 +58,12 @@ jobs:
 
   build:
     # A red suite stops the package here, before any artifact exists to be mistaken for a good
-    # one. The release job downstream depends on this build, so the gate reaches the release too.
+    # one. On a tag this same job attaches the release assets, so the gate reaches the release too.
     needs: test
+    # contents: write is for the release-asset upload on a tag. It is harmless on a dispatch build,
+    # where the attach step does not run.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -140,28 +155,29 @@ jobs:
         shell: bash
         run: ls -lh "${{ matrix.artifact }}.zip"
 
-      - uses: actions/upload-artifact@v4
+      # DISPATCH ONLY, and best-effort. This lets a human download a build that has
+      # no release. continue-on-error because the Actions artifact quota (separate
+      # from release-asset storage) can be full, and a quota miss must never fail a
+      # build that actually produced a working package. The tag path skips this
+      # entirely and attaches straight to the release below.
+      - name: Upload dispatch artifact (inspection only)
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.zip
           if-no-files-found: error
 
-  release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
+      # TAG ONLY. Each matrix leg appends its own zip to the release for this tag.
+      # softprops creates the release on the first leg and updates it on the second,
+      # so both platform zips land on one release with no artifact hop between them.
+      # The body is identical from both legs, so whichever writes it last is correct.
+      - name: Attach package to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
         with:
-          merge-multiple: true
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            Strategi-Canon-macos.zip
-            Strategi-Canon-windows.zip
+          files: ${{ matrix.artifact }}.zip
           body: |
             Download the zip for your platform, unzip it anywhere, and open the
             launcher inside. Everything the engine needs is in the package:
