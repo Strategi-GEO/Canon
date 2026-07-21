@@ -433,8 +433,8 @@ def commit_topic(client_slug, topic_slug, allow_new_version=True):
                  e.get("status") or "running", e.get("note") or "",
                  e.get("slug")))
 
-        # 2. Dossier, links, marker. The marker's three writers (engine
-        # correction, mock cap-hit, the session lead) all land on one file, so
+        # 2. Dossier, links, marker. The marker's writers (engine
+        # correction, the session lead) all land on one file, so
         # reading the file covers every writer without naming them.
         cur.execute(
             """update topics set

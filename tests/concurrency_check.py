@@ -195,7 +195,7 @@ def main(argv=None):
             peak == args.cap,
             f"measured max concurrent topics = {peak}"
             + ("" if peak == args.cap else
-               " (below cap means the mock ran too fast to overlap; above cap means the semaphore leaked)"),
+               " (below cap means topics finished too fast to overlap; above cap means the semaphore leaked)"),
         )
     else:
         check("max concurrency <= cap", peak <= args.cap,

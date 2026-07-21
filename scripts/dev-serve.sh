@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local dev launcher for real mode.
+# Local dev launcher.
 #
 # Why this exists: .mcp.json declares the firecrawl and dataforseo servers with
 # ${VAR} placeholders so no secret is ever committed. Those placeholders expand
@@ -17,19 +17,17 @@
 # personal Claude subscription, and six operators will exhaust it.
 #
 # Usage:
-#   scripts/dev-serve.sh              real mode on port 8000
-#   scripts/dev-serve.sh 8080         real mode on port 8080
-#   GEO_MOCK=1 scripts/dev-serve.sh   mock mode, no credentials needed
+#   scripts/dev-serve.sh          port 8000
+#   scripts/dev-serve.sh 8080     port 8080
 set -euo pipefail
 
 PORT="${1:-8000}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-if [ "${GEO_MOCK:-}" != "1" ]; then
-  # Read the CLI's own MCP env blocks. eval of a python-emitted export list keeps
-  # the values out of argv, where ps would expose them to any user on the box.
-  CREDS="$(python3 - <<'PY'
+# Read the CLI's own MCP env blocks. eval of a python-emitted export list keeps
+# the values out of argv, where ps would expose them to any user on the box.
+CREDS="$(python3 - <<'PY'
 import json, os, shlex
 
 path = os.path.expanduser("~/.claude.json")
@@ -61,28 +59,25 @@ for key, value in found.items():
     print(f"export {key}={shlex.quote(value)}")
 PY
 )"
-  if [ -z "$CREDS" ]; then
-    echo "[dev-serve] no firecrawl or dataforseo credentials found in ~/.claude.json." >&2
-    echo "[dev-serve] export FIRECRAWL_API_KEY, DATAFORSEO_USERNAME and DATAFORSEO_PASSWORD" >&2
-    echo "[dev-serve] yourself, or run with GEO_MOCK=1 to skip real mode entirely." >&2
-    exit 2
-  fi
-  eval "$CREDS"
-
-  # Report which names resolved, never their values.
-  for var in FIRECRAWL_API_KEY DATAFORSEO_USERNAME DATAFORSEO_PASSWORD; do
-    if [ -n "${!var:-}" ]; then echo "[dev-serve] $var loaded"; else echo "[dev-serve] $var MISSING"; fi
-  done
-
-  if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-    echo "[dev-serve] ANTHROPIC_API_KEY is not set: the SDK will spawn a CLI that draws on" >&2
-    echo "[dev-serve] your personal Claude subscription quota. One blog is 3 to 5 agent" >&2
-    echo "[dev-serve] sessions, so a full batch can exhaust it." >&2
-  fi
-  echo "[dev-serve] REAL MODE. Non-demo clients will spend credits."
-else
-  echo "[dev-serve] GEO_MOCK=1: mock mode, no credentials used."
+if [ -z "$CREDS" ]; then
+  echo "[dev-serve] no firecrawl or dataforseo credentials found in ~/.claude.json." >&2
+  echo "[dev-serve] export FIRECRAWL_API_KEY, DATAFORSEO_USERNAME and DATAFORSEO_PASSWORD" >&2
+  echo "[dev-serve] yourself before starting." >&2
+  exit 2
 fi
+eval "$CREDS"
+
+# Report which names resolved, never their values.
+for var in FIRECRAWL_API_KEY DATAFORSEO_USERNAME DATAFORSEO_PASSWORD; do
+  if [ -n "${!var:-}" ]; then echo "[dev-serve] $var loaded"; else echo "[dev-serve] $var MISSING"; fi
+done
+
+if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "[dev-serve] ANTHROPIC_API_KEY is not set: the SDK will spawn a CLI that draws on" >&2
+  echo "[dev-serve] your personal Claude subscription quota. One blog is 3 to 5 agent" >&2
+  echo "[dev-serve] sessions, so a full batch can exhaust it." >&2
+fi
+echo "[dev-serve] Clients will spend credits."
 
 # One worker, always: the client lock and the 5-topic semaphore are in-process
 # primitives in runner.py, so --workers N silently raises the cap to 5N.

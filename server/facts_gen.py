@@ -348,7 +348,6 @@ def _save_report(client_slug, job):
             f"client: {client_slug}",
             f"run_id: {job.get('run_id') or ''}",
             f"state: {job.get('state') or ''}",
-            f"mock: {str(bool(job.get('mock'))).lower()}",
             "---",
             "",
         ])
@@ -439,7 +438,7 @@ def _discard_unvouched(client_slug):
 # ---------------------------------------------------------------------------
 
 async def generate_facts(client_slug):
-    """One real session, always. Returns {"report": str, "mock": bool}, mock always False.
+    """One real session, always. Returns {"report": str}.
 
     It does not decide whether the run succeeded: the caller re-reads the file on disk. What an
     agent says it wrote and what it wrote are two different claims, and only one of them is
@@ -532,7 +531,7 @@ async def generate_facts(client_slug):
         # nobody watched.
         text = ("The session returned no final message, so there is no report. Read "
                 "canonical-facts.md itself, and check §8 and §9 first, before trusting it.")
-    return {"report": text, "mock": False}
+    return {"report": text}
 
 
 async def ensure_facts(client_slug, run_id=None):
@@ -552,9 +551,6 @@ async def ensure_facts(client_slug, run_id=None):
         "finished": None,
         "report": None,
         "error": None,
-        # Wire compatibility: readers of this job record still expect the key. The mock
-        # execution path is removed, so the honest value is the literal False, always.
-        "mock": False,
         # The blog run that triggered this, so the UI can tie the two together. A fact base is
         # never built on its own account: something was trying to write a blog.
         "run_id": run_id,
@@ -568,7 +564,6 @@ async def ensure_facts(client_slug, run_id=None):
         # operator's answer, and a job reporting only "no file written" would throw away the one
         # thing they paid for.
         job["report"] = result["report"]
-        job["mock"] = result["mock"]
         job["error"] = _validate_written(client_slug)
         if not job["error"]:
             # SUCCESS PATH ONLY, and the placement is the contract. The record must carry

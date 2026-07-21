@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
 # Start the GEO Factory: the engine API and the dashboard, together.
 #
-#   ./run.sh          SAFE mode. Every client is mock. Nothing spends credits.
-#   ./run.sh --real   REAL mode. Non-demo clients run the full agent chain and
-#                     spend your Claude subscription quota.
+#   ./run.sh   Starts both. Clients run the full agent chain and spend your
+#              Claude subscription quota, so leave a run alone in its own window
+#              until it finishes.
 #
-# Ctrl+C stops both. Closing the terminal stops both, so a real run must be left
-# alone in its own window until it finishes.
+# Ctrl+C stops both. Closing the terminal stops both.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
-
-REAL=0
-[ "${1:-}" = "--real" ] && REAL=1
 
 # Dev and production builds cannot share one .next: `next build` overwrites the
 # manifests `next dev` reads, and dev then 500s on every route with ENOENT on
@@ -49,19 +45,12 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
-if [ "$REAL" = "1" ]; then
-  echo "[run] REAL MODE. Non-demo clients will spend your Claude quota."
-  # dev-serve.sh lifts Firecrawl and DataForSEO credentials out of ~/.claude.json
-  # into the process environment. Without them an agent cannot fetch a source,
-  # and a blog with no sources cannot pass its own gates.
-  ./scripts/dev-serve.sh 8000 &
-  API_PID=$!
-else
-  echo "[run] SAFE MODE (GEO_MOCK=1). Every client is mock. No credits, no API calls."
-  echo "[run] Run './run.sh --real' when you actually want blogs written."
-  GEO_MOCK=1 .venv/bin/uvicorn server.app:app --host 127.0.0.1 --port 8000 --workers 1 &
-  API_PID=$!
-fi
+echo "[run] Clients will spend your Claude quota."
+# dev-serve.sh lifts Firecrawl and DataForSEO credentials out of ~/.claude.json
+# into the process environment. Without them an agent cannot fetch a source,
+# and a blog with no sources cannot pass its own gates.
+./scripts/dev-serve.sh 8000 &
+API_PID=$!
 
 # The dashboard's first request fails outright if the engine is not listening
 # yet, and it surfaces as "Cannot reach the engine", which reads like a bug

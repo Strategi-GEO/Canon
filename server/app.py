@@ -382,10 +382,7 @@ async def api_clients(user: auth.Identity = Depends(auth.require_user)):
         entry["preflight"] = {"ok": ok,
                               "reason": None if ok else _PREFLIGHT_PLACEHOLDER_REASON}
         client_list.append(entry)
-    # geo_mock is a wire-compat field the dashboard still reads, and it is now the literal
-    # False: the mock execution path is removed from the engine, so no client can ever
-    # produce fake output. The key stays so no reader's shape breaks; the value is the truth.
-    return {"geo_mock": False, "clients": client_list}
+    return {"clients": client_list}
 
 
 # ---------------------------------------------------------------------------
@@ -413,10 +410,7 @@ def _scoped_orgs(user):
 
 @app.get("/api/orgs")
 async def api_orgs(user: auth.Identity = Depends(auth.require_user)):
-    # geo_mock rides at the top level for the same reason /api/clients carries it: the
-    # dashboard reads the key. It is the literal False now that the mock execution path is
-    # removed; the field stays so no reader's shape breaks.
-    return {"geo_mock": False, "orgs": _scoped_orgs(user)}
+    return {"orgs": _scoped_orgs(user)}
 
 
 @app.get("/api/orgs/{org_slug}")
