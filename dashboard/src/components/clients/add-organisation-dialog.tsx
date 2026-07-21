@@ -16,39 +16,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ApiError, api } from "@/lib/api";
+import { ApiError } from "@/lib/api";
 import { HOSTED_READONLY } from "@/lib/hosted";
-import { cn } from "@/lib/utils";
 import { useOrgs } from "@/lib/orgs-context";
 import { useDescribe } from "@/lib/describe-context";
 import { FieldError } from "@/components/clients/engine-error";
 import { createClient } from "@/components/clients/wire";
 import type { Client } from "@/types";
-
-/** The engine reads these off disk, so a hardcoded list would drift the moment one lands. */
-function useIndustries(open: boolean) {
-  const [industries, setIndustries] = React.useState<string[]>([]);
-  const [error, setError] = React.useState<ApiError | null>(null);
-
-  React.useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const controller = new AbortController();
-    api.industries(controller.signal).then(
-      (data) => setIndustries(data.industries),
-      (cause: unknown) => {
-        if (cause instanceof DOMException && cause.name === "AbortError") {
-          return;
-        }
-        setError(cause instanceof ApiError ? cause : new ApiError(0, String(cause), null));
-      },
-    );
-    return () => controller.abort();
-  }, [open]);
-
-  return { industries, error };
-}
 
 /**
  * Adds an ORGANISATION, together with its first brand, in one step.
@@ -93,13 +67,11 @@ export function AddOrganisationDialog({
   const [multiBrand, setMultiBrand] = React.useState(false);
   const [brandName, setBrandName] = React.useState("");
   const [domain, setDomain] = React.useState("");
-  const [industry, setIndustry] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
 
   const { orgs, geoMock } = useOrgs();
   const { start: startDescribe } = useDescribe();
-  const { industries, error: industriesError } = useIndustries(actualOpen);
   const checkboxId = React.useId();
 
   // After every hook, so the hook order stays constant. Creating an org is an engine write
@@ -114,7 +86,6 @@ export function AddOrganisationDialog({
     setMultiBrand(false);
     setBrandName("");
     setDomain("");
-    setIndustry("");
     setError(null);
   }
 
@@ -146,7 +117,9 @@ export function AddOrganisationDialog({
       const brand = await createClient({
         name: firstBrandName,
         domain: domain.trim(),
-        industry,
+        // Industry is no longer picked here: the describe session detects it from the site right
+        // after the brand exists and writes it to the record, exactly like the description.
+        industry: "",
         ...(multiBrand ? { organisation_name: trimmedOrg } : {}),
       });
       toast.success(
@@ -288,40 +261,13 @@ export function AddOrganisationDialog({
             </p>
           </div>
 
-          <div>
-            <Label htmlFor="org-industry">Industry</Label>
-            <select
-              id="org-industry"
-              value={industry}
-              onChange={(e) => setIndustry(e.target.value)}
-              required
-              className={cn(
-                "mt-1.5 h-9 w-full rounded-lg border border-input bg-background px-2.5 text-sm",
-                "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-              )}
-            >
-              <option value="" disabled>
-                Select an industry
-              </option>
-              {industries.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Picks the industry reference the writer loads for the first brand. Skipping it
-              produces generic content.
-            </p>
-            {industriesError ? <FieldError error={industriesError} /> : null}
-          </div>
-
-          {/* No description field on purpose. The moment the organisation is added, Claude reads
-              the brand website and writes the description to the record automatically. It is not
-              typed here and it is not editable later. */}
+          {/* No industry picker and no description field on purpose. The moment the organisation
+              is added, Claude reads the brand website and writes BOTH the description and the
+              detected industry to the record automatically. Neither is typed here. An "Others"
+              bucket is used when the site fits none of the known industries. */}
           <p className="rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground">
-            The description is generated automatically from the brand website once you add the
-            organisation, so there is nothing to write here.
+            The description and the industry are detected automatically from the brand website once
+            you add the organisation, so there is nothing to pick or write here.
           </p>
 
           {error ? <FieldError error={error} /> : null}

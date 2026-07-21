@@ -360,25 +360,33 @@ create index roadmap_uploads_client on roadmap_uploads (client_id);
 -- Roadmap
 -- ---------------------------------------------------------------------------
 
--- One sheet per client. Measured: 5 sheets (acme-north has NO roadmap.csv).
--- The UNIQUE on client_id IS the 409 the app returns on a second upload.
+-- One sheet per client PER MONTH. A brand holds one roadmap per `month` (a 1,2,3,...
+-- sequence label the operator sees as "Month N Roadmap", NOT a calendar date). Every existing
+-- sheet is Month 1. Measured before months: 5 sheets (acme-north has NO roadmap.csv).
+--
+-- The UNIQUE (client_id, month) is what allows the second, third, ... roadmap: it replaced the
+-- old UNIQUE on client_id alone, which was the 409 the app returned on a second upload. The app
+-- no longer refuses a second roadmap; it files it as the next month.
 --
 -- `raw_csv` holds the file byte-for-byte, and that is what makes the
--- raw-vs-built distinction lossless. read_sheet() returns 50 RAW rows across the
--- 5 sheets (including acme-south's blank row); load_roadmap()/_build_rows
--- returns 49 INGESTABLE rows. Both numbers are correct and describe different
--- things. roadmap_rows stores the 49; the 50-row preview regenerates from
--- raw_csv on demand. Neither is lost and the two cannot drift.
+-- raw-vs-built distinction lossless. read_sheet() returns the RAW rows for one sheet
+-- (including a trailing blank row); load_roadmap()/_build_rows returns the INGESTABLE rows.
+-- Both numbers are correct and describe different things. roadmap_rows stores the built rows;
+-- the raw preview regenerates from raw_csv on demand. Neither is lost and the two cannot drift.
 create table roadmap_sheets (
   id         uuid primary key default gen_random_uuid(),
-  client_id  uuid not null unique references clients(id) on delete cascade,
+  client_id  uuid not null references clients(id) on delete cascade,
+  -- 1-based sequence: Month 1 is the first roadmap added, Month 2 the next, and so on. Not a
+  -- date. next_month() is max(month)+1, and a delete leaves gaps that are never reused.
+  month      int not null default 1,
   filename   text not null,
   raw_csv    text not null,
   columns    text[] not null,
   -- roadmap-report.md for generated sheets; null for uploads.
   report     text,
   modified   timestamptz,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  unique (client_id, month)
 );
 
 create table roadmap_rows (
@@ -1106,7 +1114,7 @@ grant select (id, topic_id, client_id, blog_version_id, parent_id, author, autho
 -- operator material. The portal reads roadmap_rows, not sheets, so grant only the harmless
 -- identity columns for any incidental read.
 revoke select on roadmap_sheets from authenticated;
-grant select (id, client_id, filename, columns, modified, created_at)
+grant select (id, client_id, month, filename, columns, modified, created_at)
   on roadmap_sheets to authenticated;
 
 -- roadmap_uploads: the raw upload bytes. The portal never reads this table; revoke outright.

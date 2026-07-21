@@ -98,6 +98,50 @@ def list_industries():
     return sorted(path.stem for path in INDUSTRIES_DIR.glob("*.md"))
 
 
+def _normalize_industry(industry):
+    """Map a detected industry name to a known reference name, "Others", or "".
+
+    Onboarding detection is free text from a model, so it is pinned to the reference set here: an
+    exact (case-insensitive) match becomes the canonical reference filename, a non-empty value that
+    matches nothing becomes "Others", and a blank stays blank. This is the one thing that keeps
+    client.md from ever naming an industry reference file that does not exist.
+    """
+    raw = str(industry or "").strip()
+    if not raw:
+        return ""
+    by_lower = {name.lower(): name for name in list_industries()}
+    return by_lower.get(raw.lower(), "Others")
+
+
+def set_onboarding_industry(slug, industry):
+    """Persist an auto-detected industry and point client.md at the right reference.
+
+    Runs from the onboarding describe job, seconds after create_client, and mirrors how the
+    description is written back: the operator never picks or edits it. The industry column and the
+    gates.json "industry" key are always updated. client.md is regenerated ONLY while it is still
+    the unedited onboarding template create_client wrote, so an operator who later fills in the
+    Market section by hand never has it wiped by a re-run of this. _client_md is deterministic, so
+    that comparison is exact.
+    """
+    cid = db.client_id(slug)
+    if not cid:
+        raise UnknownClient(f"unknown client {slug!r}")
+    name, domain, old_industry, client_md = db.q(
+        "select name, domain, industry, client_md from clients where id = %s", (cid,), fetch="one")
+    industry = _normalize_industry(industry)
+
+    sets = ["industry = %s", "gates = jsonb_set(gates, '{industry}', %s::jsonb)"]
+    params = [industry, json.dumps(industry)]
+    if client_md == _client_md(name or slug, domain or "", old_industry or "", slug):
+        sets.append("client_md = %s")
+        params.append(_client_md(name or slug, domain or "", industry, slug))
+
+    db.q(f"update clients set {', '.join(sets)} where id = %s", (*params, cid), fetch="none")
+    db.invalidate_client_cache()
+    sync.materialize_client(slug)
+    return read_client(slug)
+
+
 def exists(slug):
     """A client is a live clients row: deleted_at null. db.client_id is the one gate."""
     return db.client_id(slug) is not None
@@ -206,11 +250,21 @@ def _client_md(name, domain, industry, slug):
     rest. It invents no fact about the brand: anything not on this form is not established,
     and a brief that guessed would be read by Agent W as though a human had approved it.
     """
-    industry_ref = (
-        f".claude/skills/geo-content-writer/references/industries/{industry}.md"
-        if industry
-        else "(none: no industry selected at onboarding)"
-    )
+    # A known industry has a reference file the writer must read. "Others", a vertical with no
+    # reference, or a blank (not yet detected) have none, so the brief says so plainly rather than
+    # pointing Agent W at a file that does not exist.
+    if industry and industry in set(list_industries()):
+        industry_ref = f".claude/skills/geo-content-writer/references/industries/{industry}.md"
+        industry_line = (
+            f"Industry: {industry}. Agent W MUST read `{industry_ref}` on every run. Skipping the "
+            f"industry reference produces generic content that does not fit this client."
+        )
+    else:
+        industry_line = (
+            f"Industry: {industry or '(not yet detected)'}. No industry-specific reference applies "
+            f"(general or Others), so Agent W writes to the general GEO guidance without a vertical "
+            f"reference."
+        )
     return f"""# client.md: {name}
 
 The brand brief the engine loads for this client. It was generated at onboarding from the
@@ -233,8 +287,7 @@ operator MUST fill this section in before the first real run. Do not guess a mar
 domain suffix.
 
 ## Industry reference
-Industry: {industry or "(not selected)"}. Agent W MUST read `{industry_ref}` on every run.
-Skipping the industry reference produces generic content that does not fit this client.
+{industry_line}
 
 ## Entity names (the only permitted ways to name things)
 Name things only as: {name}. Never use a generic stand-in such as "the company", "the brand",

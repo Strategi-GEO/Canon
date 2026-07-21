@@ -181,6 +181,12 @@ export type RoadmapResponse = {
   archived: string | null;
   rows: RoadmapRow[];
   warnings: string[];
+  /**
+   * Which month this roadmap is, 1-based. A brand now holds many roadmaps, one per month, and an
+   * upload or generate response says which month it just created. Optional on the wire: a plain
+   * GET /roadmap of the latest month need not carry it, and an older engine build sends nothing.
+   */
+  month?: number;
 };
 
 /**
@@ -203,6 +209,30 @@ export type RoadmapSheet = {
   columns: string[];
   /** The data rows, each padded to the same width as `columns`. */
   rows: string[][];
+};
+
+/**
+ * One month's roadmap in the brand's list, as GET /roadmap/months returns it. A brand used to
+ * hold one roadmap and now holds many, one per month, and this is the index the preview lists
+ * down its sidebar. `label` is the operator-facing name ("Month N Roadmap"); `month` is the
+ * 1-based sequence key every other roadmap endpoint takes as ?month=N.
+ */
+export type RoadmapMonth = {
+  month: number;
+  label: string;
+  filename: string;
+  /** UTC ISO 8601, like every timestamp the engine writes. */
+  modified: string;
+  row_count: number;
+};
+
+/**
+ * Every month's roadmap this brand holds, month ASCENDING. Unlike a single-roadmap read, an
+ * EMPTY array is a 200 and not a 404: a brand with no roadmap has an empty list rather than a
+ * missing resource, so the preview reverses this for newest-first display and closes on empty.
+ */
+export type RoadmapMonthsResponse = {
+  months: RoadmapMonth[];
 };
 
 /**

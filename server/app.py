@@ -693,10 +693,10 @@ async def api_resource_delete(slug: str, name: str,
 # is no detection and no override, so there is nothing to negotiate here.
 # ---------------------------------------------------------------------------
 
-def _load_roadmap_or_404(slug, user=None):
+def _load_roadmap_or_404(slug, user=None, month=None):
     _client_or_404(slug, user)
     try:
-        return roadmap.load_roadmap(slug)
+        return roadmap.load_roadmap(slug, month)
     except roadmap.RoadmapNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except roadmap.BadUpload as exc:
@@ -727,22 +727,38 @@ def _client_has_live_run(slug):
 
 
 @app.get("/api/clients/{slug}/roadmap")
-async def api_roadmap(slug: str, user: auth.Identity = Depends(auth.require_user)):
-    return roadmap.annotate_generated(slug, _load_roadmap_or_404(slug, user))
+async def api_roadmap(slug: str, month: Optional[int] = None,
+                      user: auth.Identity = Depends(auth.require_user)):
+    """One month's roadmap. No `month` means the current (latest) roadmap, which is what the
+    Create tab and blog run read."""
+    return roadmap.annotate_generated(slug, _load_roadmap_or_404(slug, user, month))
+
+
+@app.get("/api/clients/{slug}/roadmap/months")
+async def api_roadmap_months(slug: str,
+                             user: auth.Identity = Depends(auth.require_user)):
+    """Every roadmap the brand holds, one entry per month, for the roadmap tab's month list.
+
+    An empty list is the normal empty state, never a 404: a brand with no roadmap has no months
+    yet, and the tab renders "Add New Month Roadmap" over an empty list.
+    """
+    _client_or_404(slug, user)
+    return {"months": roadmap.list_months(slug)}
 
 
 @app.get("/api/clients/{slug}/roadmap/report")
-async def api_roadmap_report(slug: str,
+async def api_roadmap_report(slug: str, month: Optional[int] = None,
                              user: auth.Identity = Depends(auth.require_user)):
     """The saved account of how this brand's roadmap was generated.
 
-    Read from the record, not from the generation job, so it outlives the process that made it.
-    The job answers "what is happening now" and is gone on restart; this answers "why does my
-    roadmap look like this", which an operator asks weeks later. A 404 here is ordinary: an
-    uploaded roadmap has no report, because nothing generated it.
+    No `month` reads the current (latest) month's report; a month names one specific sheet. Read
+    from the record, not from the generation job, so it outlives the process that made it. The
+    job answers "what is happening now" and is gone on restart; this answers "why does my roadmap
+    look like this", which an operator asks weeks later. A 404 here is ordinary: an uploaded
+    roadmap has no report, because nothing generated it.
     """
     _client_or_404(slug, user)
-    report = roadmap_gen.read_report(slug)
+    report = roadmap_gen.read_report(slug, month)
     if report is None:
         raise HTTPException(
             status_code=404, detail=f"no roadmap generation report for {slug!r}"
@@ -751,45 +767,44 @@ async def api_roadmap_report(slug: str,
 
 
 @app.get("/api/clients/{slug}/roadmap/sheet")
-async def api_roadmap_sheet(slug: str,
+async def api_roadmap_sheet(slug: str, month: Optional[int] = None,
                             user: auth.Identity = Depends(auth.require_user)):
     """The raw CSV as a rectangle, for previewing the file the operator uploaded.
 
-    Separate from /roadmap rather than folded into it: that route answers what the engine will
-    read, three columns and their parse state, and this one answers what the file contains. A
-    single route serving both would have to pick which meaning "rows" has.
+    No `month` previews the current (latest) roadmap; a month previews that specific one, which
+    is how the preview dialog's month sidebar switches between them. Separate from /roadmap
+    rather than folded into it: that route answers what the engine will read, three columns and
+    their parse state, and this one answers what the file contains. A single route serving both
+    would have to pick which meaning "rows" has.
     """
     _client_or_404(slug, user)
     try:
-        return roadmap.read_sheet(slug)
+        return roadmap.read_sheet(slug, month)
     except roadmap.RoadmapNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
 @app.delete("/api/clients/{slug}/roadmap", status_code=204)
-async def api_delete_roadmap(slug: str,
+async def api_delete_roadmap(slug: str, month: int,
                              user: auth.Identity = Depends(auth.require_admin)):
-    """Remove the brand's roadmap so a new one can be uploaded or generated.
+    """Remove ONE month's roadmap. `month` is required: with a brand holding several, the caller
+    must name which one.
 
-    This is the ONLY way to change a roadmap, by design: an upload is refused while one
-    exists. Replacing in place is how a roadmap gets swapped by accident, and the app spent
-    a while offering a "Replace roadmap" button that quietly replaced nothing, which is the
-    same class of lie in the other direction. Deleting is explicit, the UI confirms it, and
-    what it destroys is stated up front.
-
-    It removes roadmap.csv and NOTHING else. Blogs already written stay on disk, and the
-    ledger still records them. A roadmap is the input, not the work.
+    Deleting a roadmap removes that month's topic list and NOTHING else. Blogs already written
+    stay on disk, and the ledger still records them. A roadmap is the input, not the work.
+    Deleting is explicit and the UI confirms it.
     """
     _client_or_404(slug, user)
     if _client_has_live_run(slug):
-        # A live run's rows came from this sheet. Deleting it underneath would leave the
-        # status table describing topics whose source no longer exists.
+        # A live run's rows came from a sheet. Deleting one underneath would leave the status
+        # table describing topics whose source no longer exists.
         raise HTTPException(
             status_code=409,
-            detail=f"a run for {slug!r} is live; wait for it to finish before deleting the roadmap",
+            detail=f"a run for {slug!r} is live; wait for it to finish before deleting a roadmap",
         )
-    if not roadmap.delete_roadmap(slug):
-        raise HTTPException(status_code=404, detail=f"{slug!r} has no roadmap to delete")
+    if not roadmap.delete_roadmap(slug, month):
+        raise HTTPException(
+            status_code=404, detail=f"{slug!r} has no Month {month} roadmap to delete")
     return None
 
 
@@ -804,18 +819,8 @@ async def api_roadmap_upload(slug: str, file: UploadFile = File(...),
             status_code=409,
             detail=f"a run for {slug!r} is live; wait for it to finish before uploading a new roadmap",
         )
-    if roadmap.has_roadmap(slug):
-        # One roadmap per brand, and replacing it takes a deliberate delete first. An upload
-        # that silently overwrote the existing sheet would redefine every topic the brand
-        # writes from, and the operator would find out later, from a blog about the wrong
-        # subject. The refusal names the way forward rather than just saying no.
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"{slug!r} already has a content roadmap. Delete it first, then upload a new "
-                f"one. Deleting removes the topic list only: blogs already written stay."
-            ),
-        )
+    # No has_roadmap refusal: an upload ADDS the next month rather than replacing. The brand may
+    # hold Month 1, Month 2, ...; this upload becomes the next number. save_upload returns which.
 
     raw = await file.read()
     if len(raw) > roadmap.MAX_UPLOAD_BYTES:
@@ -835,6 +840,7 @@ async def api_roadmap_upload(slug: str, file: UploadFile = File(...),
     payload = roadmap.annotate_generated(slug, payload)
     payload["upload_id"] = saved["upload_id"]
     payload["archived"] = saved["archived"]
+    payload["month"] = saved["month"]
     return payload
 
 
@@ -888,23 +894,14 @@ async def api_generate_roadmap(slug: str, body: GenerateRoadmapRequest,
         })
     if _client_has_live_run(slug):
         # Same rule the roadmap upload and delete routes enforce, asked the same way: a live
-        # run's rows came from this sheet, so the sheet must not change underneath it.
+        # run's rows came from a sheet, so no sheet may change underneath it.
         raise HTTPException(
             status_code=409,
             detail=f"a run for {slug!r} is live; wait for it to finish before generating a roadmap",
         )
-    if roadmap.has_roadmap(slug):
-        # One roadmap per brand, and replacing it takes a deliberate delete first, exactly as
-        # the upload route requires. Generating over an existing sheet would redefine every
-        # topic the brand writes from, and the operator would find out from a blog about the
-        # wrong subject.
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"{slug!r} already has a content roadmap. Delete it first, then generate a new "
-                f"one. Deleting removes the topic list only: blogs already written stay."
-            ),
-        )
+    # No has_roadmap refusal: a generation ADDS the next month rather than replacing. The
+    # job_running check above still stands, so a brand cannot run two generations at once and
+    # race them to the same next-month number.
 
     return _public_job(roadmap_gen.start_job(slug, url, body.piece_count, body.notes))
 

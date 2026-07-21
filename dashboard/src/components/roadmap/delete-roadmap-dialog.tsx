@@ -19,31 +19,33 @@ import { FieldError } from "@/components/clients/engine-error";
 import { formatCount } from "@/lib/format";
 
 /**
- * Deletes the whole roadmap, behind a confirm that says what is actually lost.
+ * Deletes ONE month's roadmap, behind a confirm that says what is actually lost.
  *
- * What is lost is the TOPIC LIST and nothing else. The engine removes roadmap.csv and leaves
- * every blog on disk and in the ledger, because a roadmap is the input and deleting an input
- * never destroys what it already produced. Saying that is not reassurance for its own sake: an
- * operator who thinks this destroys their blogs will not press it, and delete is the only way
- * to replace a roadmap, so a confirm that fails to explain itself is a dead end. The scary
- * dialog would be the honest one only if the danger were real, and it is not.
+ * A brand holds many monthly roadmaps now, so this deletes the ONE named by `month` and leaves
+ * every other month standing. What is lost is that month's TOPIC LIST and nothing else: the
+ * engine removes its roadmap.csv and leaves every blog on disk and in the ledger, because a
+ * roadmap is the input and deleting an input never destroys what it already produced. Saying
+ * that is not reassurance for its own sake: an operator who thinks this destroys their blogs
+ * will not press it.
  *
- * What IS lost is stated too: hand-added records are in that CSV and nothing else holds them.
+ * The trigger is an icon in the preview sidebar, one per month, so it names the month it deletes
+ * for a reader who cannot see which row a bare trash icon sits on.
  */
 export function DeleteRoadmapDialog({
   brandSlug,
-  brandName,
+  month,
+  label,
   rowCount,
-  generatedCount,
   /** True while a run is live. The engine 409s the delete until it finishes. */
   locked,
   onDeleted,
 }: {
   brandSlug: string;
-  brandName: string;
+  /** The 1-based month key this delete targets. */
+  month: number;
+  /** The operator-facing name of the month, e.g. "Month 3 Roadmap". */
+  label: string;
   rowCount: number;
-  /** Rows whose blog already exists. The exact number this dialog promises to keep. */
-  generatedCount: number;
   locked: boolean;
   onDeleted: () => void;
 }) {
@@ -55,7 +57,7 @@ export function DeleteRoadmapDialog({
     setSubmitting(true);
     setError(null);
     try {
-      await api.deleteRoadmap(brandSlug);
+      await api.deleteRoadmap(brandSlug, month);
       setOpen(false);
       onDeleted();
     } catch (cause) {
@@ -76,23 +78,23 @@ export function DeleteRoadmapDialog({
       }}
     >
       <AlertDialogTrigger asChild>
-        {/* Outline on the page, destructive only inside the confirm. This button opens a
-            question; it destroys nothing, and a red button sitting permanently above the table
-            would make the roadmap read as a hazard rather than as the brand's topic list. */}
-        <Button size="sm" variant="outline" disabled={locked}>
-          <Trash2 data-icon="inline-start" aria-hidden />
-          Delete content roadmap
+        {/* Ghost icon in the sidebar row, destructive only inside the confirm. This button opens
+            a question; it destroys nothing, and the sr-only label names the month so it is not a
+            row of anonymous trash cans to a screen reader. */}
+        <Button size="icon-sm" variant="ghost" disabled={locked}>
+          <Trash2 aria-hidden />
+          <span className="sr-only">Delete {label}</span>
         </Button>
       </AlertDialogTrigger>
 
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete the content roadmap for {brandName}?</AlertDialogTitle>
+          <AlertDialogTitle>Delete {label}?</AlertDialogTitle>
           <AlertDialogDescription>
-            This removes the topic list only. The{" "}
+            This removes its topic list only. The{" "}
             <span className="machine">{formatCount(rowCount)}</span>{" "}
-            {rowCount === 1 ? "topic" : "topics"} on this roadmap{" "}
-            {rowCount === 1 ? "stops" : "stop"} being listed, and nothing else is touched.
+            {rowCount === 1 ? "topic" : "topics"} on this month{" "}
+            {rowCount === 1 ? "stops" : "stop"} being listed, and no other month is touched.
           </AlertDialogDescription>
         </AlertDialogHeader>
 
@@ -103,23 +105,11 @@ export function DeleteRoadmapDialog({
           <ul className="mt-1.5 flex flex-col gap-1 text-xs leading-relaxed text-muted-foreground">
             <li>
               Every blog is on disk and in the ledger, and both survive this. They stay in the
-              Blogs library for {brandName}, readable and unchanged.
-              {generatedCount > 0 ? (
-                <>
-                  {" "}
-                  <span className="machine">{formatCount(generatedCount)}</span> of the topics
-                  on this roadmap {generatedCount === 1 ? "has" : "have"} a blog, and{" "}
-                  {generatedCount === 1 ? "it keeps" : "all of them keep"} theirs.
-                </>
-              ) : null}
+              Blogs library, readable and unchanged.
             </li>
             <li>
-              The roadmap is the input, not the work. Deleting it costs you the list of what to
-              write next, never anything already written.
-            </li>
-            <li>
-              Uploading a new roadmap needs this gone first, which is what this button is for.
-              The sheet on your own machine is untouched, so the way back is to upload it again.
+              The roadmap is the input, not the work. Deleting this month costs you its list of
+              what to write, never anything already written.
             </li>
           </ul>
         </div>
@@ -128,15 +118,11 @@ export function DeleteRoadmapDialog({
 
         <AlertDialogFooter>
           <AlertDialogCancel size="sm" disabled={submitting}>
-            Keep the roadmap
+            Keep it
           </AlertDialogCancel>
-          {/* THE destructive action, and one of the two places in this app that variant belongs:
-              a sheet is genuinely about to be deleted. The other is the stop confirm on the
-              session card, which throws away work in flight without deleting a file. Both are
-              destructive of something the operator cannot get back by pressing again, and that is
-              the whole of the test. onClick preventDefault holds the dialog
-              open until the request settles, so a 409 lands in front of the operator instead of
-              behind a dialog that has already closed. */}
+          {/* THE destructive action. onClick preventDefault holds the dialog open until the
+              request settles, so a 409 lands in front of the operator instead of behind a dialog
+              that has already closed. */}
           <AlertDialogAction
             size="sm"
             variant="destructive"
@@ -149,7 +135,7 @@ export function DeleteRoadmapDialog({
             {submitting ? (
               <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
             ) : null}
-            Delete the roadmap
+            Delete {label}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

@@ -1,13 +1,16 @@
-"""Draft a brand description from a client's live homepage, in ONE short SDK session.
+"""Draft a brand's description AND classify its industry from the live homepage, in ONE SDK session.
 
 This is an onboarding step, not part of the blog pipeline. It runs once when a brand is added:
-the brand carries no description field on the form, so this reads the live homepage and writes
-the description straight to the record (see start_job). The operator does not review or edit it.
-canonical-facts.md is a separate artifact and still gets drafted and approved by a human later.
+the form carries neither a description nor an industry, so this reads the live homepage and writes
+both straight to the record (see start_job). The operator does not pick or edit either. The
+industry is pinned to the writer's reference set (clients._normalize_industry), falling back to
+"Others" when the site fits none of them. canonical-facts.md is a separate artifact and still gets
+drafted and approved by a human later.
 
-Only a REAL draft is saved. If the session could not read the site (mock mode, or a homepage
+Only a REAL result is saved. If the session could not read the site (mock mode, or a homepage
 that would not fetch), draft_description returns a placeholder with NO sources, and start_job
-leaves the record untouched rather than saving an apology as the brand's description.
+leaves the record untouched rather than saving an apology as the brand's description or a guessed
+industry.
 
 It reuses runner._resolve_mcp_servers and runner.check_real_mode_ready rather than
 duplicating the transport logic, so there is exactly one definition of "MCP is configured"
@@ -93,25 +96,28 @@ def start_job(client_slug, name, domain):
 
     async def run():
         try:
-            result = await draft_description(name, domain)
+            # Local import breaks any load-order cycle; clients imports neither describe nor app.
+            from . import clients
+            industries = clients.list_industries()
+            result = await draft_description(name, domain, industries)
             job["description"] = result["description"]
             job["sources"] = result["sources"]
-            # Onboarding auto-generates the brand description and the operator never reviews or
-            # edits it, so a REAL draft is written straight to the record here. "Real" means the
-            # session actually read the live site, which is exactly `sources` being non-empty:
-            # a placeholder (mock mode, or a homepage that could not be fetched) reports no
-            # sources and its text names ITSELF as not-from-the-site, so saving it would make the
-            # brand's description an apology. That is the precise failure this guard exists to
-            # avoid. A local import breaks any load-order cycle; clients imports neither describe
-            # nor app.
+            # Onboarding auto-generates the brand's description AND its industry, and the operator
+            # never reviews or edits either, so a REAL result is written straight to the record
+            # here. "Real" means the session actually read the live site, which is exactly
+            # `sources` being non-empty: a placeholder (mock mode, or a homepage that could not be
+            # fetched) reports no sources and its text names ITSELF as not-from-the-site, so saving
+            # it would make the brand's own fields an apology. That is the precise failure this
+            # guard exists to avoid.
+            #
+            # to_thread, not a direct call: these are sync DB writes plus a disk materialize, and
+            # this runs inside a background task whose event loop must not stall mid-write.
             if result["sources"]:
-                from . import clients
-                # to_thread, not a direct call: this runs inside a background task, and
-                # update_client is a sync DB write plus a disk materialize, so calling it
-                # straight would stall the event loop for every other request mid-write. The
-                # sync-DAL convention across app.py is exactly this hop.
                 await asyncio.to_thread(
                     clients.update_client, client_slug, description=result["description"])
+                if result.get("industry"):
+                    await asyncio.to_thread(
+                        clients.set_onboarding_industry, client_slug, result["industry"])
             job["state"] = "done"
         except Exception as exc:
             # draft_description already turns every expected failure into a placeholder, so
@@ -140,11 +146,13 @@ def _placeholder(name, domain, reason):
             f"Write the description by hand, or configure Firecrawl and try again."
         ),
         "sources": [],
+        "industry": "",
     }
 
 
-def _prompt(name, domain):
-    return f"""Fetch this brand's homepage and write a plain description of it.
+def _prompt(name, domain, industries):
+    options = ", ".join(industries) if industries else "(no list available)"
+    return f"""Fetch this brand's homepage, classify its industry, and write a plain description.
 
 Brand name: {name}
 Homepage: {domain}
@@ -152,7 +160,9 @@ Homepage: {domain}
 Steps:
 1. Call firecrawl_scrape on {domain} with formats: ['markdown'], onlyMainContent: true,
    waitFor: 6000. That is the ONLY fetch you make.
-2. Write a 60 to 120 word description of what this brand is, what it sells, and to whom.
+2. Decide which single industry best fits this brand. Choose ONE, copied verbatim, from this
+   list, or the word Others if none of them fits: {options}
+3. Write a 60 to 120 word description of what this brand is, what it sells, and to whom.
 
 Rules:
 - State ONLY what the site plainly says. If the site does not say who the buyer is, do not
@@ -164,9 +174,26 @@ Rules:
 - If the page cannot be fetched, say exactly that and stop. Do not describe the brand from
   the domain name, and do not try another URL.
 
-Return the description as your final message text and nothing else: no preamble, no heading,
-no bullet list, no closing comment.
+Return EXACTLY this as your final message text, and nothing else:
+- The first line is `INDUSTRY: ` followed by one option copied verbatim from the list, or Others.
+- Then one blank line.
+- Then the description as plain text: no preamble, no heading, no bullet list, no closing comment.
 """
+
+
+def _split_industry(text):
+    """Pull the leading `INDUSTRY: <value>` line off the model output, if present.
+
+    Returns (industry, description). The industry is the raw value the model gave; clients.
+    _normalize_industry maps it to a known reference or "Others" when it is saved. If the first
+    line is not an INDUSTRY line (an older prompt, or a fetch-failure message), industry is "" and
+    the whole text is the description, so the description path degrades exactly as it did before.
+    """
+    lines = text.splitlines()
+    if lines and lines[0].strip().upper().startswith("INDUSTRY:"):
+        industry = lines[0].split(":", 1)[1].strip()
+        return industry, "\n".join(lines[1:]).strip()
+    return "", text.strip()
 
 
 def _final_text(message):
@@ -179,10 +206,11 @@ def _final_text(message):
     return "\n".join(parts).strip()
 
 
-async def draft_description(name, domain):
-    """One short session. Returns {"description": str, "sources": [str]}."""
+async def draft_description(name, domain, industries=None):
+    """One short session. Returns {"description": str, "sources": [str], "industry": str}."""
     name = str(name or "").strip() or "this client"
     domain = str(domain or "").strip()
+    industries = list(industries or [])
 
     if not domain:
         return _placeholder(name, domain, "the client has no domain recorded")
@@ -236,7 +264,7 @@ async def draft_description(name, domain):
 
     text = ""
     try:
-        async for message in query(prompt=_prompt(name, domain), options=options):
+        async for message in query(prompt=_prompt(name, domain, industries), options=options):
             found = _final_text(message)
             if found:
                 # Keep the LAST text message: the final turn is the description, and an
@@ -251,7 +279,12 @@ async def draft_description(name, domain):
     if not text:
         return _placeholder(name, domain, "the session returned no text")
 
+    industry, description = _split_industry(text)
+    if not description:
+        # The model returned only an industry line and no description: no usable draft.
+        return _placeholder(name, domain, "the session returned no description")
+
     # The homepage is the only URL this session is allowed to read, so it is the only source
     # there is to report. Parsing sources out of the model's prose would let it name a page
     # it never fetched.
-    return {"description": text, "sources": [domain]}
+    return {"description": description, "sources": [domain], "industry": industry}

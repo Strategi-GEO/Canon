@@ -25,6 +25,7 @@ import type {
   PublishResult,
   ResourcesResponse,
   RoadmapGenJob,
+  RoadmapMonthsResponse,
   RoadmapResponse,
   RoadmapSheet,
   RunSummary,
@@ -313,24 +314,40 @@ export const api = {
       form,
     }),
 
-  roadmap: (slug: string, signal?: AbortSignal) =>
-    request<RoadmapResponse>(`/api/clients/${slug}/roadmap`, { signal }),
+  roadmap: (slug: string, signal?: AbortSignal, month?: number) =>
+    request<RoadmapResponse>(
+      `/api/clients/${slug}/roadmap${month === undefined ? "" : `?month=${month}`}`,
+      { signal },
+    ),
 
   /**
    * The whole sheet, every column of it, for the preview. This is the file rather than the
    * engine's three-column reading of it, so it is a separate call from `roadmap` and is worth
    * a second round trip: it carries columns nothing acts on, and most visits never ask for it.
+   * `month` picks which of the brand's monthly roadmaps to read; omitted reads the latest.
    * 404 means the brand has no roadmap.csv, the same empty state `roadmap` answers with.
    */
-  roadmapSheet: (slug: string, signal?: AbortSignal) =>
-    request<RoadmapSheet>(`/api/clients/${slug}/roadmap/sheet`, { signal }),
+  roadmapSheet: (slug: string, signal?: AbortSignal, month?: number) =>
+    request<RoadmapSheet>(
+      `/api/clients/${slug}/roadmap/sheet${month === undefined ? "" : `?month=${month}`}`,
+      { signal },
+    ),
 
   /**
-   * Removes roadmap.csv and NOTHING else: blogs already written stay on disk and the ledger
-   * still records them. 204, so there is no body to hand back and the caller drops its copy.
+   * Every month's roadmap this brand holds, month ASCENDING. Unlike `roadmap`, an EMPTY list is
+   * a 200 and not a 404: a brand with no roadmap has an empty array rather than a missing file.
+   * The preview lists these down its sidebar and reads each month's sheet through `roadmapSheet`.
    */
-  deleteRoadmap: (slug: string) =>
-    request<null>(`/api/clients/${slug}/roadmap`, { method: "DELETE" }),
+  roadmapMonths: (slug: string, signal?: AbortSignal) =>
+    request<RoadmapMonthsResponse>(`/api/clients/${slug}/roadmap/months`, { signal }),
+
+  /**
+   * Removes ONE month's roadmap.csv and NOTHING else: blogs already written stay on disk and the
+   * ledger still records them. `month` is required now that a brand holds many. 204, so there is
+   * no body to hand back and the caller drops its copy.
+   */
+  deleteRoadmap: (slug: string, month: number) =>
+    request<null>(`/api/clients/${slug}/roadmap?month=${month}`, { method: "DELETE" }),
 
   /**
    * Starts ONE agent session that researches the brand and writes its roadmap.csv, and answers
@@ -338,9 +355,9 @@ export const api = {
    * work runs in the engine's own background task, so nothing in this browser is holding it up
    * and closing the tab does not stop it.
    *
-   * Its refusals are all 409s worth reading: a roadmap already exists (delete it first), a
-   * blog run is live for this brand (the sheet must not change under it), or a generation is
-   * already running. 422 bounds the inputs.
+   * It adds the next month rather than replacing, so an existing roadmap is no longer a refusal.
+   * The 409s that remain are worth reading: a blog run is live for this brand (a sheet must not
+   * change under it), or a generation is already running. 422 bounds the inputs.
    */
   generateRoadmap: (slug: string, body: GenerateRoadmapBody) =>
     request<RoadmapGenJob>(`/api/clients/${slug}/roadmap/generate`, {

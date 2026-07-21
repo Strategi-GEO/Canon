@@ -33,6 +33,13 @@ export async function GET(
     return unauthenticated();
   }
   const { slug } = await params;
+  // ?month=N selects one month's sheet; absent means the CURRENT roadmap, the latest month
+  // (max), which is what every reader means by "the roadmap". A malformed month is a 400, never
+  // a silent fall-through to the latest.
+  const monthRaw = new URL(request.url).searchParams.get("month");
+  if (monthRaw !== null && !/^[1-9]\d*$/.test(monthRaw)) {
+    return detail(400, `month must be a positive integer, got '${monthRaw}'`);
+  }
   try {
     const cid = await clientId(user.token, slug);
     if (cid === null) {
@@ -40,7 +47,8 @@ export async function GET(
     }
     const sheets = await pg<SheetRow[]>(
       user.token,
-      `roadmap_sheets?select=id,columns&client_id=eq.${cid}`,
+      `roadmap_sheets?select=id,columns&client_id=eq.${cid}&` +
+        (monthRaw === null ? "order=month.desc&limit=1" : `month=eq.${monthRaw}`),
     );
     const sheet = sheets[0];
     if (sheet === undefined) {
@@ -78,15 +86,16 @@ export async function GET(
 }
 
 /**
- * The operator's replace: drop this brand's roadmap so a new sheet can be uploaded.
+ * Delete ONE month's roadmap. `?month=N` is required: a brand now holds many monthly roadmaps
+ * (migration 018), so client_id alone no longer names one to remove.
  *
  * All authority lives in the database function admin_delete_roadmap
- * (supabase/migrations/009_admin_write_tier.sql). It gates on auth_is_admin() and nothing
- * else, resolves the brand from this text slug, archives the sheet's raw CSV and its parse
- * report into roadmap_uploads under a timestamped name, then deletes the sheet and lets the
- * cascade take roadmap_rows with it. roadmap_sheets.client_id is unique, so the whole thing is
- * one atomic statement and the engine's check-then-act is closed for free: a brand with no
- * sheet is the function's own NOSHEET refusal, never a silent success.
+ * (redefined as (p_brand, p_month) in supabase/migrations/018_monthly_roadmaps.sql). It gates on
+ * auth_is_admin() and nothing else, resolves the brand from this text slug, archives that month's
+ * raw CSV and its parse report into roadmap_uploads under a timestamped name, then deletes the
+ * sheet at (client_id, month) and lets the cascade take its roadmap_rows. That pair is unique, so
+ * the whole thing is one atomic statement and the engine's check-then-act is closed for free: a
+ * brand with no such month is the function's own NOSHEET refusal, never a silent success.
  *
  * THE DISK HALF OF THIS ACTION CANNOT CROSS, AND IT IS HANDLED IN THE ENGINE. The local
  * delete also unlinks clients/<slug>/roadmap.csv, because a stale copy left on disk gets
@@ -116,9 +125,18 @@ export async function DELETE(
     return unauthenticated();
   }
   const { slug } = await params;
+  // month is REQUIRED: a brand holds many roadmaps, so client_id alone no longer names one to
+  // delete. admin_delete_roadmap takes (p_brand, p_month) since migration 018.
+  const monthRaw = new URL(request.url).searchParams.get("month");
+  if (monthRaw === null || !/^[1-9]\d*$/.test(monthRaw)) {
+    return detail(400, "month is required to delete a roadmap");
+  }
 
   try {
-    await rpc(user.token, "admin_delete_roadmap", { p_brand: slug });
+    await rpc(user.token, "admin_delete_roadmap", {
+      p_brand: slug,
+      p_month: Number.parseInt(monthRaw, 10),
+    });
     return json({ deleted: true });
   } catch (cause) {
     return adminRpcError(cause);

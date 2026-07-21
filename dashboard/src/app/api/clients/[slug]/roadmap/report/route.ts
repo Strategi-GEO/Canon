@@ -23,6 +23,12 @@ export async function GET(
     return unauthenticated();
   }
   const { slug } = await params;
+  // ?month=N reads one specific month's report; absent means the current (latest) month.
+  // Malformed is a 400.
+  const monthRaw = new URL(request.url).searchParams.get("month");
+  if (monthRaw !== null && !/^[1-9]\d*$/.test(monthRaw)) {
+    return detail(400, `month must be a positive integer, got '${monthRaw}'`);
+  }
   try {
     const cid = await clientId(user.token, slug);
     if (cid === null) {
@@ -31,7 +37,8 @@ export async function GET(
     const sheets = await pg<{ report: string | null }[]>(
       user.token,
       // admin_roadmap_sheets: `report` is not granted to `authenticated`. See migration 008.
-      `admin_roadmap_sheets?select=report&client_id=eq.${cid}`,
+      `admin_roadmap_sheets?select=report&client_id=eq.${cid}&` +
+        (monthRaw === null ? "order=month.desc&limit=1" : `month=eq.${monthRaw}`),
     );
     const text = sheets[0]?.report ?? null;
     if (text === null) {

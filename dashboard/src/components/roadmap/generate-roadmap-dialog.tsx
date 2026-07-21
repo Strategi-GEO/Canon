@@ -91,21 +91,23 @@ export function GenerateRoadmapDialog({
   onRefused: () => void;
 }) {
   const [open, setOpen] = React.useState(false);
-  const [brandUrl, setBrandUrl] = React.useState(brandDomain);
   const [pieceCount, setPieceCount] = React.useState(DEFAULT_PIECES);
   const [notes, setNotes] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
 
   function reset() {
-    setBrandUrl(brandDomain);
     setPieceCount(DEFAULT_PIECES);
     setNotes("");
     setError(null);
   }
 
   const count = Number.parseInt(pieceCount, 10);
-  const urlOk = isHttpUrl(brandUrl.trim());
+  // The website is no longer typed here. The whole roadmap is researched from the brand's own
+  // domain on file, so a typo can no longer point a full session at the wrong company. A brand
+  // with no domain recorded cannot be researched, so the press is refused with a reason.
+  const domain = brandDomain.trim();
+  const urlOk = isHttpUrl(domain);
   const countOk = Number.isInteger(count) && count >= MIN_PIECES && count <= MAX_PIECES;
 
   async function submit(event: React.FormEvent) {
@@ -114,7 +116,7 @@ export function GenerateRoadmapDialog({
     setError(null);
     try {
       const job = await api.generateRoadmap(brandSlug, {
-        brand_url: brandUrl.trim(),
+        brand_url: domain,
         piece_count: count,
         // Always sent, "" when blank: the prompt substitutes it either way.
         notes: notes.trim(),
@@ -149,7 +151,7 @@ export function GenerateRoadmapDialog({
             get the styling that says "press me by default". */}
         <Button size="sm" variant="outline" disabled={locked} title={locked ? lockedReason : undefined}>
           <MapIcon data-icon="inline-start" aria-hidden />
-          Generate roadmap
+          Add New Month Roadmap
         </Button>
       </DialogTrigger>
 
@@ -165,26 +167,25 @@ export function GenerateRoadmapDialog({
         </DialogHeader>
 
         <form onSubmit={submit} className="space-y-4">
-          <div>
-            <Label htmlFor="gen-brand-url">Brand URL</Label>
-            <Input
-              id="gen-brand-url"
-              type="url"
-              value={brandUrl}
-              onChange={(e) => setBrandUrl(e.target.value)}
-              placeholder="https://example.com/"
-              required
-              autoComplete="off"
-              aria-invalid={brandUrl.trim() !== "" && !urlOk ? true : undefined}
-              className="mt-1.5"
-            />
-            {/* The stake is stated, because the failure here is silent: a wrong URL produces a
-                complete, confident roadmap for somebody else's company. */}
-            <p className="mt-1 text-xs text-muted-foreground">
-              Prefilled from {brandName}&apos;s own domain. The whole roadmap is researched from
-              this site, so a typo here researches the wrong company rather than failing.
-            </p>
-          </div>
+          {/* No Brand URL field: the roadmap is ALWAYS researched from the brand's own website on
+              file, so there is nothing to type and nothing to typo. The site is named here so the
+              operator sees which one the session will read. */}
+          {urlOk ? (
+            <div className="rounded-md border border-border bg-muted/40 px-3 py-2.5">
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Researched from {brandName}&apos;s website on file,{" "}
+                <span className="font-medium text-foreground">{domain}</span>. To change it, edit
+                the brand&apos;s website in its settings.
+              </p>
+            </div>
+          ) : (
+            <div className="rounded-md border border-review/25 bg-review-bg px-3 py-2.5">
+              <p className="text-xs leading-relaxed text-review">
+                {brandName} has no website on file, so there is nothing to research the roadmap
+                from. Add the brand&apos;s website in its settings, then generate.
+              </p>
+            </div>
+          )}
 
           <div>
             <Label htmlFor="gen-piece-count">Pieces</Label>
@@ -252,7 +253,7 @@ export function GenerateRoadmapDialog({
               {submitting ? (
                 <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
               ) : null}
-              Generate roadmap
+              Add New Month Roadmap
             </Button>
           </DialogFooter>
         </form>

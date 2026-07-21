@@ -216,31 +216,116 @@ def _decode(raw_bytes):
     raise BadUpload("the file is not readable as text (tried utf-8, cp1252 and latin-1)")
 
 
-def _fetch_sheet(client_slug):
+def _fetch_sheet(client_slug, month=None):
     """The single choke point every roadmap read goes through.
 
-    Returns (raw_csv, filename, modified) from the client's roadmap_sheets row,
-    or raises RoadmapNotFound. raw_csv is the sheet TEXT: the write paths
-    (save_upload, roadmap_gen's completion push) decode the operator's or the
-    session's bytes ONCE with _decode on the way in, so every reader gets back
-    exactly the text the parse that accepted the sheet saw. The old split, where
-    the upload decoded leniently and the reads re-opened the file strictly as
-    utf-8-sig, once accepted an Excel cp1252 export it could never read again;
-    storing decoded text makes that mismatch unrepresentable.
+    Returns (raw_csv, filename, modified) for one of the client's roadmap_sheets
+    rows, or raises RoadmapNotFound. `month` is the 1-based sequence label of the
+    roadmap wanted. month=None means the CURRENT roadmap, which is the LATEST one
+    added (max month): the blog run, the Create tab, revise and index_by_slug all
+    mean this when they say "the roadmap", so lifting one brand to many months
+    leaves every one of those readers pointing at the newest sheet, unchanged.
+
+    raw_csv is the sheet TEXT: the write paths (save_upload, roadmap_gen's
+    completion push) decode the operator's or the session's bytes ONCE with
+    _decode on the way in, so every reader gets back exactly the text the parse
+    that accepted the sheet saw. The old split, where the upload decoded leniently
+    and the reads re-opened the file strictly as utf-8-sig, once accepted an Excel
+    cp1252 export it could never read again; storing decoded text makes that
+    mismatch unrepresentable.
 
     Tests monkeypatch this function to inject a sheet without a database row.
     """
     cid = db.client_id(client_slug)
     row = None
-    if cid:
+    if cid and month is None:
         row = db.q(
             """select raw_csv, filename, coalesce(modified, created_at)
-               from roadmap_sheets where client_id = %s""",
+               from roadmap_sheets where client_id = %s
+               order by month desc limit 1""",
             (cid,), fetch="one")
+    elif cid:
+        row = db.q(
+            """select raw_csv, filename, coalesce(modified, created_at)
+               from roadmap_sheets where client_id = %s and month = %s""",
+            (cid, month), fetch="one")
     if not row:
+        where = "" if month is None else f" at month {month}"
         raise RoadmapNotFound(
-            f"no roadmap sheet for client {client_slug!r} in roadmap_sheets")
+            f"no roadmap sheet for client {client_slug!r} in roadmap_sheets{where}")
     return row[0], row[1], row[2]
+
+
+def next_month(client_slug):
+    """The month number a newly added roadmap gets: max existing + 1, or 1 when the brand has
+    none. Gaps left by a delete are never reused, so Month 3 stays Month 3 after Month 2 is
+    deleted and the next add is Month 4."""
+    cid = db.client_id(client_slug)
+    if not cid:
+        return 1
+    return db.q(
+        "select coalesce(max(month), 0) + 1 from roadmap_sheets where client_id = %s",
+        (cid,), fetch="val") or 1
+
+
+def list_months(client_slug):
+    """Every roadmap the brand holds, oldest month first, for the roadmap tab's month list.
+
+    Each entry names the month, its display label ("Month N Roadmap"), the source filename, when
+    it last changed, and how many ingestable rows it built. row_count comes from roadmap_rows so
+    it agrees with what the brief reader sees, not with the raw preview which may hold a blank
+    trailing row. A brand with no roadmap returns [], never an error: an empty list IS the empty
+    state.
+    """
+    cid = db.client_id(client_slug)
+    if not cid:
+        return []
+    rows = db.q(
+        """select s.month, s.filename, coalesce(s.modified, s.created_at), count(r.id)
+             from roadmap_sheets s
+             left join roadmap_rows r on r.sheet_id = s.id
+            where s.client_id = %s
+            group by s.month, s.filename, s.modified, s.created_at
+            order by s.month""",
+        (cid,))
+    return [
+        {
+            "month": month,
+            "label": f"Month {month} Roadmap",
+            "filename": filename,
+            "modified": modified.astimezone(timezone.utc).isoformat(),
+            "row_count": row_count,
+        }
+        for (month, filename, modified, row_count) in rows
+    ]
+
+
+def existing_topics(client_slug):
+    """Every topic already planned across ALL of the brand's existing monthly roadmaps, oldest
+    month first, de-duplicated by slug.
+
+    This is the exclusion list a NEW month's generation is handed: a fresh research session knows
+    nothing about what earlier months planned, because those topics live in this database and not
+    on the site it reads, so without this it would re-propose the same obvious topics every month.
+    De-duplicated by the same slugify the ledger keys on, so two slightly different retypings of
+    one title collapse to one entry rather than reading as two distinct topics to avoid.
+    """
+    cid = db.client_id(client_slug)
+    if not cid:
+        return []
+    rows = db.q(
+        """select r.topic from roadmap_rows r
+             join roadmap_sheets s on r.sheet_id = s.id
+            where s.client_id = %s and btrim(r.topic) <> ''
+            order by s.month, r.row_index""",
+        (cid,))
+    seen, out = set(), []
+    for (topic,) in rows:
+        key = slugify(topic)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(topic)
+    return out
 
 
 def _csv_rows(text):
@@ -252,14 +337,15 @@ def _csv_rows(text):
     return list(csv.reader(io.StringIO(text, newline="")))
 
 
-def load_roadmap(client_slug):
-    """Return the saved roadmap payload for a client: columns, rows, warnings.
+def load_roadmap(client_slug, month=None):
+    """Return the saved roadmap payload for one month: columns, rows, warnings.
 
-    roadmap_sheets holds an OPTIONAL saved roadmap per client. It is read-only
-    input and full of topics that have not been generated. It is NOT the
-    ledger: see server/ledger.py.
+    month=None is the CURRENT roadmap (the latest month), which is what every engine reader
+    means by "the roadmap". roadmap_sheets holds an OPTIONAL saved roadmap per month. It is
+    read-only input and full of topics that have not been generated. It is NOT the ledger: see
+    server/ledger.py.
     """
-    raw_csv, _filename, _modified = _fetch_sheet(client_slug)
+    raw_csv, _filename, _modified = _fetch_sheet(client_slug, month)
     what = f"the roadmap sheet for client {client_slug!r}"
     return _parse_rows(_csv_rows(raw_csv), what)
 
@@ -339,8 +425,10 @@ def _read_raw(client_slug):
     return _csv_rows(raw_csv)
 
 
-def read_sheet(client_slug):
+def read_sheet(client_slug, month=None):
     """The roadmap CSV as a rectangle for preview: filename, modified, bytes, columns, rows.
+
+    month=None is the current (latest) month; a month names one specific roadmap to preview.
 
     This answers a question load_roadmap cannot: "what is actually in my sheet". load_roadmap
     reports the three columns the engine reads, which is the right answer for running a blog
@@ -353,7 +441,7 @@ def read_sheet(client_slug):
     data: a sheet whose header row is shorter than its widest data row is common, and an
     unpadded header would misalign every column after the short point.
     """
-    raw_csv, filename, modified = _fetch_sheet(client_slug)
+    raw_csv, filename, modified = _fetch_sheet(client_slug, month)
     raw_rows = _csv_rows(raw_csv)
 
     width = max((len(row) for row in raw_rows), default=0)
@@ -368,9 +456,12 @@ def read_sheet(client_slug):
     }
 
 
-def delete_roadmap(client_slug):
-    """Archive the brand's roadmap into roadmap_uploads, then remove the sheet. True when one
+def delete_roadmap(client_slug, month):
+    """Archive ONE month's roadmap into roadmap_uploads, then remove that sheet. True when one
     was removed.
+
+    `month` names which roadmap to delete: with a brand holding several, client_id alone no
+    longer identifies one sheet. The gaps a delete leaves are never reused (see next_month).
 
     Only the roadmap_sheets row goes (its roadmap_rows cascade with it). The roadmap_uploads
     archive stays, because /generate re-parses a live run by upload_id and deleting the sheet
@@ -400,8 +491,8 @@ def delete_roadmap(client_slug):
     if not cid:
         return False
     row = db.q(
-        "select id, raw_csv, report from roadmap_sheets where client_id = %s",
-        (cid,), fetch="one")
+        "select id, raw_csv, report from roadmap_sheets where client_id = %s and month = %s",
+        (cid, month), fetch="one")
     if not row:
         return False
     sheet_id, raw_csv, report = row
@@ -428,8 +519,8 @@ def delete_roadmap(client_slug):
     return True
 
 
-def _write_sheet(cur, cid, raw_text, payload, report=None):
-    """Upsert roadmap_sheets and rebuild roadmap_rows for one client, on an open
+def _write_sheet(cur, cid, raw_text, payload, report=None, month=1):
+    """Upsert ONE month's roadmap_sheets row and rebuild its roadmap_rows, on an open
     transaction cursor.
 
     The ONE writer of the sheet record: save_upload and roadmap_gen's completion
@@ -439,21 +530,25 @@ def _write_sheet(cur, cid, raw_text, payload, report=None):
     replaced whole: a leftover row from a longer previous sheet would be a row
     the operator deleted coming back.
 
+    The conflict target is (client_id, month): an add lands a NEW month so it never conflicts,
+    but the upsert stays so re-landing the same month (a retried push) replaces cleanly rather
+    than raising.
+
     topic_slug is computed by this module's own slugify (already on the parsed
     rows), never re-derived in SQL; an empty slug is stored as NULL because an
     incomplete row may have no topic to slugify.
     """
     cur.execute(
-        """insert into roadmap_sheets (client_id, filename, raw_csv, columns, modified, report)
-           values (%s, 'roadmap.csv', %s, %s::text[], now(), %s)
-           on conflict (client_id) do update
+        """insert into roadmap_sheets (client_id, month, filename, raw_csv, columns, modified, report)
+           values (%s, %s, 'roadmap.csv', %s, %s::text[], now(), %s)
+           on conflict (client_id, month) do update
              set filename = excluded.filename,
                  raw_csv  = excluded.raw_csv,
                  columns  = excluded.columns,
                  modified = excluded.modified,
                  report   = excluded.report
            returning id""",
-        (cid, raw_text, payload["columns"], report))
+        (cid, month, raw_text, payload["columns"], report))
     sheet_id = cur.fetchone()[0]
     cur.execute("delete from roadmap_rows where sheet_id = %s", (sheet_id,))
     for row in payload["rows"]:
@@ -516,16 +611,24 @@ def save_upload(client_slug, filename, raw_bytes):
     if not archive_name.endswith(".csv"):
         archive_name += ".csv"
 
+    # An upload always ADDS the next month rather than replacing: the old "one roadmap per brand"
+    # refusal is gone, so a second upload is Month 2, not a 409.
+    # ponytail: next_month is read then written outside a single lock, so two uploads racing for
+    # one brand can pick the same number; the unique (client_id, month) constraint is the
+    # backstop and the loser gets a loud error, not silent clobber. Add a per-brand advisory lock
+    # only if concurrent uploads to one brand ever become real.
+    month = next_month(client_slug)
     with db.tx() as cur:
         cur.execute(
             """insert into roadmap_uploads (client_id, filename, raw)
                values (%s, %s, %s)""",
             (cid, archive_name, raw_bytes))
-        _write_sheet(cur, cid, raw_text, payload)
+        _write_sheet(cur, cid, raw_text, payload, month=month)
 
     return {
         "archived": f"roadmap_uploads/{client_slug}/{archive_name}",
         "upload_id": archive_name,
+        "month": month,
         "rows": len(payload["rows"]),
         "columns": payload["columns"],
     }

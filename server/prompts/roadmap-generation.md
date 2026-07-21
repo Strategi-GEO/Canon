@@ -34,6 +34,15 @@ The bar: a competent strategist reading this CSV should be able to hand any row 
 a piece that earns AI citation on a prompt that converts. If a row cannot survive the question "why
 this, why now, what does it win", it does not ship.
 
+**Anchor every row in a real question people actually ask.** The pieces that lift a brand in both AI
+answers (GEO) and search (SEO) are the ones that answer the common, genuinely-asked questions about
+this brand's industry, its products, and its services. Start from those questions, the ones a real
+person types into ChatGPT or a search bar, and plan the piece that becomes the cited answer. Favour
+the recurring, high-intent queries a buyer in this category actually has over clever angles nobody
+searches for: a row that maps to no real question is a row no engine has a reason to surface. Keep
+the commercial through-line, but reach it by answering the question a buyer is already asking, not
+by inventing a topic to sell into.
+
 Do not write any content. This is planning only.
 
 ---
@@ -66,6 +75,27 @@ nothing to it. Never infer its contents from its filename.
 Resources are CONTEXT, not citations. They tell you what the client sells, who buys it, and what is
 true. They do not substitute for the live data in Stages 1 to 3: a brochure is marketing copy, and
 a roadmap row still needs live demand evidence.
+
+---
+
+## STAGE 0.5 (ENGINE): topics already planned in earlier months
+
+This brand builds a fresh roadmap each month, and you are generating the newest one. The months
+before it already planned their own topics, and those live in the factory's database, not on the
+site you are about to read, so nothing downstream will stop you from re-proposing them by accident.
+This block is the only place you learn what is already taken.
+
+{{EXISTING_TOPICS}}
+
+**This is a HARD exclusion, not a preference.** Every row you write must be a NEW topic, distinct
+from every topic listed above. Distinct means a different buyer question, not the same question
+retitled: "Best second homes near Bengaluru" and "Top weekend-home locations around Bangalore" are
+the SAME topic wearing two titles, and shipping the second is the exact failure this block exists to
+prevent. If your strongest candidate is already planned, that ground is taken: find the next real
+question this brand can win and plan that instead. A month that repeats last month's roadmap is worth
+nothing to the client. If the exclusion leaves fewer than `PIECE_COUNT` genuinely new topics that
+clear the Stage 4 gates, deliver fewer and say so in your report rather than padding with near
+duplicates of earlier months.
 
 ---
 
@@ -132,6 +162,9 @@ classification. Pull it or leave it out.
   is there an AI Overview, is there a People Also Ask block, what page types rank (listicles,
   directories, manufacturer pages, forums). Page type tells you the format that wins.
 - **`kw_data_google_ads_search_volume`** to validate volume on anything you are betting a row on.
+  The figure you pull here for a row's primary keyword is what populates column 6, `Est. Monthly
+  Volume`. Where Google returns nothing, the AI-layer volume from Stage 3 stands in; where neither
+  has a figure, the cell is left blank rather than guessed.
 
 Set `location_code` and `language_code` to the client's actual market, which `client.md` names.
 Default to India if the client is India-based and NOTES says nothing. Do not default to US.
@@ -181,6 +214,7 @@ Score every candidate topic on four axes. Cut anything that fails a gate.
 - It is a generic "Ultimate Guide to [Category]" with no angle.
 - It only exists to pad the count.
 - **(ENGINE)** It cannot be written without a claim `canonical-facts.md` forbids. See Stage 0.
+- **(ENGINE)** It duplicates or substantially overlaps a topic already planned in an earlier month. See Stage 0.5: earlier months own that ground, and a repeat is worth nothing to the client.
 
 If you cannot find `PIECE_COUNT` topics that clear the gates, deliver fewer and say why in your
 report. A short honest roadmap beats a padded one.
@@ -281,7 +315,7 @@ written anywhere else is a file the operator cannot see and the writers cannot u
 `{brand-slug}-content-roadmap.csv` filename belongs to a chat session handing back a download; here
 the roadmap has one home per brand and this is it.
 
-**Columns, in this exact order, exactly five:**
+**Columns, in this exact order, exactly six:**
 
 | # | Column | Spec |
 |---|---|---|
@@ -290,20 +324,27 @@ the roadmap has one home per brand and this is it.
 | 3 | `Format` | One value from the taxonomy above. |
 | 4 | `Search Intent` | One of: `Navigational`, `Informational`, `Commercial`. |
 | 5 | `Target Prompts` | Exactly 3 prompts, separated by ` \| ` (space pipe space). Built per the rules in Stage 6. |
+| 6 | `Est. Monthly Volume` | The estimated monthly search volume for the row's primary target keyword in the client's market, from the live DataForSEO calls in Stage 2 (`kw_data_google_ads_search_volume`; fall back to the AI-layer figure from `ai_optimization_keyword_data_search_volume` where Google volume is null, and say which in your report). A single number or a tight range like `1,000 to 2,000`. Leave it BLANK if no live call supports a figure; never estimate one. This is planning metadata, not a citable statistic. |
 
-**(ENGINE) Why those five columns are exactly right, and must not be reordered.** This factory reads
-a roadmap BY POSITION: column 1 is the topic, column 2 is the scope, column 5 is the target prompts.
-Your five columns already land on that mapping. Reordering them, or adding a sixth, silently feeds
-the wrong text to the writers, because there is no header detection to catch it.
+**(ENGINE) The order is load-bearing, and columns 1, 2 and 5 must not move.** This factory reads a
+roadmap BY POSITION: column 1 is the topic, column 2 is the scope, and column 5 is the target
+prompts. There is no header detection to catch a misplacement, so if `Target Prompts` is not the
+FIFTH column the writers are silently fed the wrong text. `Est. Monthly Volume` is the SIXTH column
+for exactly this reason: it sits after the prompts so the binding three keep their positions.
+Everything that is not column 1, 2 or 5 is read by its header, so the volume column reaches the
+writer as labelled guidance rather than by position. Do not reorder, and do not add a seventh.
 
-**Columns 3 and 4 are not decoration and nothing ignores them.** Every column that is not 1, 2 or 5
-is handed to the writer under its own header, so `Format: Comparison anchor` and `Search Intent:
-Commercial` are instructions the writer follows: the format decides the shape of the piece, and the
-intent frames its language. Fill them as carefully as the rest. A row whose Format contradicts its
-scope produces a piece that argues with its own brief.
+**Columns 3, 4 and 6 are not decoration and nothing ignores them.** Every column that is not 1, 2
+or 5 is handed to the writer under its own header, so `Format: Comparison anchor`, `Search Intent:
+Commercial` and `Est. Monthly Volume: 1,000 to 2,000` all reach the writer as labelled guidance: the
+format decides the shape of the piece, the intent frames its language, and the volume signals how
+much a term is worth reaching for. Fill them as carefully as the rest. A row whose Format contradicts
+its scope produces a piece that argues with its own brief.
 
-**(ENGINE) Header row.** Write the five column names as row 1. The parser always treats row 1 as a
-header and skips it, so a CSV without one loses its first topic.
+**(ENGINE) Header row.** Write the six column names as row 1, in the exact spelling above,
+`Est. Monthly Volume` included. The parser always treats row 1 as a header and skips it, so a CSV
+without one loses its first topic, and the volume column is found only by the header text you give
+it here.
 
 **Mechanics:**
 - Quote every field. Commas inside fields are fine once quoted.
@@ -312,21 +353,23 @@ header and skips it, so a CSV without one loses its first topic.
 - No em dashes anywhere in the file. No en dashes either: this house bans both, and a writer's gate
   script fails on them later.
 - No bracketed TODOs, no "TBD", no placeholder text.
-- Do not add columns. Do not add a notes column, a volume column, or a difficulty column. Five
-  columns.
+- Six columns, exactly the six above. Do not add a seventh: no notes column, no difficulty column,
+  no separate keyword column. The volume belongs in column 6 and nowhere else.
 
 ---
 
 ## STAGE 7: verify, then write
 
 Before you write, verify:
-- [ ] Five columns, exact names, exact order, header row present
+- [ ] Six columns, exact names, exact order (Target Prompts fifth, Est. Monthly Volume sixth), header row present
 - [ ] Row count matches `PIECE_COUNT`, or you have explained the shortfall
 - [ ] Intent mix hits the ratio, or NOTES overrode it
 - [ ] Exactly one hub listicle, one comparison anchor, one FAQ (entity)
 - [ ] Every row has exactly 3 prompts, pipe-separated
+- [ ] Every Est. Monthly Volume value comes from a live call, or is blank; none is estimated
 - [ ] No prompt contains a brand name (except the navigational row)
 - [ ] No row duplicates existing client content
+- [ ] No row duplicates or overlaps a topic from an earlier month (Stage 0.5)
 - [ ] Every commercial row traces to something they sell
 - [ ] No row requires a claim `canonical-facts.md` forbids
 - [ ] Zero em dashes and zero en dashes
@@ -355,7 +398,7 @@ roadmap you would argue about. Do not restate the CSV.
 
    **Scratch work outside the project is fine and is encouraged.** You have a shell. Use it: parse
    the deeply nested DataForSEO responses with `jq` rather than by eye, and check your own CSV
-   against the Stage 7 list before you return, five columns, three prompts a row, zero em dashes.
+   against the Stage 7 list before you return, six columns, three prompts a row, zero em dashes.
    Keep throwaway scripts in a temp directory, never in `clients/`. A verified sheet beats a
    claimed one, and this is how you earn the difference.
 5. **No em dashes.** Anywhere.

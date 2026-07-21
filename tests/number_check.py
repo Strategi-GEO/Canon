@@ -135,9 +135,9 @@ _EXCEL_BYTES = (
 _ORIG_FETCH = roadmap._fetch_sheet
 
 
-def _fake_fetch(client_slug):
+def _fake_fetch(client_slug, month=None):
     if client_slug != "winexcel":
-        return _ORIG_FETCH(client_slug)
+        return _ORIG_FETCH(client_slug, month)
     return roadmap._decode(_EXCEL_BYTES), "roadmap.csv", datetime.now(timezone.utc)
 
 

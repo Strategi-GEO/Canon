@@ -14,8 +14,8 @@ import { HOSTED_READONLY } from "@/lib/hosted";
 import { cn } from "@/lib/utils";
 import { EngineDown } from "@/components/clients/engine-error";
 import { RoadmapUploader } from "@/components/create/roadmap-uploader";
-import { DeleteRoadmapDialog } from "@/components/roadmap/delete-roadmap-dialog";
 import { GenerateRoadmapDialog } from "@/components/roadmap/generate-roadmap-dialog";
+import { RoadmapDownloadButton } from "@/components/roadmap/roadmap-download-button";
 import { mockReasonOf, type MockReason } from "@/components/roadmap/generation-copy";
 import { RoadmapGeneration } from "@/components/roadmap/roadmap-generation";
 import { RoadmapPreviewDialog } from "@/components/roadmap/roadmap-preview-dialog";
@@ -154,8 +154,6 @@ export function RoadmapOverview({
     );
   }
 
-  const withBlog = stats.topics - stats.remaining;
-
   return (
     <div className="w-full">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -169,30 +167,47 @@ export function RoadmapOverview({
           </p>
         </div>
 
-        {/* No upload while a roadmap exists: the engine 409s it with "delete it first", so a
-            button here could only ever be refused, and offering it would teach the operator
-            that the path is upload-then-argue rather than delete-then-upload. */}
+        {/* A brand holds many monthly roadmaps now, and adding another is no longer refused
+            while one exists: the engine appends the next month. Deleting is per-month, inside
+            the preview sidebar, rather than a toolbar button that could only delete "the"
+            roadmap a brand no longer has just one of. */}
         <div className="flex flex-wrap items-center gap-2">
-          <RoadmapPreviewDialog brandSlug={brandSlug} brandName={brandName} />
-          {/* Deleting a roadmap is an engine write, so the hosted build reads and previews
-              the sheet and offers no way to destroy it. */}
+          <RoadmapPreviewDialog
+            brandSlug={brandSlug}
+            brandName={brandName}
+            locked={locked}
+            onChanged={roadmap.reload}
+          />
+          <RoadmapDownloadButton brandSlug={brandSlug} label="the latest roadmap" />
+          {/* Adding a month is an engine write, so the hosted build previews and downloads but
+              offers neither way in. A month is added by UPLOADING a CSV or by GENERATING one, and
+              both stay available once a roadmap exists because each just appends the next month. */}
           {HOSTED_READONLY ? null : (
-            <DeleteRoadmapDialog
-              brandSlug={brandSlug}
-              brandName={brandName}
-              rowCount={stats.topics}
-              generatedCount={withBlog}
-              locked={locked}
-              onDeleted={roadmap.clear}
-            />
+            <>
+              <RoadmapUploader
+                slug={brandSlug}
+                label="Upload month"
+                onUploaded={roadmap.set}
+              />
+              <GenerateRoadmapDialog
+                brandSlug={brandSlug}
+                brandName={brandName}
+                brandDomain={brandDomain}
+                mock={mock}
+                locked={generating || locked}
+                lockedReason={generateLockedReason}
+                onStarted={gen.adopt}
+                onRefused={gen.recheck}
+              />
+            </>
           )}
         </div>
       </div>
 
-      {/* There is no Generate button on this branch, for the reason the uploader has none: a
-          brand with a roadmap gets "delete it first" from the engine, so the button could only
-          ever be refused. The card still renders, because the roadmap on this page may be the
-          one a generation just wrote and its report is the account of how it was planned. */}
+      {/* The Add New Month Roadmap button lives in the toolbar above: a brand with a roadmap can
+          add the next month, so the button is offered here and not only on the empty state. This
+          card renders the running or just-finished generation, whose report is the account of how
+          the newest month was planned. */}
       <RoadmapGeneration brandSlug={brandSlug} brandName={brandName} mock={mock} gen={gen} />
 
       {locked ? (
@@ -232,15 +247,18 @@ export function RoadmapOverview({
       ) : null}
 
       {stats.topics === 0 ? (
-        // The file exists and parsed to nothing, which is not the same as having no roadmap:
-        // an upload would still be refused, and the way out is still to delete it first. Tiles
-        // reading zero would dress that up as a state of work rather than a broken sheet.
+        // The latest month's file exists and parsed to nothing, which is not the same as having
+        // no roadmap at all. Tiles reading zero would dress that up as a state of work rather than
+        // a broken sheet, so say plainly that this month has no topics.
         <Card className="mt-6">
           <CardContent className="py-16 text-center">
-            <p className="text-sm font-medium text-foreground">This roadmap has no topics in it</p>
+            <p className="text-sm font-medium text-foreground">
+              This month&apos;s roadmap has no topics in it
+            </p>
             <p className="mx-auto mt-2 max-w-md text-xs leading-relaxed text-muted-foreground">
               The sheet uploaded and parsed, and the engine read no rows out of it. Preview it to
-              see what arrived, then delete the roadmap and upload one with topics in it.
+              see what arrived, delete this month from the preview, and add a new month with topics
+              in it.
             </p>
           </CardContent>
         </Card>

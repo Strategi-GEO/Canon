@@ -25,6 +25,12 @@ export async function GET(
     return unauthenticated();
   }
   const { slug } = await params;
+  // ?month=N previews one specific roadmap; absent means the current (latest) month. Malformed
+  // is a 400.
+  const monthRaw = new URL(request.url).searchParams.get("month");
+  if (monthRaw !== null && !/^[1-9]\d*$/.test(monthRaw)) {
+    return detail(400, `month must be a positive integer, got '${monthRaw}'`);
+  }
   try {
     const cid = await clientId(user.token, slug);
     if (cid === null) {
@@ -34,7 +40,8 @@ export async function GET(
       user.token,
       // admin_roadmap_sheets: raw_csv is the operator's whole uploaded sheet and is not granted
       // to `authenticated`. See migration 008.
-      `admin_roadmap_sheets?select=filename,raw_csv,modified,created_at&client_id=eq.${cid}`,
+      `admin_roadmap_sheets?select=filename,raw_csv,modified,created_at&client_id=eq.${cid}&` +
+        (monthRaw === null ? "order=month.desc&limit=1" : `month=eq.${monthRaw}`),
     );
     const sheet = sheets[0];
     if (sheet === undefined) {
