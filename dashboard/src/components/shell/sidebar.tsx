@@ -1,15 +1,25 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Box, Plus } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BRAND_NAV, isActiveSection, parseBrandPath, parseOrgPath } from "@/components/shell/nav";
 import { OrgSwitcher } from "@/components/shell/org-switcher";
 import { BrandSwitcher } from "@/components/shell/brand-switcher";
+import { AddOrganisationDialog } from "@/components/clients/add-organisation-dialog";
 import { addBrandHref, brandHref, orgHref, useOrgs } from "@/lib/orgs-context";
 import { cn } from "@/lib/utils";
 import type { Org } from "@/types";
+
+/**
+ * A dialog trigger dressed as a nav row, so "Add organisation" and "Add brand" read as the same
+ * kind of control even though one opens a dialog and the other is a Link. The class list is the
+ * inactive NavRow above, kept in step by hand because a button cannot BE a NavRow (that is a
+ * Link), and a two-line duplication is cheaper than a NavRow that has to branch on its element.
+ */
+const NAV_ROW_BUTTON =
+  "relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
 
 export function Wordmark() {
   return (
@@ -143,6 +153,9 @@ function OrgBrandNav({ org, onNavigate }: { org: Org; onNavigate?: () => void })
  * The orgs are the only nav that means anything here, and an empty column would be worse.
  */
 function OrgListNav({ orgs, onNavigate }: { orgs: Org[]; onNavigate?: () => void }) {
+  const router = useRouter();
+  const { refresh, findBrand } = useOrgs();
+
   if (orgs.length === 0) {
     return null;
   }
@@ -157,6 +170,22 @@ function OrgListNav({ orgs, onNavigate }: { orgs: Org[]; onNavigate?: () => void
           {org.name}
         </NavRow>
       ))}
+      {/* The org-level twin of OrgBrandNav's "Add brand" row. Returns null on the hosted,
+          read-only build, so the row simply does not appear there. */}
+      <AddOrganisationDialog
+        trigger={
+          <button type="button" className={NAV_ROW_BUTTON}>
+            <Plus className="size-4 shrink-0" aria-hidden />
+            <span className="min-w-0 flex-1 truncate">Add organisation</span>
+          </button>
+        }
+        onCreated={async (brand) => {
+          onNavigate?.();
+          await refresh();
+          const located = findBrand(brand.slug);
+          router.push(located ? brandHref(located.org.slug, located.brand.slug) : "/");
+        }}
+      />
     </nav>
   );
 }

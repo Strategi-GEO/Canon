@@ -3,18 +3,19 @@
 import * as React from "react";
 import { ApiError, api } from "@/lib/api";
 import { useNotifications } from "@/lib/notifications-context";
+import { useOrgs } from "@/lib/orgs-context";
 import type { DescribeJob } from "@/types";
 
 /**
- * Every brand description draft the engine is running, watched from above the component that
- * started it.
+ * Every brand description draft the engine is running, watched from above the route that started
+ * it.
  *
- * WHY THIS IS A PROVIDER AND NOT STATE INSIDE THE BUTTON. server/describe.py owns the work: the
- * POST starts an SDK session and returns immediately, and the draft lands in the engine tens of
- * seconds later whatever the browser does. DescribeAction cannot hold that wait, because it
- * unmounts the moment the operator hits Cancel or Save on the card around it, let alone
- * navigates. Waiting there is how the old code threw away a draft the operator had already paid
- * for. The wait belongs above every route, which is here, and the button becomes a view of this.
+ * WHY THIS IS A PROVIDER. server/describe.py owns the work: adding a brand starts an SDK session
+ * and the POST returns immediately, and the session reads the site and SAVES the description tens
+ * of seconds later whatever the browser does. The add form that started it has long since
+ * navigated to the brand, so the wait cannot live there. It lives here, above every route, so a
+ * settled draft is noticed wherever the operator has gone: this provider announces it and re-reads
+ * the hierarchy so the generated description appears on the brand's page (see `apply`).
  *
  * WHY IT DISCOVERS RATHER THAN REMEMBERS. It reads GET /api/describe-jobs, the whole list, the
  * same way lib/runs-context reads the run list. The browser keeps no registry of what it
@@ -57,6 +58,12 @@ export function DescribeProvider({ children }: { children: React.ReactNode }) {
   const [jobs, setJobs] = React.useState<ReadonlyMap<string, DescribeJob>>(NO_JOBS);
   const [startError, setStartError] = React.useState<ReadonlyMap<string, ApiError>>(NO_ERRORS);
   const { notify } = useNotifications();
+  // The engine now SAVES the description before it flips a draft to "done" (server/describe.py),
+  // so a settled draft means the record already changed underneath the list this browser is
+  // showing. Re-reading the hierarchy is what makes the freshly generated description appear on
+  // the brand's page without a manual reload. OrgsProvider is above DescribeProvider, so this is
+  // in scope.
+  const { refresh } = useOrgs();
 
   /**
    * What this tab has already seen settle, so one finished draft is announced once.
@@ -73,8 +80,10 @@ export function DescribeProvider({ children }: { children: React.ReactNode }) {
   // Read from a settling poll, long after the render that armed it, and written in an effect
   // rather than during render because a ref is not render data.
   const notifyRef = React.useRef(notify);
+  const refreshRef = React.useRef(refresh);
   React.useEffect(() => {
     notifyRef.current = notify;
+    refreshRef.current = refresh;
   });
 
   const apply = React.useCallback((list: DescribeJob[]) => {
@@ -87,11 +96,13 @@ export function DescribeProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    let settledNow = false;
     for (const job of list) {
       if (!settled(job) || seen.has(job.client)) {
         continue;
       }
       seen.add(job.client);
+      settledNow = true;
       notifyRef.current({
         kind: "describe",
         brandSlug: job.client,
@@ -100,6 +111,14 @@ export function DescribeProvider({ children }: { children: React.ReactNode }) {
         key: job.client,
         error: job.error,
       });
+    }
+
+    // A draft settled this poll, so the record it wrote its description into has changed. Re-read
+    // the hierarchy once so the brand's page shows the generated description instead of the empty
+    // state it landed on seconds earlier. Gated on `settledNow` and the `seen` newness check
+    // above, so a job that lingers settled across later polls never re-fires this.
+    if (settledNow) {
+      void refreshRef.current();
     }
 
     // A job the engine no longer holds was collected, so the next draft for that brand is news
@@ -225,9 +244,9 @@ export function DescribeProvider({ children }: { children: React.ReactNode }) {
       next.delete(slug);
       return next;
     });
-    // Fire and forget: the operator already has the draft in their textarea, and a failed DELETE
-    // costs them nothing worse than the engine holding a record nobody asks for again. Blocking
-    // the collect on it would be the tail wagging the dog.
+    // Fire and forget: the description is already saved to the record by the time a draft
+    // settles, so a failed DELETE costs nothing worse than the engine holding a spent record
+    // again. Blocking the collect on it would be the tail wagging the dog.
     void api.clearDescribeJob(slug).catch(() => {});
   }, []);
 

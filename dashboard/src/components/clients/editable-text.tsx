@@ -1,23 +1,21 @@
 "use client";
 
 import * as React from "react";
-import { Loader2, Pencil } from "lucide-react";
-import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
-import { ApiError } from "@/lib/api";
-import { HOSTED_READONLY } from "@/lib/hosted";
 import { cn } from "@/lib/utils";
-import type { Client, UpdateClientBody } from "@/types";
-import { FieldError } from "@/components/clients/engine-error";
-import { DescribeAction } from "@/components/clients/describe-action";
-import { updateClient } from "@/components/clients/wire";
 
 /**
- * The card both states share. One shell, so a read only block of client prose and an editable
- * one cannot drift into looking like two different kinds of thing.
+ * A read-only block of client prose.
+ *
+ * This file used to also export an EditableText that PATCHed the field back and hosted a "Draft
+ * with Claude" button. Both are gone: the one field it edited, the brand description, is now
+ * generated from the brand website by the engine and is never typed or changed by hand (see
+ * server/describe.py). So every surface that shows client prose shows it the same way, read only,
+ * and there is no second screen that could disagree with this one about what it says.
  */
+
+/** The card shell shared by every read-only prose block, so they cannot drift into looking like
+ *  two different kinds of thing. */
 function TextCard({
   title,
   help,
@@ -59,12 +57,11 @@ function Prose({
 }
 
 /**
- * The same block of client prose with NO way to change it.
+ * A block of client prose with NO way to change it.
  *
- * Editing one field from two screens is two screens that can disagree, and the operator has no
- * way to tell which one they are looking at once they do. Settings is where this brand is
- * configured, so Settings is the only place these fields are edited. Everywhere else shows what
- * the engine currently holds, which is what a view of a brand is for.
+ * Showing one field from two screens is two screens that can disagree, and the operator has no
+ * way to tell which one they are looking at once they do. This field is generated, not authored,
+ * so there is nowhere it is editable and every screen simply shows what the engine holds.
  */
 export function ReadOnlyText({
   title,
@@ -82,123 +79,6 @@ export function ReadOnlyText({
   return (
     <TextCard title={title} help={help}>
       <Prose value={value} emptyText={emptyText} mono={mono} />
-    </TextCard>
-  );
-}
-
-/**
- * An inline edited block of client prose, saved with a PATCH.
- *
- * PATCH sends only the field being edited: the engine reads an absent key as "do not
- * write", so a form that posted every field would let a stale description overwrite one
- * that changed in another tab.
- */
-export function EditableText({
-  brandSlug,
-  title,
-  help,
-  value,
-  placeholder,
-  emptyText,
-  mono = false,
-  rows = 6,
-  describable = false,
-  onSaved,
-}: {
-  brandSlug: string;
-  title: string;
-  help: string;
-  value: string;
-  placeholder?: string;
-  emptyText: string;
-  mono?: boolean;
-  rows?: number;
-  describable?: boolean;
-  onSaved: (client: Client) => void;
-}) {
-  const [editing, setEditing] = React.useState(false);
-  const [draft, setDraft] = React.useState(value);
-  const [saving, setSaving] = React.useState(false);
-  const [error, setError] = React.useState<ApiError | null>(null);
-
-  // The hosted build is read only: PATCH and the describe session both need the live
-  // engine, so the same block renders without its Edit button or AI draft there.
-  if (HOSTED_READONLY) {
-    return (
-      <TextCard title={title} help={help}>
-        <Prose value={value} emptyText={emptyText} mono={mono} />
-      </TextCard>
-    );
-  }
-
-  function start() {
-    setDraft(value);
-    setError(null);
-    setEditing(true);
-  }
-
-  function cancel() {
-    setDraft(value);
-    setError(null);
-    setEditing(false);
-  }
-
-  async function save() {
-    setSaving(true);
-    setError(null);
-    try {
-      const body: UpdateClientBody = { description: draft };
-      const updated = await updateClient(brandSlug, body);
-      onSaved(updated);
-      toast.success(`${title} saved`);
-      setEditing(false);
-    } catch (cause) {
-      setError(cause instanceof ApiError ? cause : new ApiError(0, String(cause), null));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <TextCard title={title} help={help}>
-      {describable && editing ? (
-        <div className="mb-3">
-          <DescribeAction slug={brandSlug} onDrafted={(text) => setDraft(text)} />
-        </div>
-      ) : null}
-
-      {editing ? (
-        <>
-          <Textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            rows={rows}
-            placeholder={placeholder}
-            aria-label={title}
-            className={cn(mono && "machine text-xs")}
-          />
-          {error ? <FieldError error={error} /> : null}
-          <div className="mt-3 flex gap-2">
-            <Button size="sm" onClick={() => void save()} disabled={saving}>
-              {saving ? (
-                <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
-              ) : null}
-              Save
-            </Button>
-            <Button size="sm" variant="ghost" onClick={cancel} disabled={saving}>
-              Cancel
-            </Button>
-          </div>
-        </>
-      ) : (
-        <>
-          <Prose value={value} emptyText={emptyText} mono={mono} />
-          <Button size="sm" variant="outline" className="mt-3" onClick={start}>
-            <Pencil data-icon="inline-start" aria-hidden />
-            Edit
-          </Button>
-        </>
-      )}
     </TextCard>
   );
 }

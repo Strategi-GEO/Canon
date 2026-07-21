@@ -67,8 +67,8 @@ function resolveTitle(
 ): string {
   if (pathname === "/admin/new") {
     // /admin/new is two flows behind one path, and ?org= is the only thing telling them apart.
-    // Two tabs both saying "Add client" would hide which one is adding a brand, and to where.
-    return joiningOrg === "" ? "Add client" : `Add brand to ${joiningOrg}`;
+    // Two tabs both saying "Add organisation" would hide which one is adding a brand, and to where.
+    return joiningOrg === "" ? "Add organisation" : `Add brand to ${joiningOrg}`;
   }
 
   const parts = parseBrandPath(pathname);

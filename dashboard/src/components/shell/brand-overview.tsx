@@ -87,14 +87,14 @@ export function BrandOverview({ orgSlug, brand }: { orgSlug: string; brand: Clie
 
       <div className="mt-6 grid gap-4 lg:grid-cols-3">
         <div className="flex flex-col gap-4 lg:col-span-2">
-          {/* Read only here. Settings is where this brand is configured, so Settings owns the
-              edit: one field editable from two screens is two screens that can disagree, and
-              the operator has no way to tell which one they are looking at once they do. */}
+          {/* Read only, and read only everywhere: the description is generated from the brand
+              website by the engine and is never edited by hand, so no screen offers a way to
+              change it. */}
           <ReadOnlyText
             title="Description"
-            help="What this brand is, what it sells, and who it sells to. Every writer run reads it."
+            help="Generated automatically from the brand website when this brand was added. Every writer run reads it."
             value={client.description}
-            emptyText="No description yet. Settings can draft one from the live site."
+            emptyText="No description yet. It is generated from the brand website shortly after the brand is added."
           />
 
           {/* Read only. Uploading lives on the Content Roadmap tab and nowhere else, so this

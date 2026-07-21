@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AddOrganisationDialog } from "@/components/clients/add-organisation-dialog";
 import { addBrandHref, brandHref, orgHref, useOrgs } from "@/lib/orgs-context";
 import { HOSTED_READONLY } from "@/lib/hosted";
 import { parseBrandPath, parseOrgPath } from "@/components/shell/nav";
@@ -38,12 +39,15 @@ const SEARCH_THRESHOLD = 7;
  * facts, so landing on one is never the end of a journey.
  */
 export function OrgSwitcher({ onNavigate }: { onNavigate?: () => void }) {
-  const { orgs, loading, error } = useOrgs();
+  const { orgs, loading, error, refresh, findBrand } = useOrgs();
   const pathname = usePathname();
   const router = useRouter();
   const palette = useCommandPalette();
   const modLabel = useModLabel();
   const [open, setOpen] = React.useState(false);
+  // Opened from the popover: the CommandItem closes the popover and flips this, the same
+  // shape the palette open below uses, so a Dialog never fights the popover for focus.
+  const [addOrgOpen, setAddOrgOpen] = React.useState(false);
 
   const orgSlug = parseOrgPath(pathname);
   const brandSlug = parseBrandPath(pathname)?.brand ?? null;
@@ -76,8 +80,9 @@ export function OrgSwitcher({ onNavigate }: { onNavigate?: () => void }) {
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
+    <>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger
         className={cn(
           "flex w-full items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-2 text-left transition-colors",
           "hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
@@ -155,10 +160,21 @@ export function OrgSwitcher({ onNavigate }: { onNavigate?: () => void }) {
                   <span className="min-w-0 truncate">Add brand to {activeOrg.name}</span>
                 </CommandItem>
               ) : null}
+              {/* Opens the org-first dialog rather than routing to a page: adding an org is
+                  the same POST /api/clients a brand is, so it need not leave the current
+                  screen. Closing the popover before flipping the dialog open keeps the two
+                  overlays from contending for focus, exactly as Search everything does below. */}
               {HOSTED_READONLY ? null : (
-                <CommandItem value="/new" keywords={["add client", "new organisation"]} onSelect={go}>
+                <CommandItem
+                  value="add-organisation"
+                  keywords={["add organisation", "add client", "new organisation", "new brand"]}
+                  onSelect={() => {
+                    setOpen(false);
+                    setAddOrgOpen(true);
+                  }}
+                >
                   <Plus className="text-muted-foreground" aria-hidden />
-                  <span>Add client</span>
+                  <span>Add organisation</span>
                 </CommandItem>
               )}
               {/* The palette does everything this menu does and reaches sections besides, so
@@ -182,7 +198,23 @@ export function OrgSwitcher({ onNavigate }: { onNavigate?: () => void }) {
           </CommandList>
         </Command>
       </PopoverContent>
-    </Popover>
+      </Popover>
+
+      {/* Controlled and trigger-less: the popover item above opens it. onCreated routes to the
+          new brand, so the operator lands where the work happens rather than on an org grouping
+          that owns no facts. The org grouping is derived from the client list, so the brand only
+          has an org to route to once that list has been re-read. */}
+      <AddOrganisationDialog
+        open={addOrgOpen}
+        onOpenChange={setAddOrgOpen}
+        onCreated={async (brand) => {
+          onNavigate?.();
+          await refresh();
+          const located = findBrand(brand.slug);
+          router.push(located ? brandHref(located.org.slug, located.brand.slug) : "/");
+        }}
+      />
+    </>
   );
 }
 

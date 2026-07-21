@@ -307,11 +307,11 @@ export function copyFor(note: AppNotification, brandName: string): NotificationC
   if (note.kind === "describe") {
     return note.error === null
       ? {
-          title: "Description drafted",
-          body: `${brandName}: Claude Code read the site and returned a draft. Nothing is saved until you submit it.`,
+          title: "Description generated",
+          body: `${brandName}: Claude Code read the site and saved the brand description.`,
         }
       : {
-          title: "Description draft failed",
+          title: "Description generation failed",
           body: `${brandName}: ${note.error}`,
         };
   }

@@ -15,7 +15,6 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { ApiError, api } from "@/lib/api";
 import { HOSTED_READONLY } from "@/lib/hosted";
 import { cn } from "@/lib/utils";
@@ -78,7 +77,6 @@ export function AddBrandDialog({
   const [organisation, setOrganisation] = React.useState(defaultOrganisationName);
   const [domain, setDomain] = React.useState("");
   const [industry, setIndustry] = React.useState("");
-  const [description, setDescription] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
 
@@ -98,7 +96,6 @@ export function AddBrandDialog({
     setOrganisation(defaultOrganisationName);
     setDomain("");
     setIndustry("");
-    setDescription("");
     setError(null);
   }
 
@@ -111,7 +108,6 @@ export function AddBrandDialog({
         name: name.trim(),
         domain: domain.trim(),
         industry,
-        description: description.trim(),
         // Blank is meaningful: it tells the engine to write no organisation key, which is
         // exactly how a brand states that it is its own single-brand org.
         organisation_name: organisation.trim(),
@@ -260,26 +256,13 @@ export function AddBrandDialog({
             {industriesError ? <FieldError error={industriesError} /> : null}
           </div>
 
-          <div>
-            <Label htmlFor="brand-description">Description</Label>
-            <Textarea
-              id="brand-description"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={4}
-              placeholder="What this brand is, what it sells, and who it sells to."
-              className="mt-1.5"
-            />
-            {/* Leave this blank: describe reads the SAVED brand's domain and 404s for a slug
-                that does not exist yet, so the draft cannot run until the brand is created.
-                Adding the brand starts it automatically, and the draft lands on the brand's
-                page for review. Nothing a draft produces is saved without that review. */}
-            <p className="mt-1 text-xs text-muted-foreground">
-              Optional. Leave it blank and Claude drafts one from the live site the moment you
-              add the brand. The draft waits on the brand&apos;s page for your review, and
-              nothing is saved without it.
-            </p>
-          </div>
+          {/* No description field on purpose. The moment the brand is added, Claude reads the
+              brand website and writes the description to the record automatically. It is not
+              typed here and it is not editable later. */}
+          <p className="rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground">
+            The description is generated automatically from the website once you add the brand,
+            so there is nothing to write here.
+          </p>
 
           {generalError ? <FieldError error={generalError} /> : null}
 

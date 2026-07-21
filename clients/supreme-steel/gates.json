@@ -1,0 +1,21 @@
+{
+  "name": "Supreme Steel",
+  "client": "supreme-steel",
+  "domain": "https://supremesteels.com/",
+  "industry": "real-estate",
+  "demo_mode": false,
+  "word_band": {
+    "min": 1200,
+    "hard_max": 2500,
+    "soft_max": 2000
+  },
+  "entity_names": [
+    "Supreme Steel"
+  ],
+  "banned_phrases": [],
+  "required_links": [],
+  "passive_whitelist": [],
+  "generic_entity_terms": [],
+  "forbidden_link_patterns": [],
+  "forbidden_claim_patterns": []
+}

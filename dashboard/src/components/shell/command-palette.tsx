@@ -189,9 +189,13 @@ function CommandPalette({
             <>
               <CommandSeparator />
               <CommandGroup heading="Actions">
-                <CommandItem value="/new" keywords={["add client", "new brand"]} onSelect={go}>
+                <CommandItem
+                  value="/admin/new"
+                  keywords={["add organisation", "add client", "new organisation", "new brand"]}
+                  onSelect={go}
+                >
                   <Plus className="text-muted-foreground" aria-hidden />
-                  <span>Add client</span>
+                  <span>Add organisation</span>
                 </CommandItem>
               </CommandGroup>
             </>

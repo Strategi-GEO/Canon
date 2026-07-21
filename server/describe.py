@@ -1,9 +1,13 @@
 """Draft a brand description from a client's live homepage, in ONE short SDK session.
 
-This is an onboarding convenience, not part of the blog pipeline. It exists so an operator
-does not retype what the site already says. What it produces is a SUGGESTION: app.py never
-saves it, the operator edits it and PATCHes it back, and canonical-facts.md still gets
-drafted and approved by a human later.
+This is an onboarding step, not part of the blog pipeline. It runs once when a brand is added:
+the brand carries no description field on the form, so this reads the live homepage and writes
+the description straight to the record (see start_job). The operator does not review or edit it.
+canonical-facts.md is a separate artifact and still gets drafted and approved by a human later.
+
+Only a REAL draft is saved. If the session could not read the site (mock mode, or a homepage
+that would not fetch), draft_description returns a placeholder with NO sources, and start_job
+leaves the record untouched rather than saving an apology as the brand's description.
 
 It reuses runner._resolve_mcp_servers and runner.check_real_mode_ready rather than
 duplicating the transport logic, so there is exactly one definition of "MCP is configured"
@@ -92,6 +96,22 @@ def start_job(client_slug, name, domain):
             result = await draft_description(name, domain)
             job["description"] = result["description"]
             job["sources"] = result["sources"]
+            # Onboarding auto-generates the brand description and the operator never reviews or
+            # edits it, so a REAL draft is written straight to the record here. "Real" means the
+            # session actually read the live site, which is exactly `sources` being non-empty:
+            # a placeholder (mock mode, or a homepage that could not be fetched) reports no
+            # sources and its text names ITSELF as not-from-the-site, so saving it would make the
+            # brand's description an apology. That is the precise failure this guard exists to
+            # avoid. A local import breaks any load-order cycle; clients imports neither describe
+            # nor app.
+            if result["sources"]:
+                from . import clients
+                # to_thread, not a direct call: this runs inside a background task, and
+                # update_client is a sync DB write plus a disk materialize, so calling it
+                # straight would stall the event loop for every other request mid-write. The
+                # sync-DAL convention across app.py is exactly this hop.
+                await asyncio.to_thread(
+                    clients.update_client, client_slug, description=result["description"])
             job["state"] = "done"
         except Exception as exc:
             # draft_description already turns every expected failure into a placeholder, so

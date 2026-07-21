@@ -76,7 +76,7 @@ export function isActiveSection(current: string, section: string): boolean {
 
 export function pageTitle(pathname: string): string {
   if (pathname === "/admin/new") {
-    return "Add client";
+    return "Add organisation";
   }
   const parts = parseBrandPath(pathname);
   if (!parts) {

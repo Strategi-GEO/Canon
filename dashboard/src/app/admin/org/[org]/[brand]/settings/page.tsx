@@ -12,7 +12,7 @@ import { HOSTED_READONLY } from "@/lib/hosted";
 import { cn } from "@/lib/utils";
 import { useOrgs } from "@/lib/orgs-context";
 import { BrandRoute } from "@/components/shell/brand-route";
-import { EditableText } from "@/components/clients/editable-text";
+import { ReadOnlyText } from "@/components/clients/editable-text";
 import { FieldError } from "@/components/clients/engine-error";
 import { updateClient } from "@/components/clients/wire";
 import { OrgCombobox } from "@/components/shell/org-combobox";
@@ -49,14 +49,15 @@ function BrandSettings({ orgName, brand }: { orgName: string; brand: Client }) {
       </div>
 
       <div className="flex flex-col gap-4">
-        <EditableText
-          brandSlug={client.slug}
+        {/* Read only, and generated, never typed. The engine drafts this from the brand website
+            the moment the brand is added (server/describe.py) and writes it to the record, so
+            there is no Edit here and no "Draft with Claude": the description is not the operator's
+            to write or change. */}
+        <ReadOnlyText
           title="Description"
-          help="What this brand is, what it sells, and who it sells to. Every writer run reads it."
+          help="Generated automatically from the brand website when this brand was added. Every writer run reads it."
           value={client.description}
-          emptyText="No description yet. Draft one from the live site, then edit it before saving."
-          describable
-          onSaved={onSaved}
+          emptyText="No description yet. It is generated from the brand website shortly after the brand is added."
         />
 
         {/* The hosted build shows what the engine knows and changes none of it: PATCH is an
