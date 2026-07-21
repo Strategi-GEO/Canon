@@ -16,7 +16,21 @@ outputs/
 # as outputs/ above, for the same reason: reproducible local working product, not source.
 graphify-out/
 
-# Uploaded roadmaps are the operator's own input, archived for provenance.
+# Client config and content is materialized from the Supabase record by
+# sync.materialize_client (see server/clients.py): regenerable scratch keyed off the
+# database, NOT source, exactly like outputs/ and graphify-out/ above. Ignore every
+# client folder by default so real client data can never land in git or a release
+# zip by reflex, and allow-list ONLY the test fixtures the suite reads from disk. A
+# new real client is auto-excluded; it lives in the DB and materialize rebuilds it.
+clients/*/
+!clients/_fixture-unreviewed/
+!clients/acme-north/
+!clients/acme-south/
+!clients/blr-brewing/
+!clients/demo/
+!clients/vacation-village/
+
+# Uploaded roadmaps are the operator's own input; never tracked, even under a fixture.
 clients/*/uploads/
 
 # Secrets. Every credential reaches this app through the environment, never a
