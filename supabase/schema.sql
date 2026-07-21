@@ -132,7 +132,6 @@ create table clients (
   -- exactly when canonical_facts is: an absent record has no build time.
   canonical_facts_at timestamptz,
 
-  demo_mode   boolean not null default false,
   -- gates.json MINUS "organisation" (modelled by org_id above).
   gates       jsonb not null default '{}'::jsonb,
 
@@ -1066,7 +1065,7 @@ grant select on orgs, client_resources, roadmap_rows,
 -- sees only identity + flags.
 revoke select on clients from authenticated;
 grant select (id, org_id, slug, name, domain, industry, description,
-              demo_mode, created_at, deleted_at, preflight_ok, is_fixture, canonical_facts_at)
+              created_at, deleted_at, preflight_ok, is_fixture, canonical_facts_at)
   on clients to authenticated;
 
 -- topics: the dossier, the links-verified working log, and the NEEDS_REVIEW marker text are
@@ -1190,7 +1189,6 @@ declare
   v_is_admin        boolean;
   v_is_member       boolean;
   v_cid             uuid;
-  v_demo            boolean;
   v_tid             uuid;
   v_form_version    uuid;
   v_current_version uuid;
@@ -1208,7 +1206,7 @@ begin
     raise exception 'PORTAL:BADBODY:answers must be a JSON array of {id, answer}';
   end if;
 
-  select c.id, c.demo_mode into v_cid, v_demo
+  select c.id into v_cid
   from clients c
   where c.slug = p_client_slug and c.deleted_at is null;
 
@@ -1237,10 +1235,6 @@ begin
       where m.client_id = v_cid and om.user_id = v_uid
         and om.role in ('admin', 'commenter'))) then
     raise exception 'PORTAL:ROLE:this account is not allowed to answer for this brand';
-  end if;
-
-  if v_demo then
-    raise exception 'PORTAL:DEMO:demo brands never run a real revise, so answers are not accepted';
   end if;
 
   select t.id into v_tid

@@ -362,7 +362,7 @@ async def api_clients(user: auth.Identity = Depends(auth.require_user)):
     # Record-backed, and a pure read at last: the old onboarding side effects
     # (mkdir outputs/<slug>/, seed generated.csv) are gone because create_client
     # and run start own onboarding now, and a GET that writes is a GET that
-    # surprises. demo_mode and every other field ride in on the record entry.
+    # surprises. Every field rides in on the record entry.
     # Scoped: a non-admin sees only the brands their grants name, and nothing in
     # the response betrays how many others exist.
     scope = _scope(user)
@@ -438,7 +438,6 @@ class CreateClientRequest(BaseModel):
     domain: str = ""
     industry: str = ""
     description: str = ""
-    demo_mode: bool = False
     # Optional: omitted means the brand is its own single-brand org, the common case.
     organisation_name: str = ""
 
@@ -485,7 +484,6 @@ async def api_create_client(body: CreateClientRequest,
             body.domain,
             body.industry,
             description=body.description,
-            demo_mode=body.demo_mode,
             organisation_name=body.organisation_name,
         )
     except clients_mod.ClientExists as exc:
@@ -1429,13 +1427,6 @@ async def api_answers(slug: str, topic: str, body: AnswersRequest,
             user.is_admin or user.roles.get(slug) in ("admin", "commenter")):
         raise HTTPException(status_code=403, detail="answering requires a commenter or admin role")
 
-    # THE DEMO REFUSAL, before the topic is even resolved. An answer dispatches a surgical
-    # revise, which is a real SDK session, and a demo fixture must never spend real API
-    # credits: the mock path that used to make this free is removed. runner.revise_topic
-    # refuses this too, so nothing bypassing the route can spend money on a fixture.
-    if runner.is_demo_client(slug):
-        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
-
     _topic_or_404(slug, topic)
 
     # THE APPROVED LOCK, ahead of the form checks, because it is the permanent one and they
@@ -1513,15 +1504,13 @@ async def api_revise_answered(slug: str, topic: str,
     person chooses the moment, which is also why the automatic pickup sweep ships
     disabled. Admin-only: answering is the client's act, rerunning is the operator's.
 
-    Refusals mirror api_answers where they share a reason: demo, unknown topic, no form,
+    Refusals mirror api_answers where they share a reason: unknown topic, no form,
     stale form, live run. Two are this route's own: a form nobody answered has nothing to
     apply (409), and a claim already held means another machine's engine is mid-rerun on
     this exact topic, so a second dispatch would double-spend (409). The claim is released
     when the dispatched task settles; a crashed engine's claim expires on its own.
     """
     _client_or_404(slug, user)
-    if runner.is_demo_client(slug):
-        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
     _topic_or_404(slug, topic)
     # The same lock api_answers makes, at the same point and for the same reason: this route
     # dispatches the identical revise, so an approved article has to be refused on both doors
@@ -1575,8 +1564,7 @@ async def api_revise_answered(slug: str, topic: str,
 # it and nothing is asked), and an operator is polishing it before the client receives it.
 # Nothing here touches the pipeline: the score stands, gates already ran before it, and the
 # only thing that changes is the article's bytes and, at the end, the sent stamp that lets
-# the portal show it. Every route refuses demo fixtures: a comment apply spends real API
-# credits, and a demo blog is templated placeholder text nobody should polish or deliver.
+# the portal show it.
 # ---------------------------------------------------------------------------
 
 @app.exception_handler(blog_edit.EditError)
@@ -1767,13 +1755,11 @@ async def api_add_blog_comment(slug: str, topic: str, body: CommentRequest,
 
     202 with the comment record: the apply is a real session taking tens of seconds, so
     the browser watches the comment list rather than holding this request open. Refusals
-    run permanent-first, exactly as api_answers orders its own: demo, then the topic's
+    run permanent-first, exactly as api_answers orders its own: the topic's
     state, then the transient live run and in-flight cap, then the body the operator can
     fix by typing.
     """
     _client_or_404(slug, user)
-    if runner.is_demo_client(slug):
-        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
     _topic_or_404(slug, topic)
     _require_done(slug, topic, "a Claude edit")
     # Permanent before transient, exactly as this route's own ordering comment states: an
@@ -1833,14 +1819,12 @@ async def api_resolve_blog_comment(slug: str, topic: str, comment_id: str,
     where an operator spends the session on one; a 'failed' comment of either author
     retries through the same door. 202 with the flipped record, for the reason filing
     a comment answers 202: the apply is a real session and the browser watches the
-    comment list. Refusals run permanent-first, exactly as filing orders its own: demo,
-    then the topic's state, then the transient live run, then the comment itself. The
+    comment list. Refusals run permanent-first, exactly as filing orders its own:
+    the topic's state, then the transient live run, then the comment itself. The
     in-flight cap no longer has its own step here, because it rides inside the flip
     statement (resolve_comment says why); this route reads its refusal off a flip that
     returned nothing."""
     _client_or_404(slug, user)
-    if runner.is_demo_client(slug):
-        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
     _topic_or_404(slug, topic)
     _require_done(slug, topic, "a Claude edit")
     # Resolving spends a Claude session that ends in a committed version, so it is the same
@@ -1906,7 +1890,7 @@ async def api_reply_blog_comment(slug: str, topic: str, comment_id: str,
     deciding the request on the client's behalf, and without the comment disappearing from
     the client's rail as though it had been handled.
 
-    No demo refusal and no done gate, unlike every route above: those exist because an
+    No done gate, unlike every route above: it exists because an
     apply spends real API credits on an article worth polishing, and a reply spends
     neither. An unknown comment and a reply's own id both answer 404, because a reply is
     not addressable as a comment (blog_edit.get_comment says why)."""
@@ -1962,8 +1946,6 @@ async def api_save_blog_content(slug: str, topic: str, body: ContentRequest,
     record commit is subsecond, and the operator pressing Save deserves to know it landed
     before the button releases."""
     _client_or_404(slug, user)
-    if runner.is_demo_client(slug):
-        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
     _topic_or_404(slug, topic)
     _require_done(slug, topic, "editing")
     # The editor is the most direct way to change bytes the client already accepted, so the
@@ -2022,8 +2004,6 @@ async def api_send_blog_to_client(slug: str, topic: str,
     it fails, so the 409 below describes a refusal the database made.
     """
     _client_or_404(slug, user)
-    if runner.is_demo_client(slug):
-        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
     _topic_or_404(slug, topic)
     _require_done(slug, topic, "sending to the client")
     # THE APPROVED LOCK, AND HERE IT GUARDS AN ACT NO TRIGGER SEES. Sending inserts nothing, it
@@ -2089,11 +2069,6 @@ async def api_upload_blog(slug: str, topic: str, payload: UploadBlogRequest,
     api_generate re-reads its rows rather than trusting the posted ones.
     """
     _client_or_404(slug, user)
-    # Same first refusal as generate: a demo brand has no real fact base, and letting one
-    # take a real article would put genuine copy behind a fixture whose blogs are marked
-    # not for publication.
-    if runner.is_demo_client(slug):
-        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
     if runner.slugify(topic) != topic:
         raise HTTPException(status_code=404, detail="not found")
 
@@ -2261,14 +2236,6 @@ async def api_stop_client_runs(slug: str,
 async def api_generate(slug: str, body: GenerateRequest,
                        user: auth.Identity = Depends(auth.require_admin)):
     _client_or_404(slug, user)
-
-    # THE DEMO REFUSAL, before anything else is even validated. A demo fixture can no longer
-    # generate anything: the mock path that used to make it free is removed, so the only thing
-    # a generate could do here is open real SDK sessions, and for a demo client with no
-    # canonical-facts.md the very first spend would be ensure_facts building a fact base for a
-    # fake brand. runner.run_batch refuses this too, so nothing bypassing the route can spend.
-    if runner.is_demo_client(slug):
-        raise HTTPException(status_code=409, detail=runner.demo_refusal_detail(slug))
 
     # When an upload_id is present, re-read and re-parse THAT archived file
     # server-side. The browser sends row indices only: it never gets to tell the

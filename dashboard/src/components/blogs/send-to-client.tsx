@@ -52,7 +52,6 @@ export function SendToClient({
   topicSlug,
   brandName,
   status,
-  demoMode,
   review,
   onSent,
 }: {
@@ -60,7 +59,6 @@ export function SendToClient({
   topicSlug: string;
   brandName: string;
   status: BlogStatus;
-  demoMode: boolean;
   /** Where this blog sits in the review loop. The page owns the read; this renders it. */
   review: BlogReviewState;
   /** Hands back the state the POST answered with, so the chip flips without a refetch. */
@@ -127,7 +125,7 @@ export function SendToClient({
     );
   }
 
-  const blocked = blockedReason(status, demoMode, review);
+  const blocked = blockedReason(status, review);
   if (blocked) {
     return (
       <Tooltip>
@@ -340,12 +338,8 @@ function SendControl({
  */
 function blockedReason(
   status: BlogStatus,
-  demoMode: boolean,
   review: BlogReviewState,
 ): string | null {
-  if (demoMode) {
-    return "This brand is in demo mode. Demo blogs are placeholder text generated without research, so they are never delivered to a client.";
-  }
   // THE GATE DECIDES WHETHER TO BLOCK; THE STATUS ONLY PICKS THE SENTENCE. Those are two different
   // jobs and this function used to do both by enumerating statuses, which meant an unrecognised one
   // fell through the list and returned null, leaving the button pressable over a record migration

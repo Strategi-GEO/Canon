@@ -64,13 +64,9 @@ class FakeRunner:
     live database while the fixtures stay plain files in a temp root.
     """
 
-    def __init__(self, root, status_lines, demo=False):
+    def __init__(self, root, status_lines):
         self.root = Path(root)
         self.status_lines = status_lines
-        self.demo = demo
-
-    def is_demo_client(self, client_slug):
-        return self.demo
 
     def fetch_status_lines(self, client_slug, topic_slug):
         return list(self.status_lines)
@@ -147,34 +143,9 @@ with tempfile.TemporaryDirectory() as tmp:
     except gate.PublishRefused:
         check("a missing blog.md is refused", True)
 
-    # A DEMO blog in the record can carry status "done" (the fixtures predate the engine's
-    # demo refusal), and old demo artifacts are placeholder text a CMS editor could approve.
-    # Status alone would pass it, so the client check must refuse it first.
-    _seed(tmp, "demo", "demo-topic")
-    runner = FakeRunner(tmp, [{"status": "done"}], demo=True)
-    try:
-        gate.build_for_publish(runner, FakeLedger({}), "demo", "demo-topic")
-        check("a done DEMO blog is still refused", False, "it built a payload")
-    except gate.PublishRefused as refused:
-        check("a done DEMO blog is still refused", True)
-        check("the demo refusal says why", "demo" in str(refused).lower(), str(refused))
-
-    # The demo refusal is a check on the CLIENT, not the artifact, so it must fire before any
-    # artifact or status is read: a demo client with no blog on disk at all still refuses as
-    # demo, never as "no blog", and the endpoint gets the status it names the refusal with.
-    runner = FakeRunner(tmp, [], demo=True)
-    try:
-        gate.build_for_publish(runner, FakeLedger({}), "demo", "never-written-topic")
-        check("the demo refusal fires before any artifact is read", False, "it built a payload")
-    except gate.PublishRefused as refused:
-        check("the demo refusal fires before any artifact is read", True)
-        check("the demo refusal carries status='demo' for the endpoint to name",
-              refused.status == "demo", str(refused.status))
-
-    # The mirror: a real blog for a real client must still publish, so the refusal cannot
-    # have been implemented wider than the demo flag.
+    # A real blog for a real client must still publish.
     _seed(tmp, "vacation-village", "a-real-topic")
-    runner = FakeRunner(tmp, [{"status": "done"}], demo=False)
+    runner = FakeRunner(tmp, [{"status": "done"}])
     real = gate.build_for_publish(runner, FakeLedger({}), "vacation-village", "a-real-topic")
     check("a REAL blog for the same client still publishes", real["title"] != "")
 

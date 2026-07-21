@@ -1,1 +1,0 @@
-Test fixture for multi-brand org rendering. Safe to delete.

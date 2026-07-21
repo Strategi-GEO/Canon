@@ -88,15 +88,6 @@ jobs:
       # ordering. THE ORDERING IS NOW FIXED AND THE PROMISE DID NOT HOLD, so the correction is
       # recorded here rather than the old claim being repeated a second time.
       #
-      # WHAT THE FIX WAS: revise_topic's demo refusal is hoisted ABOVE the approved lock, so a
-      # demo fixture is now refused from one flag in gates.json on disk instead of opening a
-      # connection to be told it is approved. The invariant it establishes is stated at both
-      # call sites in server/runner.py: nothing on a refusal path may touch the database until
-      # every refusal decidable without it has been evaluated. The fix is real and it is
-      # measurable. On a tree holding only git-visible files, config_check goes from 39 checks
-      # to 41 and its check [7] now passes end to end, where before it died inside it. A demo
-      # refusal proof with db.pool() replaced by a tripwire goes from 2 of 4 to 5 of 5.
-      #
       # NEITHER SUITE REACHES EXIT 0 ON THAT TREE, because neither was blocked by that one call.
       # Measured against a git-archive tree with no server/.env and no DATABASE_URL:
       #

@@ -23,7 +23,6 @@ export type Organisation = {
 export type Client = {
   slug: string;
   name: string;
-  demo_mode: boolean;
   /**
    * Present on GET /api/clients, and NOT sent by GET /api/orgs, which returns brands
    * undecorated. lib/orgs-context fills it in from the client list before any brand reaches a
@@ -94,7 +93,6 @@ export type CreateClientBody = {
   domain: string;
   industry: string;
   description?: string;
-  demo_mode?: boolean;
   /**
    * The org to file this brand under, by NAME rather than slug: the operator can type a new
    * org here, and the engine slugifies and matches. Omitted means the brand is its own

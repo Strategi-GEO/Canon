@@ -24,11 +24,6 @@ graphify-out/
 # new real client is auto-excluded; it lives in the DB and materialize rebuilds it.
 clients/*/
 !clients/_fixture-unreviewed/
-!clients/acme-north/
-!clients/acme-south/
-!clients/blr-brewing/
-!clients/demo/
-!clients/vacation-village/
 
 # Uploaded roadmaps are the operator's own input; never tracked, even under a fixture.
 clients/*/uploads/

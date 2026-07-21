@@ -114,18 +114,6 @@
     border-radius: 4px;
     padding: 6px 8px;
   }
-  /* Demo label is calm, never the accent: the accent means "this is your work",
-     and demo output is explicitly not that. */
-  .card .demolabel {
-    margin-top: 8px;
-    font-size: 12px;
-    color: var(--muted);
-    background: var(--ground);
-    border: 1px solid var(--hair);
-    border-radius: 4px;
-    padding: 5px 8px;
-  }
-
   /* Column rule: fixed by position, so this is a statement, not a control. */
   .colrule {
     font-family: var(--mono);
@@ -200,15 +188,6 @@
   .runmeta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 14px; }
   .conn { font-size: 13px; color: var(--amber-ink); }
   .conn:empty { display: none; }
-  .demobadge {
-    font-size: 12px;
-    color: var(--muted);
-    border: 1px solid var(--hair);
-    background: var(--ground);
-    border-radius: 999px;
-    padding: 2px 10px;
-  }
-  .demobadge[hidden] { display: none; }
 
   /* Global mock warning. Amber, not the accent: this is a status, and a loud one. */
   .mockbanner {
@@ -475,7 +454,6 @@
     <h2>Watch the run</h2>
     <div class="runmeta">
       <span class="mono" id="runId"></span>
-      <span class="demobadge" id="demoBadge" hidden>Demo org. Precoded blogs, no API calls.</span>
       <span class="conn" id="connNote" role="status"></span>
     </div>
     <div class="tablewrap" aria-live="polite">
@@ -523,7 +501,7 @@ const EYE_SVG =
   '<circle cx="12" cy="12" r="3.2"/></svg>';
 
 const state = {
-  client: null,          // {slug, name, demo_mode, preflight}
+  client: null,          // {slug, name, preflight}
   roadmap: null,         // upload or saved-roadmap response
   uploadId: null,        // carried into the generate POST, null for a saved roadmap
   selected: new Set(),   // row indexes
@@ -587,18 +565,13 @@ async function loadClients() {
       btn.className = "card";
       btn.setAttribute("aria-pressed", "false");
       let warn = "";
-      // A demo client never runs the real pipeline, so a preflight warning on it
-      // would be noise about a step that is skipped by design.
-      if (!c.demo_mode && c.preflight && !c.preflight.ok) {
+      if (c.preflight && !c.preflight.ok) {
         warn = '<span class="warn">' + escapeHtml(c.preflight.reason || "Preflight failed.") +
           " Real mode will refuse this client; mock runs only.</span>";
       }
-      const demo = c.demo_mode
-        ? '<span class="demolabel">Demo org. Precoded blogs, no API calls. Output is not researched.</span>'
-        : "";
       btn.innerHTML =
         '<span class="cname">' + escapeHtml(c.name) + "</span>" +
-        '<span class="cslug mono">' + escapeHtml(c.slug) + "</span>" + demo + warn;
+        '<span class="cslug mono">' + escapeHtml(c.slug) + "</span>" + warn;
       btn.addEventListener("click", () => selectClient(c, btn));
       wrap.appendChild(btn);
     }
@@ -615,7 +588,6 @@ function selectClient(c, btn) {
   state.dupes.clear();
   for (const el of document.querySelectorAll(".card")) el.setAttribute("aria-pressed", "false");
   btn.setAttribute("aria-pressed", "true");
-  $("demoBadge").hidden = !c.demo_mode;
   $("roadmapError").textContent = "";
   $("archivedPath").textContent = "";
   $("headersSeen").textContent = "";

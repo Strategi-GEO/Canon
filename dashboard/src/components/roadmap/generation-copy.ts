@@ -26,25 +26,17 @@ export const SURVIVES_REFRESH =
 /**
  * Why this brand's runs are mock, or null when they are real.
  *
- * The two reasons are genuinely different and lead to different places: GEO_MOCK is a global
- * switch the operator can restart out of, and demo_mode is a property of the brand that will
- * never produce a real run no matter how the engine starts. Collapsing them into "mock" would
- * send someone restarting an engine to make a demo brand hit the live web.
+ * GEO_MOCK is a global switch the operator can restart out of: while it is on, every brand
+ * produces mock output no matter how the engine starts.
  */
-export type MockReason = "geo-mock" | "demo";
+export type MockReason = "geo-mock";
 
 /**
- * Why this brand's next generation is mock, from the two switches that decide it.
+ * Why this brand's next generation is mock, from the global switch that decides it.
  *
- * demo_mode wins when both are true, and deliberately: GEO_MOCK is a mode the engine can be
- * restarted out of, while a demo brand is mock in every environment including a production one
- * holding real credentials. Naming the switch that can be flipped would tell an operator that
- * restarting the engine makes this brand hit the live web, and it never will.
+ * GEO_MOCK is a mode the engine can be restarted out of, so a run is mock exactly while it is on.
  */
-export function mockReasonOf(geoMock: boolean, demoMode: boolean): MockReason | null {
-  if (demoMode) {
-    return "demo";
-  }
+export function mockReasonOf(geoMock: boolean): MockReason | null {
   if (geoMock) {
     return "geo-mock";
   }
@@ -64,9 +56,6 @@ export function mockReasonOf(geoMock: boolean, demoMode: boolean): MockReason | 
 export function costLine(mock: MockReason | null, brandName: string): string {
   if (mock === "geo-mock") {
     return `The engine is running in safe mode (GEO_MOCK=1), so this calls nothing live and spends nothing. It produces deterministic mock rows and writes them to ${brandName}'s roadmap.csv, exactly as a real run would.`;
-  }
-  if (mock === "demo") {
-    return `${brandName} is a demo brand, so every run for it is mock: this calls nothing live and spends nothing. It produces deterministic mock rows and writes them to ${brandName}'s roadmap.csv, exactly as a real run would.`;
   }
   return `This starts one long research session against live Firecrawl and DataForSEO data, and it spends your Claude subscription quota. It writes ${brandName}'s roadmap.csv when it succeeds, which is the file every blog for this brand is then written from.`;
 }

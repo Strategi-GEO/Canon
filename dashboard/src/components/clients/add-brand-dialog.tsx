@@ -116,9 +116,9 @@ export function AddBrandDialog({
       // Start the description draft the instant the brand exists, so the operator never has to
       // type one or press Draft with Claude. The session lives in DescribeProvider above every
       // route, so it survives closing this dialog and the redirect that follows, and the draft
-      // lands on the brand's page for review. Skipped under mock and demo, where describe can
-      // only return a placeholder that must not be saved.
-      if (!geoMock && !brand.demo_mode) {
+      // lands on the brand's page for review. Skipped under mock, where describe can only return
+      // a placeholder that must not be saved.
+      if (!geoMock) {
         void startDescribe(brand.slug);
       }
       setOpen(false);

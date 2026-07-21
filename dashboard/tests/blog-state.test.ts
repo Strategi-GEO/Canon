@@ -1014,7 +1014,6 @@ function clientLowerLayerAccepts(action: ClientAction, facts: BlogStateFacts): b
     //   unknown brand or topic  014:95 / :116.
     //   wrong role              014:105. A property of the ACCOUNT, not the article, so no bench
     //                           keyed by state can express it and none should try.
-    //   demo brand              014:109. A property of the CLIENT, as on the admin side.
     //   no form at all          014:127.  MODELLED through the status, below.
     //   THE FORM IS STALE       014:170.  Version anchor OR iteration, the same rule
     //                           questions.py:375 computes and the same one server/app.py:1538

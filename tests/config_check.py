@@ -4,10 +4,7 @@
 Everything real mode depends on that can be checked without a live run is
 checked here: MCP transport resolution in all three states, the exact
 ClaudeAgentOptions the runner would pass, the SDK field names those options use,
-that .mcp.json carries no secret, and that a demo client REFUSES to run. The
-mock execution path is removed from the engine, so a demo fixture no longer
-resolves to anything: it 409s at the API and raises PreflightError in the
-runner, before the facts phase can spend a single real API call on it.
+and that .mcp.json carries no secret.
 
   .venv/bin/python tests/config_check.py
 """
@@ -246,102 +243,6 @@ def test_mcp_json_file():
           f"{len(leaked)} secret(s) leaked")
 
 
-def test_demo_refusal():
-    print("\n[7] A demo fixture refuses to run, everywhere, before any spend")
-    import asyncio
-    import tempfile
-
-    from fastapi import HTTPException
-
-    from server import app as app_mod
-    from server import facts_gen
-
-    try:
-        demo = runner.is_demo_client("demo")
-    except runner.RunnerConfigError as exc:
-        demo = False
-        check("clients/demo/gates.json is readable", False, str(exc))
-    check('is_demo_client("demo") is True', demo is True, repr(demo))
-    check("a real client is not a demo fixture",
-          runner.is_demo_client("vacation-village") is False)
-
-    detail = runner.demo_refusal_detail("demo")
-    check("the refusal detail states the reason: mock mode is removed",
-          "mock mode is removed" in detail, detail)
-    check("the refusal detail states the stake: no real API credits on a fixture",
-          "must never spend real API credits" in detail, detail)
-    check("the refusal detail names the alternative: real clients run the full pipeline",
-          "Real clients run the full pipeline" in detail, detail)
-
-    # run_batch raises BEFORE the facts phase. A demo client with no canonical-facts.md must
-    # never reach ensure_facts, which would open a real session to build a fact base for a
-    # fake brand, so the recorder below must stay empty.
-    reached = []
-
-    async def recording_ensure(slug, run_id=None):
-        reached.append(("ensure_facts", slug))
-
-    saved_ensure = facts_gen.ensure_facts
-    saved_materialize = runner._materialize_client_scratch
-    facts_gen.ensure_facts = recording_ensure
-    runner._materialize_client_scratch = lambda slug: reached.append(("materialize", slug))
-    try:
-        try:
-            asyncio.run(runner.run_batch(
-                "demo", [{"topic": "Demo Topic", "topic_slug": "demo-topic", "index": 0}]))
-            check("run_batch refuses a demo client outright", False, "it ran the batch")
-        except runner.PreflightError as exc:
-            check("run_batch refuses a demo client outright", True)
-            check("run_batch's refusal carries the shared detail sentence",
-                  str(exc) == runner.demo_refusal_detail("demo"), str(exc))
-        check("the refusal fires before the facts phase: nothing materialized, nothing built",
-              not reached, str(reached))
-    finally:
-        facts_gen.ensure_facts = saved_ensure
-        runner._materialize_client_scratch = saved_materialize
-
-    # revise_topic carries the same belt, so nothing that bypasses the route can spend money
-    # on a fixture through the answer path either. A fake brand and a stubbed is_demo_client
-    # keep this inert: the record does not know the brand, so every sync hook skips.
-    saved_is_demo = runner.is_demo_client
-    saved_root = runner.OUTPUTS_ROOT
-    with tempfile.TemporaryDirectory() as tmp:
-        runner.is_demo_client = lambda slug, clients_root=None: True
-        runner.OUTPUTS_ROOT = Path(tmp)
-        try:
-            try:
-                asyncio.run(runner.revise_topic("fixture-brand", "some-topic"))
-                check("revise_topic refuses a demo client outright", False, "it ran the revise")
-            except runner.PreflightError as exc:
-                check("revise_topic refuses a demo client outright", True)
-                check("revise_topic's refusal carries the shared detail sentence",
-                      str(exc) == runner.demo_refusal_detail("fixture-brand"), str(exc))
-        finally:
-            runner.is_demo_client = saved_is_demo
-            runner.OUTPUTS_ROOT = saved_root
-
-    # The API boundary: both generate and answers 409 a demo client with the same sentence,
-    # called directly so no server boots and nothing is written.
-    try:
-        asyncio.run(app_mod.api_generate("demo", app_mod.GenerateRequest(rows=[0])))
-        check("POST /api/clients/demo/generate 409s", False, "it accepted the run")
-    except HTTPException as exc:
-        check("POST /api/clients/demo/generate 409s", exc.status_code == 409,
-              f"status {exc.status_code}")
-        check("the generate 409 detail is the refusal sentence",
-              exc.detail == runner.demo_refusal_detail("demo"), str(exc.detail))
-
-    try:
-        asyncio.run(app_mod.api_answers("demo", "any-topic",
-                                        app_mod.AnswersRequest(answers=[])))
-        check("POST /api/clients/demo/blogs/.../answers 409s", False, "it accepted the answers")
-    except HTTPException as exc:
-        check("POST /api/clients/demo/blogs/.../answers 409s", exc.status_code == 409,
-              f"status {exc.status_code}")
-        check("the answers 409 detail is the refusal sentence",
-              exc.detail == runner.demo_refusal_detail("demo"), str(exc.detail))
-
-
 def test_repo_has_no_secrets():
     print("\n[8] No secret from ~/.claude.json anywhere under geo-factory")
     secrets = _secret_values()
@@ -367,7 +268,7 @@ def main():
           "no blog generated.")
     for test in (test_transport_http, test_transport_stdio, test_transport_missing,
                  test_session_options, test_sdk_field_names, test_mcp_json_file,
-                 test_demo_refusal, test_repo_has_no_secrets):
+                 test_repo_has_no_secrets):
         test()
     print(f"\n{CHECKS[0] - len(FAILURES)}/{CHECKS[0]} checks passed")
     if FAILURES:

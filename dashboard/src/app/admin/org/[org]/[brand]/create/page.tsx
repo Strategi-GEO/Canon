@@ -46,7 +46,6 @@ export default function CreatePage() {
                 // behind a fetch of its own.
                 hasCanonicalFacts={brand.has_canonical_facts}
                 resourceCount={brand.resource_count}
-                demoMode={brand.demo_mode}
                 geoMock={geoMock}
               />
               <LocalEngineNote />

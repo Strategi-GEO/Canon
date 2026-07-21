@@ -198,8 +198,8 @@ function AddBrandToOrgForm({ joiningOrg }: { joiningOrg: string }) {
       // Start the description draft the instant the brand exists, so the operator never has to
       // type one or press Draft with Claude. The session runs in DescribeProvider above every
       // route, so it survives this redirect and lands on the brand's page for review. Skipped
-      // under mock and demo, where describe can only return a placeholder that must not be saved.
-      if (!geoMock && !client.demo_mode) {
+      // under mock, where describe can only return a placeholder that must not be saved.
+      if (!geoMock) {
         void startDescribe(client.slug);
       }
 

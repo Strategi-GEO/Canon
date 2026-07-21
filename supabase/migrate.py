@@ -193,7 +193,6 @@ def collect(source_root, clients_mod, roadmap_mod):
             "domain": gates.get("domain") or "",
             "industry": gates.get("industry") or "",
             "description": gates.get("description") or "",
-            "demo_mode": bool(gates.get("demo_mode", False)),
             "org_slug": (org or {}).get("slug"),
             # gates MINUS organisation: org_id models it, and two homes drift.
             "gates": {k: v for k, v in gates.items() if k != "organisation"},
@@ -431,11 +430,11 @@ def load(conn, corpus, env, do_storage=True):
             cur.execute(
                 """insert into clients
                      (org_id,slug,name,domain,industry,description,
-                      client_md,canonical_facts,demo_mode,gates)
-                   values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) returning id""",
+                      client_md,canonical_facts,gates)
+                   values (%s,%s,%s,%s,%s,%s,%s,%s,%s) returning id""",
                 (org_id.get(c["org_slug"]), c["slug"], c["name"], c["domain"],
                  c["industry"], c["description"], c["client_md"], c["canonical_facts"],
-                 c["demo_mode"], Json(c["gates"])))
+                 Json(c["gates"])))
             client_id[c["slug"]] = cur.fetchone()[0]
         log(f"  clients            {len(client_id)}")
 

@@ -445,12 +445,6 @@ async def generate_facts(client_slug):
     agent says it wrote and what it wrote are two different claims, and only one of them is
     checkable.
     """
-    # A demo fixture never opens this session. run_batch already refuses the whole run for a
-    # demo client, and this raise is the belt under it for the direct caller: a fact base for
-    # a fake brand is real API spend buying nothing.
-    if runner.is_demo_client(client_slug):
-        raise FactsGenerationError(runner.demo_refusal_detail(client_slug))
-
     try:
         from claude_agent_sdk import ClaudeAgentOptions, query
     except ImportError as exc:

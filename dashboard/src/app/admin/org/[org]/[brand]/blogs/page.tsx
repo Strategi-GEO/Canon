@@ -17,7 +17,6 @@ export default function BlogsPage() {
             orgSlug={org.slug}
             brandSlug={brand.slug}
             brandName={brand.name}
-            demoMode={brand.demo_mode}
           />
         </div>
       )}

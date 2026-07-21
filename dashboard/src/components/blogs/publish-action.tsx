@@ -40,14 +40,11 @@ export function PublishAction({
   topicSlug,
   topic,
   status,
-  demoMode,
 }: {
   brandSlug: string;
   topicSlug: string;
   topic: string;
   status: BlogStatus;
-  /** A demo blog is templated placeholder text. It must never reach a client's CMS. */
-  demoMode: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
   const [posting, setPosting] = React.useState(false);
@@ -66,7 +63,7 @@ export function PublishAction({
     return null;
   }
 
-  const blocked = blockedReason(status, demoMode);
+  const blocked = blockedReason(status);
 
   if (blocked) {
     return (
@@ -206,10 +203,7 @@ export function PublishAction({
  * clause reading anything but the status ever join the publish door, this call site owes it that
  * fact rather than an omission.
  */
-function blockedReason(status: BlogStatus, demoMode: boolean): string | null {
-  if (demoMode) {
-    return "This brand is in demo mode. Demo blogs are placeholder text generated without research, so they never reach a CMS.";
-  }
+function blockedReason(status: BlogStatus): string | null {
   // BOUND AND NARROWED RATHER THAN READ STRAIGHT OFF THE CALL. GateVerdict is a discriminated
   // union and only its refusing arm carries `blocking`, so the allowed arm has to be answered
   // before the clause can be reached. That shape is deliberate on the contract's side: it makes

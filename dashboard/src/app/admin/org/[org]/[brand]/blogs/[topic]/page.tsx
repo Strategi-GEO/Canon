@@ -23,7 +23,6 @@ export default function BlogStagePage() {
             brandSlug={brand.slug}
             brandName={brand.name}
             topicSlug={topicSlug}
-            demoMode={brand.demo_mode}
           />
         </div>
       )}

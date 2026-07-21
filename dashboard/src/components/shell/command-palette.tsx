@@ -152,7 +152,6 @@ function CommandPalette({
                             {org.name}
                           </span>
                         )}
-                        {brand.demo_mode ? <DemoTag /> : null}
                       </CommandItem>
                     );
                   }),
@@ -203,17 +202,5 @@ function CommandPalette({
         </CommandList>
       </Command>
     </CommandDialog>
-  );
-}
-
-/**
- * Muted grey, never the accent. A demo brand produces precoded fake blogs and can never spend
- * an API call, so the badge marks a limitation rather than a feature.
- */
-function DemoTag() {
-  return (
-    <span className="machine shrink-0 rounded border border-border bg-muted px-1 py-px text-[0.625rem] leading-tight text-muted-foreground">
-      Demo
-    </span>
   );
 }

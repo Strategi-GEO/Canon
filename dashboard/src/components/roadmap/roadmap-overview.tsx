@@ -43,7 +43,6 @@ export function RoadmapOverview({
   brandSlug,
   brandName,
   brandDomain,
-  demoMode,
 }: {
   brandSlug: string;
   brandName: string;
@@ -52,8 +51,6 @@ export function RoadmapOverview({
    * generation dialog's BRAND_URL, which is the site the whole roadmap gets researched from.
    */
   brandDomain: string;
-  /** A demo brand is mock in every environment, so what a Generate press costs depends on it. */
-  demoMode: boolean;
 }) {
   const roadmap = useRoadmap(brandSlug);
   const gen = useRoadmapGen(brandSlug);
@@ -103,7 +100,7 @@ export function RoadmapOverview({
     }
   }, [genState, reload]);
 
-  const mock = mockReasonOf(geoMock, demoMode);
+  const mock = mockReasonOf(geoMock);
 
   // Both reads start on mount and settle together, and the page cannot answer either of its
   // questions until they do: whether there is a roadmap, and whether one is being generated.

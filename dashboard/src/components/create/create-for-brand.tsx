@@ -53,7 +53,6 @@ export function CreateForBrand({
   brandName,
   hasCanonicalFacts,
   resourceCount,
-  demoMode,
   geoMock,
 }: {
   orgSlug: string;
@@ -66,7 +65,6 @@ export function CreateForBrand({
    */
   hasCanonicalFacts: boolean;
   resourceCount: number;
-  demoMode: boolean;
   geoMock: boolean;
 }) {
   const [roadmap, setRoadmap] = React.useState<RoadmapResponse | null>(null);
@@ -317,7 +315,6 @@ export function CreateForBrand({
       resourcesHref={brandHref(orgSlug, brandSlug, "/resources")}
       hasCanonicalFacts={hasCanonicalFacts}
       resourceCount={resourceCount}
-      demoMode={demoMode}
       geoMock={geoMock}
       roadmap={roadmap}
       roadmapError={roadmapError}

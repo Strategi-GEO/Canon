@@ -87,12 +87,9 @@ were computed from the files as they stood after run 1 only.
 |---|---|
 | POST generate without GEO_MOCK (server restarted without the env) | 409, body: "preflight failed for demo-co: canonical-facts.md still contains the token PLACEHOLDER and has not been reviewed" (names PLACEHOLDER). PASS |
 
-**This preflight check no longer reproduces on this client, and that is expected.** It was
-recorded when the client was a plain fixture named `demo-co`. The client is now `demo` and
-carries `"demo_mode": true` in its `gates.json`, so it always resolves to mock and skips
-preflight by design. The refusal itself is unchanged and still fires for any real client; it
-just needs a non-demo client to observe. Everything above this note is the verbatim record of
-the original run.
+**This is the verbatim record of the original run.** It was recorded when the client was a
+plain fixture named `demo-co` whose `canonical-facts.md` still held the token PLACEHOLDER. The
+refusal is unchanged and still fires for any client in that state.
 | POST rows [999] | 422, detail names index 999 as "row does not exist". PASS |
 | GET output file outside whitelist (secrets.txt) | 404. Control: blog.md on the same topic returned 200. PASS |
 
