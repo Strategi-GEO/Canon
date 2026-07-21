@@ -11,6 +11,11 @@ __pycache__/
 # prune these folders in Finder, and the app treats the filesystem as the truth.
 outputs/
 
+# Graphify knowledge-graph output is generated tooling product, not source: `/graphify`
+# rebuilds it from the tree on demand and it runs to several MB of HTML and JSON. Same rule
+# as outputs/ above, for the same reason: reproducible local working product, not source.
+graphify-out/
+
 # Uploaded roadmaps are the operator's own input, archived for provenance.
 clients/*/uploads/
 
