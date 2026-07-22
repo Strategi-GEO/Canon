@@ -33,7 +33,7 @@ import {
   type BlogStateFacts,
   type ClientAction,
 } from "../src/lib/blog-state.ts";
-import { adminGateAllows, type GateForm } from "../src/lib/gate-contract.ts";
+import { adminGateAllows, type GateForm, type GateRecord } from "../src/lib/gate-contract.ts";
 
 const ALL_STATES: BlogState[] = [
   "generating",
@@ -240,17 +240,20 @@ test("adminActions: the full policy, state by state", () => {
     // both of those, so the test that actually governs this row is the lower-layer one below.
     answers_submitted: ["answer", "edit", "comments", "send"],
     internal_review: ["edit", "comments", "send"],
-    // NOT EMPTY ANY MORE, and the one verb here is the one that changes nothing. The client may
-    // reply while they read (CLIENT_ACTIONS grants it), every layer under a reply accepts one,
-    // and an operator who cannot answer the person reading their article is an asymmetry rather
-    // than a lock. Every act that touches the bytes is still absent.
-    client_review: ["reply"],
+    // Empty again: the reply verb is removed from the product, so while the client reads,
+    // this side waits. Every act that touches the bytes is absent.
+    client_review: [],
     changes_requested: ["edit", "comments", "send"],
-    // The approved lock covers the bytes and nothing else. Migration 013 says so twice, in its
-    // header and in refuse_comment_when_approved's early return on parent_id.
-    approved: ["publish", "reply"],
-    published: ["publish", "reply"],
-    failed: [],
+    // The approved lock covers the bytes; publish is the one act that changes nothing the
+    // client approved.
+    approved: ["publish"],
+    published: ["publish"],
+    // The full admin-review bench with the send verb swapped for promote: a failed draft is
+    // edited and Claude-polished exactly like a done one (the engine's _require_reviewable
+    // accepts done|failed on the three editing routes), then shipped through the promote
+    // door, where the sub-95 decision is recorded. Retrying stays a RUN, reached by link,
+    // not a verb here.
+    failed: ["edit", "comments", "promote"],
     stopped: [],
     unknown: [],
   };
@@ -265,12 +268,12 @@ test("clientActions: the full policy, state by state", () => {
     has_questions: ["answer"],
     answers_submitted: [],
     internal_review: [],
-    client_review: ["approve", "suggest", "reply"],
+    client_review: ["approve", "suggest"],
     // The full client_review bench survives a filed comment: the client reads the latest
     // committed version continuously, so they keep suggesting against current bytes and may
     // approve mid-round (migration 005's portal_approve_blog has no open-comment refusal).
-    changes_requested: ["approve", "suggest", "reply"],
-    approved: ["reply"],
+    changes_requested: ["approve", "suggest"],
+    approved: [],
     published: [],
     failed: [],
     stopped: [],
@@ -299,10 +302,6 @@ test("the admin cannot touch an article the client is reading", () => {
   // client_review pins the client to sent_version_id. An edit here changes the article underneath
   // someone mid-review, so every door that writes a version is shut until they act.
   //
-  // STATED AS "NOTHING THAT CHANGES THE BYTES" RATHER THAN AS AN EMPTY LIST, which is the claim
-  // this test was always making and the list was only a proxy for. A reply commits no version,
-  // resolves nothing and is exempt from every lock in the schema, so counting it as a touch would
-  // forbid the one act that lets an operator answer the person doing the reading.
   for (const action of ["edit", "comments", "send", "publish"] as AdminAction[]) {
     assert.equal(
       adminCan("client_review", action),
@@ -310,7 +309,7 @@ test("the admin cannot touch an article the client is reading", () => {
       `client_review: "${action}" would move the article out from under the client mid-review`,
     );
   }
-  assert.deepEqual([...adminActions("client_review")], ["reply"]);
+  assert.deepEqual([...adminActions("client_review")], []);
 });
 
 test("nobody edits an article while a run owns it", () => {
@@ -399,9 +398,15 @@ const EXIT_OWNER: Record<BlogState, "run" | "client" | "admin"> = {
   approved: "admin",
   // Terminal, and re-publishing is still the admin's act rather than anyone else's.
   published: "admin",
-  // These three leave only by generating the topic again, which is a new run and not a verb on
-  // this page, so an empty bench is honest for all of them.
-  failed: "run",
+  // Two exits now, and the admin owns the one on the bench: promotion, the operator shipping a
+  // sub-95 draft they have read on their own authority. Generating the topic again remains the
+  // other exit and remains a RUN (the stage links to the Create tab with the row pre-ticked),
+  // but a state an admin act can leave must carry that act, which is what this classification
+  // asserts of the bench below.
+  failed: "admin",
+  // These two leave only by generating the topic again, which is a new run and not a verb on
+  // this page, so an empty bench is honest for both: a stopped topic has no verdict at all, so
+  // there is nothing to promote.
   stopped: "run",
   unknown: "run",
 };
@@ -519,11 +524,17 @@ function lowerLayerAccepts(
     // bench grants no `answer`, so this is belt and braces rather than the thing that saves it.
     case "answer":
       return !facts.client_approved;
-    // NOT GATED ON ANY FACT IN THIS RECORD. Migration 011's admin_reply_comment carries no done
-    // gate and no approved gate, 013 exempts a reply by name, and the CMS push turns on which
-    // VERSION the client approved against which is latest, which BlogStateFacts does not carry.
-    // Modelling a rule this record cannot express would be inventing a refusal.
-    case "reply":
+    // The promote door already asked the contract everything record-shaped (terminal failed,
+    // a scored draft on the wire, no live run) through the adminGateAllows call above. What
+    // remains for this ladder is the same pair every send carries one level down: the
+    // approved lock (_require_not_approved runs inside api_promote_blog) and mark_sent's
+    // open-suggestion WHERE clause, because a promotion ENDS in the same mark_sent a send
+    // does.
+    case "promote":
+      return !facts.client_approved && (facts.changes_requested ?? 0) === 0;
+    // NOT GATED ON ANY FACT IN THIS RECORD: the CMS push turns on which VERSION the client
+    // approved against which is latest, which BlogStateFacts does not carry. Modelling a rule
+    // this record cannot express would be inventing a refusal.
     case "publish":
       return true;
   }
@@ -533,7 +544,8 @@ function lowerLayerAccepts(
 type Situation = {
   /** What has happened to this article, in a sentence, for the assertion message. */
   what: string;
-  facts: BlogStateFacts;
+  /** GateRecord rather than BlogStateFacts for one field: the promote door reads the score. */
+  facts: GateRecord;
   /**
    * The question form this record carries, STATED rather than derived from the status.
    *
@@ -657,6 +669,20 @@ const SITUATIONS: Situation[] = [
     form: "absent",
     state: "published",
     moves: "publish",
+  },
+  {
+    // The operator's own exit from a failure. The loop stalled below 95 with nothing left to
+    // ask, the best draft keeps its evaluator score on the wire, and promotion moves it: ship
+    // it on the operator's authority and send it to the client in the same press. The
+    // SCORELESS failure is deliberately not modelled as a situation: the promote door refuses
+    // it at offer time, so nothing renders for it, and the REACHABLE walk above is what
+    // exercises that half. A failed topic with no scored draft really does leave only by
+    // generating again.
+    what: "the loop stalled below 95 with nothing to ask, and the operator ships it anyway",
+    facts: { status: "failed", score: 92 },
+    form: "absent",
+    state: "failed",
+    moves: "promote",
   },
 ];
 
@@ -857,7 +883,9 @@ const AUDIT_FORMS: [string, GateForm][] = [
   ["stale and answered", { stale: true, answered: true }],
 ];
 
-const REACHABLE: Record<BlogState, BlogStateFacts[]> = {
+// GateRecord rather than BlogStateFacts, for exactly one field: the promote door reads the
+// evaluator's score off the admin wire, and the failed rows below enumerate both sides of it.
+const REACHABLE: Record<BlogState, GateRecord[]> = {
   // Both roads into a live run: a first run with no terminal line behind it, and a re-run whose
   // registry liveness beats the stale terminal status the fold still reports.
   generating: [{ status: "running" }, { status: "needs_review", live: true }],
@@ -891,7 +919,12 @@ const REACHABLE: Record<BlogState, BlogStateFacts[]> = {
   ],
   approved: [{ status: "done", sent_to_client: "t", client_approved: "t" }],
   published: [{ status: "done", sent_to_client: "t", client_approved: "t", published: "t" }],
-  failed: [{ status: "failed" }],
+  // TWO RECORDS, split by the fact the promote door turns on. The scored one is the ordinary
+  // failure (a loop that stalled below 95 keeps its best draft's score on the wire) and is what
+  // exercises the promote act's accepted path. The scoreless one is the crash or preflight
+  // refusal with nothing shippable in it: the door refuses it at offer time, so the bench
+  // renders nothing and its only exit really is generating again.
+  failed: [{ status: "failed", score: 92 }, { status: "failed" }],
   stopped: [{ status: "stopped" }],
   unknown: [{ status: "unknown" }],
 };
@@ -1057,12 +1090,6 @@ function clientLowerLayerAccepts(action: ClientAction, facts: BlogStateFacts): b
         !facts.client_approved &&
         (facts.changes_requested ?? 0) < 10
       );
-    // portal_reply_comment (005:307): not sent (005:375), no such parent comment (005:389), and a
-    // thread already long enough (005:399). The last two are facts about a COMMENT, and the rail
-    // renders no reply box where there is no comment to reply to, so the send stamp is the only
-    // one this record can carry. Migration 013 exempts replies from the approved lock by name.
-    case "reply":
-      return Boolean(facts.sent_to_client);
   }
 }
 
@@ -1087,7 +1114,7 @@ test("no client bench offers an act the layers under it refuse", () => {
     }
   }
 
-  // THE ENUMERATION IS THE FINDING, so it is asserted rather than left implicit. These eight
+  // THE ENUMERATION IS THE FINDING, so it is asserted rather than left implicit. These
   // pairs are every client act the bench grants anywhere, and every one of them is accepted by
   // its layer for every record its state can hold. The client bench does NOT carry the defect
   // the admin bench carried four times, and this is the list that says so. changes_requested
@@ -1096,14 +1123,10 @@ test("no client bench offers an act the layers under it refuse", () => {
     "has_questions:answer",
     "client_review:approve",
     "client_review:suggest",
-    "client_review:reply",
     "changes_requested:approve",
     "changes_requested:suggest",
-    "changes_requested:reply",
     "changes_requested:approve",
     "changes_requested:suggest",
-    "changes_requested:reply",
-    "approved:reply",
   ]);
 });
 

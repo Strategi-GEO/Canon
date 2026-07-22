@@ -14,7 +14,6 @@ import type {
   PortalComment,
   PortalCommentState,
   PortalReply,
-  ReplyBody,
   SuggestBody,
 } from "@/portal/types";
 
@@ -28,14 +27,14 @@ import type {
  * sentence has already said what they mean by selecting it, and a toggle only gave them a
  * way to mean it while the app was not listening.
  *
- * WHETHER THERE IS ANYTHING TO SELECT IS THE CALLER'S CALL, and it arrives as `canSuggest` and
- * `canReply` because lib/blog-state.ts decides both from the article's state. This component
- * never infers them: it has the comments and the article, which is not enough to know whether
- * the record would accept a new one, and guessing here is how an approved article came to offer
- * a suggestion box that migration 013 refuses. With `canSuggest` false the article renders
+ * WHETHER THERE IS ANYTHING TO SELECT IS THE CALLER'S CALL, and it arrives as `canSuggest`
+ * because lib/blog-state.ts decides it from the article's state. This component never infers
+ * it: it has the comments and the article, which is not enough to know whether the record
+ * would accept a new one, and guessing here is how an approved article came to offer a
+ * suggestion box that migration 013 refuses. With `canSuggest` false the article renders
  * unselectable and no composer can open, so the rail becomes a reading view with the
- * conversation still beside it; with `canReply` false the threads stay legible and lose only
- * their reply box.
+ * conversation still beside it. There is no reply box anywhere: a comment is a note the team
+ * resolves or dismisses, not a thread.
  *
  * The mechanics live in @/components/comments: the rail lays the cards out beside their
  * passages, marks the article, links hover both ways, and captures selections on touch as
@@ -206,56 +205,21 @@ function ReplyLine({ reply }: { reply: PortalReply }) {
 }
 
 /**
- * One suggestion's card: what the client asked, where it stands, what has been said since,
- * and a way to say more.
+ * One suggestion's card: what the client asked, where it stands, and what has been said.
  *
- * THE REPLY BOX IS AVAILABLE AT EVERY COMMENT STATE, resolved and reviewed included, and that
- * is the point of a thread rather than a form. "Resolved by the team" is the team's account of
- * what they did, and a client who disagrees with it has nowhere else to say so: closing the
- * conversation on the team's own verdict would make the last word structurally theirs.
- *
- * The ARTICLE's state is a separate question and it is the one that can close the box, through
- * `canReply`. While the article is with the client or its changes are with the team, replying is
- * the cheapest way to keep the two sides talking. Once it is approved the article is locked and
- * the exchange it belonged to is over, so the threads become the record of what was asked.
+ * THERE IS NO REPLY BOX. Comments are not threads: the client files a note, the team resolves
+ * it with Claude or dismisses it, and the card's state line is the whole answer. Replies that
+ * were filed before the feature was removed still render below, as history.
  */
 function ThreadCard({
   comment,
   anchored,
-  onReply,
-  canReply,
 }: {
   comment: PortalComment;
   anchored: boolean;
-  onReply: (draft: ReplyBody) => Promise<void>;
-  /** False once the article is signed off: the thread stays readable, the box goes. */
-  canReply: boolean;
 }) {
-  const [open, setOpen] = React.useState(false);
-  const [text, setText] = React.useState("");
-  const [sending, setSending] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
   const state = plainState(comment.state);
   const StateIcon = state.icon;
-
-  async function send() {
-    if (text.trim() === "") {
-      return;
-    }
-    setSending(true);
-    setError(null);
-    try {
-      await onReply({ parent_id: comment.id, body: text.trim() });
-      // Cleared only on success. A failed send keeps every word the client typed, because
-      // the one thing worse than a refusal is a refusal that also empties the box.
-      setText("");
-      setOpen(false);
-    } catch (cause) {
-      setError(sendFailure(cause));
-    } finally {
-      setSending(false);
-    }
-  }
 
   return (
     <div>
@@ -278,62 +242,6 @@ function ThreadCard({
           ))}
         </ul>
       ) : null}
-
-      {!canReply ? null : open ? (
-        <div className="mt-2.5">
-          <Textarea
-            autoFocus
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                event.preventDefault();
-                void send();
-              }
-            }}
-            rows={2}
-            placeholder="Reply to our team"
-            aria-label="Reply to our team about this suggestion"
-            className="text-sm"
-            disabled={sending}
-          />
-          {error !== null ? (
-            <p role="alert" className="mt-1.5 text-xs wrap-anywhere text-fail">
-              {error}
-            </p>
-          ) : null}
-          <div className="mt-2 flex items-center justify-end gap-1.5">
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setOpen(false);
-                setError(null);
-              }}
-              disabled={sending}
-            >
-              Cancel
-            </Button>
-            <Button size="sm" onClick={() => void send()} disabled={sending || text.trim() === ""}>
-              {sending ? (
-                <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
-              ) : (
-                <Send data-icon="inline-start" aria-hidden />
-              )}
-              Send
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <Button
-          size="sm"
-          variant="ghost"
-          className="mt-1.5 -ml-2 h-7 px-2 text-xs"
-          onClick={() => setOpen(true)}
-        >
-          Reply
-        </Button>
-      )}
     </div>
   );
 }
@@ -346,19 +254,14 @@ export function CommentedArticle({
   source,
   comments,
   onSuggest,
-  onReply,
   canSuggest,
-  canReply,
 }: {
   source: string;
   /** The client's own suggestions with their threads, oldest first. */
   comments: PortalComment[];
   onSuggest: (draft: SuggestBody) => Promise<void>;
-  onReply: (draft: ReplyBody) => Promise<void>;
   /** clientCan(state, "suggest"): whether selecting a passage may open a composer at all. */
   canSuggest: boolean;
-  /** clientCan(state, "reply"): whether a thread still takes a new line. */
-  canReply: boolean;
 }) {
   const [pending, setPending] = React.useState<{ capture: SelectionCapture; text: string } | null>(
     null,
@@ -451,12 +354,7 @@ export function CommentedArticle({
     id: comment.id,
     selected_text: comment.selected_text,
     body: (
-      <ThreadCard
-        comment={comment}
-        anchored={!lost.includes(comment.id)}
-        onReply={onReply}
-        canReply={canReply}
-      />
+      <ThreadCard comment={comment} anchored={!lost.includes(comment.id)} />
     ),
   }));
 
@@ -484,6 +382,18 @@ export function CommentedArticle({
             />
           ),
         };
+
+  // No rail where there is nothing to put in one and nothing can be filed: the article keeps
+  // the full measure instead of holding an empty 20rem margin. This is the approved and
+  // published reading view (the caller passes no comments there), and the same guard the
+  // admin stage applies.
+  if (cards.length === 0 && !canSuggest) {
+    return (
+      <article className="rounded-xl bg-card p-6 ring-1 ring-foreground/10 sm:p-10">
+        <MarkdownView source={source} />
+      </article>
+    );
+  }
 
   return (
     <CommentRail

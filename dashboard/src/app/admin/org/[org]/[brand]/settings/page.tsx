@@ -71,7 +71,7 @@ function BrandSettings({ orgName, brand }: { orgName: string; brand: Client }) {
                 the engine now holds. That is React's own answer to resetting state on a prop
                 change, and it needs no effect to chase the props. */}
             <IdentityCard
-              key={`${client.slug}:${client.domain}:${orgName}`}
+              key={`${client.slug}:${client.domain}:${client.market ?? ""}:${orgName}`}
               client={client}
               orgName={orgName}
               onSaved={onSaved}
@@ -114,6 +114,12 @@ function ReadOnlyIdentity({ client, orgName }: { client: Client; orgName: string
             </dd>
           </div>
           <div>
+            <dt className="text-xs font-medium text-muted-foreground">Market</dt>
+            <dd className="mt-0.5 text-sm text-foreground">
+              {client.market || "(not recorded)"}
+            </dd>
+          </div>
+          <div>
             <dt className="text-xs font-medium text-muted-foreground">Industry</dt>
             <dd className="mt-0.5 text-sm text-foreground">
               {client.industry || "(detected from the brand website shortly after the brand is added)"}
@@ -136,11 +142,15 @@ function IdentityCard({
   onSaved: () => void;
 }) {
   const [domain, setDomain] = React.useState(client.domain);
+  const [market, setMarket] = React.useState(client.market ?? "");
   const [organisation, setOrganisation] = React.useState(orgName);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
 
-  const dirty = domain !== client.domain || organisation !== orgName;
+  const dirty =
+    domain !== client.domain ||
+    market !== (client.market ?? "") ||
+    organisation !== orgName;
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
@@ -151,6 +161,7 @@ function IdentityCard({
       // so sending every field would let a stale value overwrite one changed in another tab.
       await updateClient(client.slug, {
         ...(domain !== client.domain ? { domain: domain.trim() } : {}),
+        ...(market !== (client.market ?? "") ? { market: market.trim() } : {}),
         ...(organisation !== orgName ? { organisation_name: organisation.trim() } : {}),
       });
       toast.success("Saved");
@@ -199,6 +210,23 @@ function IdentityCard({
             <p className="mt-1 text-xs text-muted-foreground">
               The live site wins over internal docs on any conflict, so this is what the
               researcher fetches first.
+            </p>
+          </div>
+
+          <div>
+            <Label htmlFor="settings-market">Market</Label>
+            <Input
+              id="settings-market"
+              value={market}
+              onChange={(e) => setMarket(e.target.value)}
+              placeholder="India, English"
+              autoComplete="off"
+              className="mt-1.5"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Where this brand sells and in what language. Keyword volumes are validated
+              against this market and the researcher prefers sources local to it; without one,
+              keyword validation is skipped on every blog.
             </p>
           </div>
 

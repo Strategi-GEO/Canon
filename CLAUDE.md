@@ -192,6 +192,9 @@ from reading subagent tool output into its own context.
   or `needs_review` in the one narrow case set out under Stopping a run. See that section. This
   is the one place a terminal line is written with the lead already dead, so a rule making the
   lead write it is a rule that never fires.
+- **The app** appends exactly one further terminal line, the operator-promotion `done` (see
+  Ship criteria), through the same `.claude/status.py` path as every other line, after the loop
+  is long over. No agent writes it and no agent may ask for it.
 
 Line shape, exactly:
 ```
@@ -754,6 +757,24 @@ DONE when the FIRST evaluator score is >= 95 on a draft that is already gate-cle
 link-clean AND has no current questions on disk. That score is final. Write the terminal `done`
 status and stop. 95 ships. 96 ships. No score at or above 95 is borderline, and a better one is
 never worth seeking.
+
+**Operator promotion is the ONE post-run re-verdict, and it is the operator's, never the
+loop's.** After a loop ends terminal `failed` with an evaluator-scored committed draft, the
+operator may ship it anyway from the dashboard (`POST .../promote`, `blog_edit.promote_to_done`).
+The engine appends a new terminal `done` line whose note names the operator and the score,
+commits it, appends the ledger row, and sends the blog to the client in the same act. The
+evaluator's number is never rewritten: the trail reads failed at 92, then promoted by a person,
+which is the same appended-correction idiom `_enforce_terminal_status` already uses. This changes
+NO rule the loop runs under. No agent may write it or ask for it, the resolver's table is
+untouched, first-score-is-final is untouched (promotion re-rolls no evaluator), and every
+done-gate keeps demanding the literal `done`: a promoted blog satisfies them because the fold
+genuinely reads done afterward, never because a gate was widened. Scope is exact and the engine
+refuses the rest: terminal `failed` only, never `needs_review` (a question holds at ANY score and
+promotion is not a dismiss), never `stopped` (no verdict exists to promote), never mid-run, and
+never without a scored committed draft, because gates and the link pass run before the eval, so
+the scored draft is gate-clean and link-clean and the 95 bar is the ONLY thing being waived. A
+promoted blog enters the ledger exactly as a 95+ ship does, so its roadmap row locks and a later
+"failed row in the ledger" is a promotion, not a defect.
 
 **A score is not a licence to ship past an open question.** Where the evaluator asked something
 current, the blog is HELD at ANY score, including 96, until the operator answers. Answering is a

@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ client.name }} monthly analysis, {{ month_label }}</title>
+<style>{{ css }}</style>
+{% if brand_overrides %}<style>:root { {{ brand_overrides }} }</style>{% endif %}
+</head>
+<body>
+
+{# ---------- cover ---------- #}
+<section class="cover">
+  <div class="cover-band">
+    <div class="wordmark">{{ org_name }}</div>
+    <div class="doctype">Monthly GEO and SEO Visibility Report</div>
+  </div>
+  <div class="cover-main">
+    <h1>{{ client.name }}</h1>
+    <div class="site-url">{{ client.domain }}</div>
+    {% if executive_summary and executive_summary.paragraphs %}
+      <div class="cover-verdict">{{ executive_summary.paragraphs[0] }}</div>
+    {% endif %}
+  </div>
+  <dl class="cover-meta">
+    <div><dt>Reporting period</dt><dd>{{ month_label }}</dd></div>
+    {% if client.industry %}<div><dt>Industry</dt><dd>{{ client.industry }}</dd></div>{% endif %}
+    <div><dt>Prepared by</dt><dd>{{ org_name }}</dd></div>
+    <div><dt>Tools connected</dt><dd>{{ tools | selectattr('connected') | list | length }} of {{ tools | length }}</dd></div>
+  </dl>
+</section>
+
+{# ---------- Section 0: snapshot scorecard ---------- #}
+<h2 class="section"><span class="num">00</span>The month in 15 seconds</h2>
+<div class="cards">
+  {% for c in scorecard %}
+    <div class="card {% if not c.available %}na{% endif %}">
+      <div class="c-label">{{ c.label }}</div>
+      {% if c.available %}
+        <div class="c-value">{{ c.value }}{% if c.unit %}<span class="unit">{{ c.unit }}</span>{% endif %}</div>
+        <div class="c-foot">
+          {% if c.prev_value is not none and c.prev_value != c.value %}from {{ c.prev_value }} last month{% else %}{{ c.tool }}{% endif %}
+        </div>
+      {% else %}
+        <div class="c-value">n/a</div>
+        <div class="c-foot">{{ c.note or "Not connected" }}</div>
+      {% endif %}
+    </div>
+  {% endfor %}
+</div>
+
+{# ---------- Section 1: executive summary ---------- #}
+{% if executive_summary %}
+<h2 class="section"><span class="num">01</span>Executive summary</h2>
+{% for para in executive_summary.paragraphs %}<p class="lede">{{ para }}</p>{% endfor %}
+{% if executive_summary.did or executive_summary.next %}
+<div class="twocol">
+  <div>
+    <h4>What we did</h4>
+    <ul class="tight">{% for d in executive_summary.did %}<li>{{ d }}</li>{% endfor %}</ul>
+  </div>
+  <div>
+    <h4>What is next</h4>
+    <ul class="tight">{% for n in executive_summary.next %}<li>{{ n }}</li>{% endfor %}</ul>
+  </div>
+</div>
+{% endif %}
+{% endif %}
+
+{# ---------- Section 2: GEO / AI visibility ---------- #}
+<h2 class="section"><span class="num">02</span>GEO and AI visibility</h2>
+
+{% set pm = ai_visibility.prompt_matrix %}
+<h3 class="sub">Prompt visibility matrix <span class="tool">(prompt-test runs)</span></h3>
+<div class="coverage">Coverage {{ pm.coverage_pct }}%</div>
+<table class="matrix">
+  <thead>
+    <tr>
+      <th>Buyer prompt</th>
+      {% for e in pm.engines %}<th class="engine">{{ e }}</th>{% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in pm.prompts %}
+      <tr>
+        <td class="prompt">{{ p.prompt }}</td>
+        {% for cell in p.row %}
+          <td class="cell {{ cell_class(cell.state) }}">
+            {% if cell.state == 'cited' %}Cited{% elif cell.state == 'mentioned' %}Named{% elif cell.state == 'absent' %}Absent{% else %}&middot;{% endif %}
+            {% if cell.change == 'new' %}<span class="cell-chg">&#9650;</span>{% elif cell.change == 'lost' %}<span class="cell-chg">&#9660;</span>{% endif %}
+          </td>
+        {% endfor %}
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if ai_visibility.citations %}
+<h3 class="sub">Where you are now cited</h3>
+<ul class="tight">
+  {% for c in ai_visibility.citations %}
+    <li><strong>{{ c.engine }}</strong> on "{{ c.prompt }}": {{ c.snippet }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% if ai_visibility.gaps %}
+<h3 class="sub">Priority gaps</h3>
+<ol class="fixes">
+  {% for g in ai_visibility.gaps %}
+    <li><div class="fix-head">{{ g.prompt }}</div><div class="fix-why">{{ g.play }}</div></li>
+  {% endfor %}
+</ol>
+{% endif %}
+
+{% if ai_visibility.referral_traffic and ai_visibility.referral_traffic.by_source %}
+<h3 class="sub">AI referral traffic <span class="tool">(Google Analytics)</span></h3>
+<table>
+  <thead><tr><th>Source</th><th class="num">Sessions</th><th class="num">Engaged</th><th class="num">Conversions</th></tr></thead>
+  <tbody>
+    {% for s in ai_visibility.referral_traffic.by_source %}
+      <tr><td>{{ s.source }}</td><td class="num">{{ s.sessions }}</td><td class="num">{{ s.engaged }}</td><td class="num">{{ s.conversions }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if ai_visibility.bing_indicator %}
+{% set b = ai_visibility.bing_indicator %}
+<h3 class="sub">Bing as a GEO leading indicator <span class="tool">(Bing Webmaster)</span></h3>
+<div class="stat-row">
+  <div class="stat"><div class="stat-value">{{ b.impressions }}</div><div class="stat-label">Impressions</div></div>
+  <div class="stat"><div class="stat-value">{{ b.clicks }}</div><div class="stat-label">Clicks</div></div>
+  <div class="stat"><div class="stat-value">{{ b.indexed }}/{{ b.key_pages }}</div><div class="stat-label">Key pages indexed</div></div>
+</div>
+<div class="callout accent">Bing feeds Copilot and ChatGPT search, so index coverage here is your AI pipeline filling. A page Bing has not indexed cannot surface in Copilot.</div>
+{% endif %}
+
+{% if ai_visibility.ai_overview %}
+<h3 class="sub">Google AI Overview presence <span class="tool">(DataForSEO)</span></h3>
+<table>
+  <thead><tr><th>Keyword</th><th>AI Overview</th><th>You cited</th></tr></thead>
+  <tbody>
+    {% for a in ai_visibility.ai_overview %}
+      <tr><td>{{ a.keyword }}</td><td>{% if a.aio_present %}<span class="score score-good">Yes</span>{% else %}<span class="score-na">No</span>{% endif %}</td><td>{% if a.client_cited %}<span class="score score-good">Yes</span>{% else %}<span class="score score-bad">No</span>{% endif %}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{# ---------- Section 3: SEO visibility ---------- #}
+{% if seo_visibility %}
+<h2 class="section"><span class="num">03</span>SEO visibility</h2>
+{% set s = seo_visibility %}
+
+{% if s.google %}
+<h3 class="sub">Google performance <span class="tool">(Google Search Console)</span></h3>
+<div class="stat-row">
+  <div class="stat"><div class="stat-value">{{ s.google.clicks }}</div><div class="stat-label">Clicks</div></div>
+  <div class="stat"><div class="stat-value">{{ s.google.impressions }}</div><div class="stat-label">Impressions</div></div>
+  <div class="stat"><div class="stat-value">{{ s.google.avg_position }}</div><div class="stat-label">Avg position</div></div>
+  <div class="stat"><div class="stat-value">{{ s.google.ctr }}%</div><div class="stat-label">CTR</div></div>
+</div>
+{% endif %}
+
+{% if s.striking_distance %}
+<h3 class="sub">Striking distance, the quick wins <span class="tool">(SEO Gets)</span></h3>
+<table>
+  <thead><tr><th>Query</th><th class="num">Position</th><th class="num">Impressions</th><th>URL</th></tr></thead>
+  <tbody>
+    {% for q in s.striking_distance %}
+      <tr><td>{{ q.query }}</td><td class="num">{{ q.position }}</td><td class="num">{{ q.impressions }}</td><td class="mono">{{ q.url }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if s.rankings %}
+<h3 class="sub">Rankings, movers first <span class="tool">(DataForSEO)</span></h3>
+<table>
+  <thead><tr><th>Keyword</th><th class="num">Position</th><th class="num">MoM</th><th class="num">Volume</th><th>URL</th></tr></thead>
+  <tbody>
+    {% for r in s.rankings %}
+      <tr>
+        <td>{{ r.keyword }}</td>
+        <td class="num">{{ r.position }}</td>
+        <td class="num">{% if r.delta and r.delta > 0 %}<span class="delta delta-up">+{{ r.delta }}</span>{% elif r.delta and r.delta < 0 %}<span class="delta delta-down">{{ r.delta }}</span>{% else %}<span class="delta-flat">0</span>{% endif %}</td>
+        <td class="num">{{ r.volume }}</td>
+        <td class="mono">{{ r.url }}</td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if s.serp_features %}
+<h3 class="sub">SERP feature and AIO capture <span class="tool">(DataForSEO)</span></h3>
+<table>
+  <thead><tr><th>Feature</th><th class="num">This month</th><th class="num">Last month</th></tr></thead>
+  <tbody>
+    {% for f in s.serp_features %}
+      <tr><td>{{ f.feature }}</td><td class="num">{{ f.owned_this }}</td><td class="num">{{ f.owned_last }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if s.bing %}
+<h3 class="sub">Bing performance <span class="tool">(Bing Webmaster)</span></h3>
+<div class="stat-row">
+  <div class="stat"><div class="stat-value">{{ s.bing.clicks }}</div><div class="stat-label">Clicks</div></div>
+  <div class="stat"><div class="stat-value">{{ s.bing.impressions }}</div><div class="stat-label">Impressions</div></div>
+  <div class="stat"><div class="stat-value">{{ s.bing.avg_position }}</div><div class="stat-label">Avg position</div></div>
+</div>
+{% endif %}
+
+{% if s.index_health %}
+<h3 class="sub">Index and crawl health <span class="tool">(Search Console and Bing Webmaster)</span></h3>
+<table>
+  <thead><tr><th>Engine</th><th class="num">Indexed</th><th class="num">Errors</th><th class="num">Dropped this month</th></tr></thead>
+  <tbody>
+    {% if s.index_health.google %}<tr><td>Google</td><td class="num">{{ s.index_health.google.indexed }}</td><td class="num">{{ s.index_health.google.errors }}</td><td class="num">{{ s.index_health.google.dropped }}</td></tr>{% endif %}
+    {% if s.index_health.bing %}<tr><td>Bing</td><td class="num">{{ s.index_health.bing.indexed }}</td><td class="num">{{ s.index_health.bing.errors }}</td><td class="num">{{ s.index_health.bing.dropped }}</td></tr>{% endif %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if s.tech_health and s.tech_health.lighthouse and s.tech_health.lighthouse.scores %}
+<h3 class="sub">Technical and GEO health <span class="tool">(DataForSEO Lighthouse, schema, Core Web Vitals)</span></h3>
+<table>
+  <thead><tr><th>Category</th><th class="num">Desktop</th><th class="num">Mobile</th></tr></thead>
+  <tbody>
+    {% for sc in s.tech_health.lighthouse.scores %}
+      <tr><td>{{ sc.category }}</td><td class="num">{{ score_cell(sc.desktop) }}</td><td class="num">{{ score_cell(sc.mobile) }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if s.tech_health.schema_coverage_pct is not none or s.tech_health.cwv_status %}
+<div class="callout">
+  {% if s.tech_health.schema_coverage_pct is not none %}Structured data coverage: <strong>{{ s.tech_health.schema_coverage_pct }}%</strong> of key page types. {% endif %}
+  {% if s.tech_health.cwv_status %}Core Web Vitals field status: <strong>{{ s.tech_health.cwv_status }}</strong>.{% endif %}
+</div>
+{% endif %}
+{% endif %}
+{% endif %}
+
+{# ---------- Section 4: engagement ---------- #}
+{% if engagement %}
+<h2 class="section"><span class="num">04</span>Engagement and behaviour <span class="tool">(Microsoft Clarity)</span></h2>
+{% if engagement.landing_pages %}
+<h3 class="sub">Landing page behaviour</h3>
+<table>
+  <thead><tr><th>Page</th><th class="num">Scroll depth</th><th>Avg time</th><th>Top clicked</th></tr></thead>
+  <tbody>
+    {% for p in engagement.landing_pages %}
+      <tr><td class="mono">{{ p.page }}</td><td class="num">{{ p.scroll_pct }}%</td><td>{{ p.avg_time }}</td><td>{{ p.top_click }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% if engagement.friction %}
+<h3 class="sub">Friction flags</h3>
+<table>
+  <thead><tr><th>Page</th><th>Problem</th><th class="num">Count</th><th class="num">MoM</th></tr></thead>
+  <tbody>
+    {% for f in engagement.friction %}
+      <tr><td class="mono">{{ f.page }}</td><td>{{ f.type }}</td><td class="num">{{ f.count }}</td><td class="num">{% if f.delta and f.delta > 0 %}<span class="delta delta-down">+{{ f.delta }}</span>{% elif f.delta and f.delta < 0 %}<span class="delta delta-up">{{ f.delta }}</span>{% else %}<span class="delta-flat">0</span>{% endif %}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endif %}
+
+{# ---------- Section 5: outcomes ---------- #}
+{% if outcomes %}
+<h2 class="section"><span class="num">05</span>Outcomes <span class="tool">(Google Analytics)</span></h2>
+<div class="stat-row">
+  <div class="stat"><div class="stat-value">{{ outcomes.organic_sessions }}</div><div class="stat-label">Organic sessions</div></div>
+  {% if outcomes.engaged_sessions is not none %}<div class="stat"><div class="stat-value">{{ outcomes.engaged_sessions }}</div><div class="stat-label">Engaged sessions</div></div>{% endif %}
+  <div class="stat"><div class="stat-value">{{ outcomes.conversions_organic }}</div><div class="stat-label">Conversions, organic</div></div>
+  {% if outcomes.conversions_ai is not none %}<div class="stat"><div class="stat-value">{{ outcomes.conversions_ai }}</div><div class="stat-label">Conversions, AI referral</div></div>{% endif %}
+</div>
+{% if outcomes.summary %}<div class="callout accent">{{ outcomes.summary }}</div>{% endif %}
+{% endif %}
+
+{# ---------- Section 6: what we did / what is next ---------- #}
+{% if plan %}
+<h2 class="section"><span class="num">06</span>What we did and what is next</h2>
+<div class="twocol">
+  <div>
+    <h4>Shipped this month</h4>
+    <ul class="tight">{% for d in plan.did %}<li>{{ d }}</li>{% endfor %}</ul>
+  </div>
+  <div>
+    <h4>Next month plan</h4>
+    <ul class="tight">{% for n in plan.next %}<li>{{ n.item }}{% if n.source %}<span class="src">{{ n.source }}</span>{% endif %}</li>{% endfor %}</ul>
+  </div>
+</div>
+{% endif %}
+
+{# ---------- appendix + data sources ---------- #}
+<h2 class="section"><span class="num">07</span>Appendix and data sources</h2>
+{% if appendix and appendix.notes %}
+<h3 class="sub">Methodology</h3>
+<ul class="tight">{% for n in appendix.notes %}<li>{{ n }}</li>{% endfor %}</ul>
+{% endif %}
+<h3 class="sub">Data sources</h3>
+<table>
+  <thead><tr><th>Tool</th><th>Status</th><th>What it provided</th></tr></thead>
+  <tbody>
+    {% for t in tools %}
+      <tr>
+        <td><span class="tool-dot {% if t.connected %}tool-on{% else %}tool-off{% endif %}"></span>{{ t.name }}</td>
+        <td>{% if t.connected %}Connected{% else %}Not connected{% endif %}</td>
+        <td class="muted">{{ t.note }}</td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+</body>
+</html>

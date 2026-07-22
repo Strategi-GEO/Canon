@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import pathlib
+import re
 
 from . import db
 
@@ -63,6 +64,34 @@ def _read(path):
 # Materialize: record -> scratch, before a session spawns
 # ---------------------------------------------------------------------------
 
+# The Market heading in the client.md template, through to the next H2 (or EOF).
+_MARKET_SECTION = re.compile(r"## Market\n.*?(?=\n## |\Z)", re.S)
+
+
+def _client_md_with_market(client_md, market):
+    """client.md with its Market section stating the recorded market.
+
+    The market lives in clients.market (onboarding dialog / Settings), while client_md is a
+    text snapshot written at create time, so the section is spliced in at the ONE place the
+    disk copy is laid down and every path (create, settings save, run start) inherits it. An
+    empty market leaves the template's own placeholder, which says where to set it.
+    """
+    market = str(market or "").strip()
+    if not market:
+        return client_md
+    section = (
+        "## Market\n"
+        f"Primary market: {market}. This is the location and language DataForSEO keyword "
+        "validation runs against, and the market whose sources Agent R prefers over generic "
+        "or foreign data. Recorded in brand Settings; the record wins over any hand edit "
+        "here.\n"
+    )
+    # Lambda replacement: the market is operator text and re.sub would expand backslashes.
+    if _MARKET_SECTION.search(client_md):
+        return _MARKET_SECTION.sub(lambda _match: section, client_md, count=1)
+    return client_md.rstrip("\n") + "\n\n" + section
+
+
 def materialize_client(slug):
     """Lay clients/<slug>/ down from the record.
 
@@ -77,9 +106,9 @@ def materialize_client(slug):
     if not cid:
         raise LookupError(f"unknown client {slug!r}")
     row = db.q(
-        """select gates, client_md, canonical_facts, description, custom_instructions
+        """select gates, client_md, canonical_facts, description, custom_instructions, market
            from clients where id = %s""", (cid,), fetch="one")
-    gates, client_md, facts, description, custom_instructions = row
+    gates, client_md, facts, description, custom_instructions, market = row
 
     cdir = _client_dir(slug)
     cdir.mkdir(parents=True, exist_ok=True)
@@ -87,7 +116,8 @@ def materialize_client(slug):
         json.dumps(gates or {}, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8")
     if client_md is not None:
-        (cdir / "client.md").write_text(client_md, encoding="utf-8")
+        (cdir / "client.md").write_text(
+            _client_md_with_market(client_md, market), encoding="utf-8")
     # client.md's template tells agents the operator-owned brand description
     # lives at clients/<slug>/description.md, so the promise must be kept on
     # disk even when the description is empty.

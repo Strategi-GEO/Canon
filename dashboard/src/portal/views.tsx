@@ -35,7 +35,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
 import { BlogsTable } from "@/components/blogs/blogs-table";
-import { BrandHeader, ResourcesSummaryCard, StatRow } from "@/components/shell/brand-overview";
+import { BrandHeader, StatRow } from "@/components/shell/brand-overview";
 import { ReadOnlyText } from "@/components/clients/editable-text";
 import {
   PREVIEW_ROWS,
@@ -51,7 +51,7 @@ import type { WaitingSignal } from "@/components/blogs/questions-state";
 import { cn } from "@/lib/utils";
 import { usePortal } from "@/portal/portal-context";
 import { useBlogDetail } from "@/portal/use-blog-detail";
-import type { PortalAnswerView, PortalBlogCard, ReplyBody, SuggestBody } from "@/portal/types";
+import type { PortalAnswerView, PortalBlogCard, SuggestBody } from "@/portal/types";
 
 /**
  * The client portal's views, one per resolved route. The (client) layout provides the
@@ -271,22 +271,6 @@ export function BrandOverview({ org, brand: brandSlug }: { org: string; brand: s
   }, [brandSlug]);
   const topics = sheetFor !== null && sheetFor.brand === brandSlug ? sheetFor.topics : null;
 
-  // The resources preview, same card the admin overview renders (ResourcesSummaryCard), over
-  // the portal's own wire. A failed read costs the card its list, not the page its render.
-  const [resourcesFor, setResourcesFor] = React.useState<{
-    brand: string;
-    resources: { name: string; content_type: string }[];
-  } | null>(null);
-  React.useEffect(() => {
-    const controller = new AbortController();
-    api.resources(brandSlug, controller.signal).then(
-      (data) => setResourcesFor({ brand: brandSlug, resources: data.resources }),
-      () => setResourcesFor({ brand: brandSlug, resources: [] }),
-    );
-    return () => controller.abort();
-  }, [brandSlug]);
-  const resources = resourcesFor?.brand === brandSlug ? resourcesFor.resources : null;
-
   if (error !== null) {
     return <ErrorCard message="Could not load this brand" detail={detailText(error)} onRetry={refresh} />;
   }
@@ -372,16 +356,10 @@ export function BrandOverview({ org, brand: brandSlug }: { org: string; brand: s
               <dl className="mt-3 flex flex-col gap-2">
                 <StatRow label="Blogs delivered" value={delivered} accent />
                 <StatRow label="Waiting on you" value={needsAnswers.length} />
-                <StatRow label="Resources" value={resources === null ? null : resources.length} />
                 <StatRow label="Roadmap topics" value={topics} />
               </dl>
             </CardContent>
           </Card>
-          <ResourcesSummaryCard
-            total={resources?.length ?? 0}
-            resources={resources}
-            href={brandHref(org, brand.slug, single, "/resources")}
-          />
         </div>
       </div>
     </div>
@@ -752,14 +730,6 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
     [brand, topic, refresh],
   );
 
-  const submitReply = React.useCallback(
-    async (draft: ReplyBody) => {
-      await api.replyComment(brand, topic, draft);
-      refresh();
-    },
-    [brand, topic, refresh],
-  );
-
   if (error !== null) {
     return (
       <div className="mx-auto max-w-md rounded-xl border bg-card p-6 text-center">
@@ -791,7 +761,7 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
   }
 
   /*
-   * THE FOUR ACTS, ASKED OF THE TABLE RATHER THAN OF THE BRANCH THEY SIT IN. Read together
+   * THE THREE ACTS, ASKED OF THE TABLE RATHER THAN OF THE BRANCH THEY SIT IN. Read together
    * they are the whole of what a client may do to an article, and each one is a lookup rather
    * than a condition this file invented:
    *   answer   has_questions only
@@ -800,13 +770,11 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
    *            block them
    *   suggest  client_review and changes_requested, always against the latest version this
    *            page shows; an approved article still collects no new requests
-   *   reply    client_review, changes_requested and approved, so a thread stays usable while
-   *            the team works and a question can still be answered after sign-off
+   * There is no reply act: comments are notes the team resolves or dismisses, not threads.
    */
   const canAnswer = clientCan(blog.state, "answer");
   const canApprove = clientCan(blog.state, "approve");
   const canSuggest = clientCan(blog.state, "suggest");
-  const canReply = clientCan(blog.state, "reply");
 
   // The one fact the changes_requested state cannot carry: how many of this client's notes are
   // still unaddressed. open + applying + failed all count, matching the server's
@@ -962,11 +930,15 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
 
           <CommentedArticle
             source={blog.body}
-            comments={blog.comments ?? []}
+            /* An approval ends the conversation: no comment is shown on either side after it,
+               matching the admin stage, and the approved article reads clean at full measure. */
+            comments={
+              blog.state === "approved" || blog.state === "published"
+                ? []
+                : (blog.comments ?? [])
+            }
             onSuggest={submitSuggestion}
-            onReply={submitReply}
             canSuggest={canSuggest}
-            canReply={canReply}
           />
         </div>
       ) : null}
@@ -1240,7 +1212,7 @@ function ApproveAction({
           <AlertDialogDescription>
             {stale
               ? "Our team sent a newer version while you were reading. Your approval has not been recorded. The page now shows the new article: please read it again, then approve it."
-              : "The team takes it live after your approval."}
+              : "Approving locks this article permanently: these become the exact words that go out, and nobody can change them afterwards, you or our team. You will not be able to add comments or ask for fixes once it is approved. If anything still needs attention, cancel and leave a note on the text instead."}
           </AlertDialogDescription>
         </AlertDialogHeader>
 

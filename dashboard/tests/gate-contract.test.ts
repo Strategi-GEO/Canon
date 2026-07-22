@@ -580,7 +580,10 @@ test("an omitted applying count asks a record question, and unread asks a moment
         `moment and does not know it yet`,
     );
     // And the record half still decides a momentless caller, so this is not a way past the gate.
-    assert.equal(adminGateAllows(action, { ...momentless, record: { status: "failed" } }), false);
+    // needs_review, not failed: the admin-review bench now seats a failed draft (edit and
+    // comments open on done OR failed via _require_reviewable), so needs_review is the status
+    // that genuinely refuses and proves the record half is still deciding.
+    assert.equal(adminGateAllows(action, { ...momentless, record: { status: "needs_review" } }), false);
   }
 });
 
@@ -607,44 +610,42 @@ test("each door behind the answer verb opens on exactly the form its route accep
 test("an approved article refuses the answer verb through both of its doors", () => {
   // _require_not_approved runs on api_answers and api_revise_answered alike, ahead of the form
   // checks, because an answer dispatches a revise that rewrites the draft and commits a version.
-  // The bench never reaches this: `approved` grants only publish and reply. The gate holds anyway,
+  // The bench never reaches this: `approved` grants only publish. The gate holds anyway,
   // because a bench keyed by state is precisely what stopped being trusted here.
   const verdict = adminGateVerdict("answer", at({ client_approved: APPROVED_AT }));
   assert.equal(verdict.allowed, false);
   assert.equal(verdict.blocking?.id, "not_approved_engine");
 });
 
-test("reply carries no record conditions, and the empty list is the statement", () => {
-  assert.equal(ADMIN_GATE_DOORS.reply.length, 1);
-  assert.deepEqual(ADMIN_GATE_DOORS.reply[0].clauses, []);
+test("send and publish open only on done; edit and comments open on the review bench (done or failed)", () => {
+  // TWO STATUS RULES NOW, because the admin-review bench gained the failed draft. The SEND and
+  // the PUBLISH still demand the literal 'done' (server/app.py's _require_done and
+  // server/cms/gate.py's assert_publishable), so a failed draft ships only through the promote
+  // door. The EDIT and the COMMENTS moved to _require_reviewable, which accepts done OR failed,
+  // so the operator can polish a sub-95 draft before promoting it. Neither opens on
+  // needs_review, running, stopped or nonsense.
   for (const status of STATUSES) {
-    assert.equal(
-      adminGateAllows("reply", { record: { status }, form: "unread", applying: "unread" }),
-      true,
-      `reply must not be gated on the record: migration 011 carries no done gate and migration ` +
-        `013 exempts a reply by name`,
-    );
-  }
-});
-
-test("edit, comments, send and publish all open on a done record and on nothing else", () => {
-  // PUBLISH IS IN THIS LIST NOW, and it was not before. server/cms/gate.py refuses any push whose
-  // terminal status is not exactly "done", so the act that was declared unconditional shares the
-  // status condition with the other three.
-  for (const status of STATUSES) {
-    for (const action of ["edit", "comments", "send", "publish"] as AdminAction[]) {
+    for (const action of ["send", "publish"] as AdminAction[]) {
       assert.equal(
         adminGateAllows(action, at({ status })),
         status === "done",
-        `${action} at status=${status}: the done gate raises unless the terminal status is ` +
-          `exactly 'done', in migration 013's admin_done_topic, in server/app.py's ` +
-          `_require_done, and in server/cms/gate.py's assert_publishable`,
+        `${action} at status=${status}: the send and publish gates raise unless the terminal ` +
+          `status is exactly 'done', in server/app.py's _require_done and server/cms/gate.py's ` +
+          `assert_publishable`,
+      );
+    }
+    for (const action of ["edit", "comments"] as AdminAction[]) {
+      assert.equal(
+        adminGateAllows(action, at({ status })),
+        status === "done" || status === "failed",
+        `${action} at status=${status}: _require_reviewable opens the admin-review bench on a ` +
+          `done or a failed draft and refuses every other status`,
       );
     }
   }
 });
 
-test("an approval locks every act that changes the article and leaves publish and reply alone", () => {
+test("an approval locks every act that changes the article and leaves publish alone", () => {
   const approved = at({ client_approved: APPROVED_AT });
   for (const action of ["edit", "comments", "send"] as AdminAction[]) {
     assert.equal(
@@ -654,9 +655,7 @@ test("an approval locks every act that changes the article and leaves publish an
         `damaging of the three because mark_sent CLEARS the approval as it re-stamps`,
     );
   }
-  // Migration 013's own header names these two as the acts the lock leaves open.
   assert.equal(adminGateAllows("publish", approved), true);
-  assert.equal(adminGateAllows("reply", approved), true);
 });
 
 test("an article out with the client refuses edit and comments, and a change round reopens them", () => {
@@ -738,9 +737,11 @@ test("an apply in flight greys the edit rather than removing it, and fills the c
   assert.equal(adminGateAllows("comments", { ...CLEAN_INPUT, applying: 0 }), true);
 
   // A PERMANENT refusal removes the control, which is the other half of the same rule.
-  const notDone = adminGateStanding("edit", at({ status: "failed" }));
-  assert.equal(notDone.mount, false);
-  assert.equal(notDone.waitingOn, null);
+  // needs_review, not failed: a failed draft is now on the review bench and edit mounts on it,
+  // so needs_review is the status whose permanent refusal removes the control.
+  const notReviewable = adminGateStanding("edit", at({ status: "needs_review" }));
+  assert.equal(notReviewable.mount, false);
+  assert.equal(notReviewable.waitingOn, null);
 });
 
 // ---------------------------------------------------------------------------

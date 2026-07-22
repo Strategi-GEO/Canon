@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { Check, CheckCheck, Loader2, MessageCircleQuestion, SendHorizontal } from "lucide-react";
+import Link from "next/link";
+import { Loader2, MessageCircleQuestion, RotateCw, SendHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -20,7 +21,6 @@ import { FieldError } from "@/components/clients/engine-error";
 import { ApiError, api } from "@/lib/api";
 import { adminGateVerdict } from "@/lib/gate-contract";
 import { HOSTED_READONLY } from "@/lib/hosted";
-import { formatAbsolute, formatRelative } from "@/lib/format";
 import type { BlogReviewState, BlogStatus } from "@/types";
 
 /**
@@ -36,11 +36,12 @@ const OPEN_CHANGES_REASON =
  * button that moves it.
  *
  * Until the first send, a done blog is the team's: editable on this page and invisible to
- * the client, and the control is the Send button alone. After it, the control reads the
- * review state out loud: "Sent for client review" while the client holds it, "Changes
- * requested" while their suggestions sit open, "Approved" once they sign off. Send again
- * is the release valve that restarts the cycle, and it re-stamps the send and CLEARS any
- * approval, because the client approves an exact article and a re-send replaces it.
+ * the client, and the control is the Send button alone. After it, this component mostly
+ * DISAPPEARS: ReviewStamp in blog-stage.tsx carries the "Sent for client review / Approved
+ * … ago" fact, and a blog sitting with the client offers no re-send at all. The one
+ * survivor is the open-change-round re-send, which returns the fixed article to the client
+ * and closes the round; it re-stamps the send and CLEARS any approval, because the client
+ * approves an exact article and a re-send replaces it.
  *
  * THIS COMPONENT IS NOT THE GUARD: the engine refuses anything not done and refuses a
  * re-send past open suggestions, so every disable here is courtesy, exactly as
@@ -158,44 +159,23 @@ export function SendToClient({
     );
   }
 
-  return (
-    <span className="inline-flex items-center gap-2">
-      {review.client_approved !== null ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="inline-flex cursor-default items-center gap-1.5 rounded-md border border-ship/25 bg-ship/10 px-2.5 py-1 text-xs font-medium text-ship">
-              <CheckCheck className="size-3.5" aria-hidden />
-              Approved {formatRelative(review.client_approved)}
-            </span>
-          </TooltipTrigger>
-          <TooltipContent className="machine">
-            {formatAbsolute(review.client_approved)}
-            {review.client_approved_by ? ` by ${review.client_approved_by}` : ""}
-          </TooltipContent>
-        </Tooltip>
-      ) : (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="inline-flex cursor-default items-center gap-1.5 rounded-md border border-ship/25 bg-ship/10 px-2.5 py-1 text-xs font-medium text-ship">
-              <Check className="size-3.5" aria-hidden />
-              Sent for client review {formatRelative(review.sent_to_client)}
-            </span>
-          </TooltipTrigger>
-          <TooltipContent className="machine">
-            {formatAbsolute(review.sent_to_client)}
-            {review.sent_to_client_by ? ` by ${review.sent_to_client_by}` : ""}
-          </TooltipContent>
-        </Tooltip>
-      )}
-      <SendControl
-        brandSlug={brandSlug}
-        topicSlug={topicSlug}
-        brandName={brandName}
-        resend
-        onSent={onSent}
-      />
-    </span>
-  );
+  // ALREADY SENT: this component renders NOTHING, in every state but one. The fact of the
+  // send lives in ONE place, blog-stage's ReviewStamp ("Sent for client review / Approved …
+  // ago", with the absolute time and the person in its tooltip); a second chip here was the
+  // same fact twice in one row. There is no Send again for a blog sitting with the client:
+  // the portal always shows the newest version, so a re-send there re-stamps nothing the
+  // client needs. The ONE exception is an open change round with every suggestion resolved,
+  // where the re-send is the act that returns the fixed article and closes the round
+  // (blog-state.test.ts pins that the round stays open until it).
+  return review.change_round_open ? (
+    <SendControl
+      brandSlug={brandSlug}
+      topicSlug={topicSlug}
+      brandName={brandName}
+      resend
+      onSent={onSent}
+    />
+  ) : null;
 }
 
 /**
@@ -406,5 +386,143 @@ function blockedReason(
   return (
     verdict.blocking?.refusal ??
     `This article's last run recorded a status of "${status}", and only a blog the engine has landed at done can be delivered. Generating this topic again is what produces one, and this button comes back once a run lands at done.`
+  );
+}
+
+/**
+ * The failed blog's bench: ship it anyway, or retry the topic.
+ *
+ * The run landed below the house 95 bar with nothing left to ask, so the loop's verdict is on
+ * the trail and stays there. What this offers is the OPERATOR'S decision, made after reading
+ * the draft: promote it, which appends a `done` verdict naming them and the score, records the
+ * ledger row (the roadmap locks the topic exactly as a 95+ ship would), and sends it to the
+ * client in the same press. The confirm dialog says all of that, because promotion trades the
+ * retry away: a ledgered topic refuses regeneration, so this button and the retry beside it
+ * are alternatives, not a sequence.
+ *
+ * RETRY IS A LINK, NOT A REQUEST. A retry is a new RUN, and runs start in the Create tab: the
+ * link lands there with this row pre-ticked (?retry=<slug>), so the operator keeps the
+ * instructions box, the queue view, and every duplicate guard the create flow already has,
+ * instead of this page growing a second, thinner copy of run submission.
+ *
+ * Mounted behind `canPromote` in blog-stage.tsx, which is the bench grant ANDed with the
+ * promote door (adminGateAllows), so a scoreless failure or a mid-run topic never renders it:
+ * the engine would refuse both, and a control that renders only to be refused is the exact
+ * defect the gate contract exists to catch.
+ */
+export function PromoteFailedBlog({
+  brandSlug,
+  topicSlug,
+  brandName,
+  score,
+  canSend,
+  retryHref,
+  onPromoted,
+}: {
+  brandSlug: string;
+  topicSlug: string;
+  brandName: string;
+  /** The evaluator's number, for the dialog's honesty. Never null when canSend is true: the
+   *  promote door refuses a scoreless record. */
+  score: number | null;
+  /** The promote door's verdict. The Retry link mounts regardless (a failed topic can always
+   *  be generated again); only the ship-anyway half is withheld where the engine would
+   *  refuse it, e.g. a failed run that never scored a draft. */
+  canSend: boolean;
+  /** The Create tab with this row pre-ticked. The route owns URLs; this just renders one. */
+  retryHref: string;
+  /** Hands back the review state the POST answered with, exactly as SendControl's onSent. */
+  onPromoted: (state: BlogReviewState) => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [sending, setSending] = React.useState(false);
+  const [error, setError] = React.useState<ApiError | null>(null);
+
+  if (HOSTED_READONLY) {
+    return null;
+  }
+
+  async function promote() {
+    setSending(true);
+    setError(null);
+    try {
+      const state = await api.promoteBlog(brandSlug, topicSlug);
+      setOpen(false);
+      toast.success("Shipped and sent to client", {
+        description:
+          `Recorded as shipped at ${score ?? "its"} score on your authority. ` +
+          `${brandName} now sees it in their portal as ready to post.`,
+      });
+      onPromoted(state);
+    } catch (cause) {
+      setError(cause instanceof ApiError ? cause : new ApiError(0, String(cause), null));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <Button size="sm" variant="outline" asChild>
+        <Link href={retryHref}>
+          <RotateCw data-icon="inline-start" aria-hidden />
+          Retry this topic
+        </Link>
+      </Button>
+
+      {canSend ? (
+      <AlertDialog
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (!next) {
+            setError(null);
+          }
+        }}
+      >
+        <AlertDialogTrigger asChild>
+          <Button size="sm">
+            <SendHorizontal data-icon="inline-start" aria-hidden />
+            Send to client
+          </Button>
+        </AlertDialogTrigger>
+
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Ship this blog below the bar?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The evaluator scored this draft {score ?? "below 95"}, under the house 95 bar. If
+              you are satisfied with it as it reads, sending it records it as shipped on your
+              authority, with the score kept on the record, and releases it to {brandName}
+              &apos;s portal for review exactly like any other shipped blog. Its roadmap row
+              locks like a shipped blog&apos;s too, so it can no longer be regenerated: retry
+              instead if you want another attempt at 95.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {error ? <FieldError error={error} /> : null}
+
+          <AlertDialogFooter>
+            <AlertDialogCancel size="sm" disabled={sending}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              size="sm"
+              disabled={sending}
+              onClick={(event) => {
+                event.preventDefault();
+                void promote();
+              }}
+            >
+              {sending ? (
+                <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
+              ) : null}
+              Ship and send it
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      ) : null}
+    </div>
   );
 }

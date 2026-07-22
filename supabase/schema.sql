@@ -121,6 +121,11 @@ create table clients (
   name        text not null check (btrim(name) <> ''),
   domain      text not null default '',
   industry    text not null default '',
+  -- Geography + language, e.g. "India, English": the location/language DataForSEO keyword
+  -- validation runs against, and the market whose sources Agent R prefers. Collected at
+  -- onboarding and editable from Settings (migration 026); sync.materialize_client splices it
+  -- into client.md's Market section, which is where the agents read it.
+  market      text not null default '',
   description text not null default '',
 
   -- The client doc set, inlined. An existing-but-empty doc must round-trip as ''
@@ -797,12 +802,15 @@ create table blog_comments (
   -- the moment any engine boots, killing a session that is still working.
   applying_since  timestamptz,
   finished_at     timestamptz,
+  -- When this comment was reframed and appended to the brand's custom instructions (025),
+  -- or null. Stamped once by the engine; what keeps "Added to instructions" disabled
+  -- across reloads and operators.
+  added_to_instructions timestamptz,
   foreign key (topic_id, client_id) references topics(id, client_id) on delete cascade,
-  -- ONE level of nesting, exactly like a document comment thread: a reply is 'open' and
-  -- stays there, so nothing can resolve, apply, or dismiss it. This constraint cannot see
-  -- the parent's own parent_id, so portal_reply_comment refuses a parent that is itself a
-  -- reply; the two rules together are what keep a thread flat, and neither is redundant
-  -- (a function check cannot stop a later UPDATE, and a row check cannot read the parent).
+  -- ONE level of nesting. A parent_id row is 'open' and stays there, so nothing can
+  -- resolve, apply, or dismiss it. The reply FEATURE is removed (025); parent_id rows
+  -- still exist because portal_submit_answers stores a client's question answers this way,
+  -- and historic replies keep rendering.
   constraint blog_comments_reply_open check (parent_id is null or state = 'open')
 );
 
@@ -975,21 +983,14 @@ create or replace function auth_can_read_client_slug(cslug text) returns boolean
 $$;
 
 -- The WRITE predicate. Admin-inclusive: a Strategi operator manages any brand's resources
--- from the console, and a client member manages their own. For a member the writing role is
--- still required, matching every other portal write door (portal_suggest_change,
--- portal_approve_blog): a viewer is a read seat. The admin bypass is the deliberate change
--- from the original resource design, where only clients could write; resources are now common
--- to both, so this mirrors auth_can_read_client_slug rather than dropping its bypass.
+-- from the console, and NOBODY ELSE. Resources are admin-only (024): a client never uploads,
+-- deletes, lists or downloads a file. This is the ONE choke point every resource write routes
+-- through (storage resources_insert_scoped and resources_delete_scoped, portal_resource_add,
+-- portal_resource_remove), so admin-only here closes all four. cslug is now vestigial (an admin
+-- may write any brand, a non-admin none), kept only because those four callers pass it.
 create or replace function auth_can_write_client_slug(cslug text) returns boolean
   language sql stable security definer set search_path = public as $$
   select auth_is_admin()
-      or exists (
-    select 1 from org_membership m
-    join org_members om on om.org_slug = m.org_slug
-    where m.client_slug = cslug
-      and om.user_id = auth.uid()
-      and om.role in ('admin', 'commenter')
-  )
 $$;
 
 revoke all on function auth_is_admin(), auth_org_slugs(), auth_can_read_client(uuid) from anon;
@@ -1007,8 +1008,10 @@ alter view v_review_notes set (security_invoker = true);
 
 -- Read policies: authenticated + SELECT only. Row scope is the client_id the row
 -- carries (or the row's own id for clients, the org slug for orgs).
+-- client_resources is admin-only (024): unlike every other read below, a client member never
+-- sees a brand's fact-base index.
 create policy read_scoped on client_resources for select to authenticated
-  using (auth_can_read_client(client_id));
+  using (auth_is_admin());
 create policy read_scoped on roadmap_uploads  for select to authenticated
   using (auth_can_read_client(client_id));
 create policy read_scoped on roadmap_sheets    for select to authenticated
@@ -1074,7 +1077,7 @@ grant select on orgs, client_resources, roadmap_rows,
 -- internal brief (client_md) and the gate config (gates) are operator material. A client
 -- sees only identity + flags.
 revoke select on clients from authenticated;
-grant select (id, org_id, slug, name, domain, industry, description,
+grant select (id, org_id, slug, name, domain, industry, market, description,
               created_at, deleted_at, preflight_ok, is_fixture, canonical_facts_at)
   on clients to authenticated;
 
@@ -1492,123 +1495,9 @@ grant execute on function portal_suggest_change(text, text, text, text, text, te
 
 -- A suggestion is not a one-shot form, it is the start of a thread: the admin resolves or
 -- dismisses it and the client answers that, the admin answers back, and both sides read the
--- same rows. Same gate stack, with three refusals of its own.
---
--- A reply is DELIBERATELY NOT a change request. It inserts with parent_id set, state
--- 'open', its text in `instruction`, and empty selected_text, so no apply path can ever
--- pick it up and no count can ever see it. The reply-of-a-reply refusal is what keeps the
--- thread one level deep: the row constraint on blog_comments cannot read the parent's
--- parent_id, so the check lives here, and a client who somehow held a reply's id would
--- otherwise nest a conversation the rail has no way to draw.
-create or replace function portal_reply_comment(
-  p_brand  text,
-  p_topic  text,
-  p_parent uuid,
-  p_body   text
-) returns uuid
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  v_uid          uuid := auth.uid();
-  v_email        text := coalesce(auth.jwt() ->> 'email', '');
-  v_is_admin     boolean;
-  v_is_member    boolean;
-  v_cid          uuid;
-  v_tid          uuid;
-  v_sent_at      timestamptz;
-  v_parent_topic uuid;
-  v_parent_of    uuid;
-  v_replies      int;
-  v_id           uuid;
-begin
-  if v_uid is null then
-    raise exception 'PORTAL:AUTH:not authenticated';
-  end if;
-  if btrim(coalesce(p_body, '')) = '' then
-    raise exception 'PORTAL:BLANK:a reply needs something in it';
-  end if;
-
-  select c.id into v_cid
-  from clients c
-  where c.slug = p_brand and c.deleted_at is null;
-
-  v_is_admin := exists (select 1 from app_admins a where a.user_id = v_uid);
-  v_is_member := v_cid is not null and (
-      v_is_admin
-      or exists (
-          select 1
-          from org_membership m
-          join org_members om on om.org_slug = m.org_slug
-          where m.client_id = v_cid and om.user_id = v_uid));
-
-  -- The 003 parity rule: a non-member learns nothing, because a brand that does not
-  -- exist and a brand in someone else's org answer identically.
-  if not v_is_member then
-    raise exception 'PORTAL:NOTFOUND:no blog to review for this account';
-  end if;
-
-  if not (v_is_admin or exists (
-      select 1 from org_membership m
-      join org_members om on om.org_slug = m.org_slug
-      where m.client_id = v_cid and om.user_id = v_uid
-        and om.role in ('admin', 'commenter'))) then
-    raise exception 'PORTAL:ROLE:this account is not allowed to reply for this brand';
-  end if;
-
-  select t.id, t.sent_to_client_at
-    into v_tid, v_sent_at
-  from topics t
-  where t.client_id = v_cid and t.slug = p_topic and t.deleted_at is null;
-  if v_tid is null then
-    raise exception 'PORTAL:NOTFOUND:no blog to review for this account';
-  end if;
-
-  -- An unsent article has no conversation to join. It refuses here rather than at the
-  -- parent lookup so the client reads why, not "that comment does not exist".
-  if v_sent_at is null then
-    raise exception 'PORTAL:NOTSENT:this article is not with you for review yet';
-  end if;
-
-  -- Serialize on the parent row, for the reason suggest serializes on the topic: two
-  -- racing replies would otherwise both count nineteen and both insert past the cap.
-  select c.topic_id, c.parent_id into v_parent_topic, v_parent_of
-  from blog_comments c
-  where c.id = p_parent
-  for update;
-
-  -- An unknown comment, another topic's comment, and a REPLY all answer identically. The
-  -- last one is not a lookup failure, it is the flat-thread rule: distinguishing it would
-  -- also hand a caller a probe for which ids are replies.
-  if v_parent_topic is null or v_parent_topic <> v_tid or v_parent_of is not null then
-    raise exception 'PORTAL:NOTFOUND:no comment to reply to on this article';
-  end if;
-
-  -- Twenty replies on one comment is not a conversation any more. The suggestion cap
-  -- above does not bind here (replies are excluded from it on purpose), so without this
-  -- one the thread is an unbounded write channel behind an authenticated login.
-  select count(*) into v_replies
-  from blog_comments c
-  where c.parent_id = p_parent;
-  if v_replies >= 20 then
-    raise exception 'PORTAL:LIMIT:this conversation is long enough; the team will follow up directly';
-  end if;
-
-  insert into blog_comments
-    (topic_id, client_id, parent_id, author, author_email,
-     selected_text, context_before, context_after, instruction, state)
-  values
-    (v_tid, v_cid, p_parent, 'client', v_email,
-     '', '', '', p_body, 'open')
-  returning id into v_id;
-
-  return v_id;
-end
-$$;
-
-revoke all on function portal_reply_comment(text, text, uuid, text) from public, anon;
-grant execute on function portal_reply_comment(text, text, uuid, text) to authenticated;
+-- portal_reply_comment is GONE (025): the reply feature is removed. A client files a
+-- comment; the team resolves it with Claude or dismisses it. Historic reply rows keep
+-- rendering, and portal_submit_answers still writes its answer rows with parent_id set.
 
 -- Same gates as portal_suggest_change, then the stamp. Approval stays available while
 -- the client's own suggestions are open (the portal keeps Approve live in the 'ready'
@@ -2169,15 +2058,17 @@ end $$;
 -- caller holds membership for: no wildcard and no prefix match, so `acme` and `acme-holdings`
 -- are unrelated values and a caller with no membership satisfies nothing.
 --
--- SELECT is admin-inclusive because the admin console lists a brand's knowledge base.
+-- SELECT is ADMIN-ONLY (024): only the admin console lists or downloads a brand's knowledge
+-- base. auth_can_write_client_slug (redefined to admin-only) would serve here too, but the read
+-- side reuses no membership predicate, so auth_is_admin() is stated directly.
 drop policy if exists resources_read_scoped on storage.objects;
 create policy resources_read_scoped on storage.objects for select to authenticated
   using (
     bucket_id = 'resources'
-    and auth_can_read_client_slug((storage.foldername(name))[1])
+    and auth_is_admin()
   );
 
--- INSERT and DELETE allow admins and a brand's own writing members (auth_can_write_client_slug).
+-- INSERT and DELETE are admin-only (024) via auth_can_write_client_slug.
 -- The depth check exists because storage
 -- keys are literal strings never validated against the client_slug domain: `mine/../yours/x`
 -- has first segment `mine`, so it could never be read as another brand's, but every
@@ -2417,5 +2308,33 @@ revoke all on function report_months(text), report_pdf(text, text),
   admin_report_months(text), admin_report_pdf(text, text) from public, anon;
 grant execute on function report_months(text), report_pdf(text, text),
   admin_report_months(text), admin_report_pdf(text, text) to authenticated;
+
+-- ---------------------------------------------------------------------------
+-- client_analyses: monthly ANALYSIS reports (six-tool GEO + SEO visibility). Shaped like
+-- client_reports (WORKING half + reserved SHARED snapshot) so the generate/list/delete/pdf plumbing
+-- clones cleanly and a future share-to-client needs no migration. RLS enabled and all authenticated
+-- grants revoked: the local engine reads it over the owner connection, and no hosted (PostgREST)
+-- read exists yet, so no SECURITY DEFINER functions are defined (they would be dead SQL). Add them
+-- exactly like report_months/admin_report_months above if a hosted read is ever needed. See
+-- 027_client_analyses.sql for the full account.
+-- ---------------------------------------------------------------------------
+create table if not exists client_analyses (
+  id             uuid primary key default gen_random_uuid(),
+  client_id      uuid not null references clients(id) on delete cascade,
+  month          text not null check (month ~ '^\d{4}-(0[1-9]|1[0-2])$'),
+  analysis       jsonb,
+  pdf            bytea,
+  generated_at   timestamptz,
+  generated_by   text,
+  shared_analysis jsonb,
+  shared_pdf      bytea,
+  shared_at       timestamptz,
+  shared_by       text,
+  created_at     timestamptz not null default now(),
+  unique (client_id, month)
+);
+create index if not exists client_analyses_client on client_analyses (client_id);
+alter table client_analyses enable row level security;
+revoke all on client_analyses from authenticated, anon;
 
 commit;

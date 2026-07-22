@@ -184,12 +184,6 @@ export type SuggestBody = {
   instruction: string;
 };
 
-/** What one reply carries: which suggestion it answers, and the line itself. */
-export type ReplyBody = {
-  parent_id: string;
-  body: string;
-};
-
 /** What an approval carries: the version the client actually read. */
 export type ApproveBody = {
   version: string | null;

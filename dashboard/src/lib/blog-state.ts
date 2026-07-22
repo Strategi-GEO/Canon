@@ -259,33 +259,25 @@ export type AdminAction =
   | "answer"
   /** Edit the markdown directly, and select a passage to have Claude change it. */
   | "edit"
-  /** File a change request, resolve one with Claude, dismiss one, or reply in its thread. */
+  /** File a change request, resolve one with Claude, or dismiss one. There is NO reply verb
+   *  on either bench: comments are not threads. A client files a comment, the team resolves
+   *  it with Claude or dismisses it, and that is the whole conversation. */
   | "comments"
-  /**
-   * Reply in an existing thread, and nothing else: no filing, no resolving, no dismissing.
-   *
-   * A SECOND VERB RATHER THAN A WIDER `comments`, because the acts behind `comments` all change
-   * the article and a reply changes nothing. It carries parent_id, commits no version and
-   * resolves no request, which is why migration 013 exempts it from the approved lock by name
-   * (013:18, and the `new.parent_id is not null` early return at 013:88), why migration 011's
-   * admin_reply_comment carries no done gate and no approved gate at all, and why
-   * server/app.py's reply route (:1898) states the same two absences in its own docstring.
-   *
-   * IT EXISTS BECAUSE THE TWO BENCHES DISAGREED AND THE CLIENT'S WAS RIGHT. CLIENT_ACTIONS grants
-   * `reply` in client_review and approved, so a client can ask a question about an article the
-   * operator may no longer edit. The admin bench carried nothing there, so the rail rendered
-   * read-only, ReplyBox was withheld, and the operator could not answer a person who was waiting
-   * on them, over an act every layer underneath accepts. Withdrawing the client's grant was the
-   * other way to make the two agree and it is the wrong one: it buys agreement by taking away
-   * the cheapest, least destructive act in the loop and leaving the client with silence.
-   *
-   * GRANTED WHERE THE RAIL IS READ AND `comments` IS NOT, which is exactly client_review,
-   * approved and published. In every state that grants `comments` the reply door already rides
-   * on that grant, so the two never both appear and blog-stage.tsx ORs them into one flag.
-   */
-  | "reply"
   /** Release it, or release it again after resolving change requests. */
   | "send"
+  /**
+   * Ship a FAILED blog anyway. The loop's verdict stands on the trail (the evaluator scored
+   * the draft below the house 95 bar and had nothing left to ask); this verb is the operator
+   * overruling that bar for a draft they have READ and are satisfied with. One press appends
+   * a `done` verdict naming the operator and the score, records the ledger row so the
+   * roadmap locks the topic exactly as a 95+ ship would, and sends the blog to the client.
+   * FAILED-BENCH ONLY, and the boundaries are the rule: needs_review is a hold no score
+   * dismisses (promotion is not a dismiss), stopped has no verdict to promote, and the
+   * engine refuses a failed record with no evaluator-scored draft, because gates and the
+   * link pass run before the eval and the scored draft is therefore the one shippable
+   * artifact a failed topic can hold.
+   */
+  | "promote"
   /** Push it to the CMS. */
   | "publish";
 
@@ -379,32 +371,30 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   answers_submitted: ["answer", "edit", "comments", "send"],
   // The refining bench. This is the one state where the admin shapes the article freely.
   internal_review: ["edit", "comments", "send"],
-  // WAITING, and the emptiness of the WRITE bench is still the feature. The client is reading the
-  // exact bytes pinned by sent_version_id, so an edit here changes the article underneath someone
-  // mid-review. `reply` is not an edit: CLIENT_ACTIONS grants the client `reply` in this same
-  // state, and an operator who cannot answer a question the client asked while reading is the
-  // asymmetry the verb was added to close. See `reply` above.
-  client_review: ["reply"],
+  // WAITING, and the emptiness is the feature. The client is reading the exact bytes pinned by
+  // sent_version_id, so an edit here changes the article underneath someone mid-review.
+  client_review: [],
   // The client asked for something, so the admin answers it and sends again. `send` is listed
   // and is still refused by the record while any suggestion is open: the button appears once
   // the last one is resolved or dismissed, which is what makes it a queue rather than a trap.
   changes_requested: ["edit", "comments", "send"],
   // LOCKED for every act that changes the article, which is what the lock is for and all it is
-  // for. `publish` is the one act that alters nothing the client approved. `reply` is the other,
-  // and its absence here was a defect rather than part of the lock: CLIENT_ACTIONS grants the
-  // client `reply` on an approved article, migration 013 exempts replies from the approved lock
-  // in so many words, and the bench carried nothing, so the client could speak and the operator
-  // could not answer.
-  approved: ["publish", "reply"],
-  // Still the same two doors: pushing again updates the same CMS post rather than creating a
-  // second one, so a re-push is how a failed or partial push is retried. `reply` survives the
-  // publish for the same reason it survives the approval, and it matters here for one specific
-  // road: a client replies while the article is approved, the operator publishes, and without
-  // this grant the thread they left open becomes unanswerable at the moment it is least
-  // excusable. The client's own bench is empty here, so no NEW question can arrive.
-  published: ["publish", "reply"],
-  // Today's handling, unchanged: these never reach a client and carry no review loop.
-  failed: [],
+  // for. `publish` is the one act that alters nothing the client approved.
+  approved: ["publish"],
+  // Still the one door: pushing again updates the same CMS post rather than creating a
+  // second one, so a re-push is how a failed or partial push is retried.
+  published: ["publish"],
+  // The full admin-review bench, one verb swapped: a failed draft is edited, commented and
+  // Claude-polished exactly like a done one, and then PROMOTED rather than sent, because the
+  // sub-95 ship is the operator's own decision and the promote door is where that decision is
+  // recorded. The engine widened with this bench (_require_reviewable accepts done|failed on
+  // the three editing routes; the send keeps demanding done). Retrying the topic is
+  // deliberately NOT a verb here, because a retry is a RUN: the roadmap keeps failed rows red
+  // and selectable, and the stage links there with the row pre-ticked.
+  failed: ["edit", "comments", "promote"],
+  // Never reaches a client and carries no review loop: a stopped topic has no verdict at all
+  // (no score describes it), so there is nothing to promote and its only exit is generating
+  // again.
   stopped: [],
   unknown: [],
 };
@@ -467,9 +457,7 @@ export type ClientAction =
   /** Accept the article as sent. */
   | "approve"
   /** Select a passage and ask for a change. */
-  | "suggest"
-  /** Reply inside an existing thread. Never resolves and never withdraws anything. */
-  | "reply";
+  | "suggest";
 
 const CLIENT_ACTIONS: Record<BlogState, readonly ClientAction[]> = {
   generating: [],
@@ -483,20 +471,16 @@ const CLIENT_ACTIONS: Record<BlogState, readonly ClientAction[]> = {
   answers_submitted: [],
   // Not visible. The article is with the team.
   internal_review: [],
-  client_review: ["approve", "suggest", "reply"],
-  // The full client_review bench, deliberately. The old reply-only row guarded against queueing
-  // a second request behind bytes the first one was already changing, and that describes a world
-  // that is gone: the client reads the latest committed version continuously, so a further
-  // suggestion is against current bytes, and approving mid-round is the client saying the
-  // remaining notes no longer block them. The database has permitted both all along: migration
-  // 005's portal_approve_blog header says in so many words that there is no open-comment
-  // refusal, because approving over an open suggestion is the client's call to make.
-  changes_requested: ["approve", "suggest", "reply"],
+  client_review: ["approve", "suggest"],
+  // The full client_review bench, deliberately: the client reads the latest committed version
+  // continuously, so a further suggestion is against current bytes, and approving mid-round is
+  // the client saying the remaining notes no longer block them. The database has permitted both
+  // all along: migration 005's portal_approve_blog header says in so many words that there is no
+  // open-comment refusal, because approving over an open suggestion is the client's call to make.
+  changes_requested: ["approve", "suggest"],
   // Locked for the client exactly as it is for the admin: no new change requests, from either
-  // side. Replying survives, and migration 013 permits it for the reason 011 gave about the
-  // operator's side: a reply carries parent_id, changes no bytes and resolves nothing, so
-  // "thanks, this reads well" is not an edit and refusing it only buys silence.
-  approved: ["reply"],
+  // side.
+  approved: [],
   // Live on their site. The conversation about getting it there is over.
   published: [],
   failed: [],

@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useSearchParams } from "next/navigation";
 import { ApiError, api } from "@/lib/api";
 import { SelectState } from "@/components/create/select-state";
 import { WatchState } from "@/components/create/watch-state";
@@ -87,6 +88,21 @@ export function CreateForBrand({
    * re-ticked rows after mount would fight the operator every time they unticked one.
    */
   const [retry, setRetry] = React.useState<{ token: number; slugs: string[] } | null>(null);
+
+  /**
+   * A retry arriving FROM THE BLOGS TAB: the failed blog's page links here with
+   * ?retry=<topic-slug>, and it lands exactly as the in-tab retry does, by seeding the same
+   * retry state so the select view mounts with the row pre-ticked. An effect rather than the
+   * initializer, so a second failed blog's link pre-ticks its row without a remount; the same
+   * slug twice is a no-op, which is fine, because its row is already ticked.
+   */
+  const retryParam = useSearchParams().get("retry");
+  React.useEffect(() => {
+    if (retryParam) {
+      setRetry({ token: Date.now(), slugs: [retryParam] });
+      setWatching(false);
+    }
+  }, [retryParam]);
 
   /**
    * The engine-wide run list, from the ONE poll above this tree rather than a read of its own.
@@ -297,6 +313,12 @@ export function CreateForBrand({
         factsBuild={factsBuildOf(run.runId, factsGen.job)}
         submittedAt={run.submittedAt}
         runningSince={run.runningSince}
+        /* Straight off the engine's record rather than folded into local run state: the phase
+           flips exactly once per run, and the record poll is what reports it. Null until the
+           poll lands or from an engine that predates the field, which the clock reads as the
+           old single timer. */
+        phase={record?.phase ?? null}
+        phaseStarted={record?.phase_started ?? null}
         stream={stream}
         blogsHref={brandHref(orgSlug, brandSlug, "/blogs")}
         onBack={() => {

@@ -2,12 +2,12 @@
 
 import * as React from "react";
 import {
+  BookmarkPlus,
   Check,
   CircleDashed,
   Laptop,
   Link2Off,
   Loader2,
-  Reply,
   Sparkles,
   TriangleAlert,
   X,
@@ -59,13 +59,13 @@ export function CommentableArticle({
   comments,
   disabled,
   canResolve,
-  canReply,
+  canAddToInstructions,
   deploymentLocked,
   remaining,
   onSubmit,
   onDismiss,
   onResolve,
-  onReply,
+  onAddToInstructions,
 }: {
   source: string;
   /** Every comment the engine holds for this blog, dismissed ones included: the filtering
@@ -74,17 +74,15 @@ export function CommentableArticle({
   disabled: boolean;
   /** Whether Resolve may be offered at all. A SEPARATE QUESTION FROM `disabled`, and the
    *  two are not degrees of the same permission: `disabled` asks whether this article takes
-   *  comments, this asks whether anything exists to spend a Claude session on one. Filing,
-   *  replying and dismissing are database writes the hosted build performs for real, while
-   *  resolving is an Agent SDK session that only the local engine can run, so Resolve is the
-   *  single act that has to go when the article is otherwise fully commentable. */
+   *  comments, this asks whether anything exists to spend a Claude session on one. Filing and
+   *  dismissing are database writes the hosted build performs for real, while resolving is an
+   *  Agent SDK session that only the local engine can run, so Resolve is the single act that
+   *  has to go when the article is otherwise fully commentable. */
   canResolve: boolean;
-  /** Whether a reply may be filed in an existing thread. A THIRD axis, and it is not a degree of
-   *  either one above: `disabled` asks whether the article takes changes and `canResolve` asks
-   *  whether an engine exists, while a reply is neither a change nor a session. It survives on an
-   *  article the client has approved, where every other door here is shut, because that is where
-   *  the client's own bench still grants them `reply` and somebody has to be able to answer. */
-  canReply: boolean;
+  /** Whether "Add to brand instructions" may run. The DEPLOYMENT axis alone: the act reframes
+   *  the comment with a Claude call and writes the BRAND record, not this article, so the
+   *  article's state never gates it, and it stays available on a resolved comment. */
+  canAddToInstructions: boolean;
   /** Whether the read-only rail is read-only because of the DEPLOYMENT rather than the article's
    *  state. It selects which sentence a card owed an act prints, and picking the wrong one told
    *  hosted operators the article was closed when it was open. */
@@ -95,9 +93,9 @@ export function CommentableArticle({
   onDismiss: (comment: BlogComment) => void;
   /** Starts the Claude apply for one open or failed comment. The engine owns the cap. */
   onResolve: (comment: BlogComment) => void;
-  /** Files one operator reply in a comment's thread. Rejects with the engine's own sentence,
-   *  which the card renders inline beside the box that produced it. */
-  onReply: (comment: BlogComment, body: string) => Promise<void>;
+  /** Reframes this comment as a standing instruction and appends it to the brand's custom
+   *  instructions. Rejects with the engine's own sentence for the card to render inline. */
+  onAddToInstructions: (comment: BlogComment) => Promise<void>;
 }) {
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const [capture, setCapture] = React.useState<SelectionCapture | null>(null);
@@ -211,12 +209,12 @@ export function CommentableArticle({
             unanchored={lost.has(comment.id)}
             capped={full}
             canResolve={canResolve}
-            canReply={canReply}
+            canAddToInstructions={canAddToInstructions}
             deploymentLocked={deploymentLocked}
             readOnly={disabled}
             onDismiss={onDismiss}
             onResolve={onResolve}
-            onReply={onReply}
+            onAddToInstructions={onAddToInstructions}
           />
         ),
       })),
@@ -225,12 +223,12 @@ export function CommentableArticle({
       lost,
       full,
       canResolve,
-      canReply,
+      canAddToInstructions,
       deploymentLocked,
       disabled,
       onDismiss,
       onResolve,
-      onReply,
+      onAddToInstructions,
     ],
   );
 
@@ -337,7 +335,7 @@ function Composer({
           ) : (
             <Sparkles data-icon="inline-start" aria-hidden />
           )}
-          Make changes with Claude
+          Resolve with Claude
         </Button>
       </div>
     </div>
@@ -345,35 +343,32 @@ function Composer({
 }
 
 /**
- * One comment's whole thread, in the rail beside its passage: who asked, what they asked
- * for, what the engine did about it, every reply since, and the three doors out.
+ * One comment's card, in the rail beside its passage: who asked, what they asked for, what
+ * the engine did about it, and the doors out.
  *
- * RESOLVE AND REPLY ARE DIFFERENT ACTS and the card offers both, which is the point. Resolve
- * spends a Claude session on the request. Reply says "we cut that line, it was a duplicate"
- * and leaves the request exactly where it was, so an operator can answer a client without
- * either deciding the request on their behalf or making it vanish from the client's rail.
+ * TWO ACTS, NO REPLY. Resolve spends a Claude session on the request; Dismiss declines it.
+ * Comments are not threads: the client files a note and reads its state, and that is the
+ * whole conversation. "Add to brand instructions" is the third door and it is NOT an act on
+ * this article: it reframes the note as a standing instruction for every future blog and
+ * appends it to the brand record, which is why it survives both a resolved comment and a
+ * read-only article.
  *
- * THREE DOORS, AND ONLY ONE OF THEM NEEDS AN ENGINE. Dismiss and Reply are database writes,
- * so they are offered wherever the article is commentable. Resolve is a Claude session, so
- * where there is nothing to run it the card drops the button and says where it runs instead.
- *
- * ALL THREE GO AT ONCE when the article itself is not open for changes. That case arrived with
- * the state machine: the rail is now read on an article the client is mid-review of, one they
- * have approved, and one already in the CMS, because an admin has to be able to SEE what was
- * asked for even where nobody may act on it. Reading is the whole of what is permitted there,
- * so the card becomes a record rather than a queue.
+ * A RESOLVED CARD KEEPS ITS PLACE AND ITS BUTTON. The green tick says what happened, the
+ * Resolve button stays visible and disabled so the card still reads as the same card, the
+ * anchor keeps pointing at the passage (hover still highlights it), and Add to brand
+ * instructions stays live: a note worth generalising is worth generalising after the fix.
  */
 function CommentCard({
   comment,
   unanchored,
   capped,
   canResolve,
-  canReply,
+  canAddToInstructions,
   deploymentLocked,
   readOnly,
   onDismiss,
   onResolve,
-  onReply,
+  onAddToInstructions,
 }: {
   comment: BlogComment;
   /** The passage is no longer in the article, so this card has no highlight to point at. */
@@ -387,25 +382,20 @@ function CommentCard({
    * This asks whether the ARTICLE is open, and when it is not, dismissing goes with it: the
    * record says the client accepted these exact bytes, and an admin waving a suggestion away
    * afterwards edits a conversation that is closed.
-   *
-   * REPLYING NO LONGER GOES WITH IT, and that is a correction rather than a loosening. The reply
-   * box used to sit inside this flag's block, so an approved article withheld it, while the
-   * client's own bench grants them `reply` in exactly that state and migration 013 exempts
-   * replies from the approved lock by name. The client could speak and nobody could answer. The
-   * box now rides on `canReply`, which the page composes from the bench and the deployment.
    */
   readOnly: boolean;
   /** An engine is behind this page, so a Claude session can actually run. False replaces the
    *  button with the reason: a card owed an act, offering neither the act nor an explanation
    *  for its absence, reads as a broken card rather than a deliberate one. */
   canResolve: boolean;
-  /** A reply may be filed in this thread. Independent of `readOnly` on purpose: see above. */
-  canReply: boolean;
+  /** The engine axis for Add to brand instructions: the reframe is a Claude call, so the
+   *  hosted build hides the button exactly as it hides Resolve. */
+  canAddToInstructions: boolean;
   /** The read-only above is the DEPLOYMENT's doing rather than the article's state. */
   deploymentLocked: boolean;
   onDismiss: (comment: BlogComment) => void;
   onResolve: (comment: BlogComment) => void;
-  onReply: (comment: BlogComment, body: string) => Promise<void>;
+  onAddToInstructions: (comment: BlogComment) => Promise<void>;
 }) {
   // Open and failed both wait on the same act: point Claude at the passage. On a failed
   // comment the button is the retry, whichever side filed it.
@@ -491,16 +481,16 @@ function CommentCard({
           where the state would have taken the change and the build refuses it, which makes the
           two arms mutually exclusive by construction rather than by a coincidence of props.
 
-          THE HOSTED ARM PROMISES NOTHING IT CANNOT KEEP. Its predecessor offered dismiss and
-          reply, and on this build both answer 501: blogs/[topic]/comments/[id]/route.ts and
-          .../reply/route.ts are hostedWriteRefused like every other admin write. Naming an act
-          that fails is worse than naming none, so it names the machine instead. */}
+          THE HOSTED ARM PROMISES NOTHING IT CANNOT KEEP. Its predecessor offered dismiss, and
+          on this build blogs/[topic]/comments/[id]/route.ts is hostedWriteRefused like every
+          other admin write. Naming an act that fails is worse than naming none, so it names
+          the machine instead. */}
       {readOnly && resolvable ? (
         deploymentLocked ? (
           <p className="mt-1.5 flex gap-1.5 text-xs leading-relaxed text-muted-foreground">
             <Laptop className="mt-0.5 size-3 shrink-0" aria-hidden />
-            This request is open and this hosted view cannot act on it. Resolving it with Claude,
-            dismissing it and replying to it all run in the Canon app on your own machine.
+            This request is open and this hosted view cannot act on it. Resolving it with Claude
+            and dismissing it both run in the Canon app on your own machine.
           </p>
         ) : (
           // A card owed an act, showing neither the act nor a reason for its absence, reads as
@@ -515,12 +505,14 @@ function CommentCard({
         )
       ) : null}
 
-      {/* THE DOORS ROW SURVIVES A READ-ONLY ARTICLE NOW, because one of the doors on it is not a
-          change. Resolve and the row itself used to be gated together on `readOnly`, and the
-          reply box was inside that block, so an approved article withheld the one act every layer
-          underneath accepts. `canReply` carries the reply door on its own axis and Resolve keeps
-          both of its old conditions, so nothing that writes a version has been loosened. */}
-      {(resolvable && canResolve && !readOnly) || canReply ? (
+      {/* THE DOORS ROW. Resolve renders enabled on an open or failed comment where an engine
+          exists and the article is open, and DISABLED (never absent) on a resolved one: the
+          green tick above says what happened and the greyed button keeps the card reading as
+          the same card. Add to brand instructions rides only the deployment axis, so it
+          survives a resolved comment and a read-only article alike. */}
+      {(resolvable && canResolve && !readOnly) ||
+      comment.state === "resolved" ||
+      canAddToInstructions ? (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {resolvable && canResolve && !readOnly ? (
             <Button
@@ -537,8 +529,15 @@ function CommentCard({
               <Sparkles data-icon="inline-start" aria-hidden />
               Resolve with Claude
             </Button>
+          ) : comment.state === "resolved" ? (
+            <Button size="xs" variant="outline" disabled title="This change is already applied.">
+              <Sparkles data-icon="inline-start" aria-hidden />
+              Resolve with Claude
+            </Button>
           ) : null}
-          {canReply ? <ReplyBox comment={comment} onReply={onReply} /> : null}
+          {canAddToInstructions && comment.state !== "applying" ? (
+            <AddToInstructions comment={comment} onAdd={onAddToInstructions} />
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -546,96 +545,62 @@ function CommentCard({
 }
 
 /**
- * The reply door, closed until it is asked for.
+ * The brand-instructions door: reframe this note as a standing instruction for every future
+ * blog and append it to the brand record.
  *
- * A textarea open on every card in a 20rem column would push the next comment half a screen
- * down for a box almost nobody is typing in, so the button is the resting state and the box
- * is what a click buys. State lives here rather than in the rail's parent: one card's
- * half-written reply is nothing any other card or the article has to know about.
+ * The stamp on the comment is the state, so "Added to instructions" survives a reload and
+ * every operator sees the same disabled button. The click is a Claude call plus a record
+ * write, so the pending state is honest about taking a few seconds.
  */
-function ReplyBox({
+function AddToInstructions({
   comment,
-  onReply,
+  onAdd,
 }: {
   comment: BlogComment;
-  onReply: (comment: BlogComment, body: string) => Promise<void>;
+  onAdd: (comment: BlogComment) => Promise<void>;
 }) {
-  const [open, setOpen] = React.useState(false);
-  const [body, setBody] = React.useState("");
-  const [sending, setSending] = React.useState(false);
+  const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const added = comment.added_to_instructions != null;
 
-  async function send() {
-    if (body.trim() === "") {
-      return;
-    }
-    setSending(true);
+  async function add() {
+    setPending(true);
     setError(null);
     try {
-      await onReply(comment, body.trim());
-      setOpen(false);
-      setBody("");
+      await onAdd(comment);
     } catch (cause) {
-      // The engine's refusal, in the box that caused it. A toast would put the reason
-      // somewhere other than the words it is about.
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setSending(false);
+      setPending(false);
     }
-  }
-
-  if (!open) {
-    return (
-      <Button size="xs" variant="ghost" onClick={() => setOpen(true)}>
-        <Reply data-icon="inline-start" aria-hidden />
-        Reply
-      </Button>
-    );
   }
 
   return (
-    <div className="w-full">
-      <Textarea
-        autoFocus
-        value={body}
-        onChange={(event) => setBody(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-            event.preventDefault();
-            void send();
-          }
-        }}
-        rows={2}
-        placeholder="Reply to this comment"
-        aria-label="Reply to this comment"
-        className="text-sm"
-        disabled={sending}
-      />
-      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-        The client reads this in their own rail. Replying leaves the change request open.
-      </p>
-      {error !== null ? <p className="mt-1 text-xs wrap-anywhere text-fail">{error}</p> : null}
-      <div className="mt-1.5 flex items-center justify-end gap-1.5">
-        <Button
-          size="xs"
-          variant="ghost"
-          disabled={sending}
-          onClick={() => {
-            setOpen(false);
-            setBody("");
-            setError(null);
-          }}
-        >
-          Cancel
-        </Button>
-        <Button size="xs" disabled={sending || body.trim() === ""} onClick={() => void send()}>
-          {sending ? (
-            <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
-          ) : null}
-          Send reply
-        </Button>
-      </div>
-    </div>
+    <>
+      <Button
+        size="xs"
+        variant="ghost"
+        disabled={added || pending}
+        title={
+          added
+            ? "This comment is already part of the brand instructions."
+            : "Rewrite this comment as a standing instruction for all upcoming blogs and add it to the brand instructions."
+        }
+        onClick={() => void add()}
+      >
+        {pending ? (
+          <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
+        ) : added ? (
+          <Check data-icon="inline-start" aria-hidden />
+        ) : (
+          <BookmarkPlus data-icon="inline-start" aria-hidden />
+        )}
+        {added ? "Added to instructions" : pending ? "Adding…" : "Add to brand instructions"}
+      </Button>
+      {error !== null ? (
+        <p className="w-full text-xs wrap-anywhere text-fail">{error}</p>
+      ) : null}
+    </>
   );
 }
 

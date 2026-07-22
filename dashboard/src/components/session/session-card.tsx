@@ -173,7 +173,19 @@ export function SessionCard({
               />
             )}
             <span className="text-sm font-medium text-foreground">
-              {stopped ? "Session stopped" : ended ? "Session finished" : "Session running"}
+              {/* The phase names what the engine is actually doing, because a facts build can
+                  run for minutes with every blog row sitting still, and "Session running" over
+                  a still table reads as wedged. The clock beside it measures the SAME phase
+                  the heading names, so the two can never describe different work. */}
+              {stopped
+                ? "Session stopped"
+                : ended
+                  ? "Session finished"
+                  : run.phase === "facts"
+                    ? "Generating canonical facts"
+                    : run.phase === "topics"
+                      ? "Generating blogs"
+                      : "Session running"}
             </span>
             <span className="text-xs text-muted-foreground">
               <span className="machine text-foreground">{topics.length}</span>{" "}
@@ -215,8 +227,13 @@ export function SessionCard({
           </span>
 
           <span className="ml-auto flex shrink-0 items-center gap-2">
-            {elapsed !== null ? (
-              <span className="machine text-xs text-muted-foreground">{elapsed} elapsed</span>
+            {elapsed !== null && clock !== null ? (
+              <span className="machine text-xs text-muted-foreground">
+                {/* "building for" while the facts file is written, a bare elapsed once blogs
+                    run. The blog clock starts FRESH at the phase flip (clockOf), so this
+                    number never carries the facts build's minutes. */}
+                {clock.measures === "building" ? `building for ${elapsed}` : `${elapsed} elapsed`}
+              </span>
             ) : null}
             <ChevronDown
               className={cn(

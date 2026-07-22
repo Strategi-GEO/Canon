@@ -236,6 +236,10 @@ def register_run(run_id, client, topics):
         # deserves to know the engine is building the file every one of those blogs will inherit
         # rather than doing nothing.
         "phase": None,
+        # When the CURRENT phase began, stamped by mark_phase at each flip. The dashboard's
+        # blog-generation clock starts here when phase reads "topics", so the facts build's
+        # minutes are never billed to the blogs. None until the run starts, like phase.
+        "phase_started": None,
         # Named only when the fact base could not be built. The run's topics carry the same reason
         # into their own status lines; this is the run-level copy, so /api/runs can say why a run
         # produced nothing without every reader parsing five status.jsonl files.
@@ -269,6 +273,29 @@ def mark_phase(run_id, phase):
     run = RUNS.get(run_id)
     if run is not None:
         run["phase"] = phase
+        # The instant the phase genuinely changed, same discipline as started_running: stamped
+        # at the flip, never predicted. This is what lets the dashboard start a FRESH clock for
+        # blog generation instead of billing the facts build's minutes to the blogs.
+        run["phase_started"] = datetime.now(timezone.utc).isoformat()
+
+
+def mark_topic_terminal(run_id, topic_slug):
+    """Release ONE topic from a still-live run the moment its session settles.
+
+    app.py's _live_run_slugs counts a live run's topics as in-flight so a second submit for
+    the same topic is refused. Before this flag it counted ALL of them, so a topic that
+    FAILED at iteration 3 stayed locked until its siblings finished, and the operator could
+    not re-select the exact row a failure makes them want to retry. Set on the success and
+    failure arms of run_batch's guarded(); never on a stop, because a stop flips the whole
+    run's `live` off and every topic releases with it. In-memory on the run record, one
+    uvicorn worker, exactly like every other mark_* here.
+    """
+    run = RUNS.get(run_id)
+    if run is None:
+        return
+    for topic in run.get("topics", []):
+        if topic.get("topic_slug") == topic_slug:
+            topic["terminal"] = True
 
 
 def mark_run_error(run_id, reason):
@@ -1397,11 +1424,20 @@ def _materialize_topic_scratch(client_slug, topic_slug, answers=False):
     before this call still counts only what the coming session appends. answers=True
     additionally rebuilds questions.json and answers.json from the record, which the
     answer-driven revise needs on disk before its snapshot.
+
+    THE CLIENT SCRATCH IS RE-LAID HERE TOO, not only at batch start. The answer-driven revise
+    reaches this function without passing run_batch's own _materialize_client_scratch call, and
+    its writer reads clients/<slug>/custom-instructions.md as a MAJOR-priority directive. A
+    brand instruction added after the last generate (the Add-to-brand-instructions button, a
+    Settings edit) must bind the very next revise, and it lives in the record, so the disk is
+    refreshed from the record before every session, whichever path opens it. Idempotent and
+    cheap; run_batch's earlier call simply makes this one a no-op rewrite of the same bytes.
     """
     if db.client_id(client_slug) is None:
         log.debug("materialize skipped for %s/%s: the record does not know this client, "
                   "so there is nothing to lay down", client_slug, topic_slug)
         return
+    sync.materialize_client(client_slug)
     sync.materialize_topic(client_slug, topic_slug)
     if answers:
         sync.materialize_answers(client_slug, topic_slug)
@@ -2570,13 +2606,21 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
         except Exception as exc:
             # Report the failure through the same callback, then re-raise so
             # gather's return_exceptions still records it for the return value.
+            # Released from the in-flight set FIRST: a failed topic is exactly
+            # the one the operator wants to re-select, and holding it until the
+            # batch ends refused the retry for as long as any sibling ran.
+            mark_topic_terminal(run_id, topic_slug)
             await _notify(on_topic_done, {
                 "topic_slug": topic_slug, "status": "failed", "score": None,
                 "iterations": 0, "note": str(exc), "row": row, "index": index,
             })
             raise
         # Fire outside the semaphore: bookkeeping must not hold a slot that the
-        # next topic is waiting on.
+        # next topic is waiting on. The terminal release comes first for the same
+        # reason as the failure arm's: this topic's session is over, its record is
+        # committed (run_topic's own commit ran before it returned), and nothing
+        # about it is in flight any more.
+        mark_topic_terminal(run_id, topic_slug)
         await _notify(on_topic_done, dict(result, row=row, index=index))
         return result
 

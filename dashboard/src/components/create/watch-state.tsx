@@ -44,6 +44,8 @@ export function WatchState({
   factsBuild,
   submittedAt,
   runningSince,
+  phase,
+  phaseStarted,
   stream,
   blogsHref,
   onBack,
@@ -78,6 +80,12 @@ export function WatchState({
   submittedAt: string;
   /** When the engine took the lock and began. Null while queued. Feeds the RUNNING clock. */
   runningSince: string | null;
+  /** The engine's own phase for this run: "facts" while canonical-facts.md is being built,
+   *  "topics" once blogs are dispatched, null while queued or from an older engine. */
+  phase: "facts" | "topics" | null;
+  /** When the current phase began. The blog clock starts FRESH here on the topics flip, so
+   *  the facts build's minutes are never billed to the blogs. */
+  phaseStarted: string | null;
   /** Held by the parent, because the roadmap table reads the same frames to paint its rows. */
   stream: StreamState;
   /** This brand's blog library. The route owns every URL in this tree. */
@@ -167,7 +175,7 @@ export function WatchState({
   const clock: Clock | null =
     buildingSince !== null
       ? { since: buildingSince, measures: "building" }
-      : clockOf({ state, submittedAt, runningSince });
+      : clockOf({ state, submittedAt, runningSince, phase, phaseStarted });
   const elapsed = now === null || clock === null ? null : formatElapsed(clock.since, now);
 
   return (
@@ -178,15 +186,17 @@ export function WatchState({
             {/* The facts phase gets its own heading rather than hiding under "Run in progress".
                 An operator looking at a list of blogs where nothing is moving asks one question,
                 and the heading is where they read the answer. */}
-            {building
-              ? "Building the fact base"
+            {building || (!finished && phase === "facts")
+              ? "Generating canonical facts"
               : stopped
                 ? "Run stopped"
                 : queued
                   ? "Run queued"
                   : finished
                     ? "Run finished"
-                    : "Run in progress"}
+                    : phase === "topics"
+                      ? "Generating blogs"
+                      : "Run in progress"}
           </h2>
           <p className="machine mt-1 text-xs wrap-break-word text-muted-foreground">{runId}</p>
         </div>

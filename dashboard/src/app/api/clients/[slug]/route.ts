@@ -43,6 +43,11 @@ export async function GET(
  * `authenticated`, and a write path into a column the caller may not read would be strictly
  * more powerful than the read path that was deliberately closed.
  *
+ * market (added with migration 026) is not here either, by simple omission rather than a
+ * security argument: the operator dashboard edits it against the engine, and this hosted
+ * mirror refuses every write before parsing anyway. Add it to admin_update_client first if a
+ * hosted deployment ever needs to edit it.
+ *
  * organisation_name is excluded for a different reason and it is worth stating, because the
  * local engine accepts it here. _upsert_org does `on conflict (slug) do update set name =
  * excluded.name`, which renames the org for EVERY brand under it. No per-brand check can scope

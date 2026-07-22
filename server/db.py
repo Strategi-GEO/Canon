@@ -142,6 +142,14 @@ AGENT_ENV_ALLOW = (
     "DATAFORSEO_USERNAME", "DATAFORSEO_PASSWORD",
     "FIRECRAWL_MCP_URL", "DATAFORSEO_MCP_URL",
     "FIRECRAWL_MCP_AUTH", "DATAFORSEO_MCP_AUTH",
+    # The four monthly-Analysis tools. These reach the agent through their own MCP servers exactly
+    # like the two above; where a tool has no MCP and needs a raw key, that key is named here too.
+    # Absent vars are simply not passed, which is what makes the Analysis report degrade gracefully.
+    "GSC_MCP_URL", "GSC_MCP_AUTH",              # Google Search Console
+    "GA4_MCP_URL", "GA4_MCP_AUTH",              # Google Analytics (GA4)
+    "BING_MCP_URL", "BING_MCP_AUTH", "BING_WEBMASTER_API_KEY",   # Bing Webmaster
+    "CLARITY_MCP_URL", "CLARITY_MCP_AUTH", "CLARITY_API_KEY",    # Microsoft Clarity
+    "SEOGETS_MCP_URL", "SEOGETS_MCP_AUTH", "SEOGETS_API_KEY",    # SEO Gets
     # Engine knobs
     "GEO_MODEL", "GEO_MAX_TURNS", "GEO_MAX_BUDGET_USD",
     "GEO_RETRIES", "GEO_DASHBOARD_ORIGINS",

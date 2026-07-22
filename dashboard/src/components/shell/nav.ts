@@ -9,6 +9,7 @@ import {
   PenLine,
   Recycle,
   Settings,
+  Telescope,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -40,6 +41,9 @@ export const BRAND_NAV: NavItem[] = [
   // The monthly performance report: AI visibility, backlinks and referring domains over time.
   // It reads the outcome of the work the rows above produce, so it sits after them.
   { section: "/reports", label: "Reports", icon: ChartColumnIncreasing },
+  // The monthly Analysis report: the deep six-tool GEO + SEO visibility read (prompt matrix,
+  // rankings, engagement, outcomes). Kept separate from Reports on purpose. Sits beside it.
+  { section: "/analysis", label: "Analysis", icon: Telescope },
   { section: "/resources", label: "Resources", icon: FolderOpen },
   { section: "/settings", label: "Settings", icon: Settings },
 ];

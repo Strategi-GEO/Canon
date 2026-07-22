@@ -125,8 +125,22 @@ export type GateForm = GateFormFacts | "absent" | "unread";
  */
 export type GateApplying = number | "unread";
 
+/**
+ * The record a gate reads: the state facts, plus the evaluator's score.
+ *
+ * `score` is DELIBERATELY NOT a BlogStateFacts member. The state never reads it, the portal
+ * producers never supply it (tests/portal_check.py bans the token from the client surface
+ * outright), and exactly one door needs it: promote, whose engine route refuses a failed
+ * record with no evaluator-scored draft. It rides here because the admin wire already carries
+ * it (BlogSummary.score), and blog-stage's gateInput record is the merged BlogSummary, so the
+ * fact is on the page without touching either state-facts producer. Absent reads as refuse in
+ * the one clause that consults it, which is the true answer rather than a guess: a scoreless
+ * failed record has nothing shippable in it.
+ */
+export type GateRecord = BlogStateFacts & { score?: number | null };
+
 export type GateInput = {
-  record: BlogStateFacts;
+  record: GateRecord;
   form: GateForm;
   /**
    * OPTIONAL, AND THE THREE ANSWERS ARE THREE DIFFERENT QUESTIONS. Read this before omitting it.
@@ -165,12 +179,12 @@ export type GateSourceId =
   | "admin_save_blog_content"
   | "admin_add_comment"
   | "admin_dismiss_comment"
-  | "admin_reply_comment"
   | "refuse_version_when_approved"
   | "refuse_comment_when_approved"
   | "client_or_404"
   | "topic_or_404"
   | "require_done"
+  | "require_reviewable"
   | "require_not_approved"
   | "require_not_with_client"
   | "api_answers"
@@ -180,7 +194,7 @@ export type GateSourceId =
   | "api_resolve_blog_comment"
   | "api_delete_blog_comment"
   | "api_send_blog_to_client"
-  | "api_reply_blog_comment"
+  | "api_promote_blog"
   | "api_publish_blog"
   | "assert_publishable"
   | "cms_record_blog"
@@ -300,7 +314,7 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     symbol: "admin_brand_id",
     kind: "sql",
     fingerprint: "4244b6ce54f51e7d",
-    gates: ["edit", "comments", "send", "reply"],
+    gates: ["edit", "comments", "send"],
     what:
       "Resolves the brand for every admin write on the hosted build, and refuses a caller who is " +
       "not an admin or is asking about a brand that is not there.",
@@ -336,12 +350,14 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     symbol: "admin_done_topic",
     kind: "sql",
     fingerprint: "25e031cf00f9ea20",
-    gates: ["edit", "comments", "send"],
+    gates: ["send"],
     what:
       "Resolves a topic for any admin write, raises PORTAL:NOTDONE unless topic_rollup.status is " +
       "exactly 'done', then PORTAL:LOCKED on an approved article. admin_save_blog_content, " +
-      "admin_add_comment and the send all route through it, so it is the shared gate under " +
-      "`edit`, `comments` and `send` on the hosted build.",
+      "admin_add_comment and the send all still route through it on the hosted build, but its " +
+      "clause now sits only on the send door: the failed-draft bench exists on the local build " +
+      "alone, and every hosted admin write route answers 501 before this function runs, so " +
+      "done-only here is defense-in-depth rather than a refusal any mounted control can hit.",
     exemptions: [
       {
         id: "done_topic_not_found",
@@ -448,36 +464,6 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
       },
     ],
   },
-  admin_reply_comment: {
-    file: "supabase/migrations/011_admin_reply_comment.sql",
-    symbol: "admin_reply_comment",
-    kind: "sql",
-    fingerprint: "7b182e3a043e279c",
-    gates: ["reply"],
-    what:
-      "The hosted reply. It carries NO done gate and NO approved gate by design, which is what " +
-      "makes `reply` the one act with no record condition: a reply commits no version and " +
-      "resolves nothing.",
-    exemptions: [
-      {
-        id: "reply_topic_not_found",
-        raises: "PORTAL:NOTFOUND:no such blog for this account",
-        why: "Resolution rather than a gate, exactly as admin_done_topic's own NOTFOUND is.",
-      },
-      {
-        id: "reply_blank_body",
-        raises: "PORTAL:BLANK:a reply needs something in it",
-        why: "The payload, decided at the moment of sending.",
-      },
-      {
-        id: "reply_parent_not_found",
-        raises: "PORTAL:NOTFOUND:no such change request on this blog",
-        why:
-          "A property of ONE comment rather than of the article, and this contract is keyed by " +
-          "article. The rail already withholds a reply box on a row it does not hold.",
-      },
-    ],
-  },
   refuse_version_when_approved: {
     file: "supabase/migrations/013_approved_lock.sql",
     symbol: "refuse_version_when_approved",
@@ -497,8 +483,8 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     gates: ["comments"],
     what:
       "The trigger on blog_comments, TOP-LEVEL ROWS ONLY. An operator comment is born 'applying' " +
-      "and runs Claude at once, so it is an edit wearing a comment's clothes; a reply carries " +
-      "parent_id and returns early, which is the whole of why `reply` survives an approval.",
+      "and runs Claude at once, so it is an edit wearing a comment's clothes; a parent_id row " +
+      "(a client's question answer, or a legacy reply) returns early and is untouched.",
     exemptions: [],
   },
 
@@ -510,7 +496,7 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     symbol: "_client_or_404",
     kind: "python",
     fingerprint: "4ea483dedc489e82",
-    gates: ["answer", "edit", "comments", "send", "reply"],
+    gates: ["answer", "edit", "comments", "send"],
     what: "The engine's twin of admin_brand_id: the brand must exist and be inside the caller's scope.",
     exemptions: [
       {
@@ -527,7 +513,7 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     symbol: "_topic_or_404",
     kind: "python",
     fingerprint: "dfdabc791ae049bc",
-    gates: ["answer", "edit", "comments", "send", "reply"],
+    gates: ["answer", "edit", "comments", "send"],
     what:
       "The engine's topic resolver, and the traversal guard with it: an unknown slug and a " +
       "smuggled path get one answer.",
@@ -547,12 +533,12 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     symbol: "_require_done",
     kind: "python",
     fingerprint: "ea22e7feea82b739",
-    gates: ["edit", "comments", "send"],
+    gates: ["send"],
     what:
       "The local engine's admin_done_topic: a 409 unless the topic's terminal verdict is done. " +
-      "api_save_blog_content, api_add_blog_comment, api_resolve_blog_comment and " +
-      "api_send_blog_to_client each call it, so it is the single gate under `edit`, `comments` " +
-      "and `send` on the build that does the actual writing.",
+      "Only api_send_blog_to_client calls it now: the three editing routes moved to " +
+      "_require_reviewable when the admin-review bench gained the failed draft, so this is " +
+      "the gate that keeps a failed draft from SHIPPING by any door other than promote.",
     exemptions: [],
     dependsOn: [
       {
@@ -567,16 +553,42 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
       },
     ],
   },
+  require_reviewable: {
+    file: "server/app.py",
+    symbol: "_require_reviewable",
+    kind: "python",
+    // Recorded at the entry's creation, reconciled with the clause above it.
+    fingerprint: "e6a0ac2987702f5d",
+    gates: ["edit", "comments"],
+    what:
+      "The admin-review bench's own gate: a 409 unless the verdict is done OR failed. The " +
+      "three editing routes (save, comment filing, comment resolve) call it, so an operator " +
+      "can polish a sub-95 draft before promoting it, while needs_review, stopped and running " +
+      "stay closed and the send keeps demanding the literal done through _require_done.",
+    exemptions: [],
+    dependsOn: [
+      {
+        file: "server/app.py",
+        symbol: "_topic_status",
+        why:
+          "The same dependency require_done records, for the same mutation: the status this " +
+          "gate compares is folded by this helper, so a helper forced to answer \"done\" " +
+          "leaves this gate's own text byte identical while it stops gating.",
+      },
+    ],
+  },
   require_not_approved: {
     file: "server/app.py",
     symbol: "_require_not_approved",
     kind: "python",
     fingerprint: "6302d2452a9c26e4",
-    gates: ["answer", "edit", "comments", "send"],
+    gates: ["answer", "edit", "comments", "send", "promote"],
     what:
       "The HTTP half of the approved lock, and the widest gate in the engine: it stands in front " +
       "of the answer routes as well as the three write routes, because an answer dispatches a " +
-      "revise that rewrites the draft and commits a version.",
+      "revise that rewrites the draft and commits a version. The promote route calls it too: a " +
+      "resurrected topics row keeps its old approval stamp, and promoting over one would end in " +
+      "mark_sent's None with a sentence about suggestions that are not the problem.",
     exemptions: [],
   },
   require_not_with_client: {
@@ -676,7 +688,7 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/app.py",
     symbol: "api_save_blog_content",
     kind: "python",
-    fingerprint: "1740c9ef095753b6",
+    fingerprint: "ac909ca1173c8d7c",
     gates: ["edit"],
     what:
       "The engine's save route. Beyond the three shared helpers it refuses a live run and the " +
@@ -703,7 +715,7 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/app.py",
     symbol: "api_add_blog_comment",
     kind: "python",
-    fingerprint: "11148807c94999f6",
+    fingerprint: "424261b6030a40d0",
     gates: ["comments"],
     what:
       "The engine's change request route, which files the comment AND starts the Claude session, " +
@@ -745,7 +757,7 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/app.py",
     symbol: "api_resolve_blog_comment",
     kind: "python",
-    fingerprint: "ed94283d6cc2c7f1",
+    fingerprint: "704a5484d1a4c258",
     gates: ["comments"],
     what:
       "Spends a Claude session on ONE waiting comment. The client's suggestions arrive 'open' " +
@@ -818,25 +830,39 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
       "it reports from mark_sent answering None rather than from a count it ran first.",
     exemptions: [],
   },
-  api_reply_blog_comment: {
+  // THE ONE ACT THAT PASSES ON "failed" AND ON NOTHING ELSE: the operator shipping a sub-95
+  // draft they have read. The route appends a `done` verdict to the status trail
+  // (blog_edit.promote_to_done), ledgers the blog, and releases it through mark_sent, so every
+  // other gate in this table keeps demanding the literal "done" untouched: a promoted blog
+  // satisfies them because the fold genuinely reads done afterward, never because one of them
+  // was widened. Its four refusals are the four clauses on the promote door.
+  api_promote_blog: {
     file: "server/app.py",
-    symbol: "api_reply_blog_comment",
+    symbol: "api_promote_blog",
     kind: "python",
-    fingerprint: "559820b4530bc729",
-    gates: ["reply"],
+    // Recorded at the entry's creation, after the four clauses above were written against the
+    // route's four raises and the record-behind mapping was exempted below, so the hash and
+    // the clause set were reconciled together rather than the hash bumped over an unread diff.
+    fingerprint: "6b44d1e9cdf2f84c",
+    gates: ["promote"],
     what:
-      "The engine's reply route, and its docstring states the absence in so many words: no done " +
-      "gate, because a reply spends nothing.",
+      "Ships a FAILED blog on the operator's authority and sends it to the client in one act: " +
+      "refuses a topic mid-run, a topic that is not terminal failed, one with no " +
+      "evaluator-scored committed draft, and the open-suggestion sentinel from mark_sent. The " +
+      "approved lock is _require_not_approved's own clause, called rather than restated.",
     exemptions: [
       {
-        id: "reply_route_blank",
-        raises: 'detail="a reply needs something in it"',
-        why: "The payload.",
-      },
-      {
-        id: "reply_route_parent_unknown",
-        raises: 'detail=f"no comment {comment_id!r} on {topic!r}"',
-        why: "A property of one comment rather than of the article, as the hosted twin's is.",
+        id: "promote_route_record_behind",
+        raises: "status_code=409, detail=str(exc))",
+        why:
+          "The HTTP mapping of blog_edit.promote_to_done's own refusals, of which there are " +
+          "two: the status feed on this machine sitting behind a record another engine wrote " +
+          "(the promotion line gets swallowed by the ordinal conflict, verified after commit), " +
+          "and a draft the machine MOVED after its last evaluator score (a retry's writer " +
+          "replaced blog.md and died before an eval, so the score describes other bytes). " +
+          "Both are facts about the status feed's line-level shape at one instant, not " +
+          "conditions the record on this page's wire can express, so no clause could decide " +
+          "either; the 409 carries the fix in the engine's own words.",
       },
     ],
   },
@@ -977,7 +1003,9 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/blog_edit.py",
     symbol: "_refuse_if_approved",
     kind: "python",
-    fingerprint: "fbf3eea7685f260b",
+    // Re-recorded when _COMMENT_COLS (inside this symbol's extraction window) gained the
+    // added_to_instructions column. The refusals themselves are unchanged.
+    fingerprint: "0cf2e733ba99a033",
     gates: ["edit", "comments"],
     what:
       "The engine module's own approved lock, in front of the trigger, so an operator reads a " +
@@ -1153,7 +1181,7 @@ const CLEAN: GateInput = {
 };
 
 /** The same input with one record fact changed. Keeps every witness a one-variable statement. */
-function withRecord(patch: Partial<BlogStateFacts>): GateInput {
+function withRecord(patch: Partial<GateRecord>): GateInput {
   return { ...CLEAN, record: { ...CLEAN.record, ...patch } };
 }
 
@@ -1189,6 +1217,25 @@ const DONE_TOPIC_ENGINE: GateClause = {
   transient: false,
   decide: ({ record }) => (record.status === "done" ? "pass" : "refuse"),
   witness: { passes: CLEAN, refuses: withRecord({ status: "failed" }) },
+};
+
+// THE ADMIN-REVIEW BENCH NOW SEATS A FAILED DRAFT, and this clause is the widening, kept as
+// its own function so DONE_TOPIC_ENGINE above stays byte-identical on the send door. The
+// operator may polish a sub-95 draft with edits and Claude comments before promoting it: the
+// promoted artifact should be the draft they are satisfied with. needs_review stays out (a
+// hold no edit clears), stopped and running have no settled draft, and the send still demands
+// the literal done, so a failed draft ships only through the promote door.
+const REVIEWABLE_TOPIC_ENGINE: GateClause = {
+  id: "topic_is_reviewable_engine",
+  source: "require_reviewable",
+  line: 1876,
+  condition: 'if status not in ("done", "failed"):',
+  raises: "not done or failed; {act} is for settled",
+  refusal: "409 this blog is neither done nor failed, so the admin-review bench is closed",
+  transient: false,
+  decide: ({ record }) =>
+    record.status === "done" || record.status === "failed" ? "pass" : "refuse",
+  witness: { passes: withRecord({ status: "failed" }), refuses: withRecord({ status: "needs_review" }) },
 };
 
 const NOT_APPROVED_SQL: GateClause = {
@@ -1302,6 +1349,78 @@ const SEND_NO_OPEN_SUGGESTIONS_ENGINE: GateClause = {
   raises: "the client's suggestions are still open; resolve or dismiss each",
   refusal: "409 the client's suggestions are still open",
   transient: false,
+  decide: ({ record }) => ((record.changes_requested ?? 0) > 0 ? "refuse" : "pass"),
+  witness: { passes: CLEAN, refuses: withRecord({ changes_requested: 1 }) },
+};
+
+// ---------------------------------------------------------------------------
+// The promote door: shipping a FAILED blog on the operator's authority.
+// ---------------------------------------------------------------------------
+// The engine route (api_promote_blog) appends a `done` verdict to the status trail, ledgers
+// the blog, and sends it, so every OTHER door keeps demanding the literal "done" untouched:
+// a promoted blog satisfies DONE_TOPIC and its siblings because the fold genuinely reads
+// done afterward, not because any of them was widened. These four clauses are the route's
+// own refusals, and they are the inverse gate of the rest of this table: the one act that
+// passes on "failed" and on nothing else.
+
+const PROMOTE_NOT_IN_FLIGHT: GateClause = {
+  id: "promote_not_in_flight",
+  source: "api_promote_blog",
+  line: 2286,
+  condition: "if topic in _live_run_slugs(slug):",
+  raises: "is generating right now in a live run; promotion is for",
+  refusal: "409 this topic is generating right now in a live run",
+  transient: false,
+  // The registry excludes topics whose session already settled (mark_topic_terminal), so a
+  // failed topic mid-batch reads live: false on the wire and is promotable while its
+  // siblings still run, exactly as it is re-selectable on the roadmap.
+  decide: ({ record }) => (record.live ? "refuse" : "pass"),
+  witness: { passes: CLEAN, refuses: withRecord({ live: true }) },
+};
+
+const PROMOTE_TOPIC_IS_FAILED: GateClause = {
+  id: "promote_topic_is_failed",
+  source: "api_promote_blog",
+  line: 2293,
+  condition: 'if status != "failed":',
+  raises: "promotion is for failed blogs only",
+  refusal: "409 this blog is not failed, and promotion is for failed blogs only",
+  transient: false,
+  // The exact inverse of DONE_TOPIC, and the boundaries are the rule: needs_review is a hold
+  // no score dismisses (promotion is not a dismiss), stopped has no verdict to promote, and
+  // done needs no promotion.
+  decide: ({ record }) => (record.status === "failed" ? "pass" : "refuse"),
+  witness: { passes: withRecord({ status: "failed" }), refuses: CLEAN },
+};
+
+const PROMOTE_HAS_SCORED_DRAFT: GateClause = {
+  id: "promote_has_scored_draft",
+  source: "api_promote_blog",
+  line: 2310,
+  condition: "if score is None:",
+  raises: "has no evaluator-scored draft to promote",
+  refusal: "409 no evaluator-scored draft exists to promote",
+  transient: false,
+  // Gates and the link pass run BEFORE the eval, so a scored committed draft is gate-clean
+  // and link-clean by construction: the 95 bar is the only thing promotion waives. A failed
+  // topic with no scored version (a crash, a preflight refusal) has nothing shippable in it,
+  // and an absent score fails closed because that is the true answer, not a guess.
+  decide: ({ record }) => (record.score != null ? "pass" : "refuse"),
+  witness: { passes: withRecord({ score: 92 }), refuses: CLEAN },
+};
+
+const PROMOTE_NO_OPEN_SUGGESTIONS: GateClause = {
+  id: "promote_no_open_suggestions",
+  source: "api_promote_blog",
+  line: 2325,
+  condition: "if state is None:",
+  raises: "the client's suggestions are still open; resolve or dismiss each",
+  refusal: "409 the client's suggestions are still open",
+  transient: false,
+  // The same mark_sent sentinel the send route reports, arriving through the promote route's
+  // own copy of the mapping. Unreachable for an ordinary failed blog (suggestions require a
+  // send, a send requires done), kept as a clause because the raise exists in the source and
+  // a resurrected topics row can still carry old comments.
   decide: ({ record }) => ((record.changes_requested ?? 0) > 0 ? "refuse" : "pass"),
   witness: { passes: CLEAN, refuses: withRecord({ changes_requested: 1 }) },
 };
@@ -1539,6 +1658,11 @@ export const ALL_GATE_CLAUSES: readonly GateClause[] = [
   NOT_WITH_CLIENT,
   SEND_NO_OPEN_SUGGESTIONS_SQL,
   SEND_NO_OPEN_SUGGESTIONS_ENGINE,
+  REVIEWABLE_TOPIC_ENGINE,
+  PROMOTE_NOT_IN_FLIGHT,
+  PROMOTE_TOPIC_IS_FAILED,
+  PROMOTE_HAS_SCORED_DRAFT,
+  PROMOTE_NO_OPEN_SUGGESTIONS,
   NO_APPLY_IN_FLIGHT,
   COMMENT_CAP,
   RESOLVE_COMMENT_CAP,
@@ -1556,14 +1680,6 @@ export const ALL_GATE_CLAUSES: readonly GateClause[] = [
  * THE TABLE. Keyed by the same AdminAction the bench hands out, so the two compose rather than
  * compete: `adminCan` says whether the article's PLACE permits the act, and this says whether the
  * RECORD will take it. Both must hold, and neither is a restatement of the other.
- *
- * `reply` IS THE ONLY VERB THAT CARRIES NO CLAUSE, and the empty list is a statement rather than a
- * gap. Migration 011's admin_reply_comment carries no done gate and no approved gate, migration
- * 013 exempts a reply by name at 013:18 with a `new.parent_id is not null` early return at 013:88,
- * and server/app.py's reply route states both absences in its own docstring. A reply commits no
- * version and resolves nothing, so there is no record condition left for it to fail. Both of its
- * sources are still listed in GATE_SOURCES and still fingerprinted, so a done gate added to either
- * goes red here rather than shipping as an offered-but-refused control.
  *
  * `publish` USED TO SIT IN THAT SENTENCE AND IT DID NOT BELONG THERE. The reason given was that a
  * push changes nothing about the article, which is true and is a claim about the ARTICLE rather
@@ -1592,9 +1708,15 @@ export const ADMIN_GATE_DOORS: Record<AdminAction, readonly GateDoor[]> = {
     {
       id: "save_blog_content",
       what: "save the article body",
+      // REVIEWABLE rather than the DONE pair, and the SQL clause's absence is a decision:
+      // admin_done_topic still demands the literal done on the hosted build, but every hosted
+      // admin write route answers 501 hostedWriteRefused before any SQL runs, so the only
+      // build that MOUNTS this control is the local one, whose engine gate is exactly the
+      // clause below. Listing the SQL clause here would refuse the failed bench on the one
+      // build that has it. If the hosted build ever performs admin writes, widen
+      // admin_done_topic in a migration first and restore its clause here.
       clauses: [
-        DONE_TOPIC,
-        DONE_TOPIC_ENGINE,
+        REVIEWABLE_TOPIC_ENGINE,
         NOT_APPROVED_SQL,
         NOT_APPROVED_ENGINE,
         NOT_APPROVED_EDIT_MODULE,
@@ -1618,7 +1740,7 @@ export const ADMIN_GATE_DOORS: Record<AdminAction, readonly GateDoor[]> = {
      * with-client gate at all: migration 013's triggers are `before insert` and a dismiss is an
      * UPDATE, and server/app.py's delete route calls only the two resolvers. So an OR would grant
      * `comments` on an approved article, which is true of dismissing and false of the act the
-     * bench hands out. blog-state.ts gives `approved` a bench of publish and reply, and this table
+     * bench hands out. blog-state.ts gives `approved` a bench of publish alone, and this table
      * composes with that bench rather than arguing with it.
      *
      * THE ORDER IS THE MESSAGE ORDER. Permanent clauses first, then the cap, then the dismiss
@@ -1629,9 +1751,11 @@ export const ADMIN_GATE_DOORS: Record<AdminAction, readonly GateDoor[]> = {
     {
       id: "add_comment",
       what: "file, resolve or dismiss a change request",
+      // REVIEWABLE rather than the DONE pair, for the reason the edit door states: the failed
+      // bench exists only on the local build, and the hosted SQL gate sits behind routes that
+      // 501 every admin write anyway.
       clauses: [
-        DONE_TOPIC,
-        DONE_TOPIC_ENGINE,
+        REVIEWABLE_TOPIC_ENGINE,
         NOT_APPROVED_SQL,
         NOT_APPROVED_ENGINE,
         NOT_APPROVED_EDIT_MODULE,
@@ -1658,10 +1782,22 @@ export const ADMIN_GATE_DOORS: Record<AdminAction, readonly GateDoor[]> = {
       ],
     },
   ],
+  promote: [
+    {
+      id: "promote_failed_blog",
+      what: "ship this failed blog on your authority and send it to the client",
+      clauses: [
+        PROMOTE_NOT_IN_FLIGHT,
+        PROMOTE_TOPIC_IS_FAILED,
+        NOT_APPROVED_ENGINE,
+        PROMOTE_HAS_SCORED_DRAFT,
+        PROMOTE_NO_OPEN_SUGGESTIONS,
+      ],
+    },
+  ],
   publish: [
     { id: "publish_to_cms", what: "push the article to the CMS", clauses: [PUBLISH_TOPIC_IS_DONE] },
   ],
-  reply: [{ id: "reply_in_thread", what: "reply inside an existing thread", clauses: [] }],
 };
 
 export type GateVerdict =

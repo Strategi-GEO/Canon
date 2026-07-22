@@ -33,7 +33,7 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
                                StreamingResponse)
 from pydantic import BaseModel
 
-from . import auth, blog_edit, blog_upload, client_answers, db, describe, facts_gen, ledger, report_gen, roadmap, roadmap_gen, runner, sync
+from . import analysis_gen, auth, blog_edit, blog_upload, client_answers, db, describe, facts_gen, ledger, report_gen, roadmap, roadmap_gen, runner, sync
 # Aliased for the same reason clients is: "questions" is the natural name for the list of
 # questions inside a handler, and the shadowing bug that causes is silent.
 from . import questions as questions_mod
@@ -431,6 +431,11 @@ class CreateClientRequest(BaseModel):
     name: str
     domain: str = ""
     industry: str = ""
+    # Geography + language ("India, English"): what DataForSEO validates keywords against.
+    # Asked at onboarding because the old workflow (hand-editing client.md's Market section)
+    # was never surfaced anywhere, so every brand shipped without one and DataForSEO was
+    # skipped on every run.
+    market: str = ""
     description: str = ""
     # Optional: omitted means the brand is its own single-brand org, the common case.
     organisation_name: str = ""
@@ -453,6 +458,10 @@ class UpdateClientRequest(BaseModel):
     # clients.set_onboarding_industry) and nobody edits it after, so the silent drop is now
     # the refusal. The settings page no longer offers the field.
     domain: Optional[str] = None
+    # Same rule as domain: modelled here AND forwarded in api_update_client, or the settings
+    # page's key is dropped and the operator sees "Saved" over a record that never moved.
+    # Empty string clears the market; None means "not sent".
+    market: Optional[str] = None
     # The brand's standing blog instructions, same rule as domain/industry: modelled here AND
     # forwarded in api_update_client, or an unmodelled key is dropped and the operator sees
     # "Saved" over a record that never moved. Empty string clears them; None means "not sent".
@@ -487,6 +496,7 @@ async def api_create_client(body: CreateClientRequest,
             body.industry,
             description=body.description,
             organisation_name=body.organisation_name,
+            market=body.market,
         )
     except clients_mod.ClientExists as exc:
         raise HTTPException(status_code=409, detail=str(exc))
@@ -509,6 +519,7 @@ async def api_update_client(slug: str, body: UpdateClientRequest,
             name=body.name,
             organisation_name=body.organisation_name,
             domain=body.domain,
+            market=body.market,
             custom_instructions=body.custom_instructions,
         )
     except clients_mod.UnknownClient as exc:
@@ -716,7 +727,12 @@ def _live_run_slugs(slug):
         if run.get("client") != slug or not run.get("live"):
             continue
         for topic in run.get("topics", []):
-            in_flight.add(topic.get("topic_slug"))
+            # A topic whose session already settled (mark_topic_terminal) is not in flight,
+            # however live its siblings are: its terminal status is written and its record
+            # committed, so a failed one is re-selectable the moment it fails rather than
+            # when the whole batch ends.
+            if not topic.get("terminal"):
+                in_flight.add(topic.get("topic_slug"))
     return in_flight
 
 
@@ -1146,6 +1162,150 @@ async def api_report_pdf(slug: str, month: str,
     return Response(
         content=bytes(pdf), media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{slug}-{month}-report.pdf"'})
+
+
+# ---------------------------------------------------------------------------
+# Monthly ANALYSIS: run (a job), then list / delete / pdf.
+#
+# Deliberately kept SEPARATE from Reports (a different tab, a different table, a different skill),
+# per the requirement to keep the two apart for now. Generation is a long SDK session, so the run
+# trio mirrors reports/generate exactly: 202 and the browser watches. There is no Share here yet:
+# Analysis is an admin-internal report, so the client-facing snapshot half of the table stays unused
+# until a Share route is added. Everything else is a plain record read/write over the owner
+# connection. Same ROUTE ORDER rule: the static /analysis/generate paths are declared before
+# /analysis/{month} so a DELETE on /analysis/generate reaches the clear-job handler.
+# See supabase/migrations/027_client_analyses.sql and server/analysis_gen.py.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/clients/{slug}/analysis")
+async def api_analyses(slug: str, user: auth.Identity = Depends(auth.require_user)):
+    """Every month this brand holds an analysis for, plus the current month even when it has none,
+    so the tab can offer Run over an empty current month. Each entry carries the WORKING analysis
+    (what the admin sees and what the trend is drawn from)."""
+    _client_or_404(slug, user)
+    cid = db.client_id(slug)
+    rows = db.q(
+        "select month, analysis, (pdf is not null), generated_at, generated_by "
+        "from client_analyses where client_id = %s order by month desc", (cid,)) if cid else []
+    current = analysis_gen.current_month()
+    analyses = []
+    seen = set()
+    for month, analysis, has_pdf, gen_at, gen_by in rows:
+        seen.add(month)
+        analyses.append({
+            "month": month,
+            "status": "generated" if analysis is not None else "none",
+            "analysis": analysis,
+            "has_pdf": bool(has_pdf),
+            "generated_at": gen_at,
+            "generated_by": gen_by,
+        })
+    if current not in seen:
+        analyses.append({
+            "month": current, "status": "none", "analysis": None, "has_pdf": False,
+            "generated_at": None, "generated_by": None,
+        })
+    analyses.sort(key=lambda r: r["month"], reverse=True)
+    return {"current_month": current, "analyses": analyses}
+
+
+@app.post("/api/clients/{slug}/analysis/generate", status_code=202)
+async def api_generate_analysis(slug: str, user: auth.Identity = Depends(auth.require_admin)):
+    """Run this month's analysis. 202, and the browser watches: one long SDK session that merges up
+    to six tools. Generation ALWAYS targets the current calendar month, computed from the engine
+    clock, never taken from the browser."""
+    client = _read_client_or_404(slug, user)
+    month = analysis_gen.current_month()
+
+    if analysis_gen.job_running(slug):
+        raise HTTPException(status_code=409, detail={
+            "detail": f"an analysis for {slug!r} is already running; watch that one rather than "
+                      f"starting a second, which would race it to write the same row",
+            "job": _public_job(analysis_gen.get_job(slug)),
+        })
+    if _client_has_live_run(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"a run for {slug!r} is live; wait for it to finish before running an analysis")
+    if analysis_gen.working_analysis_exists(slug, month):
+        raise HTTPException(
+            status_code=409,
+            detail=f"an analysis for {month} already exists; delete it first to regenerate")
+    if not (client.get("domain") or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="this brand has no domain recorded; a monthly analysis measures a live site")
+
+    email = getattr(user, "email", "") or ""
+    return _public_job(analysis_gen.start_job(slug, month, email))
+
+
+@app.get("/api/clients/{slug}/analysis/generate")
+async def api_analysis_generation_job(slug: str,
+                                      user: auth.Identity = Depends(auth.require_user)):
+    """The current analysis job, or 404 when there has never been one. Lets a run survive a refresh
+    and be watched from a tab that never started it."""
+    _client_or_404(slug, user)
+    job = analysis_gen.get_job(slug)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"no analysis job for {slug!r}")
+    return _public_job(job)
+
+
+@app.delete("/api/clients/{slug}/analysis/generate", status_code=204)
+async def api_clear_analysis_generation(slug: str,
+                                        user: auth.Identity = Depends(auth.require_admin)):
+    """Drop a settled analysis job once the operator has read or dismissed it. A running job is
+    refused: the session is spending quota and dropping its record would strand it."""
+    _client_or_404(slug, user)
+    if analysis_gen.job_running(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"the analysis for {slug!r} is still running; clear it once it finishes")
+    analysis_gen.clear_job(slug)
+    return None
+
+
+@app.delete("/api/clients/{slug}/analysis/{month}", status_code=204)
+async def api_delete_analysis(slug: str, month: str,
+                              user: auth.Identity = Depends(auth.require_admin)):
+    """Remove this month's WORKING analysis: analysis, pdf and generation stamps. The reserved
+    shared snapshot is left untouched. When no shared snapshot remains either, the now-empty row is
+    dropped. Idempotent: deleting a month that has no working analysis is a no-op 204."""
+    _client_or_404(slug, user)
+    if not analysis_gen.valid_month(month):
+        raise HTTPException(status_code=404, detail=f"{month!r} is not a valid analysis month")
+    if analysis_gen.job_running(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"an analysis for {slug!r} is running; wait for it before deleting")
+    cid = db.client_id(slug)
+    with db.tx() as cur:
+        cur.execute(
+            "update client_analyses set analysis = null, pdf = null, generated_at = null, "
+            "generated_by = null where client_id = %s and month = %s", (cid, month))
+        cur.execute(
+            "delete from client_analyses where client_id = %s and month = %s "
+            "and shared_analysis is null", (cid, month))
+    return None
+
+
+@app.get("/api/clients/{slug}/analysis/{month}/pdf")
+async def api_analysis_pdf(slug: str, month: str,
+                           user: auth.Identity = Depends(auth.require_user)):
+    """The WORKING analysis's PDF for one month, as a download. 404 when this month has no working
+    PDF, which is both a deleted month and an analysis whose PDF never rendered (Chromium absent)."""
+    _client_or_404(slug, user)
+    if not analysis_gen.valid_month(month):
+        raise HTTPException(status_code=404, detail=f"{month!r} is not a valid analysis month")
+    cid = db.client_id(slug)
+    pdf = db.q("select pdf from client_analyses where client_id = %s and month = %s",
+               (cid, month), fetch="val")
+    if pdf is None:
+        raise HTTPException(status_code=404, detail=f"no analysis PDF for {month}")
+    return Response(
+        content=bytes(pdf), media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{slug}-{month}-analysis.pdf"'})
 
 
 # ---------------------------------------------------------------------------
@@ -1824,10 +1984,6 @@ class CommentRequest(BaseModel):
     context_after: str = ""
 
 
-class ReplyRequest(BaseModel):
-    body: str
-
-
 class ContentRequest(BaseModel):
     body: str
 
@@ -1849,6 +2005,23 @@ def _require_done(slug, topic_slug, act):
         raise HTTPException(
             status_code=409,
             detail=f"{topic_slug!r} is {status}, not done; {act} is for shipped blogs only",
+        )
+
+
+def _require_reviewable(slug, topic_slug, act):
+    """409 unless the verdict is done OR failed: the admin-review bench, which now includes a
+    failed draft. The operator may polish a sub-95 draft with edits and Claude comments before
+    promoting it (api_promote_blog), because the promoted artifact should be the draft they
+    are satisfied with, not the draft plus a wish list. The boundaries stay hard: needs_review
+    is a hold no edit clears (answering is the only door), stopped and running have no settled
+    draft to edit, and the SEND stays behind _require_done, so a failed draft still ships only
+    through promotion."""
+    status = _topic_status(slug, topic_slug)
+    if status not in ("done", "failed"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{topic_slug!r} is {status}, not done or failed; {act} is for settled "
+                   f"drafts on the admin-review bench only",
         )
 
 
@@ -1979,7 +2152,7 @@ async def api_add_blog_comment(slug: str, topic: str, body: CommentRequest,
     """
     _client_or_404(slug, user)
     _topic_or_404(slug, topic)
-    _require_done(slug, topic, "a Claude edit")
+    _require_reviewable(slug, topic, "a Claude edit")
     # Permanent before transient, exactly as this route's own ordering comment states: an
     # approved article is locked for good, so saying so before the live-run and in-flight
     # refusals keeps the operator from waiting out a run to retry something that will never
@@ -2044,7 +2217,7 @@ async def api_resolve_blog_comment(slug: str, topic: str, comment_id: str,
     returned nothing."""
     _client_or_404(slug, user)
     _topic_or_404(slug, topic)
-    _require_done(slug, topic, "a Claude edit")
+    _require_reviewable(slug, topic, "a Claude edit")
     # Resolving spends a Claude session that ends in a committed version, so it is the same
     # act as filing a comment as far as the approved lock is concerned. It matters separately
     # from the filing route because a suggestion filed BEFORE the approval is still sitting
@@ -2094,39 +2267,57 @@ async def api_resolve_blog_comment(slug: str, topic: str, comment_id: str,
     return flipped
 
 
-@app.post("/api/clients/{slug}/blogs/{topic}/comments/{comment_id}/reply",
-          status_code=201)
-async def api_reply_blog_comment(slug: str, topic: str, comment_id: str,
-                                 body: ReplyRequest,
-                                 user: auth.Identity = Depends(auth.require_admin)):
-    """Answer one comment in its thread, as the operator.
+@app.post("/api/clients/{slug}/blogs/{topic}/comments/{comment_id}/to-instructions")
+async def api_comment_to_instructions(slug: str, topic: str, comment_id: str,
+                                      user: auth.Identity = Depends(auth.require_admin)):
+    """Reframe one comment as a standing brand instruction and append it to the brand's
+    custom instructions, then stamp the comment so every surface reads it as added.
 
-    201 and not 202, because nothing runs: a reply is a sentence the client reads, and it
-    leaves the parent's state exactly where it was. REPLYING IS NOT RESOLVING, and keeping
-    those two doors apart is the whole point of this one: an operator who wants to say "we
-    cut that line, it was a duplicate" must be able to say it without a Claude session
-    deciding the request on the client's behalf, and without the comment disappearing from
-    the client's rail as though it had been handled.
-
-    No done gate, unlike every route above: it exists because an
-    apply spends real API credits on an article worth polishing, and a reply spends
-    neither. An unknown comment and a reply's own id both answer 404, because a reply is
-    not addressable as a comment (blog_edit.get_comment says why)."""
+    The ENGINE owns the whole act on purpose: the reframe is a Claude call, and the append
+    is ATOMIC IN THE DATABASE (a concat inside one UPDATE), because two operators clicking
+    at once, or one click racing another comment's, must not interleave: a read here, a
+    multi-second reframe, and a write-back was exactly that lost-update window, and the
+    review that found it proved two concurrent appends dropped a line. No done gate and
+    no approved gate: the write lands on the BRAND record, not on this article, which is
+    also why the button stays live on a resolved comment. 409 answers a comment already
+    stamped, because the reframed line is already in the instructions and a second append
+    would say it twice."""
     _client_or_404(slug, user)
     _topic_or_404(slug, topic)
-    text = body.body.strip()
-    if not text:
-        raise HTTPException(status_code=422, detail="a reply needs something in it")
-    reply = await asyncio.to_thread(
-        blog_edit.reply_comment,
-        slug, topic, comment_id,
-        body=text,
-        author="operator",
-        author_email=getattr(user, "email", "") or "",
-    )
-    if reply is None:
+    comment = await asyncio.to_thread(blog_edit.get_comment, slug, topic, comment_id)
+    if comment is None:
         raise HTTPException(status_code=404, detail=f"no comment {comment_id!r} on {topic!r}")
-    return reply
+    if comment.get("added_to_instructions"):
+        raise HTTPException(status_code=409,
+                            detail="this comment is already in the brand instructions")
+
+    record = await asyncio.to_thread(clients_mod.read_client, slug)
+    brand_name = record.get("name") or slug
+    try:
+        line = await blog_edit.reframe_as_instruction(
+            brand_name, comment["selected_text"], comment["instruction"])
+    except blog_edit.EditError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    def _append_instruction():
+        # The concat happens inside the UPDATE, so concurrent appends serialize on the row
+        # and neither is lost; the multi-second reframe above sits safely outside it. The
+        # scratch copy then follows the record, exactly as update_client orders it.
+        db.q(
+            r"""update clients
+                set custom_instructions = case
+                      when btrim(coalesce(custom_instructions, '')) = '' then %s
+                      else rtrim(custom_instructions) || E'\n\n' || %s
+                    end
+                where id = %s""",
+            (line, line, db.client_id(slug)), fetch="none")
+        db.invalidate_client_cache()
+        sync.materialize_client(slug)
+
+    await asyncio.to_thread(_append_instruction)
+    stamped = await asyncio.to_thread(
+        blog_edit.mark_added_to_instructions, slug, topic, comment_id)
+    return {"instruction": line, "comment": stamped}
 
 
 @app.delete("/api/clients/{slug}/blogs/{topic}/comments/{comment_id}", status_code=204)
@@ -2165,7 +2356,7 @@ async def api_save_blog_content(slug: str, topic: str, body: ContentRequest,
     before the button releases."""
     _client_or_404(slug, user)
     _topic_or_404(slug, topic)
-    _require_done(slug, topic, "editing")
+    _require_reviewable(slug, topic, "editing")
     # The editor is the most direct way to change bytes the client already accepted, so the
     # lock is checked before the body is even looked at. save_content refuses this too; this
     # is what turns the refusal into a 409 the Save button can render, rather than the 500 an
@@ -2236,6 +2427,76 @@ async def api_send_blog_to_client(slug: str, topic: str,
     # locked, which sends them to resolve comments that are not the problem.
     _require_not_approved(slug, topic, "sending to the client")
     email = getattr(user, "email", "") or ""
+    state = await asyncio.to_thread(blog_edit.mark_sent, slug, topic, email)
+    if state is None:
+        raise HTTPException(
+            status_code=409,
+            detail="the client's suggestions are still open; resolve or dismiss each "
+                   "one before sending again",
+        )
+    return state
+
+
+@app.post("/api/clients/{slug}/blogs/{topic}/promote")
+async def api_promote_blog(slug: str, topic: str,
+                           user: auth.Identity = Depends(auth.require_admin)):
+    """Ship a FAILED blog on the operator's authority, and send it to the client, one act.
+
+    The evaluator's verdict stays on the trail: this route exists for the blog that stalled
+    below 95 with nothing left to ask, where the operator has read the draft and is satisfied
+    with it. Promotion appends a new terminal `done` line whose note names the operator and
+    the score (blog_edit.promote_to_done), appends the ledger row so the roadmap locks the
+    topic exactly as a 95+ ship would, and then releases the blog to the client through the
+    same mark_sent every send uses. From that moment the blog is treated as passed
+    everywhere, because review, approve and publish all read the folded status, and the fold
+    reads done.
+
+    Scope is exact and each boundary refuses below: terminal `failed` only, never
+    needs_review (questions hold at any score, and promotion is not a dismiss), never
+    stopped (no verdict exists to promote), never mid-run, never approved, and never without
+    an evaluator-scored committed draft. Gates and the link pass run before the eval, so a
+    scored draft is gate-clean and link-clean; the 95 bar is the ONLY thing being waived.
+    """
+    _client_or_404(slug, user)
+    _topic_or_404(slug, topic)
+    if topic in _live_run_slugs(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{topic!r} is generating right now in a live run; promotion is for "
+                   f"settled topics",
+        )
+    status = _topic_status(slug, topic)
+    if status != "failed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"{topic!r} is {status}, not failed; promotion is for failed blogs only",
+        )
+    # Unreachable through the bench in the ordinary world (an approved topic folds to
+    # approved, not failed), but a resurrected topics row keeps its old stamps, and promoting
+    # over one would end in mark_sent's None with a sentence about suggestions that are not
+    # the problem. The precise refusal goes first.
+    _require_not_approved(slug, topic, "promotion")
+    cid = db.client_id(slug)
+    score = db.q(
+        """select v.score from blog_versions v
+           join topics t on t.id = v.topic_id
+           where t.client_id = %s and t.slug = %s and t.deleted_at is null
+           order by v.version_no desc limit 1""",
+        (cid, topic), fetch="val")
+    if score is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{topic!r} has no evaluator-scored draft to promote; generate it "
+                   f"again instead",
+        )
+    email = getattr(user, "email", "") or ""
+    try:
+        await asyncio.to_thread(blog_edit.promote_to_done, slug, topic, score, email)
+    except blog_edit.EditError as exc:
+        # The promotion line did not land in the record (this machine's status feed is behind
+        # it, promote_to_done says how that happens and what clears it). Nothing was ledgered
+        # and nothing was sent, so the operator retries after the stated fix.
+        raise HTTPException(status_code=409, detail=str(exc))
     state = await asyncio.to_thread(blog_edit.mark_sent, slug, topic, email)
     if state is None:
         raise HTTPException(

@@ -40,6 +40,13 @@ INDUSTRIES_DIR = (
 # The house default word band, matching CLAUDE.md. gates may override it per client.
 HOUSE_WORD_BAND = {"min": 1200, "soft_max": 2000, "hard_max": 2500}
 
+# The house default market, the operator's standing decision (every brand this agency serves
+# sells in India, in English). NOT a guess from the domain, which the engine contract forbids:
+# it is a configured default the onboarding dialog prefills visibly, and a brand that sells
+# elsewhere overrides it there or in Settings. create_client falls back to it so a brand can
+# never be created marketless, which is what silently skipped DataForSEO on every early run.
+HOUSE_DEFAULT_MARKET = "India, English"
+
 # A resource is a brochure, a deck, a sheet, a PDF. 25 MB is generous for that and small
 # enough that a mistaken upload fails fast instead of filling Storage.
 MAX_RESOURCE_BYTES = 25 * 1024 * 1024
@@ -150,7 +157,7 @@ def exists(slug):
 # disagree on a count or a flag. blog_count counts topics that actually carry a committed
 # blog version, which is the record's answer to what _blog_count used to glob off disk.
 _CLIENT_SELECT = """
-    select c.slug, c.name, c.domain, c.industry, c.description,
+    select c.slug, c.name, c.domain, c.industry, c.market, c.description,
            c.custom_instructions,
            c.created_at,
            exists (select 1 from roadmap_sheets r where r.client_id = c.id)
@@ -170,7 +177,7 @@ _CLIENT_SELECT = """
 
 
 def _client_from_row(row):
-    (slug, name, domain, industry, description, custom_instructions,
+    (slug, name, domain, industry, market, description, custom_instructions,
      created_at, has_roadmap, has_facts, resource_count, blog_count,
      org_slug, org_name) = row
     return {
@@ -185,6 +192,9 @@ def _client_from_row(row):
                         else {"slug": slug, "name": name or slug},
         "domain": domain or "",
         "industry": industry or "",
+        # Geography + language ("India, English"): what DataForSEO validates keywords against
+        # and whose local sources Agent R prefers. Collected at onboarding, edited in Settings.
+        "market": market or "",
         "description": description or "",
         # The brand's standing blog instructions, so the Settings tab can show and edit them.
         # Operator material: present on the engine's own record (owner connection), never on the
@@ -285,8 +295,8 @@ docs on any conflict. If a fact is not in `canonical-facts.md`, it is not establ
 it, do not infer it.
 
 ## Market
-Not recorded at onboarding. DataForSEO needs a location and language named here, so an
-operator MUST fill this section in before the first real run. Do not guess a market from the
+Not recorded yet. DataForSEO needs a location and language named here, so set the Market
+field in this brand's Settings before the first real run. Do not guess a market from the
 domain suffix.
 
 ## Industry reference
@@ -464,7 +474,7 @@ def _upsert_org(org_config, for_client=None):
 
 
 def create_client(name, domain, industry, description="",
-                  organisation_name=None):
+                  organisation_name=None, market=""):
     name = str(name or "").strip()
     slug = slugify_client(name)
     if not slug:
@@ -493,6 +503,7 @@ def create_client(name, domain, industry, description="",
 
     industry = str(industry or "").strip()
     domain = str(domain or "").strip()
+    market = str(market or "").strip() or HOUSE_DEFAULT_MARKET
 
     # gates.json as it will be materialized to disk, MINUS "organisation": the org lives
     # in org_id and is never duplicated into gates.
@@ -526,10 +537,11 @@ def create_client(name, domain, industry, description="",
     try:
         db.q(
             """insert into clients
-                 (org_id, slug, name, domain, industry, description, client_md,
+                 (org_id, slug, name, domain, industry, market, description, client_md,
                   gates)
-               values (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)""",
-            (org_id, slug, name, domain, industry, str(description or ""),
+               values (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)""",
+            (org_id, slug, name, domain, industry, market,
+             str(description or ""),
              _client_md(name, domain, industry, slug),
              json.dumps(config, ensure_ascii=False)),
             fetch="none")
@@ -553,7 +565,8 @@ def create_client(name, domain, industry, description="",
 
 
 def update_client(slug, description=None, name=None, organisation_name=None,
-                  domain=None, industry=None, custom_instructions=None):
+                  domain=None, industry=None, custom_instructions=None,
+                  market=None):
     """Update only what was passed. A None field is untouched, so a PATCH carrying one key
     cannot blank the others, and gates keys this function was not given survive."""
     cid = db.client_id(slug)
@@ -593,6 +606,12 @@ def update_client(slug, description=None, name=None, organisation_name=None,
     if industry is not None:
         sets.append("industry = %s")
         params.append(str(industry).strip())
+    # Column only, like domain: the agents read it from client.md's Market section, which
+    # sync.materialize_client below splices in from this column on every lay-down. Empty string
+    # is a real value (clearing the market), so only None means "not sent".
+    if market is not None:
+        sets.append("market = %s")
+        params.append(str(market).strip())
     if organisation_name is not None:
         # Moving a brand between orgs rewrites ONE column and renames NO slug. Blank
         # clears back to its own single-brand org, which is what a null org_id means.

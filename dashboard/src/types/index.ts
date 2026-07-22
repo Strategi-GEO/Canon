@@ -40,6 +40,12 @@ export type Client = {
   custom_instructions: string;
   domain: string;
   industry: string;
+  /**
+   * Geography + language, e.g. "India, English": what DataForSEO validates keywords against
+   * and whose local sources the researcher prefers. Asked at onboarding, edited in Settings.
+   * Absent-safe with `?? ""` at every read, like custom_instructions.
+   */
+  market: string;
   has_roadmap: boolean;
   has_canonical_facts: boolean;
   resource_count: number;
@@ -93,6 +99,11 @@ export type CreateClientBody = {
   name: string;
   domain: string;
   industry: string;
+  /**
+   * Geography + language ("India, English"). Asked at onboarding because DataForSEO keyword
+   * validation is silently skipped on every run for a brand without one.
+   */
+  market?: string;
   description?: string;
   /**
    * The org to file this brand under, by NAME rather than slug: the operator can type a new
@@ -421,6 +432,15 @@ export type RunSummary = {
    * queued session has no such clock because nothing has run.
    */
   started_running: string | null;
+  /**
+   * Which half of a running run this is: "facts" while canonical-facts.md is being built,
+   * "topics" once blogs are dispatched. Optional on the wire: an engine one restart behind
+   * omits both, and every reader falls back to the old single clock.
+   */
+  phase?: "facts" | "topics" | null;
+  /** When the CURRENT phase began. The blog clock measures from this when phase is "topics",
+   *  so the facts build's minutes are never billed to the blogs. */
+  phase_started?: string | null;
   topics: RunTopic[];
 };
 
@@ -830,9 +850,17 @@ export type BlogComment = {
   /**
    * The thread under this comment, oldest first, and empty for most comments. ALWAYS
    * present, even empty: a surface that has to test for the key renders "undefined replies"
-   * the first time one arrives.
+   * the first time one arrives. HISTORY ONLY: the reply feature is removed, so nothing ever
+   * appends to this again; it renders rows filed before the removal.
    */
   replies: BlogCommentReply[];
+  /**
+   * UTC ISO when this comment was reframed and appended to the brand's custom instructions,
+   * or null. The stamp is what keeps "Added to instructions" disabled across reloads and
+   * across operators. Optional on the wire: an engine one pull behind serves comments
+   * without the key.
+   */
+  added_to_instructions?: string | null;
 };
 
 export type BlogCommentsResponse = {
@@ -1074,4 +1102,118 @@ export type ShareReportResult = {
   status: "generated_shared";
   shared_at: string;
   shared_by: string;
+};
+
+// ---------------------------------------------------------------------------
+// Monthly ANALYSIS (the deep six-tool GEO + SEO report). Kept separate from Reports on purpose.
+// The dashboard and the branded PDF render the SAME normalized analysis.json, so on-screen numbers
+// and the download can never disagree. Every value is an ABSOLUTE count for its month; the UI
+// derives month-over-month from stored history (or from a card's own prev_value). Sections whose
+// tool is not connected are simply absent (graceful degradation). Schema of record:
+// .claude/skills/geo-analysis-report/references/analysis-schema.md.
+// ---------------------------------------------------------------------------
+
+/** One card in Section 0's snapshot scorecard. `available: false` renders greyed as "Not connected". */
+export type AnalysisScorecardCard = {
+  key: string;
+  label: string;
+  value: string | number;
+  prev_value?: string | number | null;
+  unit?: string | null;
+  spark?: number[] | null;
+  tool: string;
+  available: boolean;
+  note?: string | null;
+};
+
+/** One (prompt, engine) cell in the prompt visibility matrix. A null state renders neutral. */
+export type AnalysisMatrixCell = {
+  engine: string;
+  state: "cited" | "mentioned" | "absent" | null;
+  change?: "new" | "lost" | null;
+};
+
+export type AnalysisPromptRow = { prompt: string; cells: AnalysisMatrixCell[] };
+
+export type AnalysisPromptMatrix = {
+  coverage_pct?: number;
+  engines: string[];
+  prompts: AnalysisPromptRow[];
+};
+
+/** One Lighthouse category, same normalisation rules as the Reports tab (61 or 0.61 both read 61). */
+export type AnalysisLighthouseScore = { category: string; desktop: number | null; mobile?: number | null };
+
+/** The full analysis.json. Only the floor is required; every other section is optional and absent
+ *  when its tool is not connected. The rest is left loose rather than typed field by field. */
+export type AnalysisDocument = {
+  client: { name: string; slug?: string; domain?: string; industry?: string };
+  month: string;
+  month_label: string;
+  brand?: { org_name?: string; accent?: string } | null;
+  scorecard: AnalysisScorecardCard[];
+  executive_summary?: { paragraphs?: string[]; did?: string[]; next?: string[] } | null;
+  ai_visibility: {
+    prompt_matrix: AnalysisPromptMatrix;
+    citations?: { prompt: string; engine: string; snippet: string }[];
+    gaps?: { prompt: string; play: string }[];
+    referral_traffic?: {
+      by_source?: { source: string; sessions: number; engaged: number; conversions: number }[];
+    } | null;
+    bing_indicator?: { impressions: number; clicks: number; indexed: number; key_pages: number } | null;
+    ai_overview?: { keyword: string; aio_present: boolean; client_cited: boolean }[];
+  };
+  seo_visibility?: {
+    google?: { clicks: number; impressions: number; avg_position: number; ctr: number;
+               prev_clicks?: number; prev_impressions?: number; prev_avg_position?: number; prev_ctr?: number } | null;
+    striking_distance?: { query: string; position: number; impressions: number; url: string }[];
+    rankings?: { keyword: string; position: number; delta?: number; volume?: number; url?: string }[];
+    serp_features?: { feature: string; owned_this: number; owned_last: number }[];
+    bing?: { clicks: number; impressions: number; avg_position: number } | null;
+    index_health?: { google?: { indexed: number; errors: number; dropped: number };
+                     bing?: { indexed: number; errors: number; dropped: number } } | null;
+    tech_health?: { lighthouse?: { scores: AnalysisLighthouseScore[] };
+                    schema_coverage_pct?: number | null; cwv_status?: string | null } | null;
+  } | null;
+  engagement?: {
+    landing_pages?: { page: string; scroll_pct: number; avg_time: string; top_click: string }[];
+    friction?: { page: string; type: string; count: number; delta?: number }[];
+  } | null;
+  outcomes?: {
+    organic_sessions: number; prev_organic_sessions?: number; engaged_sessions?: number;
+    conversions_organic: number; conversions_ai?: number; summary?: string;
+  } | null;
+  plan?: { did?: string[]; next?: { item: string; source?: string }[] } | null;
+  appendix?: { notes?: string[] } | null;
+  tools: { name: string; connected: boolean; note?: string }[];
+  [key: string]: unknown;
+};
+
+export type AnalysisStatus = "none" | "generated";
+
+/** One month, as the admin Analysis tab sees it. `analysis` is null for a month never run. */
+export type AnalysisMonth = {
+  month: string; // YYYY-MM
+  status: AnalysisStatus;
+  analysis: AnalysisDocument | null;
+  has_pdf: boolean;
+  generated_at: string | null;
+  generated_by: string | null;
+};
+
+export type AnalysisResponse = {
+  current_month: string;
+  analyses: AnalysisMonth[];
+};
+
+/** One analysis run, as the engine remembers it. Same three-state shape as every other engine job. */
+export type AnalysisGenJob = {
+  client: string;
+  month: string;
+  state: "running" | "done" | "failed";
+  started: string;
+  finished: string | null;
+  summary: string | null;
+  error: string | null;
+  has_pdf?: boolean;
 };

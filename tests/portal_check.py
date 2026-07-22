@@ -224,11 +224,10 @@ else:
 #    bounded, not asserted present.
 # ---------------------------------------------------------------------------
 CLIENT_WRITES = {
-    # The blog review loop: answer the evaluator, suggest a change to a passage, reply in a
-    # comment thread, approve the article as sent.
+    # The blog review loop: answer the evaluator, suggest a change to a passage, approve the
+    # article as sent. There is no reply door: the reply feature is removed (migration 025).
     "portal_submit_answers",
     "portal_suggest_change",
-    "portal_reply_comment",
     "portal_approve_blog",
     # The client's own fact base, and the reason rule 6 no longer forbids a resources route:
     # the client is the only person who uploads and removes these documents, so these two are
@@ -244,8 +243,7 @@ CLIENT_WRITES = {
     # nothing, so it is not a CLIENT_WRITE_DOOR below, only a vetted call the scan must not reject.
     "report_months",
 }
-CLIENT_WRITE_DOORS = {"portal_submit_answers", "portal_suggest_change", "portal_reply_comment",
-                      "portal_approve_blog"}
+CLIENT_WRITE_DOORS = {"portal_submit_answers", "portal_suggest_change", "portal_approve_blog"}
 rpc_calls = []
 for path in FILES:
     body = code_only(path.read_text(encoding="utf-8"))
@@ -266,6 +264,13 @@ for expected in sorted(CLIENT_WRITE_DOORS):
 # the client write surface growing where the call-site scan cannot see it, which is exactly
 # how portal_resource_add went unnoticed. Migrations are read alongside schema.sql because a
 # function is real to a reviewer the moment its migration is written, not when it is applied.
+# A function DROPPED by a later migration may still be declared by the earlier one that
+# created it, because history is not edited. It stays off CLIENT_WRITES (no route may call
+# it), and its historical declaration is not a failure. schema.sql must NOT declare it.
+REMOVED_CLIENT_WRITES = {
+    # The reply feature, removed by 025. Comments are notes, not threads.
+    "portal_reply_comment",
+}
 sql_files = [REPO / "supabase" / "schema.sql"]
 sql_files += sorted((REPO / "supabase" / "migrations").glob("*.sql"))
 DEFINED_RE = re.compile(r"create\s+or\s+replace\s+function\s+(portal_[a-z_]+)")
@@ -273,6 +278,10 @@ for path in sql_files:
     if not path.is_file():
         continue
     for name in sorted(set(DEFINED_RE.findall(path.read_text(encoding="utf-8")))):
+        if name in REMOVED_CLIENT_WRITES:
+            if path.name == "schema.sql":
+                fail(f"schema.sql still declares {name!r}, which migration 025 removed")
+            continue
         if name not in CLIENT_WRITES:
             fail(f"{path.relative_to(REPO)}: declares {name!r}, a client write function this "
                  "check has never vetted; add it to CLIENT_WRITES once it is reviewed")

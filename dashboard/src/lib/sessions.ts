@@ -33,6 +33,10 @@ export type Session = {
   submittedAt: string;
   /** When work began. Null while queued, and the type keeps it that way on purpose. */
   runningSince: string | null;
+  /** Which half of a running session this is. Null while queued, or from an older engine. */
+  phase: "facts" | "topics" | null;
+  /** When the current phase began. Feeds the fresh blog-generation clock. */
+  phaseStarted: string | null;
   topicCount: number;
 };
 
@@ -98,6 +102,8 @@ export function sessionOf(run: RunSummary): Session | null {
     state,
     submittedAt: run.started,
     runningSince: run.started_running,
+    phase: run.phase ?? null,
+    phaseStarted: run.phase_started ?? null,
     topicCount: run.topics.length,
   };
 }
@@ -132,14 +138,23 @@ export function queueOf(runs: readonly RunSummary[]): Session[] {
 export type SessionClock = {
   /** The ISO instant to measure from. Never null, so formatElapsed can never be fed one. */
   since: string;
-  /** "running" measures work done. "waiting" measures time spent waiting on another brand. */
-  measures: "running" | "waiting";
+  /** "running" measures blog work. "waiting" measures time queued behind another brand.
+   *  "building" measures the canonical-facts build, which is deliberately NOT blog work. */
+  measures: "running" | "waiting" | "building";
 };
 
 /**
  * A queued session has waited since it was submitted; a running one has run since it took the
  * lock. Two different questions, and this is the only place either is answered, so no caller
  * can reach for `started` on a running session and report ten minutes of queueing as work.
+ *
+ * THE PHASE SPLITS THE RUNNING CLOCK IN TWO, live runs only. While the engine reports "facts",
+ * the clock measures the BUILD and says so; the moment blogs dispatch it measures from the
+ * flip (`phaseStarted`), a FRESH timer, because the facts build's minutes are not blog work
+ * and a single clock was billing them to the blogs. Phase fields are optional so every caller
+ * that predates them, and every payload from an engine that does, falls back to the old single
+ * clock from `runningSince`. A FINISHED or STOPPED session ignores the phase on purpose: what
+ * it is owed is how long the whole run took.
  *
  * Returns null rather than a zero when a running session somehow carries no start: the engine
  * sets `started_running` as it takes the lock, so this should be unreachable, and inventing
@@ -151,18 +166,27 @@ export function clockOf(session: {
   state: RunState;
   submittedAt: string;
   runningSince: string | null;
+  phase?: "facts" | "topics" | null;
+  phaseStarted?: string | null;
 }): SessionClock | null {
   if (session.state === "queued") {
     return { since: session.submittedAt, measures: "waiting" };
   }
-  // A FINISHED session lands here too, and correctly: what it is owed is how long it ran,
-  // which is measured from the same instant a running one measures from. Its caller freezes
-  // the clock, so the reading stops at the end rather than ticking on forever.
-  //
-  // So does a STOPPED one, and the null return is what makes it honest. A session stopped while
-  // it was still queued never ran, so `runningSince` is null and it gets no clock at all rather
-  // than a duration measured from a submit it never acted on.
-  return session.runningSince === null
-    ? null
-    : { since: session.runningSince, measures: "running" };
+  if (session.runningSince === null) {
+    // A session STOPPED while still queued never ran: no clock at all rather than a duration
+    // measured from a submit it never acted on.
+    return null;
+  }
+  if (session.state === "running") {
+    if (session.phase === "facts") {
+      return { since: session.phaseStarted ?? session.runningSince, measures: "building" };
+    }
+    if (session.phase === "topics" && session.phaseStarted != null) {
+      return { since: session.phaseStarted, measures: "running" };
+    }
+  }
+  // A FINISHED session lands here, and correctly: what it is owed is how long it ran,
+  // measured from the lock. Its caller freezes the clock, so the reading stops at the end
+  // rather than ticking on forever.
+  return { since: session.runningSince, measures: "running" };
 }

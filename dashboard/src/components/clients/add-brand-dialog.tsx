@@ -49,6 +49,10 @@ export function AddBrandDialog({
   const [name, setName] = React.useState("");
   const [organisation, setOrganisation] = React.useState(defaultOrganisationName);
   const [domain, setDomain] = React.useState("");
+  // Prefilled with the house default (HOUSE_DEFAULT_MARKET in server/clients.py, which also
+  // falls back to it on a blank): every brand this agency serves sells in India in English,
+  // so the field is visible and editable but never demands typing for the common case.
+  const [market, setMarket] = React.useState("India, English");
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
 
@@ -65,6 +69,7 @@ export function AddBrandDialog({
     setName("");
     setOrganisation(defaultOrganisationName);
     setDomain("");
+    setMarket("India, English");
     setError(null);
   }
 
@@ -79,6 +84,10 @@ export function AddBrandDialog({
         // Industry is detected from the site by the describe session, exactly like the
         // description, so it is not asked here.
         industry: "",
+        // The market is NOT detected: the engine contract forbids guessing it from the
+        // domain, and DataForSEO is skipped on every run for a brand without one, so it is
+        // the one field only a human can supply and it is asked here.
+        market: market.trim(),
         // Blank is meaningful: it tells the engine to write no organisation key, which is
         // exactly how a brand states that it is its own single-brand org.
         organisation_name: organisation.trim(),
@@ -193,6 +202,24 @@ export function AddBrandDialog({
             <p className="mt-1 text-xs text-muted-foreground">
               The live site wins over internal docs on any conflict, so this is what the
               researcher fetches first.
+            </p>
+          </div>
+
+          <div>
+            <Label htmlFor="brand-market">Market</Label>
+            <Input
+              id="brand-market"
+              value={market}
+              onChange={(e) => setMarket(e.target.value)}
+              placeholder="India, English"
+              required
+              autoComplete="off"
+              className="mt-1.5"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Where this brand sells and in what language. Keyword volumes are validated
+              against this market and the researcher prefers sources local to it. Prefilled
+              with the house default; change it only if this brand sells elsewhere.
             </p>
           </div>
 

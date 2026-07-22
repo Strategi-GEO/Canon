@@ -59,12 +59,13 @@ const STATUS_FOR: Record<string, number> = {
   // the body problems: nothing about the request is malformed, it conflicts with what the
   // brand already holds, which is what every other 409 above means.
   //
-  // THIS ENTRY IS LOAD-BEARING RATHER THAN COMPLETING A SET. portal/resources.tsx keys the
+  // THIS ENTRY IS LOAD-BEARING RATHER THAN COMPLETING A SET. The resources upload path keys the
   // entire duplicate story off status 409: at that status it renders the database's own
   // sentence, which names the file the bytes are already stored as, followed by the promise
   // that nothing was overwritten. Without the entry the refusal arrives as a bare 400 and the
-  // client is told their upload failed with no sentence telling them they already have the
-  // file, which is the one thing that would let them act on it.
+  // uploader is told it failed with no sentence telling them the file is already stored, which
+  // is the one thing that would let them act on it. (Resources are admin-only since migration
+  // 024; this is the admin console's upload path.)
   DUPLICATEBYTES: 409,
   // Body problems. The function judges content; the route only judged shape.
   BLANK: 422,

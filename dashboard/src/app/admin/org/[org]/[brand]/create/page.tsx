@@ -1,5 +1,6 @@
 "use client";
 
+import * as React from "react";
 import Link from "next/link";
 import { BookOpen, PenLine } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -32,8 +33,12 @@ export default function CreatePage() {
             />
           ) : (
             <>
-              {/* Keyed by brand, so switching brand remounts rather than leaking one brand's
-                  selection or run into another's. */}
+              {/* The Suspense boundary is not decoration, same as the blogs library's:
+                  CreateForBrand reads ?retry= via useSearchParams (the failed blog's page
+                  links here with its row pre-ticked), and Next bails a prerendered route out
+                  to the client up to the nearest boundary. Keyed by brand, so switching brand
+                  remounts rather than leaking one brand's selection or run into another's. */}
+              <React.Suspense fallback={null}>
               <CreateForBrand
                 key={brand.slug}
                 orgSlug={org.slug}
@@ -47,6 +52,7 @@ export default function CreatePage() {
                 hasCanonicalFacts={brand.has_canonical_facts}
                 resourceCount={brand.resource_count}
               />
+              </React.Suspense>
               <LocalEngineNote />
             </>
           )}

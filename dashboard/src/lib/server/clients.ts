@@ -44,6 +44,7 @@ export type ClientShape = {
   organisation: Organisation;
   domain: string;
   industry: string;
+  market: string;
   description: string;
   has_roadmap: boolean;
   has_canonical_facts: boolean;
@@ -60,6 +61,7 @@ type ClientRow = {
   name: string | null;
   domain: string | null;
   industry: string | null;
+  market: string | null;
   description: string | null;
   created_at: string | null;
   preflight_ok: boolean;
@@ -67,7 +69,7 @@ type ClientRow = {
 };
 
 const CLIENT_SELECT =
-  "id,slug,name,domain,industry,description,created_at,preflight_ok,org:orgs(slug,name)";
+  "id,slug,name,domain,industry,market,description,created_at,preflight_ok,org:orgs(slug,name)";
 
 /** server/clients.py _client_from_row, translated field for field. */
 function shapeClient(
@@ -83,6 +85,7 @@ function shapeClient(
     organisation: row.org ? { slug: row.org.slug, name: row.org.name } : { slug: row.slug, name },
     domain: row.domain || "",
     industry: row.industry || "",
+    market: row.market || "",
     description: row.description || "",
     has_roadmap: flags.hasRoadmap,
     has_canonical_facts: flags.hasFacts,

@@ -2,6 +2,8 @@ import { API_BASE } from "@/lib/config";
 import { clearSession, ensureFreshToken, getAccessToken } from "@/lib/session";
 import type {
   AddCommentBody,
+  AnalysisGenJob,
+  AnalysisResponse,
   AnswersBody,
   BlogComment,
   BlogCommentReply,
@@ -547,20 +549,16 @@ export const api = {
     ),
 
   /**
-   * Answers one comment in its thread, as the operator. 201 with the new reply, because
-   * nothing runs: REPLYING IS NOT RESOLVING, and the parent's state is exactly where it
-   * was afterwards. That separation is the whole reason this door exists beside Resolve
-   * with Claude: an operator who wants to say "we cut that line, it was a duplicate" says
-   * it without spending a session on the client's behalf, and without the suggestion
-   * disappearing from the client's rail as though it had been handled.
-   *
-   * 422 refuses a blank body. 404 covers an unknown comment AND a reply's own id, because
-   * a reply is not addressable as a comment: threads are one level deep, like Docs.
+   * Reframes one comment as a standing instruction for every future blog and appends it to
+   * the brand's custom instructions. The engine runs the reframe (a one-shot Claude call),
+   * performs the append, and stamps the comment, so the act is idempotent: a comment already
+   * added answers with its existing state rather than a second line. Returns the reframed
+   * instruction for the toast.
    */
-  replyToBlogComment: (slug: string, topicSlug: string, commentId: string, body: string) =>
-    request<BlogCommentReply>(
-      `/api/clients/${slug}/blogs/${topicSlug}/comments/${encodeURIComponent(commentId)}/reply`,
-      { method: "POST", body: { body } },
+  commentToInstructions: (slug: string, topicSlug: string, commentId: string) =>
+    request<{ instruction: string }>(
+      `/api/clients/${slug}/blogs/${topicSlug}/comments/${encodeURIComponent(commentId)}/to-instructions`,
+      { method: "POST" },
     ),
 
   /**
@@ -633,6 +631,19 @@ export const api = {
     }),
 
   /**
+   * Ships a FAILED blog on the operator's authority and sends it to the client, one act.
+   * The engine appends a `done` verdict naming the operator and the score, records the
+   * ledger row (the roadmap locks the topic exactly as a 95+ ship would), and releases the
+   * blog through the same send every shipped blog uses. 409 unless the topic is terminal
+   * `failed` with an evaluator-scored committed draft and no live run holds it. Answers
+   * with the new review state.
+   */
+  promoteBlog: (slug: string, topicSlug: string) =>
+    request<BlogReviewState>(`/api/clients/${slug}/blogs/${topicSlug}/promote`, {
+      method: "POST",
+    }),
+
+  /**
    * Pushes one shipped blog to the Strategi CMS as a draft for a human to review.
    *
    * The browser sends a brand and a topic and NOTHING ELSE: no title, no body, no key. The
@@ -695,4 +706,36 @@ export const api = {
   /** One month's report PDF, as a download blob. Needs the live engine. */
   reportPdf: (slug: string, month: string, signal?: AbortSignal) =>
     requestBlob(`/api/clients/${slug}/reports/${month}/pdf`, signal),
+
+  /**
+   * Every month of analyses this brand holds, plus the current month even when it has none yet,
+   * newest first. Each entry carries the WORKING analysis document the dashboard draws its metrics
+   * and trend from. Never a 404: an empty brand is an empty `analyses` array under the current month.
+   */
+  analysis: (slug: string, signal?: AbortSignal) =>
+    request<AnalysisResponse>(`/api/clients/${slug}/analysis`, { signal }),
+
+  /**
+   * Runs this month's analysis and answers 202 with the JOB. Always targets the engine's current
+   * calendar month, so it takes no month. 409 when one is already running, a blog run is live, or an
+   * analysis for this month already exists (delete it first). 422 when the brand has no domain.
+   */
+  generateAnalysis: (slug: string) =>
+    request<AnalysisGenJob>(`/api/clients/${slug}/analysis/generate`, { method: "POST" }),
+
+  /** The brand's analysis job, running or settled, or 404 when there has never been one. */
+  analysisGeneration: (slug: string, signal?: AbortSignal) =>
+    request<AnalysisGenJob>(`/api/clients/${slug}/analysis/generate`, { signal }),
+
+  /** Forgets a SETTLED analysis job. 409 while it runs. 204, so the caller drops its copy. */
+  clearAnalysisGeneration: (slug: string) =>
+    request<null>(`/api/clients/${slug}/analysis/generate`, { method: "DELETE" }),
+
+  /** Deletes one month's WORKING analysis. 204, and the caller reloads the list. */
+  deleteAnalysis: (slug: string, month: string) =>
+    request<null>(`/api/clients/${slug}/analysis/${month}`, { method: "DELETE" }),
+
+  /** One month's analysis PDF, as a download blob. Needs the live engine. */
+  analysisPdf: (slug: string, month: string, signal?: AbortSignal) =>
+    requestBlob(`/api/clients/${slug}/analysis/${month}/pdf`, signal),
 };

@@ -34,6 +34,11 @@ export type LiveRun = {
   submittedAt: string;
   /** When the engine actually began work. Null while queued. Feeds the RUNNING clock. */
   runningSince: string | null;
+  /** Which half of a running run this is: "facts" or "topics". Null while queued or from an
+   *  engine that predates the field. Picks the heading and which clock the card shows. */
+  phase: "facts" | "topics" | null;
+  /** When the current phase began. The fresh blog clock measures from it. */
+  phaseStarted: string | null;
   /** From the engine's own run record, so it is known before a single frame exists. */
   topicCount: number;
   /**
@@ -181,6 +186,8 @@ export function useLiveRun(brandSlug: string, roadmap: RoadmapState): LiveRunSta
             state,
             submittedAt: record.started,
             runningSince: record.started_running,
+            phase: record.phase ?? null,
+            phaseStarted: record.phase_started ?? null,
             topicCount: record.topics.length,
             ahead,
             others,

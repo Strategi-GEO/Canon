@@ -12,7 +12,9 @@ import {
   Globe,
   Laptop,
   Pencil,
+  Redo2,
   TriangleAlert,
+  Undo2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -26,7 +28,7 @@ import { AnswerQuestions } from "@/components/blogs/answer-questions";
 import { BlogEditor } from "@/components/blogs/blog-editor";
 import { MarkdownView } from "@/components/blogs/markdown-view";
 import { PublishAction } from "@/components/blogs/publish-action";
-import { SendToClient } from "@/components/blogs/send-to-client";
+import { PromoteFailedBlog, SendToClient } from "@/components/blogs/send-to-client";
 import { CommentableArticle, type SelectionDraft } from "@/components/blogs/selection-comments";
 import { extractScore } from "@/components/blogs/markdown";
 import { countSources, countWords } from "@/components/blogs/metrics";
@@ -89,15 +91,15 @@ const TABS: { name: OutputFile; label: string }[] = [
  * `answers_submitted` carries no send stamp by construction, because a send outranks it in
  * blogState's ladder, so there is no client conversation for the margin to omit.
  *
- * THE STATES ARE NAMED BY THE GRANT RATHER THAN LISTED BY HAND. blog-state.ts hands `reply` to
- * client_review, approved and published, and `comments` to the bench states, which is exactly the
- * set this used to spell out. Reading it off the bench ties the fetch to the reason for the fetch,
- * so a future state that gains either door gets its rail read without anyone remembering to come
- * back here. HOSTED_READONLY is deliberately not consulted, because reading is exactly what that
- * build is for.
+ * THE ONE READ STATE IS NAMED BY HAND NOW. client_review is where the client may be writing
+ * notes this side must see before it can act, so the rail is read there even though every
+ * write is refused. APPROVED AND PUBLISHED ARE DELIBERATELY ABSENT: an approval ends the
+ * conversation, no comment is shown on either side after it, and the article takes the full
+ * measure instead of holding an empty margin for a rail that will never fill. HOSTED_READONLY
+ * is deliberately not consulted, because reading is exactly what that build is for.
  */
 function commentRailVisible(state: BlogState): boolean {
-  return adminCan(state, "comments") || adminCan(state, "reply");
+  return adminCan(state, "comments") || state === "client_review";
 }
 
 /**
@@ -457,6 +459,18 @@ function StageBody({
   const canSend = adminCan(state, "send") && adminGateAllows("send", gateInput);
   const canPublish = adminCan(state, "publish") && adminGateAllows("publish", gateInput);
   /**
+   * THE FAILED BENCH'S ONE VERB: ship it anyway. The record axis is the promote door
+   * (terminal failed, an evaluator-scored draft on the wire, no live run, no approval, no
+   * open suggestions), and the deployment axis is HOSTED_READONLY exactly as canEdit carries
+   * it, because there is no hosted promote route. A scoreless failure fails the door and
+   * renders nothing, which is honest: the engine refuses it, and its only exit really is
+   * generating again.
+   */
+  const canPromote =
+    !HOSTED_READONLY &&
+    adminCan(state, "promote") &&
+    adminGateAllows("promote", gateInput);
+  /**
    * THE `answer` VERB IS TWO DOORS AND BOTH GATE ON THE FORM, NEVER ON THE STATUS. Rounds four and
    * five of one defect were both this flag, and the second one is why nothing here restates a rule
    * any more.
@@ -490,32 +504,6 @@ function StageBody({
     adminCan(state, "answer") &&
     adminGateAllows("answer", gateInput);
   /**
-   * REPLYING IN AN EXISTING THREAD, which is a door of its own now and not a corner of `comments`.
-   *
-   * ORed with canComment because the two grants are disjoint by construction: blog-state.ts hands
-   * out `reply` only in the three states where the rail is read and `comments` is withheld, so
-   * this reads as "the fuller bench, or the reply door alone". Where `comments` is granted the
-   * reply box already rides on it and always has.
-   *
-   * HOSTED_READONLY IS IN HERE AND NOT IN canComment, and the split is the same one canRunClaude
-   * makes: canComment feeds commentsVisible, which must keep FETCHING the rail on the hosted
-   * build, while this feeds a control that writes. blogs/[topic]/comments/[id]/reply/route.ts
-   * answers 501 hostedWriteRefused, so offering the box there would be the deployment-axis twin of
-   * the bench defect this file keeps closing.
-   *
-   * THE CONTRACT TERM IS HERE EVEN THOUGH `reply` CARRIES NO CLAUSE TODAY, and that is the point
-   * rather than a redundancy. Migration 011's admin_reply_comment has no done gate and no approved
-   * gate, migration 013 exempts a reply by name, and the engine's reply route says both absences in
-   * its docstring, so the contract's door for this verb is deliberately empty. Asking anyway means
-   * the day a gate is added to any of those three, the clause lands in one table and this control
-   * follows it. An act exempted by hand here would have to be remembered instead.
-   */
-  const canReply =
-    !HOSTED_READONLY &&
-    adminGateAllows("reply", gateInput) &&
-    (canComment || adminCan(state, "reply"));
-
-  /**
    * WHAT STILL NEEDS AN ENGINE, and it is a SEPARATE AXIS that stays separate.
    *
    * Every flag above asks what the state permits. This asks whether an engine exists to do the
@@ -547,6 +535,85 @@ function StageBody({
   // cannot toast twice.
   const seenStates = React.useRef(new Map<string, BlogComment["state"]>());
   const articleReload = article.reload;
+
+  /**
+   * UNDO / REDO over the article's COMMITTED states, held in browser memory only.
+   *
+   * Every committed change on this page already lands in the record the instant it happens
+   * (a manual save, a Claude apply, and now an undo or a redo), so the database always holds
+   * exactly the state on screen and leaving the page loses nothing. These stacks are this
+   * VISIT's memory of the states it walked through; a refresh deliberately forgets them,
+   * which is the contract: the record keeps the current state, the browser keeps the trail.
+   *
+   * An undo is a NEW SAVE of the previous state, through the same route an edit uses, never
+   * a rollback: the record stays append-only (a fresh blog_versions row), and the approved /
+   * with-client / apply-in-flight gates all still apply to it.
+   */
+  const historyRef = React.useRef<{ past: string[]; future: string[] }>({ past: [], future: [] });
+  const lastTextRef = React.useRef<string | null>(null);
+  const timeTravelRef = React.useRef(false);
+  const [, bumpHistory] = React.useReducer((n: number) => n + 1, 0);
+  const [travelling, setTravelling] = React.useState(false);
+
+  React.useEffect(() => {
+    // A different topic is a different history.
+    historyRef.current = { past: [], future: [] };
+    lastTextRef.current = null;
+    timeTravelRef.current = false;
+  }, [topicSlug]);
+
+  React.useEffect(() => {
+    if (articleText === null) {
+      return;
+    }
+    const last = lastTextRef.current;
+    lastTextRef.current = articleText;
+    if (last === null || last === articleText) {
+      return;
+    }
+    if (timeTravelRef.current) {
+      // This transition IS an undo/redo landing; the click already adjusted the stacks.
+      timeTravelRef.current = false;
+      return;
+    }
+    // A new committed state arrived (a save or a Claude apply): the old one becomes
+    // undoable and any redo line is abandoned, exactly as an editor's history behaves.
+    historyRef.current.past.push(last);
+    historyRef.current.future = [];
+    bumpHistory();
+  }, [articleText]);
+
+  const travel = React.useCallback(
+    async (direction: "undo" | "redo") => {
+      const h = historyRef.current;
+      const from = direction === "undo" ? h.past : h.future;
+      const to = direction === "undo" ? h.future : h.past;
+      const target = from[from.length - 1];
+      const current = lastTextRef.current;
+      if (target === undefined || current === null) {
+        return;
+      }
+      setTravelling(true);
+      try {
+        // Persisted BEFORE the stacks move, so a refused save (approved mid-flight, an apply
+        // racing) leaves the history exactly as it was and the engine's reason is shown.
+        await api.saveBlogContent(brandSlug, topicSlug, target, blog.version_no ?? null);
+        from.pop();
+        to.push(current);
+        timeTravelRef.current = true;
+        bumpHistory();
+        articleReload();
+        onChanged();
+      } catch (cause) {
+        toast.error(direction === "undo" ? "Could not undo" : "Could not redo", {
+          description: cause instanceof ApiError ? cause.message : String(cause),
+        });
+      } finally {
+        setTravelling(false);
+      }
+    },
+    [brandSlug, topicSlug, blog.version_no, articleReload, onChanged],
+  );
   React.useEffect(() => {
     for (const comment of comments.comments) {
       const before = seenStates.current.get(comment.id);
@@ -598,16 +665,18 @@ function StageBody({
   }
 
   /**
-   * Answers one comment in its thread. Nothing else moves: the parent keeps its state, so a
-   * reply is how an operator says "we cut that line, it was a duplicate" without spending a
-   * session on the request or making it disappear from the client's rail.
-   *
-   * The refusal is RETHROWN rather than toasted, because the reply box is a form and the
-   * engine's sentence belongs beside the words that caused it.
+   * Reframes one comment as a standing instruction for every future blog and appends it to
+   * the brand's custom instructions. The ENGINE owns the reframe (a one-shot Claude call) and
+   * the append, so two operators clicking at once cannot lose each other's line; this side
+   * only refreshes the rail, whose stamp is what flips the button to "Added to instructions".
+   * The refusal is rethrown for the card to render beside the button that caused it.
    */
-  async function replyToComment(comment: BlogComment, body: string) {
+  async function addToInstructions(comment: BlogComment) {
     try {
-      await api.replyToBlogComment(brandSlug, topicSlug, comment.id, body);
+      const updated = await api.commentToInstructions(brandSlug, topicSlug, comment.id);
+      toast.success("Added to brand instructions", {
+        description: updated.instruction,
+      });
     } catch (cause) {
       throw new Error(cause instanceof ApiError ? cause.message : String(cause));
     }
@@ -745,6 +814,30 @@ function StageBody({
               }}
             />
           ) : null}
+          {/* The failed blog's two exits, side by side: retry the topic (a link into the
+              Create tab with the row pre-ticked, because a retry is a RUN and runs start
+              there) or ship it anyway on the operator's authority. The RETRY link mounts on
+              the state alone, because a retry is always available to a failed topic (the
+              roadmap keeps its row selectable); only the SEND half rides canPromote, so a
+              scoreless failure or a mid-run topic keeps its way out without being offered a
+              ship the engine would refuse. */}
+          {state === "failed" && !HOSTED_READONLY ? (
+            <PromoteFailedBlog
+              canSend={canPromote}
+              brandSlug={brandSlug}
+              topicSlug={topicSlug}
+              brandName={brandName}
+              score={blog.score ?? null}
+              retryHref={`${brandHref(orgSlug, brandSlug, "/create")}?retry=${encodeURIComponent(topicSlug)}`}
+              onPromoted={(sent) => {
+                // Same shape as onSent above: the POST answers with the review state the
+                // promotion produced, so the page flips to client_review on the spot and the
+                // summary re-read only has to agree with it.
+                setReview({ ...reviewState, ...sent });
+                onChanged();
+              }}
+            />
+          ) : null}
         </div>
       </div>
 
@@ -830,6 +923,37 @@ function StageBody({
                   layer below a canEdit that knew nothing about it. A restatement is silent when
                   it is wrong, which is every round of this defect, so the condition is read off
                   the clause and the sentence beside it is the layer's own reason. */}
+              {/* Undo/redo over committed states, mounted with the Edit button and gated the
+                  same way: each press writes a version through the save route, so the same
+                  state permission and the same apply-in-flight moment govern it. */}
+              {canEdit && tab === "blog.md" && editorDraft === null ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={
+                      historyRef.current.past.length === 0 || travelling || !editStanding.act
+                    }
+                    onClick={() => void travel("undo")}
+                    aria-label="Undo the last change to the article"
+                  >
+                    <Undo2 data-icon="inline-start" aria-hidden />
+                    Undo
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={
+                      historyRef.current.future.length === 0 || travelling || !editStanding.act
+                    }
+                    onClick={() => void travel("redo")}
+                    aria-label="Redo the undone change to the article"
+                  >
+                    <Redo2 data-icon="inline-start" aria-hidden />
+                    Redo
+                  </Button>
+                </>
+              ) : null}
               {canEdit && tab === "blog.md" && editorDraft === null ? (
                 <EditButton
                   disabled={articleText === null || !editStanding.act}
@@ -898,7 +1022,11 @@ function StageBody({
                       loaded={article.loaded}
                       canComment={canRunClaude}
                       canResolve={canRunClaude}
-                      canReply={canReply}
+                      /* The deployment axis alone: the reframe is a Claude call the hosted
+                         build cannot make, and the ARTICLE's state never gates it, because
+                         adding a standing instruction writes the brand record, not this
+                         article. */
+                      canAddToInstructions={!HOSTED_READONLY}
                       /* THE STATE WOULD TAKE A CHANGE AND THIS BUILD WILL NOT, which is a
                          different sentence from "this article is closed" and the rail was
                          printing the wrong one. canComment carries no HOSTED_READONLY term, so
@@ -913,7 +1041,7 @@ function StageBody({
                       onSubmit={submitComment}
                       onDismiss={dismissComment}
                       onResolve={resolveComment}
-                      onReply={replyToComment}
+                      onAddToInstructions={addToInstructions}
                     />
                   </>
                 )}
@@ -973,25 +1101,25 @@ function BlogArticle({
   loaded,
   canComment,
   canResolve,
-  canReply,
+  canAddToInstructions,
   deploymentLocked,
   remaining,
   comments,
   onSubmit,
   onDismiss,
   onResolve,
-  onReply,
+  onAddToInstructions,
 }: {
   loaded: LoadedArtifact | undefined;
-  /** Whether the STATE lets this side file, resolve, dismiss or reply to a change. */
+  /** Whether the STATE lets this side file, resolve or dismiss a change. */
   canComment: boolean;
   /** Whether an engine is behind this page, so a Claude session can actually run. Threaded
    *  from StageBody rather than read off HOSTED_READONLY down here, so the one flag that
    *  already knows the answer is the only thing the rail can disagree with. */
   canResolve: boolean;
-  /** Whether a reply may be filed in an existing thread. A door of its own, so it survives on
-   *  an article that takes no other change: see blog-state.ts's `reply`. */
-  canReply: boolean;
+  /** Whether Add to brand instructions may run: the deployment axis alone, since the act
+   *  writes the brand record rather than this article. */
+  canAddToInstructions: boolean;
   /** Whether the read-only rail is read-only because of the DEPLOYMENT rather than the state.
    *  It decides which sentence a card owed an act prints, and the two are not interchangeable:
    *  one names a state that will change, the other names a build that will not. */
@@ -1001,7 +1129,7 @@ function BlogArticle({
   onSubmit: (draft: SelectionDraft) => Promise<void>;
   onDismiss: (comment: BlogComment) => void;
   onResolve: (comment: BlogComment) => void;
-  onReply: (comment: BlogComment, body: string) => Promise<void>;
+  onAddToInstructions: (comment: BlogComment) => Promise<void>;
 }) {
   if (!loaded) {
     return <ArtifactSkeleton name="blog.md" />;
@@ -1029,13 +1157,13 @@ function BlogArticle({
         comments={comments}
         disabled={!canComment}
         canResolve={canResolve}
-        canReply={canReply}
+        canAddToInstructions={canAddToInstructions}
         deploymentLocked={deploymentLocked}
         remaining={remaining}
         onSubmit={onSubmit}
         onDismiss={onDismiss}
         onResolve={onResolve}
-        onReply={onReply}
+        onAddToInstructions={onAddToInstructions}
       />
     </>
   );
@@ -1191,7 +1319,7 @@ function ReviewStamp({ review }: { review: BlogReviewState }) {
           ) : (
             <Check className="size-3.5" aria-hidden />
           )}
-          {approved ? "Approved" : "Sent"} {formatRelative(when)}
+          {approved ? "Approved" : "Sent for client review"} {formatRelative(when)}
         </span>
       </TooltipTrigger>
       <TooltipContent className="max-w-xs">

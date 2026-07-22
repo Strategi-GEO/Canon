@@ -42,7 +42,7 @@ import logging
 import os
 import uuid
 
-from . import db, runner, sync
+from . import db, ledger, roadmap, runner, sync
 
 log = logging.getLogger("geo-factory")
 
@@ -145,7 +145,7 @@ def _refuse_if_approved(client_slug, topic_slug, act):
 # column cannot be added to one query and forgotten in another.
 _COMMENT_COLS = """id, created_at, author, author_email, selected_text,
                    context_before, context_after, instruction, state,
-                   finished_at, error, edits, applying_since"""
+                   finished_at, error, edits, applying_since, added_to_instructions"""
 
 # A reply's columns, and they are fewer on purpose: a reply has no selection, no state the
 # UI branches on, and no apply verdict, so serving those keys would invite a surface to
@@ -159,7 +159,8 @@ def _wire(row, replies=()):
     author_email, plus applying_since and its thread. Timestamps flatten to isoformat;
     edits arrives already decoded, because psycopg maps jsonb to Python."""
     (comment_id, created_at, author, author_email, selected_text, context_before,
-     context_after, instruction, state, finished_at, error, edits, applying_since) = row
+     context_after, instruction, state, finished_at, error, edits, applying_since,
+     added_to_instructions) = row
     return {
         "id": str(comment_id),
         "created": created_at.isoformat(),
@@ -174,6 +175,10 @@ def _wire(row, replies=()):
         "error": error,
         "edits": edits,
         "applying_since": applying_since.isoformat() if applying_since else None,
+        # When this comment was reframed and appended to the brand's custom instructions,
+        # or null. The stamp is what keeps the button disabled across reloads and operators.
+        "added_to_instructions": (
+            added_to_instructions.isoformat() if added_to_instructions else None),
         # Oldest first inside the thread, which is the order a conversation is read in.
         # Always present, even empty: a surface that has to test for the key would print
         # "undefined replies" the first time one arrives.
@@ -321,9 +326,8 @@ def add_comment(client_slug, topic_slug, *, selected_text, instruction,
     # THE APPROVED LOCK, in front of the trigger that would otherwise refuse this INSERT.
     # An operator comment is born 'applying' and the route runs Claude on it immediately, so
     # it is an edit wearing a comment's clothes, which is exactly the reasoning migration 013
-    # gives for closing top-level comments alongside versions. Replies are untouched here
-    # because reply_comment carries parent_id and the trigger exempts it: replying is the
-    # cheapest act in the loop and an approval is no reason to make someone wait on silence.
+    # gives for closing top-level comments alongside versions. The trigger still exempts
+    # parent_id rows, which portal_submit_answers writes for a client's question answers.
     _refuse_if_approved(client_slug, topic_slug, "a Claude edit")
     state = "applying" if author == "operator" else "open"
     # applying_since is stamped by the same expression that sets the state, so the two can
@@ -344,32 +348,92 @@ def add_comment(client_slug, topic_slug, *, selected_text, instruction,
     return _wire(row)
 
 
-def reply_comment(client_slug, topic_slug, comment_id, *, body,
-                  author="operator", author_email=""):
-    """Add one reply to an existing top-level comment and return its reply wire dict, or
-    None when the parent is unknown, another topic's, or itself a reply (get_comment
-    refuses all three by construction).
+# There is NO reply_comment and no reply write path anywhere: the reply feature is removed.
+# Comments are notes the team resolves or dismisses, not threads. _REPLY_COLS, _wire_reply and
+# _replies_for stay because rows filed before the removal still render as history, and because
+# portal_submit_answers stores a client's question answers as parent_id rows this module reads.
 
-    Replying is NOT resolving: the parent's state is untouched, nothing is applied, and no
-    count moves. An operator answering "we cut that line, it was a duplicate" is telling
-    the client something, and turning that sentence into a Claude session or into a
-    dismissal would silently decide the request on their behalf. The client's own replies
-    arrive through portal_reply_comment, which enforces the same one-level rule at the
-    database."""
-    tid = db.topic_id(client_slug, topic_slug)
-    # get_comment carries the uuid check and the top-level filter, so the id is a real
-    # comment on THIS topic by the time it reaches the insert's explicit ::uuid cast.
-    if tid is None or get_comment(client_slug, topic_slug, comment_id) is None:
+
+def mark_added_to_instructions(client_slug, topic_slug, comment_id):
+    """Stamp one top-level comment as folded into the brand instructions. Returns the
+    comment's wire dict, or None for an unknown comment. The `where added_to_instructions
+    is null` arm makes two racing clicks one append: the loser reads the winner's stamp."""
+    if get_comment(client_slug, topic_slug, comment_id) is None:
         return None
-    row = db.q(
-        f"""insert into blog_comments
-              (topic_id, client_id, parent_id, author, author_email, selected_text,
-               context_before, context_after, instruction, state)
-            select id, client_id, %s::uuid, %s, %s, '', '', '', %s, 'open'
-            from topics where id = %s
-            returning {_REPLY_COLS}""",
-        (comment_id, author, author_email, body, tid), fetch="one")
-    return _wire_reply(row)
+    db.q(
+        """update blog_comments set added_to_instructions = now()
+           where id = %s and added_to_instructions is null""",
+        (comment_id,), fetch="none")
+    return get_comment(client_slug, topic_slug, comment_id)
+
+
+def _reframe_prompt(brand_name, selected_text, instruction):
+    return f"""A client reviewing ONE blog article we wrote for the brand "{brand_name}" left a
+comment on a selected passage. The team believes it expresses a preference that should apply
+to EVERY future article for this brand, not just this one.
+
+The passage the client selected:
+<<<PASSAGE
+{selected_text}
+PASSAGE>>>
+
+The client's comment:
+<<<COMMENT
+{instruction}
+COMMENT>>>
+
+Rewrite the comment as ONE standing instruction for all future blog articles written for this
+brand. Imperative mood. General: no reference to this article, this passage, the client, or
+the comment. Keep every concrete preference the comment carries (terminology, tone, facts to
+avoid, formatting) and drop everything article-specific. One to two sentences, no heading, no
+bullet, no quotes. Return ONLY the instruction text."""
+
+
+async def reframe_as_instruction(brand_name, selected_text, instruction):
+    """One tool-less SDK session turning a client comment into a standing brand instruction.
+    Returns the instruction line, or raises EditError with the sentence the operator reads.
+    Same denied-tools posture as _edit_session and for the same reason: the comment text is
+    client-typed, so this prompt is an injection surface."""
+    try:
+        from claude_agent_sdk import ClaudeAgentOptions, query
+    except ImportError as exc:
+        raise EditError(f"the Claude Agent SDK is unavailable ({exc})")
+
+    try:
+        from claude_agent_sdk import ClaudeSDKError
+    except ImportError:
+        ClaudeSDKError = ()
+
+    options = ClaudeAgentOptions(
+        cwd=str(runner.REPO_ROOT),
+        permission_mode="acceptEdits",
+        disallowed_tools=[
+            "Bash", "Write", "Edit", "MultiEdit", "NotebookEdit",
+            "Read", "Glob", "Grep", "LS", "NotebookRead", "Task", "TodoWrite",
+            "WebFetch", "WebSearch", "mcp__firecrawl", "mcp__dataforseo",
+        ],
+        max_turns=MAX_TURNS,
+        model=os.environ.get("GEO_MODEL") or None,
+        env=db.agent_env(),
+    )
+
+    text = ""
+    try:
+        from contextlib import aclosing
+        async with aclosing(query(prompt=_reframe_prompt(brand_name, selected_text,
+                                                         instruction),
+                                  options=options)) as session:
+            async for message in session:
+                found = _final_text(message)
+                if found:
+                    text = found
+    except ClaudeSDKError as exc:
+        raise EditError(f"the reframe session died ({exc})")
+
+    line = text.strip()
+    if not line:
+        raise EditError("the reframe session returned no text")
+    return line
 
 
 def resolve_comment(client_slug, topic_slug, comment_id):
@@ -842,6 +906,126 @@ def sent_state(client_slug, topic_slug):
         "published_by": published_by,
         "cms_status": cms_status,
     }
+
+
+def promote_to_done(client_slug, topic_slug, score, email):
+    """Operator promotion: re-verdict one FAILED topic as done, on the operator's authority.
+
+    The loop's verdict stays on the trail: the evaluator scored this draft below the house 95
+    bar and the resolver wrote `failed`. Promotion is the operator overruling that bar for one
+    blog they have read and are satisfied with. It deliberately widens NO done-gate:
+    _require_done, admin_done_topic and assert_publishable keep demanding the literal `done`,
+    and promotion satisfies them the way every verdict in this system is expressed, by
+    APPENDING a new terminal line to the status trail. Every consumer folds "last non-running
+    line wins" (runner._summarize, topic_rollup, the portal's own fold), the appended line's
+    note names the operator and the score, and the trail keeps the whole history: failed at
+    92, then a person shipping it anyway. _enforce_terminal_status set the precedent that a
+    correction is an appended line, never a rewrite.
+
+    The route (api_promote_blog) owns every refusal; this function is the act. By the time it
+    runs, the fold reads exactly `failed`, the latest committed version carries an evaluator
+    score, and no live run holds the topic. A scored draft is gate-clean and link-clean by
+    construction (gates and the link pass run BEFORE the eval), so the 95 bar is the only
+    thing being waived.
+    """
+    # Scratch first, laid from the record, so the appended line lands after the record's own
+    # high-water mark and commit_topic's (topic_id, line_no) keying reads it as genuinely new.
+    sync.materialize_topic(client_slug, topic_slug)
+
+    out_dir = runner.output_dir(client_slug, topic_slug)
+    lines = runner._read_status(out_dir)
+    summary = runner._summarize(topic_slug, lines)
+
+    # THE DRAFT MUST BE THE ONE THE EVALUATOR SCORED. The version score the route checked is
+    # a fold over the WHOLE status feed, and the feed is append-only across retries: a retry
+    # whose writer replaced blog.md and then died before its eval leaves a committed version
+    # carrying the PREVIOUS run's score, and promoting it would ship bytes no evaluator ever
+    # saw, recorded as "shipped at 92". The feed says when that happened: a write or revise
+    # START after the last SCORED eval end means the machine moved the draft after the last
+    # verdict. Operator edits are exempt by construction, because they write no status lines;
+    # that is the admin-review bench working as designed, and this guard refuses only the
+    # machine's unevaluated leftovers. Read from DISK after materialize, deliberately: a live
+    # or crashed retry's lines exist on disk before any commit, so the record alone would
+    # miss exactly the case this exists for.
+    scored_at = moved_at = None
+    for i, entry in enumerate(lines):
+        if (entry.get("stage") == "eval" and entry.get("event") == "end"
+                and entry.get("score") is not None):
+            scored_at = i
+        if entry.get("stage") in ("write", "revise") and entry.get("event") == "start":
+            moved_at = i
+    if scored_at is None or (moved_at is not None and moved_at > scored_at):
+        raise EditError(
+            f"the draft on record for {topic_slug!r} moved after its last evaluator score: a "
+            f"later run's writer touched it and never reached an eval, so the score does not "
+            f"describe these bytes. Generate the topic again to completion, or delete the "
+            f"partial run's scratch, before promoting."
+        )
+
+    # score=None ON PURPOSE: the promotion line flips the STATUS fold and must not touch the
+    # SCORE fold. Every score reader takes the last (eval, end) line with a NON-NULL score, so
+    # the evaluator's number stays exactly what the evaluator gave, beside a done verdict
+    # whose note names who overrode the bar and at what score.
+    runner._status_module().append_status(
+        out_dir, topic_slug, stage="eval", event="end",
+        # Floor 1: status_events checks iter >= 1, and a feed whose lines carried no iter
+        # would otherwise fold to 0 and wedge the commit on the constraint.
+        iter=max(summary["iterations"], 1), score=None, status="done",
+        note=f"operator promotion: {email or 'an operator'} shipped this blog at "
+             f"score {score}, below the house 95 bar, and sent it to the client",
+    )
+
+    # allow_new_version=False: promotion ships the draft the record already holds, so stray
+    # scratch bytes must never become a new version on this path. The bookkeeping (status
+    # lines, shipped flags) still lands, which is exactly what that flag exists to express.
+    sync.commit_topic(client_slug, topic_slug, allow_new_version=False)
+
+    # VERIFY THE VERDICT LANDED IN THE RECORD BEFORE ANYTHING RESTS ON IT. commit_topic keys
+    # status lines on (topic_id, line_no) with ON CONFLICT DO NOTHING, and line_no is the
+    # line's position in THIS machine's file. materialize_topic re-lays an ABSENT file from
+    # the record, but it leaves an existing one alone, so a disk feed that is BEHIND the
+    # record (another engine ran this topic; two engines sharing one record is a documented
+    # workflow) appends the promotion at an ordinal the record already owns, and the conflict
+    # clause swallows it silently. Half a promotion is worse than none: the send stamp would
+    # land while the fold still reads failed. So the fold is re-read from the record here, and
+    # a promotion that did not land refuses loudly before the ledger row or the send exist.
+    tid = db.topic_id(client_slug, topic_slug)
+    landed = db.q(
+        """select status from status_events
+           where topic_id = %s and status <> 'running'
+           order by line_no desc limit 1""",
+        (tid,), fetch="val") if tid else None
+    if landed != "done":
+        raise EditError(
+            f"the promotion did not reach the record: the fold still reads {landed!r}. This "
+            f"machine's status feed for {topic_slug!r} is behind the record, which happens "
+            f"when another engine ran the topic. Delete outputs/{client_slug}/{topic_slug}/"
+            f"status.jsonl so it re-materializes from the record, then promote again."
+        )
+
+    # The ledger row is what makes the promotion a real ship: the roadmap row locks exactly
+    # as a 95+ ship locks it, and generate refuses the slug as already_generated. Brief fields
+    # come from the roadmap row when the sheet still carries it; a blog whose row is gone
+    # ships with the topic title and no prompts, the same degradation blog_upload accepts.
+    # append_row is first-write-wins, so a slug that somehow already ledgered keeps its
+    # original entry.
+    row = None
+    try:
+        payload = roadmap.load_roadmap(client_slug)
+        row = next((r for r in payload["rows"]
+                    if r.get("topic_slug") == topic_slug), None)
+    except roadmap.RoadmapNotFound:
+        pass
+    tid = db.topic_id(client_slug, topic_slug)
+    title = db.q("select title from topics where id = %s", (tid,), fetch="val") if tid else None
+    ledger.append_row(client_slug, {
+        "topic": (row or {}).get("topic") or title or topic_slug,
+        "topic_slug": topic_slug,
+        "covers": (row or {}).get("covers", ""),
+        "prompts": (row or {}).get("prompts", []),
+        "score": score,
+        "run_id": "operator-promotion",
+    })
 
 
 def mark_sent(client_slug, topic_slug, email):
