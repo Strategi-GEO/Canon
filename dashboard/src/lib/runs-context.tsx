@@ -36,10 +36,10 @@ type RunsState = {
 const RunsContext = React.createContext<RunsState | null>(null);
 
 /**
- * Four seconds. A mock run lives about five, so a slower poll would let a whole session appear
- * and vanish between reads, and this endpoint is served from the engine's own process memory
- * on the same machine as the browser. The cost is a rounding error; missing the queue moving
- * is the entire failure this view exists to prevent.
+ * Four seconds. A short session can appear and vanish between slower reads, so a lazier poll
+ * would let a whole session go unseen, and this endpoint is served from the engine's own process
+ * memory on the same machine as the browser. The cost is a rounding error; missing the queue
+ * moving is the entire failure this view exists to prevent.
  */
 const POLL_MS = 4000;
 

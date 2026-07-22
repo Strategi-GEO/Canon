@@ -22,7 +22,6 @@ import {
   NO_DENOMINATOR,
   SURVIVES_REFRESH,
   costLine,
-  type MockReason,
 } from "@/components/roadmap/generation-copy";
 import type { RoadmapGenJob } from "@/types";
 
@@ -60,7 +59,6 @@ export function GenerateRoadmapDialog({
   brandSlug,
   brandName,
   brandDomain,
-  mock,
   locked,
   lockedReason,
   onStarted,
@@ -76,8 +74,6 @@ export function GenerateRoadmapDialog({
    * company and spends a full session doing it.
    */
   brandDomain: string;
-  /** Why this brand's runs are mock, or null when a press spends real quota. */
-  mock: MockReason | null;
   /** True when the engine would 409 the start. The reason is said rather than discovered. */
   locked?: boolean;
   lockedReason?: string;
@@ -227,7 +223,7 @@ export function GenerateRoadmapDialog({
           {/* What the press costs, immediately above the button that charges it. This is the
               last thing read before the click, which is the only place it can do its job. */}
           <div className="rounded-md border border-border bg-muted/40 px-3 py-2.5">
-            <p className="text-xs leading-relaxed text-foreground">{costLine(mock, brandName)}</p>
+            <p className="text-xs leading-relaxed text-foreground">{costLine(brandName)}</p>
             <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
               {SURVIVES_REFRESH} {NO_DENOMINATOR}
             </p>

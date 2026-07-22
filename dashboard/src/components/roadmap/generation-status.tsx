@@ -12,7 +12,7 @@ import { ArrowRight, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useNow } from "@/components/create/use-now";
-import { workingLine, type MockReason } from "@/components/roadmap/generation-copy";
+import { workingLine } from "@/components/roadmap/generation-copy";
 import { formatElapsed } from "@/lib/format";
 import { brandHref } from "@/lib/orgs-context";
 import { useRoadmapGen } from "@/lib/use-roadmap-gen";
@@ -38,12 +38,10 @@ export function RoadmapGenerationStatus({
   orgSlug,
   brandSlug,
   brandName,
-  mock,
 }: {
   orgSlug: string;
   brandSlug: string;
   brandName: string;
-  mock: MockReason | null;
 }) {
   const { job } = useRoadmapGen(brandSlug);
   const running = job !== null && job.state === "running";
@@ -81,7 +79,7 @@ export function RoadmapGenerationStatus({
         </span>
 
         <span className="min-w-0 text-xs text-muted-foreground">
-          {workingLine(mock, brandName)}
+          {workingLine(brandName)}
         </span>
 
         <span className="ml-auto flex shrink-0 items-center gap-2">

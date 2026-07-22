@@ -57,7 +57,7 @@ function tokenise(text: string): string[] {
 }
 
 /** The terms one row contributes, deduped, because a row votes once for each term it holds. */
-function termsOf(row: RoadmapRow): { unigrams: Set<string>; bigrams: Set<string> } {
+function termsOf(row: Pick<RoadmapRow, "topic" | "covers">): { unigrams: Set<string>; bigrams: Set<string> } {
   const tokens = tokenise(`${row.topic} ${row.covers}`);
   const unigrams = new Set<string>();
   const bigrams = new Set<string>();
@@ -95,7 +95,10 @@ function tally(sets: Set<string>[]): Map<string, number> {
  * Deterministic end to end: same rows in, same chips out, with ties broken by term rather
  * than by whatever order the Map happened to fill. Nothing here reaches the network.
  */
-export function deriveTheme(rows: RoadmapRow[], limit = 6): ThemeTerm[] {
+// Pick, not RoadmapRow: the theme reads only the topic and covers text, and the client
+// portal's rows (PortalRoadmapRow) carry those two fields without the admin diagnostics,
+// so the narrower signature is what lets both surfaces share this one derivation.
+export function deriveTheme(rows: Pick<RoadmapRow, "topic" | "covers">[], limit = 6): ThemeTerm[] {
   const perRow = rows.map(termsOf);
   const bigramCounts = tally(perRow.map((r) => r.bigrams));
   const unigramCounts = tally(perRow.map((r) => r.unigrams));

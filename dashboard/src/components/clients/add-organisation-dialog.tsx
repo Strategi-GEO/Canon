@@ -70,7 +70,7 @@ export function AddOrganisationDialog({
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
 
-  const { orgs, geoMock } = useOrgs();
+  const { orgs } = useOrgs();
   const { start: startDescribe } = useDescribe();
   const checkboxId = React.useId();
 
@@ -127,11 +127,8 @@ export function AddOrganisationDialog({
       );
       // Start the description draft the instant the brand exists, so the operator never has to
       // type one or press Draft with Claude. The session lives in DescribeProvider above every
-      // route, so it survives closing this dialog and any redirect the caller runs. Skipped
-      // under mock, where describe can only return a placeholder that must not be saved.
-      if (!geoMock) {
-        void startDescribe(brand.slug);
-      }
+      // route, so it survives closing this dialog and any redirect the caller runs.
+      void startDescribe(brand.slug);
       setOpen(false);
       onCreated?.(brand);
     } catch (cause) {

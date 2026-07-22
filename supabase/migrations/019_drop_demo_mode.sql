@@ -1,7 +1,8 @@
 -- 019_drop_demo_mode.sql
 -- Removes the per-client demo_mode feature. Demo brands (precoded/"mock" fixtures) are gone: the
 -- app no longer flags, badges, or refuses them, so the `clients.demo_mode` column and every DB
--- object that reads it come out here. GEO_MOCK is a separate switch and is left untouched.
+-- object that reads it come out here. (GEO_MOCK, the old global mock env switch, had no DB
+-- object of its own, so nothing about it belongs in this migration.)
 --
 -- WHAT READS THE COLUMN, and the order that clears it for a clean DROP:
 --   1. portal_submit_answers reads clients.demo_mode into v_demo and raises PORTAL:DEMO. Recreated

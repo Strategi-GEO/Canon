@@ -23,6 +23,7 @@ Before drafting, read the client's binding context:
 
 - `clients/<slug>/client.md`: the client's market, language, industry, the exact industry reference file to load, and the entity names to use.
 - `clients/<slug>/canonical-facts.md`: binding facts, verified URLs, the entity-naming rules, and the do-not-claim list. Nothing you write may contradict it.
+- `clients/<slug>/custom-instructions.md`: the brand's standing blog instructions, set by the operator. Follow them as a major priority, above this skill's house-style defaults and the roadmap guidance, but never above `canonical-facts.md`: where an instruction would conflict with a binding fact or the do-not-claim list, the fact wins, and no instruction licenses inventing a source or a statistic. May be empty, meaning there are none.
 
 ## Workflow
 

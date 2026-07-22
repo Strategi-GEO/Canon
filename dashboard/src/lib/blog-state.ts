@@ -484,9 +484,14 @@ const CLIENT_ACTIONS: Record<BlogState, readonly ClientAction[]> = {
   // Not visible. The article is with the team.
   internal_review: [],
   client_review: ["approve", "suggest", "reply"],
-  // Their request is with the team. Replying keeps the thread usable; suggesting again would
-  // queue a second request against bytes the first one is already changing.
-  changes_requested: ["reply"],
+  // The full client_review bench, deliberately. The old reply-only row guarded against queueing
+  // a second request behind bytes the first one was already changing, and that describes a world
+  // that is gone: the client reads the latest committed version continuously, so a further
+  // suggestion is against current bytes, and approving mid-round is the client saying the
+  // remaining notes no longer block them. The database has permitted both all along: migration
+  // 005's portal_approve_blog header says in so many words that there is no open-comment
+  // refusal, because approving over an open suggestion is the client's call to make.
+  changes_requested: ["approve", "suggest", "reply"],
   // Locked for the client exactly as it is for the admin: no new change requests, from either
   // side. Replying survives, and migration 013 permits it for the reason 011 gave about the
   // operator's side: a reply carries parent_id, changes no bytes and resolves nothing, so
@@ -667,9 +672,11 @@ const CLIENT_TAGS: Record<BlogState, StateTag> = {
     detail: "This article is with you. Approve it, or select any passage to ask for a change.",
   },
   changes_requested: {
-    label: "With our team",
+    label: "Pending comments",
     tone: "waiting",
-    detail: "We are working through the changes you asked for.",
+    detail:
+      "We are working through your comments. You can keep reading the latest version, add " +
+      "more notes, or approve at any time.",
   },
   approved: {
     label: "Approved",
@@ -687,12 +694,57 @@ const CLIENT_TAGS: Record<BlogState, StateTag> = {
   unknown: { label: "In progress", tone: "busy", detail: "Our team is working on this article." },
 };
 
+/**
+ * The other face of the changes_requested tag: every comment in the round is addressed, so the
+ * ball is back with the client. Tone `ship` because the word is "resolved": the green says the
+ * round of notes ended well, where the pending face stays `waiting`. A module-level const
+ * rather than an inline literal so it lives beside CLIENT_TAGS, where the vocabulary it
+ * belongs to is defined and swept for leak words.
+ */
+const COMMENTS_RESOLVED_TAG: StateTag = {
+  label: "Comments resolved",
+  tone: "ship",
+  detail:
+    "We have addressed all your comments. Read the updated article and approve it, or add " +
+    "another note.",
+};
+
 export function adminTag(state: BlogState): StateTag {
   return ADMIN_TAGS[state];
 }
 
 export function clientTag(state: BlogState): StateTag {
   return CLIENT_TAGS[state];
+}
+
+/**
+ * The changes_requested tag splits on one fact the state machine cannot carry: whether any of
+ * the client's comments is still unaddressed. PENDING counts open, applying AND failed,
+ * because a failed apply is the team's retry, invisible to the client, and a tag that read
+ * "resolved" over one would tell the client their note was addressed when it never was. Only
+ * resolved and dismissed are done.
+ */
+export function clientCommentsTag(pendingComments: number): StateTag {
+  return pendingComments > 0 ? CLIENT_TAGS.changes_requested : COMMENTS_RESOLVED_TAG;
+}
+
+/**
+ * The ADMIN face of the same split, on the same count. Once every comment in the round is
+ * addressed the ball is back with the client, who reads the latest committed version
+ * continuously, so "Changes requested" would tell the operator they still owe work they have
+ * already done. The STATE stays changes_requested until a re-send closes the round, which is
+ * what keeps the Send button on the bench; only the label moves.
+ */
+const ADMIN_COMMENTS_RESOLVED_TAG: StateTag = {
+  label: "With client",
+  tone: "waiting",
+  detail:
+    "Every comment in this round is addressed and the client is reading the updated article. " +
+    "Send it again to close the round, or wait for their approval or their next note.",
+};
+
+export function adminCommentsTag(pendingComments: number): StateTag {
+  return pendingComments > 0 ? ADMIN_TAGS.changes_requested : ADMIN_COMMENTS_RESOLVED_TAG;
 }
 
 /**

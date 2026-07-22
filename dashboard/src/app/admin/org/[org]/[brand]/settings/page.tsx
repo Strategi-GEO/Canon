@@ -7,9 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ApiError, api } from "@/lib/api";
+import { Textarea } from "@/components/ui/textarea";
+import { ApiError } from "@/lib/api";
 import { HOSTED_READONLY } from "@/lib/hosted";
-import { cn } from "@/lib/utils";
 import { useOrgs } from "@/lib/orgs-context";
 import { BrandRoute } from "@/components/shell/brand-route";
 import { ReadOnlyText } from "@/components/clients/editable-text";
@@ -71,9 +71,16 @@ function BrandSettings({ orgName, brand }: { orgName: string; brand: Client }) {
                 the engine now holds. That is React's own answer to resetting state on a prop
                 change, and it needs no effect to chase the props. */}
             <IdentityCard
-              key={`${client.slug}:${client.domain}:${client.industry}:${orgName}`}
+              key={`${client.slug}:${client.domain}:${orgName}`}
               client={client}
               orgName={orgName}
+              onSaved={onSaved}
+            />
+            {/* Keyed on the saved value so a save resets the draft to what the engine now holds,
+                the same trick IdentityCard uses. */}
+            <CustomInstructionsCard
+              key={`${client.slug}:instructions`}
+              client={client}
               onSaved={onSaved}
             />
             <DangerZone client={client} />
@@ -109,7 +116,7 @@ function ReadOnlyIdentity({ client, orgName }: { client: Client; orgName: string
           <div>
             <dt className="text-xs font-medium text-muted-foreground">Industry</dt>
             <dd className="mt-0.5 text-sm text-foreground">
-              {client.industry || "(not selected)"}
+              {client.industry || "(detected from the brand website shortly after the brand is added)"}
             </dd>
           </div>
         </dl>
@@ -118,7 +125,7 @@ function ReadOnlyIdentity({ client, orgName }: { client: Client; orgName: string
   );
 }
 
-/** Domain, industry and org: the three fields that decide what the engine fetches and reads. */
+/** Domain and org: the two editable fields that decide what the engine fetches and reads. */
 function IdentityCard({
   client,
   orgName,
@@ -129,26 +136,11 @@ function IdentityCard({
   onSaved: () => void;
 }) {
   const [domain, setDomain] = React.useState(client.domain);
-  const [industry, setIndustry] = React.useState(client.industry);
   const [organisation, setOrganisation] = React.useState(orgName);
-  const [industries, setIndustries] = React.useState<string[]>([]);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
 
-  React.useEffect(() => {
-    const controller = new AbortController();
-    api.industries(controller.signal).then(
-      (data) => setIndustries(data.industries),
-      () => {
-        // The current industry still renders below, so a failed list costs the operator the
-        // ability to CHANGE it, not the ability to see it.
-      },
-    );
-    return () => controller.abort();
-  }, []);
-
-  const dirty =
-    domain !== client.domain || industry !== client.industry || organisation !== orgName;
+  const dirty = domain !== client.domain || organisation !== orgName;
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
@@ -159,7 +151,6 @@ function IdentityCard({
       // so sending every field would let a stale value overwrite one changed in another tab.
       await updateClient(client.slug, {
         ...(domain !== client.domain ? { domain: domain.trim() } : {}),
-        ...(industry !== client.industry ? { industry } : {}),
         ...(organisation !== orgName ? { organisation_name: organisation.trim() } : {}),
       });
       toast.success("Saved");
@@ -211,31 +202,107 @@ function IdentityCard({
             </p>
           </div>
 
+          {/* Read only, exactly like the description above and for the same reason: the
+              describe session detects it from the brand website right after the brand is
+              added (server/describe.py), and it picks the industry reference the writer
+              loads. It is not the operator's to change, so there is no control here. */}
           <div>
-            <Label htmlFor="settings-industry">Industry</Label>
-            <select
-              id="settings-industry"
-              value={industry}
-              onChange={(e) => setIndustry(e.target.value)}
-              className={cn(
-                "mt-1.5 h-9 w-full rounded-lg border border-input bg-background px-2.5 text-sm",
-                "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-              )}
-            >
-              {/* The saved value may not be in the list if the list failed to load, so it is
-                  always an option: a select that silently drops it would rewrite the brand. */}
-              {industries.includes(industry) || industry === "" ? null : (
-                <option value={industry}>{industry}</option>
-              )}
-              {industries.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
+            <p className="text-xs font-medium text-muted-foreground">Industry</p>
+            <p className="mt-1.5 text-sm text-foreground">
+              {client.industry ||
+                "(detected from the brand website shortly after the brand is added)"}
+            </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Picks the industry reference the writer loads. Skipping it produces generic
-              content.
+              Detected automatically from the brand website. It picks the industry reference
+              the writer loads.
+            </p>
+          </div>
+
+          {error ? <FieldError error={error} /> : null}
+
+          <Button type="submit" size="sm" disabled={!dirty || saving}>
+            {saving ? (
+              <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
+            ) : null}
+            Save changes
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * The brand's standing blog instructions: what every blog for this brand must follow.
+ *
+ * These reach the research, writing and evaluation agents as a MAJOR priority, ranked above the
+ * house style defaults and the roadmap guidance but never above the brand's canonical facts, so
+ * this is the place to say things like "always cite an India-specific source" or "never open with
+ * a question". It is a per-run instruction's durable sibling: session instructions typed at
+ * Generate apply to one run, these apply to every blog until changed here. Empty is a legitimate
+ * state and clears them.
+ */
+function CustomInstructionsCard({
+  client,
+  onSaved,
+}: {
+  client: Client;
+  onSaved: () => void;
+}) {
+  const [value, setValue] = React.useState(client.custom_instructions ?? "");
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState<ApiError | null>(null);
+
+  const dirty = value !== (client.custom_instructions ?? "");
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      // Sent even when blank: "" is the operator clearing their instructions, a real change the
+      // engine writes, not a no-op. The PATCH reads absent-as-untouched, so a blank string is
+      // the only way to say "remove them".
+      await updateClient(client.slug, { custom_instructions: value });
+      toast.success("Saved");
+      onSaved();
+    } catch (cause) {
+      setError(cause instanceof ApiError ? cause : new ApiError(0, String(cause), null));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent>
+        <p className="text-sm font-semibold text-foreground">Custom blog instructions</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Standing instructions every blog for {client.name} must follow. The engine obeys them as
+          a major priority, above its house style and the roadmap guidance, but never above this
+          brand&apos;s canonical facts, and no instruction here licenses inventing a source or a
+          statistic. Leave it empty for none.
+        </p>
+
+        <form onSubmit={save} className="mt-4 space-y-4">
+          <div>
+            <Label htmlFor="settings-instructions" className="sr-only">
+              Custom blog instructions
+            </Label>
+            <Textarea
+              id="settings-instructions"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              rows={6}
+              placeholder={
+                "e.g. Always cite an India-specific source for market data. Address the reader " +
+                "as “you”. Never open with a rhetorical question."
+              }
+              className="min-h-32"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Applies to every blog written from now on. To shape just one run, use the
+              instructions box that appears when you press Generate.
             </p>
           </div>
 

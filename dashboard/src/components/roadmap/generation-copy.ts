@@ -24,47 +24,17 @@ export const SURVIVES_REFRESH =
   "The session runs in the engine, so refreshing this page, closing the tab, or opening it somewhere else does not stop it or lose it.";
 
 /**
- * Why this brand's runs are mock, or null when they are real.
- *
- * GEO_MOCK is a global switch the operator can restart out of: while it is on, every brand
- * produces mock output no matter how the engine starts.
- */
-export type MockReason = "geo-mock";
-
-/**
- * Why this brand's next generation is mock, from the global switch that decides it.
- *
- * GEO_MOCK is a mode the engine can be restarted out of, so a run is mock exactly while it is on.
- */
-export function mockReasonOf(geoMock: boolean): MockReason | null {
-  if (geoMock) {
-    return "geo-mock";
-  }
-  return null;
-}
-
-/**
  * What pressing the button actually costs, which is the one thing this dialog owes the
- * operator before they press it.
- *
- * Real mode is stated in full: live Firecrawl and DataForSEO calls, a long session, and the
+ * operator before they press it: live Firecrawl and DataForSEO calls, a long session, and the
  * operator's own Claude subscription quota, because that quota is personal and finite and
- * nothing else on this screen would tell them. Mock mode says the opposite just as plainly:
- * an operator who thinks a demo run costs them money will not press it, and demo is how this
- * feature is meant to be tried.
+ * nothing else on this screen would tell them.
  */
-export function costLine(mock: MockReason | null, brandName: string): string {
-  if (mock === "geo-mock") {
-    return `The engine is running in safe mode (GEO_MOCK=1), so this calls nothing live and spends nothing. It produces deterministic mock rows and writes them to ${brandName}'s roadmap.csv, exactly as a real run would.`;
-  }
+export function costLine(brandName: string): string {
   return `This starts one long research session against live Firecrawl and DataForSEO data, and it spends your Claude subscription quota. It writes ${brandName}'s roadmap.csv when it succeeds, which is the file every blog for this brand is then written from.`;
 }
 
 /** What the session does, for the card that watches it rather than the one that starts it. */
-export function workingLine(mock: MockReason | null, brandName: string): string {
-  if (mock !== null) {
-    return `The engine is producing deterministic mock rows for ${brandName}. Nothing live is being called and nothing is being spent.`;
-  }
+export function workingLine(brandName: string): string {
   return `Claude Code is reading ${brandName}'s site through Firecrawl, pulling demand and competitor data from DataForSEO, and planning the rows.`;
 }
 

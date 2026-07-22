@@ -13,7 +13,7 @@
  */
 
 import { api } from "@/lib/api";
-import type { Client, CreateClientBody, Preflight, Resource, UpdateClientBody } from "@/types";
+import type { Client, CreateClientBody, Preflight, UpdateClientBody } from "@/types";
 
 /**
  * Preflight rides on the LIST response only. server/app.py decorates each entry of
@@ -35,36 +35,4 @@ export function createClient(body: CreateClientBody): Promise<Client> {
 
 export function updateClient(slug: string, body: UpdateClientBody): Promise<Client> {
   return api.updateClient(slug, body);
-}
-
-/** The upload timestamp, from whichever key this engine build sends. */
-export function uploadedAt(resource: Resource): string {
-  const wire = resource as Resource & { uploaded?: string };
-  return wire.uploaded ?? resource.modified ?? "";
-}
-
-/** Bytes, rendered short. The engine reports st_size, so this is an exact count. */
-export function formatSize(bytes: number): string {
-  if (!Number.isFinite(bytes)) {
-    return "";
-  }
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  }
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-/** An ISO timestamp shown as a plain date. Invalid input falls back to the raw string. */
-export function formatDate(iso: string): string {
-  if (!iso) {
-    return "";
-  }
-  const parsed = new Date(iso);
-  if (Number.isNaN(parsed.getTime())) {
-    return iso;
-  }
-  return parsed.toISOString().slice(0, 10);
 }

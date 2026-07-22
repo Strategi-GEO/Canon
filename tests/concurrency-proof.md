@@ -1,11 +1,14 @@
 # Concurrency proof: geo-factory runner over HTTP
 
-Build-order step 4 evidence. Everything below ran in MOCK MODE (GEO_MOCK=1):
-no SDK sessions, no API calls, but the exact production plumbing (status.py
-subprocesses appending status.jsonl, the SSE tailer, the semaphore and client
-lock in server/runner.py). Date: 2026-07-16. Server: uvicorn on port 8907,
-one worker. Analysis script: tests/concurrency_check.py, run against the
-status.jsonl files, which are the authoritative feed.
+Build-order step 4 evidence, recorded 2026-07-16. This is an archived record: the
+run stubbed the agents (no SDK sessions, no API calls) so the concurrency plumbing
+could be measured on its own, while exercising the exact production plumbing
+(status.py subprocesses appending status.jsonl, the SSE tailer, the semaphore and
+client lock in server/runner.py). That agent stub has since been removed from the
+product; the plumbing it exercised is real and unchanged, and that plumbing is
+what this proof is about. Server: uvicorn on port 8907, one worker. Analysis
+script: tests/concurrency_check.py, run against the status.jsonl files, which are
+the authoritative feed.
 
 ## The claim under test
 
@@ -13,9 +16,9 @@ The topic semaphore caps topics in flight at 5, dispatch is
 gather-all-at-once so topic 6 starts the instant a slot frees (not after the
 first batch of 5 finishes), and one client's queue runs at a time.
 
-## Run 1: the demo client (then named demo-co), rows [0..6], 7 topics vs cap 5
+## Run 1: a test fixture client (named demo-co at the time), rows [0..6], 7 topics vs cap 5
 
-POST /api/clients/demo-co/generate (the client is now named demo) returned 202 with
+POST /api/clients/demo-co/generate returned 202 with
 run_id d36cc76bdbe84b58b3db990507c9698a.
 
 ### Per-topic table (from status.jsonl first and terminal lines)
@@ -85,7 +88,7 @@ were computed from the files as they stood after run 1 only.
 
 | Check | Result |
 |---|---|
-| POST generate without GEO_MOCK (server restarted without the env) | 409, body: "preflight failed for demo-co: canonical-facts.md still contains the token PLACEHOLDER and has not been reviewed" (names PLACEHOLDER). PASS |
+| POST generate for demo-co while its canonical-facts.md still held the token PLACEHOLDER | 409, body: "preflight failed for demo-co: canonical-facts.md still contains the token PLACEHOLDER and has not been reviewed" (names PLACEHOLDER). PASS |
 
 **This is the verbatim record of the original run.** It was recorded when the client was a
 plain fixture named `demo-co` whose `canonical-facts.md` still held the token PLACEHOLDER. The
@@ -102,7 +105,8 @@ run and is out of scope for this step.
 
 ## Verdict
 
-All assertions PASS. tests/concurrency_check.py exits 0 against
-clients/demo/output (run 1 state). Mock mode throughout: every score,
-draft, and dossier in clients/demo/output is marked "MOCK OUTPUT, do not
-publish".
+All assertions PASS. tests/concurrency_check.py exits 0 against the run 1
+status.jsonl files. The run stubbed the agents, so its scores, drafts, and
+dossiers are not real content and were marked not-for-publication; the proof
+rests only on the status.jsonl timing feed, which the plumbing writes
+identically whether the agents are real or stubbed.

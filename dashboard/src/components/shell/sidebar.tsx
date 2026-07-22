@@ -8,7 +8,7 @@ import { BRAND_NAV, isActiveSection, parseBrandPath, parseOrgPath } from "@/comp
 import { OrgSwitcher } from "@/components/shell/org-switcher";
 import { BrandSwitcher } from "@/components/shell/brand-switcher";
 import { AddOrganisationDialog } from "@/components/clients/add-organisation-dialog";
-import { addBrandHref, brandHref, orgHref, useOrgs } from "@/lib/orgs-context";
+import { addBrandHref, brandHref, brandLocationHref, orgHref, useOrgs } from "@/lib/orgs-context";
 import { cn } from "@/lib/utils";
 import type { Org } from "@/types";
 
@@ -154,7 +154,7 @@ function OrgBrandNav({ org, onNavigate }: { org: Org; onNavigate?: () => void })
  */
 function OrgListNav({ orgs, onNavigate }: { orgs: Org[]; onNavigate?: () => void }) {
   const router = useRouter();
-  const { refresh, findBrand } = useOrgs();
+  const { refresh } = useOrgs();
 
   if (orgs.length === 0) {
     return null;
@@ -179,11 +179,10 @@ function OrgListNav({ orgs, onNavigate }: { orgs: Org[]; onNavigate?: () => void
             <span className="min-w-0 flex-1 truncate">Add organisation</span>
           </button>
         }
-        onCreated={async (brand) => {
+        onCreated={(brand) => {
           onNavigate?.();
-          await refresh();
-          const located = findBrand(brand.slug);
-          router.push(located ? brandHref(located.org.slug, located.brand.slug) : "/");
+          void refresh();
+          router.push(brandLocationHref(brand));
         }}
       />
     </nav>

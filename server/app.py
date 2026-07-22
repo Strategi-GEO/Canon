@@ -33,7 +33,7 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
                                StreamingResponse)
 from pydantic import BaseModel
 
-from . import auth, blog_edit, blog_upload, client_answers, db, describe, facts_gen, ledger, roadmap, roadmap_gen, runner, sync
+from . import auth, blog_edit, blog_upload, client_answers, db, describe, facts_gen, ledger, report_gen, roadmap, roadmap_gen, runner, sync
 # Aliased for the same reason clients is: "questions" is the natural name for the list of
 # questions inside a handler, and the shadowing bug that causes is silent.
 from . import questions as questions_mod
@@ -382,10 +382,7 @@ async def api_clients(user: auth.Identity = Depends(auth.require_user)):
         entry["preflight"] = {"ok": ok,
                               "reason": None if ok else _PREFLIGHT_PLACEHOLDER_REASON}
         client_list.append(entry)
-    # geo_mock is a wire-compat field the dashboard still reads, and it is now the literal
-    # False: the mock execution path is removed from the engine, so no client can ever
-    # produce fake output. The key stays so no reader's shape breaks; the value is the truth.
-    return {"geo_mock": False, "clients": client_list}
+    return {"clients": client_list}
 
 
 # ---------------------------------------------------------------------------
@@ -413,10 +410,7 @@ def _scoped_orgs(user):
 
 @app.get("/api/orgs")
 async def api_orgs(user: auth.Identity = Depends(auth.require_user)):
-    # geo_mock rides at the top level for the same reason /api/clients carries it: the
-    # dashboard reads the key. It is the literal False now that the mock execution path is
-    # removed; the field stays so no reader's shape breaks.
-    return {"geo_mock": False, "orgs": _scoped_orgs(user)}
+    return {"orgs": _scoped_orgs(user)}
 
 
 @app.get("/api/orgs/{org_slug}")
@@ -448,13 +442,21 @@ class UpdateClientRequest(BaseModel):
     description: Optional[str] = None
     name: Optional[str] = None
     organisation_name: Optional[str] = None
-    # domain and industry were MISSING here while the settings page sent both of them and
-    # toasted "Saved". Pydantic drops an unmodelled key silently, so the operator changed a
-    # brand's domain, saw a success toast, and the record never moved. The engine then
-    # researched against the old site. Added to the model AND to update_client together,
-    # because either half alone reproduces the same silent success one level down.
+    # domain was MISSING here while the settings page sent it and toasted "Saved". Pydantic
+    # drops an unmodelled key silently, so the operator changed a brand's domain, saw a
+    # success toast, and the record never moved. The engine then researched against the old
+    # site. Added to the model AND to update_client together, because either half alone
+    # reproduces the same silent success one level down.
+    #
+    # industry is UNMODELLED here ON PURPOSE, the deliberate twin of that accident: the
+    # describe session detects it from the brand website (server/describe.py ->
+    # clients.set_onboarding_industry) and nobody edits it after, so the silent drop is now
+    # the refusal. The settings page no longer offers the field.
     domain: Optional[str] = None
-    industry: Optional[str] = None
+    # The brand's standing blog instructions, same rule as domain/industry: modelled here AND
+    # forwarded in api_update_client, or an unmodelled key is dropped and the operator sees
+    # "Saved" over a record that never moved. Empty string clears them; None means "not sent".
+    custom_instructions: Optional[str] = None
 
 
 def _read_client_or_404(slug, user=None):
@@ -507,7 +509,7 @@ async def api_update_client(slug: str, body: UpdateClientRequest,
             name=body.name,
             organisation_name=body.organisation_name,
             domain=body.domain,
-            industry=body.industry,
+            custom_instructions=body.custom_instructions,
         )
     except clients_mod.UnknownClient as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -942,6 +944,211 @@ async def api_clear_roadmap_generation(slug: str,
 
 
 # ---------------------------------------------------------------------------
+# Monthly reports: generate (a job), then list / share / delete / pdf.
+#
+# Generation is a long SDK session, so the generate trio mirrors roadmap/generate exactly: 202
+# and the browser watches. The rest are plain record reads and writes over the owner connection.
+# The SHARING MODEL lives here: Generate writes the WORKING copy, Share copies it into the SHARED
+# snapshot the client sees, Delete removes only the working copy so the shared snapshot survives,
+# and a regenerate after a share leaves generated_at > shared_at, which the dashboard reads as
+# "not shared yet". See supabase/migrations/020_client_reports.sql and server/report_gen.py.
+#
+# ROUTE ORDER MATTERS: the static /reports/generate paths are declared before /reports/{month},
+# so a DELETE on /reports/generate reaches the clear-job handler rather than being read as a
+# month named "generate". The {month} handlers still validate the format as a second guard.
+# ---------------------------------------------------------------------------
+
+def _report_status(has_working, generated_at, shared_at, has_shared):
+    """The four states the dashboard branches on, derived from one row's timestamps.
+
+    A working copy that was shared AT OR AFTER it was generated is up to date with the client;
+    a working copy generated after the last share is the "not shared yet" case a regenerate
+    creates. A month with no working copy but a shared snapshot is a report the operator deleted
+    while the client keeps seeing the last one sent. Anything else is nothing at all.
+    """
+    if has_working:
+        if shared_at is not None and generated_at is not None and shared_at >= generated_at:
+            return "generated_shared"
+        return "generated_unshared"
+    if has_shared:
+        return "deleted_shared"
+    return "none"
+
+
+@app.get("/api/clients/{slug}/reports")
+async def api_reports(slug: str, user: auth.Identity = Depends(auth.require_user)):
+    """Every month this brand holds, plus the current month even when it has no report yet, so
+    the tab can offer Generate over an empty current month. Each entry carries the WORKING
+    report (what the admin sees and what the trend is drawn from), never the shared snapshot:
+    a deleted month returns report null, so a deleted report stays unseeable to the operator
+    exactly as the requirement asks, while the client keeps seeing the snapshot elsewhere."""
+    _client_or_404(slug, user)
+    cid = db.client_id(slug)
+    rows = db.q(
+        "select month, report, (pdf is not null), generated_at, generated_by, "
+        "shared_at, shared_by, (shared_report is not null) "
+        "from client_reports where client_id = %s order by month desc", (cid,)) if cid else []
+    current = report_gen.current_month()
+    reports = []
+    seen = set()
+    for month, report, has_pdf, gen_at, gen_by, shared_at, shared_by, has_shared in rows:
+        seen.add(month)
+        reports.append({
+            "month": month,
+            "status": _report_status(report is not None, gen_at, shared_at, has_shared),
+            "report": report,
+            "has_pdf": bool(has_pdf),
+            "generated_at": gen_at,
+            "generated_by": gen_by,
+            "shared_at": shared_at,
+            "shared_by": shared_by,
+        })
+    if current not in seen:
+        reports.append({
+            "month": current, "status": "none", "report": None, "has_pdf": False,
+            "generated_at": None, "generated_by": None, "shared_at": None, "shared_by": None,
+        })
+    reports.sort(key=lambda r: r["month"], reverse=True)
+    return {"current_month": current, "reports": reports}
+
+
+@app.post("/api/clients/{slug}/reports/generate", status_code=202)
+async def api_generate_report(slug: str, user: auth.Identity = Depends(auth.require_admin)):
+    """Start this month's report generation. 202, and the browser watches: this is one long SDK
+    session against live data and DataForSEO, exactly the shape of a roadmap generation.
+
+    Generation ALWAYS targets the current calendar month, computed here from the engine clock and
+    never taken from the browser: a report carries numbers measured now, so letting a caller name
+    a past month would stamp today's metrics under a label they do not belong to."""
+    client = _read_client_or_404(slug, user)
+    month = report_gen.current_month()
+
+    if report_gen.job_running(slug):
+        raise HTTPException(status_code=409, detail={
+            "detail": f"a report generation for {slug!r} is already running; watch that one "
+                      f"rather than starting a second, which would race it to write the same row",
+            "job": _public_job(report_gen.get_job(slug)),
+        })
+    if _client_has_live_run(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"a run for {slug!r} is live; wait for it to finish before generating a report")
+    if report_gen.working_report_exists(slug, month):
+        # One report per month. Regenerating means Delete first, which is the requirement and the
+        # guard that keeps a generation from clobbering a report the operator may still want.
+        raise HTTPException(
+            status_code=409,
+            detail=f"a report for {month} already exists; delete it first to regenerate")
+    if not (client.get("domain") or "").strip():
+        # The whole session audits a live site. No domain, nothing to audit, so refuse at submit
+        # rather than spend a session that fails at its first scrape.
+        raise HTTPException(
+            status_code=422,
+            detail="this brand has no domain recorded; a monthly report audits a live site")
+
+    email = getattr(user, "email", "") or ""
+    return _public_job(report_gen.start_job(slug, month, email))
+
+
+@app.get("/api/clients/{slug}/reports/generate")
+async def api_report_generation_job(slug: str,
+                                    user: auth.Identity = Depends(auth.require_user)):
+    """The current report generation job, or 404 when there has never been one. This is what
+    lets a generation survive a refresh and be watched from a tab that never started it."""
+    _client_or_404(slug, user)
+    job = report_gen.get_job(slug)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"no report generation job for {slug!r}")
+    return _public_job(job)
+
+
+@app.delete("/api/clients/{slug}/reports/generate", status_code=204)
+async def api_clear_report_generation(slug: str,
+                                      user: auth.Identity = Depends(auth.require_admin)):
+    """Drop a settled report generation job once the operator has read or dismissed it. A running
+    job is refused: the session is spending quota and dropping its record would strand it."""
+    _client_or_404(slug, user)
+    if report_gen.job_running(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"the report generation for {slug!r} is still running; clear it once it finishes")
+    report_gen.clear_job(slug)
+    return None
+
+
+@app.post("/api/clients/{slug}/reports/{month}/share")
+async def api_share_report(slug: str, month: str,
+                           user: auth.Identity = Depends(auth.require_admin)):
+    """Send this month's WORKING report to the client: copy it into the shared snapshot the
+    portal reads. Every share re-stamps shared_at, so it also re-shares after a regenerate.
+    Refused when there is no working report to share (409): a share of nothing is nonsense, and
+    Delete leaves report null precisely so this refusal fires for a deleted month."""
+    _client_or_404(slug, user)
+    if not report_gen.valid_month(month):
+        raise HTTPException(status_code=404, detail=f"{month!r} is not a valid report month")
+    if report_gen.job_running(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"a report generation for {slug!r} is running; wait for it before sharing")
+    cid = db.client_id(slug)
+    email = getattr(user, "email", "") or ""
+    shared_at = db.q(
+        "update client_reports set shared_report = report, shared_pdf = pdf, "
+        "shared_at = now(), shared_by = %s "
+        "where client_id = %s and month = %s and report is not null "
+        "returning shared_at", (email, cid, month), fetch="val")
+    if shared_at is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"there is no generated report for {month} to share; generate it first")
+    return {"month": month, "status": "generated_shared", "shared_at": shared_at, "shared_by": email}
+
+
+@app.delete("/api/clients/{slug}/reports/{month}", status_code=204)
+async def api_delete_report(slug: str, month: str,
+                            user: auth.Identity = Depends(auth.require_admin)):
+    """Remove this month's WORKING report: report, pdf and generation stamps. The SHARED snapshot
+    is left untouched, so the client keeps seeing the last report sent, and there is no way for
+    the operator to see the working copy again (the are-you-sure lives in the dashboard). When no
+    shared snapshot remains either, the now-empty row is dropped. Idempotent: deleting a month
+    that has no working report is a no-op 204."""
+    _client_or_404(slug, user)
+    if not report_gen.valid_month(month):
+        raise HTTPException(status_code=404, detail=f"{month!r} is not a valid report month")
+    if report_gen.job_running(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"a report generation for {slug!r} is running; wait for it before deleting")
+    cid = db.client_id(slug)
+    with db.tx() as cur:
+        cur.execute(
+            "update client_reports set report = null, pdf = null, generated_at = null, "
+            "generated_by = null where client_id = %s and month = %s", (cid, month))
+        cur.execute(
+            "delete from client_reports where client_id = %s and month = %s "
+            "and shared_report is null", (cid, month))
+    return None
+
+
+@app.get("/api/clients/{slug}/reports/{month}/pdf")
+async def api_report_pdf(slug: str, month: str,
+                         user: auth.Identity = Depends(auth.require_user)):
+    """The WORKING report's PDF for one month, as a download. 404 when this month has no working
+    PDF, which is both a deleted month and a report whose PDF never rendered (Chromium absent)."""
+    _client_or_404(slug, user)
+    if not report_gen.valid_month(month):
+        raise HTTPException(status_code=404, detail=f"{month!r} is not a valid report month")
+    cid = db.client_id(slug)
+    pdf = db.q("select pdf from client_reports where client_id = %s and month = %s",
+               (cid, month), fetch="val")
+    if pdf is None:
+        raise HTTPException(status_code=404, detail=f"no report PDF for {month}")
+    return Response(
+        content=bytes(pdf), media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{slug}-{month}-report.pdf"'})
+
+
+# ---------------------------------------------------------------------------
 # Canonical facts: the file, then the job that builds it.
 #
 # READ ONLY, all three. There is deliberately NO POST and NO PATCH here: a blog run starts the
@@ -1217,15 +1424,25 @@ def _blog_history(slug):
     sent_map = {row[0]: row[1:] for row in sent_rows}
     # parent_id is null: a client's REPLY is not a change request, and counting one would
     # put a "changes requested" chip on the library card for "thanks, looks good".
-    changes_map = dict(db.q(
-        """select t.slug, count(*)
+    # TWO COUNTS FROM ONE READ, because they answer two different questions. open+applying is
+    # changes_requested, the send-gate count. Adding failed gives comments_pending, the
+    # human-facing count the state tags split on: a failed apply is the team's retry, so to
+    # both humans that comment is simply not yet addressed, and a tag that read "resolved"
+    # over one would lie to the admin exactly as portal-data.ts documents it lying to the
+    # client. The two tags fold the same fact or the two audiences disagree.
+    comment_rows = db.q(
+        """select t.slug,
+                  count(*) filter (where c.state in ('open', 'applying')),
+                  count(*) filter (where c.state in ('open', 'applying', 'failed'))
            from blog_comments c
            join topics t on t.id = c.topic_id
            where c.client_id = %s and c.author = 'client'
              and c.parent_id is null
-             and c.state in ('open', 'applying')
+             and c.state in ('open', 'applying', 'failed')
            group by t.slug""",
-        (client_id,)))
+        (client_id,))
+    changes_map = {row[0]: row[1] for row in comment_rows}
+    pending_map = {row[0]: row[2] for row in comment_rows}
     # THE ROUND, which is a different question from the queue above and drives the STATE.
     # "Has the client asked for anything since we last sent this?" It ignores comment state
     # entirely, so it survives resolving, dismissing and a failed apply alike, and only
@@ -1307,6 +1524,7 @@ def _blog_history(slug):
         entry["sent_to_client"] = sent_at.isoformat() if sent_at else None
         entry["client_approved"] = approved_at.isoformat() if approved_at else None
         entry["changes_requested"] = int(changes_map.get(entry["topic_slug"], 0))
+        entry["comments_pending"] = int(pending_map.get(entry["topic_slug"], 0))
         entry["change_round_open"] = entry["topic_slug"] in round_map
         # An ISO stamp rather than a boolean, matching every other human-act field on this
         # entry, so a card can render "Questions answered, 18 Jul" without a second call.
@@ -2155,6 +2373,11 @@ async def _revise_task(run_id, slug, topic_slug):
 class GenerateRequest(BaseModel):
     rows: list[int]
     upload_id: Optional[str] = None
+    # Instructions specific to THIS run's blogs, typed in the dialog after Generate. Optional
+    # and often None: a run with none behaves exactly as before. Stamped onto each selected row
+    # in api_generate so it rides down to run_topic, which lays it down as a file every agent
+    # reads. It ranks with the brand instructions (major priority, never above canonical-facts).
+    session_instructions: Optional[str] = None
 
 
 @app.get("/api/runs")
@@ -2386,6 +2609,10 @@ async def api_generate(slug: str, body: GenerateRequest,
     run_id = uuid.uuid4().hex
     topics = []
     for row in selected:
+        # Instructions typed for THIS run ride down on the row, which travels verbatim to
+        # run_topic; it lays them at <out_dir>/session-instructions.md for the agents. Trimmed
+        # so a blank textarea reads the same as None: no file written, no change to the run.
+        row["session_instructions"] = (body.session_instructions or "").strip()
         # status.jsonl is append-only and survives across runs, so a rerun of
         # a finished topic would replay the old run's history and terminal
         # line into the new SSE stream. Record the current byte size now,

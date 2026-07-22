@@ -15,7 +15,6 @@ type OrgsState = {
   orgs: Org[];
   /** Every brand across every org, flat. The org grouping is the only thing above it. */
   brands: Client[];
-  geoMock: boolean;
   loading: boolean;
   /** The engine's own reason the list could not load, or null when it loaded. */
   error: ApiError | null;
@@ -109,7 +108,6 @@ async function fetchOrgs(signal?: AbortSignal): Promise<OrgsResponse> {
     const clients =
       clientsResult.status === "fulfilled" ? clientsResult.value.clients : [];
     return {
-      geo_mock: orgsResult.value.geo_mock,
       orgs: withPreflight(sortOrgs(orgsResult.value.orgs), clients),
     };
   }
@@ -127,18 +125,16 @@ async function fetchOrgs(signal?: AbortSignal): Promise<OrgsResponse> {
   }
 
   const data: ClientsResponse = clientsResult.value;
-  return { geo_mock: data.geo_mock, orgs: deriveOrgs(data.clients) };
+  return { orgs: deriveOrgs(data.clients) };
 }
 
 export function OrgsProvider({ children }: { children: React.ReactNode }) {
   const [orgs, setOrgs] = React.useState<Org[]>([]);
-  const [geoMock, setGeoMock] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<ApiError | null>(null);
 
   const apply = React.useCallback((data: OrgsResponse) => {
     setOrgs(sortOrgs(data.orgs));
-    setGeoMock(data.geo_mock);
     setError(null);
     setLoading(false);
   }, []);
@@ -186,7 +182,6 @@ export function OrgsProvider({ children }: { children: React.ReactNode }) {
     return {
       orgs,
       brands,
-      geoMock,
       loading,
       error,
       refresh,
@@ -201,7 +196,7 @@ export function OrgsProvider({ children }: { children: React.ReactNode }) {
         return null;
       },
     };
-  }, [orgs, geoMock, loading, error, refresh]);
+  }, [orgs, loading, error, refresh]);
 
   return <OrgsContext.Provider value={value}>{children}</OrgsContext.Provider>;
 }
@@ -223,6 +218,18 @@ export function orgHref(orgSlug: string): string {
 
 export function brandHref(orgSlug: string, brandSlug: string, section = ""): string {
   return `/admin/org/${orgSlug}/${brandSlug}${section}`;
+}
+
+/**
+ * The canonical URL of a brand computed from the brand ALONE. A brand's org slug is its
+ * organisation slug, or its own slug when it stands alone, matching deriveOrgs exactly. This is
+ * how a freshly created brand is routed to WITHOUT re-reading the orgs list first: findBrand
+ * closes over the pre-refresh orgs, so `await refresh(); findBrand(slug)` still misses the brand
+ * that was just made and falls back to "/". The created record already carries its organisation,
+ * so the address is knowable straight away.
+ */
+export function brandLocationHref(brand: Client, section = ""): string {
+  return brandHref(brand.organisation?.slug ?? brand.slug, brand.slug, section);
 }
 
 /**

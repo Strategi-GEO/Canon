@@ -7,8 +7,8 @@ industry is pinned to the writer's reference set (clients._normalize_industry), 
 "Others" when the site fits none of them. canonical-facts.md is a separate artifact and still gets
 drafted and approved by a human later.
 
-Only a REAL result is saved. If the session could not read the site (mock mode, or a homepage
-that would not fetch), draft_description returns a placeholder with NO sources, and start_job
+Only a REAL result is saved. If the session could not read the site (a homepage that would not
+fetch), draft_description returns a placeholder with NO sources, and start_job
 leaves the record untouched rather than saving an apology as the brand's description or a guessed
 industry.
 
@@ -105,7 +105,7 @@ def start_job(client_slug, name, domain):
             # Onboarding auto-generates the brand's description AND its industry, and the operator
             # never reviews or edits either, so a REAL result is written straight to the record
             # here. "Real" means the session actually read the live site, which is exactly
-            # `sources` being non-empty: a placeholder (mock mode, or a homepage that could not be
+            # `sources` being non-empty: a placeholder (a homepage that could not be
             # fetched) reports no sources and its text names ITSELF as not-from-the-site, so saving
             # it would make the brand's own fields an apology. That is the precise failure this
             # guard exists to avoid.

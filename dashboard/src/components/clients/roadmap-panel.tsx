@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -14,8 +15,9 @@ import { StatusBadge } from "@/components/shell/status-badge";
 /**
  * The overview shows a PREVIEW. The full selectable table is the create page, one click away,
  * so repeating forty rows here would only push everything else about the brand off screen.
+ * SHARED with the client portal's overview, whose blogs card previews the same number.
  */
-const PREVIEW_ROWS = 5;
+export const PREVIEW_ROWS = 5;
 
 /**
  * The one roadmap card, and it is READ ONLY.
@@ -115,67 +117,123 @@ export function RoadmapPanel({
 
         {preview.length > 0 ? (
           <>
-            <ul className="mt-4 flex flex-col divide-y border-t">
-              {preview.map((row) => (
-                <li key={row.index} className="flex items-start gap-3 py-2.5">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm text-pretty text-foreground">
-                      {/* The row number, here as everywhere else. This is a preview of the sheet,
-                          so a row read here has to be findable in the sheet without counting. */}
-                      <span className="machine mr-1.5 text-muted-foreground">{row.index + 1}.</span>
-                      {row.topic}
-                    </p>
-                    {/* What the piece covers, in place of the slug this used to print. A title
-                        and its own slugified self say one thing twice, and neither says what
-                        the topic actually is. The slug is the ledger key and it is still on
-                        the create page, where an operator matching a row to an output folder
-                        is. Two lines, unexpandable: this card is a preview and the page that
-                        reads a row in full is one click away. */}
-                    {row.covers ? (
-                      <p className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
-                        {row.covers}
-                      </p>
-                    ) : null}
-                    {/* Counted, not listed. The prompts are the binding part of a row and the
-                        reason to open the create page, but printing five of them per topic
-                        would rebuild that page here. The number is what this card can honestly
-                        carry: it says the row has queries to win and how many. */}
-                    {row.prompts.length > 0 ? (
-                      <p className="mt-1 text-xs text-muted-foreground/80">
-                        <span className="machine">{row.prompts.length}</span>{" "}
-                        {row.prompts.length === 1 ? "target prompt" : "target prompts"}
-                      </p>
-                    ) : null}
-                  </div>
-                  <RoadmapRowState row={row} blog={blogBySlug.get(row.topic_slug)} />
-                </li>
-              ))}
-            </ul>
-
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-              {/* Said, never silent. A list that simply stops at five teaches the operator
-                  that five is all there is. */}
-              <p className="text-xs text-muted-foreground">
-                {remaining > 0 ? (
+            <PreviewList
+              items={preview.map((row) => ({
+                key: row.index,
+                /* The row number, here as everywhere else. This is a preview of the sheet,
+                   so a row read here has to be findable in the sheet without counting. */
+                number: row.index + 1,
+                title: row.topic,
+                /* What the piece covers, in place of the slug this used to print. A title
+                   and its own slugified self say one thing twice, and neither says what
+                   the topic actually is. The slug is the ledger key and it is still on
+                   the create page, where an operator matching a row to an output folder
+                   is. Two lines, unexpandable: this card is a preview and the page that
+                   reads a row in full is one click away. */
+                sub: row.covers,
+                /* Counted, not listed. The prompts are the binding part of a row and the
+                   reason to open the create page, but printing five of them per topic
+                   would rebuild that page here. The number is what this card can honestly
+                   carry: it says the row has queries to win and how many. */
+                meta:
+                  row.prompts.length > 0 ? (
+                    <>
+                      <span className="machine">{row.prompts.length}</span>{" "}
+                      {row.prompts.length === 1 ? "target prompt" : "target prompts"}
+                    </>
+                  ) : null,
+                right: <RoadmapRowState row={row} blog={blogBySlug.get(row.topic_slug)} />,
+              }))}
+            />
+            <PreviewFooter
+              note={
+                /* Said, never silent. A list that simply stops at five teaches the operator
+                   that five is all there is. */
+                remaining > 0 ? (
                   <>
                     <span className="machine">{remaining}</span> more{" "}
                     {remaining === 1 ? "topic" : "topics"} on the create page.
                   </>
                 ) : (
                   "That is every topic in this roadmap."
-                )}
-              </p>
-              <Button size="sm" variant="outline" asChild>
-                <Link href={brandHref(orgSlug, brandSlug, "/create")}>
-                  Pick topics
-                  <ArrowRight data-icon="inline-end" aria-hidden />
-                </Link>
-              </Button>
-            </div>
+                )
+              }
+              href={brandHref(orgSlug, brandSlug, "/create")}
+              cta="Pick topics"
+            />
           </>
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * The preview list an overview card renders: numbered rows with a title, a clamped support
+ * line, a small meta line, and a status chip on the right. SHARED with the client portal's
+ * overview, which fills it with the client's articles instead of roadmap rows, so the two
+ * surfaces stay one component rather than two copies of this markup.
+ */
+export function PreviewList({
+  items,
+}: {
+  items: {
+    key: string | number;
+    /** Printed as-is, so pass it 1-based. Omit for an unnumbered row. */
+    number?: number;
+    title: string;
+    sub?: string | null;
+    meta?: ReactNode;
+    right?: ReactNode;
+  }[];
+}) {
+  return (
+    <ul className="mt-4 flex flex-col divide-y border-t">
+      {items.map((item) => (
+        <li key={item.key} className="flex items-start gap-3 py-2.5">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm text-pretty text-foreground">
+              {item.number !== undefined ? (
+                <span className="machine mr-1.5 text-muted-foreground">{item.number}.</span>
+              ) : null}
+              {item.title}
+            </p>
+            {item.sub ? (
+              <p className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+                {item.sub}
+              </p>
+            ) : null}
+            {item.meta ? (
+              <p className="mt-1 text-xs text-muted-foreground/80">{item.meta}</p>
+            ) : null}
+          </div>
+          {item.right}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** The preview card's "N more" line plus its one outline door. SHARED like PreviewList. */
+export function PreviewFooter({
+  note,
+  href,
+  cta,
+}: {
+  note: ReactNode;
+  href: string;
+  cta: string;
+}) {
+  return (
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+      <p className="text-xs text-muted-foreground">{note}</p>
+      <Button size="sm" variant="outline" asChild>
+        <Link href={href}>
+          {cta}
+          <ArrowRight data-icon="inline-end" aria-hidden />
+        </Link>
+      </Button>
+    </div>
   );
 }
 

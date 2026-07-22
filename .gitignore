@@ -47,3 +47,6 @@ node_modules/
 # "Start Canon.command" stays: it is machine-independent because it defers to
 # whatever python3 is on PATH.
 Start Canon (installed).command
+
+# Packaged skill zips are built from .claude/skills/<name>/; the folder is the source.
+*.skill

@@ -17,6 +17,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError, api } from "@/lib/api";
 import { brandHref } from "@/lib/orgs-context";
+import { blogState } from "@/lib/blog-state";
 import { formatCount } from "@/lib/format";
 import {
   loadObservedReview,
@@ -367,6 +368,9 @@ function Library({
                 <BlogsTable
                   blogs={shown}
                   waiting={waiting}
+                  // The one read of where each blog is, over the same wire fields the stage
+                  // page folds, so the two screens can never disagree about a row's state.
+                  stateOf={blogState}
                   sortKey={url.sortKey}
                   sortDir={url.sortDir}
                   activeSlug={activeSlug}

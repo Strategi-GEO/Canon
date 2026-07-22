@@ -67,7 +67,6 @@ export async function GET(
       piece_count: intOrNull(meta.piece_count),
       rows: intOrNull(meta.rows),
       notes: meta.notes ?? null,
-      mock: meta.mock === "true",
     });
   } catch (cause) {
     return failure(cause);

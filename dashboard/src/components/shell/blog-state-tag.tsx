@@ -1,6 +1,13 @@
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { adminTag, clientTag, type BlogState, type StateTone } from "@/lib/blog-state";
+import {
+  adminCommentsTag,
+  adminTag,
+  clientCommentsTag,
+  clientTag,
+  type BlogState,
+  type StateTone,
+} from "@/lib/blog-state";
 
 /**
  * The tag that says where a blog is.
@@ -41,14 +48,33 @@ const TONES: Record<StateTone, string> = {
 export function BlogStateTag({
   state,
   audience,
+  commentsPending,
   className,
 }: {
   state: BlogState;
   /** Which vocabulary to speak. Never inferred: the same component renders on both surfaces. */
   audience: "admin" | "client";
+  /**
+   * changes_requested only: how many of the client's comments are still unaddressed (open,
+   * applying or failed). BOTH audiences split on it, each in its own vocabulary: the client
+   * between "Pending comments" and "Comments resolved", the admin between "Changes requested"
+   * and "With client". The labels live in blog-state.ts with every other label (labels never
+   * leave that file); this prop only carries the one fact the state itself cannot. Omitting
+   * it falls back to the plain state tag.
+   */
+  commentsPending?: number | null;
   className?: string;
 }) {
-  const tag = audience === "admin" ? adminTag(state) : clientTag(state);
+  const pending =
+    state === "changes_requested" && typeof commentsPending === "number" ? commentsPending : null;
+  const tag =
+    audience === "admin"
+      ? pending !== null
+        ? adminCommentsTag(pending)
+        : adminTag(state)
+      : pending !== null
+        ? clientCommentsTag(pending)
+        : clientTag(state);
   return (
     <Tooltip>
       <TooltipTrigger asChild>

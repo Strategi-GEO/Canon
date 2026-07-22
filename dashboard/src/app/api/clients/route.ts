@@ -5,7 +5,7 @@ import { failure, json } from "@/lib/server/http";
 /**
  * The engine's GET /api/clients, answered from Supabase as the caller: RLS scopes the list,
  * so a non-admin sees only the brands their grants name and nothing in the response betrays
- * how many others exist. geo_mock is the wire-compat literal false the engine sends.
+ * how many others exist.
  */
 export async function GET(request: Request) {
   const user = await verifyRequest(request);
@@ -23,7 +23,7 @@ export async function GET(request: Request) {
         reason: entry.preflightOk ? null : PREFLIGHT_PLACEHOLDER_REASON,
       },
     }));
-    return json({ geo_mock: false, clients });
+    return json({ clients });
   } catch (cause) {
     return failure(cause);
   }

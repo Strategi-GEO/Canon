@@ -104,9 +104,6 @@ def start_job(client_slug, brand_url, piece_count, notes):
         "report": None,
         "rows": None,
         "error": None,
-        # Wire compatibility: readers of this job record still expect the key. The mock
-        # execution path is removed, so the honest value is the literal False, always.
-        "mock": False,
     }
     GEN_JOBS[client_slug] = job
 
@@ -118,7 +115,6 @@ def start_job(client_slug, brand_url, piece_count, notes):
             # answer, and a job that reported only "no roadmap written" would throw away the
             # one thing they paid for.
             job["report"] = result["report"]
-            job["mock"] = result["mock"]
             rows, error = _validate_written(client_slug)
             job["rows"] = rows
             job["error"] = error
@@ -304,7 +300,6 @@ def read_report(client_slug, month=None):
         "piece_count": _int_or_none(meta.get("piece_count")),
         "rows": _int_or_none(meta.get("rows")),
         "notes": meta.get("notes"),
-        "mock": meta.get("mock") == "true",
     }
 
 
@@ -333,7 +328,6 @@ def _save_report(client_slug, job):
             f"piece_count: {job.get('piece_count', '')}",
             f"rows: {job.get('rows')}",
             f"notes: {job.get('notes') or '(none given)'}",
-            f"mock: {str(bool(job.get('mock'))).lower()}",
             "---",
             "",
         ])
@@ -422,7 +416,7 @@ def _push_sheet(client_slug):
 # ---------------------------------------------------------------------------
 
 async def generate_roadmap(client_slug, brand_url, piece_count, notes):
-    """One real session, always. Returns {"report": str, "mock": bool}, mock always False.
+    """One real session, always. Returns {"report": str}.
 
     It does not decide whether the run succeeded: the caller re-parses the file on disk. What
     an agent says it wrote and what it wrote are two different claims, and only one of them is
@@ -504,4 +498,4 @@ async def generate_roadmap(client_slug, brand_url, piece_count, notes):
         # nobody watched.
         text = ("The session returned no final message, so there is no report. Read the CSV "
                 "itself before trusting it.")
-    return {"report": text, "mock": False}
+    return {"report": text}

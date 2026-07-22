@@ -1011,6 +1011,14 @@ def _agent_definitions():
             "for every path and never guess them.\n"
             "Before anything else read clients/<slug>/client.md, clients/<slug>/canonical-facts.md, "
             "and .claude/skills/geo-research/references/source-vetting.md, every run.\n"
+            "Then read the operator's custom instructions, which bind this blog as a MAJOR "
+            "priority, ABOVE house style and roadmap guidance but NEVER above canonical-facts.md, "
+            "and never as licence to invent a source, statistic, or URL: "
+            "clients/<slug>/custom-instructions.md (the brand's standing instructions, may be "
+            "empty) and <out_dir>/session-instructions.md (this run's instructions, present only "
+            "when the operator gave some). Follow both. When session-instructions.md exists, copy "
+            "its text VERBATIM into the dossier under a '## Session instructions (this run)' "
+            "heading, so the finished blog carries the instruction it was written under.\n"
             "Run the geo-research skill and write the dossier to <out_dir>/dossier.md. Fetched "
             "full text or it is not a source; search snippets are leads only.\n"
             "Append your own status lines with stage research (event start when you begin, end "
@@ -1033,6 +1041,12 @@ def _agent_definitions():
             "Run the geo-content-writer skill against the FROZEN dossier at <out_dir>/dossier.md. "
             "Never re-research and never invent a citation or URL: a claim with no supporting "
             "source is a Sourcing failure to flag, not to patch.\n"
+            "Follow the operator's custom instructions as a MAJOR priority, ABOVE house style and "
+            "roadmap guidance and NEVER above canonical-facts.md, and never as licence to invent a "
+            "source or URL: clients/<slug>/custom-instructions.md (the brand's standing "
+            "instructions, may be empty) and <out_dir>/session-instructions.md (this run's "
+            "instructions, present only when given, and still present and still binding on a "
+            "revise).\n"
             "On iteration 1 you draft blog.md. On iteration 2 and later you receive the current "
             "blog.md and a fix list: apply ONLY the listed fixes, never rewrite the article, and "
             "never cut an honest negative to save words.\n"
@@ -1055,11 +1069,18 @@ def _agent_definitions():
             "You are Agent E, a hostile auditor for one GEO blog draft. The dispatching lead "
             "gives you the client slug, topic slug, output dir, and current iteration number.\n"
             "Your inputs are <out_dir>/blog.md, .claude/skills/geo-content-eval/references/"
-            "rubric.md, clients/<slug>/canonical-facts.md, and <out_dir>/answers.json WHEN ONE "
+            "rubric.md, clients/<slug>/canonical-facts.md, clients/<slug>/custom-instructions.md, "
+            "<out_dir>/session-instructions.md WHEN IT EXISTS, and <out_dir>/answers.json WHEN ONE "
             "EXISTS, and nothing else. Never read the dossier, the writer's reasoning, or any "
             "prior eval: your isolation is intact, because an operator answer ranks with "
             "canonical-facts.md and above any internal doc, so it is an EXTENSION OF THE FACT "
             "BASE you already read and not the writer's reasoning.\n"
+            "The custom instructions (the brand's clients/<slug>/custom-instructions.md and this "
+            "run's <out_dir>/session-instructions.md) are operator directives the writer was TOLD "
+            "to follow, exactly like the answers: read them so you do NOT mark the draft down for "
+            "obeying them. Read this run's instructions from session-instructions.md, never from "
+            "the dossier, which stays off-limits. They are NOT sources, they never become a "
+            "citation, and they never override canonical-facts.md or a hard gate.\n"
             "READ THE ANSWERS BEFORE YOU SCORE. A negative answer forces the writer to CUT a "
             "claim, and an evaluator that cannot see the answer reads that cut as lost factual "
             "density and scores the draft DOWN for telling the truth. An answer is still NOT a "
@@ -1453,6 +1474,24 @@ def _schedule_commit(client_slug, topic_slug):
 # Per-topic and per-batch dispatch
 # ---------------------------------------------------------------------------
 
+def _write_session_instructions(out_dir, text):
+    """Lay this run's session instructions at <out_dir>/session-instructions.md, or clear a
+    stale one.
+
+    Deterministic and written from the row every run, so a retry or a resume re-lays THIS run's
+    instructions, and a run with none REMOVES a prior run's file rather than letting it leak into
+    a blog it was never meant for. The agents read it by path, exactly like answers.json; it is a
+    scratch input and is never synced to the record, so the dossier (which Agent R copies it into)
+    is what carries it onto a surface the dashboard can read.
+    """
+    path = out_dir / "session-instructions.md"
+    text = (text or "").strip()
+    if text:
+        path.write_text(text + "\n", encoding="utf-8")
+    else:
+        path.unlink(missing_ok=True)
+
+
 async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None):
     """One blog, one SDK session, plus the died-session safety net.
 
@@ -1564,6 +1603,11 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
         # See _status_baseline: this topic may have been run before, and every terminal
         # question below is about THIS session rather than about the file.
         baseline = _status_baseline(out_dir)
+
+        # Lay this run's session instructions down for the agents to read by path (empty or
+        # absent clears any file a prior run left). The brand's standing instructions arrived
+        # separately via _materialize_topic_scratch -> materialize_client -> custom-instructions.md.
+        _write_session_instructions(out_dir, row.get("session_instructions"))
 
         # A batch-level refusal is checked BEFORE preflight on purpose. precheck_error is not
         # preflight. Preflight asks whether THIS client's file is fit to write against.

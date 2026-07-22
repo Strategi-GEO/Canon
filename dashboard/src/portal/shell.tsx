@@ -8,11 +8,9 @@ import {
   Box,
   Check,
   ChevronsUpDown,
-  FileCheck2,
   Loader2,
   LogOut,
   Menu,
-  MessageCircleQuestion,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,7 +26,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   BRAND_NAV,
   brandHref,
-  homeHref,
   isActiveSection,
   orgHref,
   pageTitle,
@@ -265,63 +262,6 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
-/**
- * The portal's notifications, derived and nothing else: the overview the shell already
- * holds IS the notification, so there is no bell, no history, and no read-state to store
- * anywhere. Exactly two counts matter to a client (articles waiting on their answers,
- * articles ready to approve), and each links home, where those sections sit at the top of
- * the page. The strip simply disappears when both are zero: an empty notification area
- * would only teach the client to stop looking at it.
- */
-function AttentionStrip({ onNavigate }: { onNavigate?: () => void }) {
-  const { blogs, loading, orgs } = usePortal();
-  if (loading) {
-    return null;
-  }
-  // The two states where the client OWES something, which is what clientActions says of them:
-  // has_questions offers `answer` and client_review offers `approve`. changes_requested is
-  // deliberately absent, because a request already with the team is not a debt of the client's,
-  // and `answers_submitted` is absent for the same reason and a stronger one: clientActions
-  // gives it nothing at all, so counting it here would put a number on the sidebar that no page
-  // in the portal offers a way to clear.
-  const action = blogs.filter((blog) => blog.state === "has_questions").length;
-  const ready = blogs.filter((blog) => blog.state === "client_review").length;
-  if (action === 0 && ready === 0) {
-    return null;
-  }
-  // The caller's actual home, not the root signpost: the org list is already in hand here,
-  // so sending a client through two requests and a spinner to arrive at the page this
-  // shell could name is a round trip for nothing.
-  const home = homeHref(orgs);
-  const row =
-    "flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium transition-colors " +
-    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
-  return (
-    <div className="flex flex-col gap-1.5 border-t px-2.5 pt-3 pb-4" aria-label="Needs your attention">
-      {action > 0 ? (
-        <Link
-          href={home}
-          onClick={onNavigate}
-          className={cn(row, "bg-review-bg text-review hover:bg-review/15")}
-        >
-          <MessageCircleQuestion className="size-3.5 shrink-0" aria-hidden />
-          {action === 1 ? "1 article needs your answers" : `${action} articles need your answers`}
-        </Link>
-      ) : null}
-      {ready > 0 ? (
-        <Link
-          href={home}
-          onClick={onNavigate}
-          className={cn(row, "bg-primary/8 text-primary hover:bg-primary/15")}
-        >
-          <FileCheck2 className="size-3.5 shrink-0" aria-hidden />
-          {ready === 1 ? "1 ready to post" : `${ready} ready to post`}
-        </Link>
-      ) : null}
-    </div>
-  );
-}
-
 function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <div className="flex h-full flex-col">
@@ -331,7 +271,6 @@ function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
       <div className="flex-1 overflow-y-auto px-2.5 pb-4">
         <SidebarNav onNavigate={onNavigate} />
       </div>
-      <AttentionStrip onNavigate={onNavigate} />
     </div>
   );
 }

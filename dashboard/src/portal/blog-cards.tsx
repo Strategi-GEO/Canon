@@ -16,11 +16,13 @@ import { cn } from "@/lib/utils";
  *
  *   ActionCard   -- loud. Amber ground, a question count, a full-card link. The portal asks a
  *                   client for answers rarely, so this card is allowed to shout. (has_questions)
- *   ReadyCard    -- inviting, on the brand's own accent. The happy ask: the article is
- *                   finished, read it and approve it, or say what should change by leaving a
- *                   note on the text itself. (client_review)
+ *   ReadyCard    -- inviting, on the brand's own accent. The happy ask: the article is with
+ *                   the client, read it and approve it, or say what should change by leaving a
+ *                   note on the text itself. (client_review AND changes_requested: once sent,
+ *                   the approve path never closes, so a round of comments stays a ReadyCard
+ *                   whose tag says whether the notes are pending or resolved)
  *   FrozenRow    -- quiet rows with a lock. Nothing to do here; saying so calmly is the job.
- *                   (changes_requested, answers_submitted, and the in-flight slivers)
+ *                   (answers_submitted and the in-flight slivers)
  *   ApprovedCard -- a clean reading library. White cards, dates, reading time, a quiet mark.
  *                   (approved and published, both locked and both only to be read)
  *
@@ -52,16 +54,16 @@ export function ActionCard({ card, showBrand }: { card: PortalBlogCard; showBran
   return (
     <Link
       href={cardHref(card, isSingleBrand(card.org))}
-      className="group block rounded-xl border border-review/25 bg-review-bg p-4 outline-none transition-colors hover:border-review/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+      className="group block rounded-xl border border-review/25 bg-review-bg p-4 outline-none transition-all hover:border-review/50 hover:shadow-sm hover:shadow-review/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:p-5"
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           {showBrand ? (
             <div className="mb-1.5">
               <BrandChip name={card.brand_name} />
             </div>
           ) : null}
-          <h3 className="font-serif text-base leading-snug text-pretty">{card.title}</h3>
+          <h3 className="text-base font-semibold leading-snug text-pretty sm:text-lg">{card.title}</h3>
           <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-review">
             <BlogStateTag state={card.state} audience="client" />
             <MessageCircleQuestion className="size-3.5 shrink-0" aria-hidden />
@@ -71,7 +73,9 @@ export function ActionCard({ card, showBrand }: { card: PortalBlogCard; showBran
             <span className="text-muted-foreground">· asked {formatRelative(card.date)}</span>
           </p>
         </div>
-        <span className="mt-1 inline-flex shrink-0 items-center gap-1 text-xs font-medium text-foreground">
+        {/* Styled as a button so the card's one action is visible before the hover, but it is
+            NOT one: the whole card is the link, and a nested control would steal its click. */}
+        <span className="inline-flex shrink-0 items-center gap-1 self-start rounded-md border border-foreground/15 bg-background/80 px-2.5 py-1.5 text-xs font-medium text-foreground shadow-xs transition-colors group-hover:border-foreground/25 group-hover:bg-background sm:mt-1">
           Review & answer
           <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden />
         </span>
@@ -85,24 +89,38 @@ export function ReadyCard({ card, showBrand }: { card: PortalBlogCard; showBrand
   return (
     <Link
       href={cardHref(card, isSingleBrand(card.org))}
-      className="group block rounded-xl border border-primary/25 bg-primary/5 p-4 outline-none transition-colors hover:border-primary/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+      className="group block rounded-xl border border-primary/25 bg-primary/5 p-4 outline-none transition-all hover:border-primary/50 hover:shadow-sm hover:shadow-primary/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:p-5"
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           {showBrand ? (
             <div className="mb-1.5">
               <BrandChip name={card.brand_name} />
             </div>
           ) : null}
-          <h3 className="font-serif text-base leading-snug text-pretty">{card.title}</h3>
+          <h3 className="text-base font-semibold leading-snug text-pretty sm:text-lg">{card.title}</h3>
           <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-primary">
-            {/* The tag replaces the hand written "Ready to post" and its icon. The sent date
-                stays: it is this card's own fact, and the tag says nothing about elapsed time. */}
-            <BlogStateTag state={card.state} audience="client" />
-            <span className="text-muted-foreground">sent {formatRelative(card.date)}</span>
+            {/* The tag carries the status word (Ready to review / Pending comments / Comments
+                resolved); the sentence beside it is this card's own fact, the one thing the tag
+                cannot say: when it was sent, or where the notes stand and when they last moved.
+                card.date is the newest-activity stamp in changes_requested. */}
+            <BlogStateTag
+              state={card.state}
+              audience="client"
+              commentsPending={card.comments_pending}
+            />
+            <span className="text-muted-foreground">
+              {card.state !== "changes_requested"
+                ? `sent ${formatRelative(card.date)}`
+                : (card.comments_pending ?? 0) > 0
+                  ? `your notes are with our team · ${formatRelative(card.date)}`
+                  : `updated ${formatRelative(card.date)}`}
+            </span>
           </p>
         </div>
-        <span className="mt-1 inline-flex shrink-0 items-center gap-1 text-xs font-medium text-foreground">
+        {/* Styled as a button so the card's one action is visible before the hover, but it is
+            NOT one: the whole card is the link, and a nested control would steal its click. */}
+        <span className="inline-flex shrink-0 items-center gap-1 self-start rounded-md border border-foreground/15 bg-background/80 px-2.5 py-1.5 text-xs font-medium text-foreground shadow-xs transition-colors group-hover:border-foreground/25 group-hover:bg-background sm:mt-1">
           Review & approve
           <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden />
         </span>
@@ -113,10 +131,11 @@ export function ReadyCard({ card, showBrand }: { card: PortalBlogCard; showBrand
 
 /**
  * The quiet row, for every state where the article is with the team and the client is not being
- * asked for anything: a change request they filed, a form they have already answered
- * (`answers_submitted`), and the two in-flight slivers portal-data.ts keeps visible. The tag says
- * which; the sentence beside it says when they acted, because "what happened to my article" is
- * answered by the tag and "how long ago" is not.
+ * asked for anything: a form they have already answered (`answers_submitted`) and the two
+ * in-flight slivers portal-data.ts keeps visible. `changes_requested` no longer renders here or
+ * as a frozen row anywhere: a round of client comments keeps the approve path open, so it is a
+ * ReadyCard now. The tag says which state this is; the sentence beside it says when they acted,
+ * because "what happened to my article" is answered by the tag and "how long ago" is not.
  *
  * THE SENTENCE READS OFF `card.answered`, NOT OFF THE STATE, and that is what makes this one of
  * the few sites the new state needed no edit for. The flag means "the client's answers are
@@ -125,17 +144,14 @@ export function ReadyCard({ card, showBrand }: { card: PortalBlogCard; showBrand
  */
 export function FrozenRow({ card, showBrand }: { card: PortalBlogCard; showBrand: boolean }) {
   const { isSingleBrand } = usePortal();
-  const acted =
-    card.state === "changes_requested"
-      ? `you asked for changes ${formatRelative(card.date)}`
-      : card.answered
-        ? // "WITH our team", never "applying", and the weakening is the same correction the
-          // detail page's with-the-team copy already carries. Nothing picks a portal submission
-          // up on default configuration until an operator clicks Rerun, so a present-tense claim
-          // that the answers are being applied can be false for as long as the client is looking
-          // at the row. What is unconditionally true is where their answers are.
-          `answers received ${formatRelative(card.date)}, they are with our editorial team`
-        : null;
+  const acted = card.answered
+    ? // "WITH our team", never "applying", and the weakening is the same correction the
+      // detail page's with-the-team copy already carries. Nothing picks a portal submission
+      // up on default configuration until an operator clicks Rerun, so a present-tense claim
+      // that the answers are being applied can be false for as long as the client is looking
+      // at the row. What is unconditionally true is where their answers are.
+      `answers received ${formatRelative(card.date)}, they are with our editorial team`
+    : null;
   return (
     <Link
       href={cardHref(card, isSingleBrand(card.org))}
@@ -183,7 +199,7 @@ export function ApprovedCard({ card, showBrand }: { card: PortalBlogCard; showBr
           <BrandChip name={card.brand_name} />
         </div>
       ) : null}
-      <h3 className="font-serif text-base leading-snug text-pretty">{card.title}</h3>
+      <h3 className="text-base font-semibold leading-snug text-pretty">{card.title}</h3>
       <div className="mt-auto flex flex-wrap items-center gap-2 pt-3 text-xs text-muted-foreground">
         {/* The tag distinguishes approved from published, which the old hardcoded "Approved"
             could not: both are locked and read-only, and only one of them is on the site. */}

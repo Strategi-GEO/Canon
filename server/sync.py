@@ -77,9 +77,9 @@ def materialize_client(slug):
     if not cid:
         raise LookupError(f"unknown client {slug!r}")
     row = db.q(
-        """select gates, client_md, canonical_facts, description
+        """select gates, client_md, canonical_facts, description, custom_instructions
            from clients where id = %s""", (cid,), fetch="one")
-    gates, client_md, facts, description = row
+    gates, client_md, facts, description, custom_instructions = row
 
     cdir = _client_dir(slug)
     cdir.mkdir(parents=True, exist_ok=True)
@@ -92,6 +92,11 @@ def materialize_client(slug):
     # lives at clients/<slug>/description.md, so the promise must be kept on
     # disk even when the description is empty.
     (cdir / "description.md").write_text(description or "", encoding="utf-8")
+    # The brand's standing blog instructions, laid down every run so the R/W/E agents read a
+    # real file by path. Record-wins and unconditional like description.md: an empty string is
+    # written when the brand set none, so the agents find the file where the cards say it is and
+    # read no instructions from it rather than failing to open it.
+    (cdir / "custom-instructions.md").write_text(custom_instructions or "", encoding="utf-8")
     # canonical-facts.md is the ONE file where disk wins over the record,
     # because the file IS the human's editing surface: the workflow is that a
     # person reviews and hand-edits it, and no dashboard editor exists for it.
@@ -433,8 +438,8 @@ def commit_topic(client_slug, topic_slug, allow_new_version=True):
                  e.get("status") or "running", e.get("note") or "",
                  e.get("slug")))
 
-        # 2. Dossier, links, marker. The marker's three writers (engine
-        # correction, mock cap-hit, the session lead) all land on one file, so
+        # 2. Dossier, links, marker. The marker's writers (engine
+        # correction, the session lead) all land on one file, so
         # reading the file covers every writer without naming them.
         cur.execute(
             """update topics set

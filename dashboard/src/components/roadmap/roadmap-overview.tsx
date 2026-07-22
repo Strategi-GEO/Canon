@@ -5,22 +5,19 @@ import { CircleDot, FileSpreadsheet } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import { formatCount } from "@/lib/format";
-import { useOrgs } from "@/lib/orgs-context";
 import { useRuns } from "@/lib/runs-context";
 import { useRoadmap } from "@/lib/use-roadmap";
 import { useRoadmapGen } from "@/lib/use-roadmap-gen";
 import { HOSTED_READONLY } from "@/lib/hosted";
-import { cn } from "@/lib/utils";
 import { EngineDown } from "@/components/clients/engine-error";
 import { RoadmapUploader } from "@/components/create/roadmap-uploader";
 import { GenerateRoadmapDialog } from "@/components/roadmap/generate-roadmap-dialog";
 import { RoadmapDownloadButton } from "@/components/roadmap/roadmap-download-button";
-import { mockReasonOf, type MockReason } from "@/components/roadmap/generation-copy";
 import { RoadmapGeneration } from "@/components/roadmap/roadmap-generation";
 import { RoadmapPreviewDialog } from "@/components/roadmap/roadmap-preview-dialog";
 import { roadmapStats } from "@/components/roadmap/roadmap-stats";
 import { deriveTheme } from "@/components/roadmap/roadmap-theme";
+import { StatTile, ThemeCard } from "@/components/roadmap/shared";
 import type { BlogSummary } from "@/types";
 
 function plural(count: number, one: string, many: string): string {
@@ -54,7 +51,6 @@ export function RoadmapOverview({
 }) {
   const roadmap = useRoadmap(brandSlug);
   const gen = useRoadmapGen(brandSlug);
-  const { geoMock } = useOrgs();
   const [blogs, setBlogs] = React.useState<BlogSummary[]>([]);
 
   React.useEffect(() => {
@@ -100,8 +96,6 @@ export function RoadmapOverview({
     }
   }, [genState, reload]);
 
-  const mock = mockReasonOf(geoMock);
-
   // Both reads start on mount and settle together, and the page cannot answer either of its
   // questions until they do: whether there is a roadmap, and whether one is being generated.
   // Rendering the empty state before the second lands would flash a live Generate button over
@@ -135,12 +129,11 @@ export function RoadmapOverview({
       <div className="w-full">
         {/* Above the empty state rather than inside it: a generation in flight is the answer to
             "why is there no roadmap", and it outlives the emptiness it explains. */}
-        <RoadmapGeneration brandSlug={brandSlug} brandName={brandName} mock={mock} gen={gen} />
+        <RoadmapGeneration brandSlug={brandSlug} brandName={brandName} gen={gen} />
         <NoRoadmap
           brandSlug={brandSlug}
           brandName={brandName}
           brandDomain={brandDomain}
-          mock={mock}
           generateLocked={generating || locked}
           generateLockedReason={generateLockedReason}
           onUploaded={roadmap.set}
@@ -190,7 +183,6 @@ export function RoadmapOverview({
                 brandSlug={brandSlug}
                 brandName={brandName}
                 brandDomain={brandDomain}
-                mock={mock}
                 locked={generating || locked}
                 lockedReason={generateLockedReason}
                 onStarted={gen.adopt}
@@ -205,7 +197,7 @@ export function RoadmapOverview({
           add the next month, so the button is offered here and not only on the empty state. This
           card renders the running or just-finished generation, whose report is the account of how
           the newest month was planned. */}
-      <RoadmapGeneration brandSlug={brandSlug} brandName={brandName} mock={mock} gen={gen} />
+      <RoadmapGeneration brandSlug={brandSlug} brandName={brandName} gen={gen} />
 
       {locked ? (
         <Card className="mt-6 border-review/25 bg-review-bg">
@@ -334,84 +326,10 @@ export function RoadmapOverview({
             ) : null}
           </div>
 
-          <Card className="mt-4">
-            <CardContent className="py-8">
-              <p className="text-sm font-medium text-foreground">What these blogs are about</p>
-              {theme.length > 0 ? (
-                <>
-                  <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-muted-foreground">
-                    The terms that recur across the topics, counted from the sheet. The number is
-                    how many topics carry each one.
-                  </p>
-                  <ul className="mt-4 flex flex-wrap gap-2">
-                    {theme.map((term) => (
-                      <li
-                        key={term.term}
-                        className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm text-foreground"
-                      >
-                        {term.term}
-                        <span className="machine text-xs text-muted-foreground">
-                          {formatCount(term.topics)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              ) : (
-                <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-muted-foreground">
-                  This roadmap has no single recurring theme: no term appears in more than one
-                  topic. That is a real answer about the sheet rather than a gap, and a roadmap
-                  of unrelated topics is a legitimate thing to have.
-                </p>
-              )}
-            </CardContent>
-          </Card>
-
+          <ThemeCard theme={theme} />
         </>
       )}
     </div>
-  );
-}
-
-type Tone = "plain" | "ship" | "review" | "fail";
-
-const TONES: Record<Tone, string> = {
-  plain: "text-foreground",
-  ship: "text-ship",
-  review: "text-review",
-  fail: "text-fail",
-};
-
-/**
- * One number, big, with the sentence that says what it means.
- *
- * The note is not decoration. "Needs review: 3" and "Failed: 3" look identical at a glance and
- * mean opposite things, and the colour alone cannot carry that difference to someone who reads
- * the number before the palette.
- */
-function StatTile({
-  label,
-  value,
-  note,
-  tone = "plain",
-}: {
-  label: string;
-  value: number;
-  note: string;
-  tone?: Tone;
-}) {
-  return (
-    <Card className="[--card-spacing:--spacing(6)]">
-      <CardContent className="flex flex-col">
-        <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-          {label}
-        </p>
-        <p className={cn("machine mt-4 text-4xl font-semibold", TONES[tone])}>
-          {formatCount(value)}
-        </p>
-        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{note}</p>
-      </CardContent>
-    </Card>
   );
 }
 
@@ -430,7 +348,6 @@ function NoRoadmap({
   brandSlug,
   brandName,
   brandDomain,
-  mock,
   generateLocked,
   generateLockedReason,
   onUploaded,
@@ -440,7 +357,6 @@ function NoRoadmap({
   brandSlug: string;
   brandName: string;
   brandDomain: string;
-  mock: MockReason | null;
   generateLocked: boolean;
   generateLockedReason?: string;
   onUploaded: React.ComponentProps<typeof RoadmapUploader>["onUploaded"];
@@ -493,7 +409,6 @@ function NoRoadmap({
               brandSlug={brandSlug}
               brandName={brandName}
               brandDomain={brandDomain}
-              mock={mock}
               locked={generateLocked}
               lockedReason={generateLockedReason}
               onStarted={onStarted}

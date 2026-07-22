@@ -15,7 +15,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AddOrganisationDialog } from "@/components/clients/add-organisation-dialog";
-import { addBrandHref, brandHref, orgHref, useOrgs } from "@/lib/orgs-context";
+import { addBrandHref, brandHref, brandLocationHref, orgHref, useOrgs } from "@/lib/orgs-context";
 import { HOSTED_READONLY } from "@/lib/hosted";
 import { parseBrandPath, parseOrgPath } from "@/components/shell/nav";
 import { useCommandPalette } from "@/components/shell/command-palette";
@@ -39,7 +39,7 @@ const SEARCH_THRESHOLD = 7;
  * facts, so landing on one is never the end of a journey.
  */
 export function OrgSwitcher({ onNavigate }: { onNavigate?: () => void }) {
-  const { orgs, loading, error, refresh, findBrand } = useOrgs();
+  const { orgs, loading, error, refresh } = useOrgs();
   const pathname = usePathname();
   const router = useRouter();
   const palette = useCommandPalette();
@@ -202,16 +202,15 @@ export function OrgSwitcher({ onNavigate }: { onNavigate?: () => void }) {
 
       {/* Controlled and trigger-less: the popover item above opens it. onCreated routes to the
           new brand, so the operator lands where the work happens rather than on an org grouping
-          that owns no facts. The org grouping is derived from the client list, so the brand only
-          has an org to route to once that list has been re-read. */}
+          that owns no facts. The address comes from the created record itself, so the redirect
+          does not wait on the orgs list; refresh only repopulates the nav behind it. */}
       <AddOrganisationDialog
         open={addOrgOpen}
         onOpenChange={setAddOrgOpen}
-        onCreated={async (brand) => {
+        onCreated={(brand) => {
           onNavigate?.();
-          await refresh();
-          const located = findBrand(brand.slug);
-          router.push(located ? brandHref(located.org.slug, located.brand.slug) : "/");
+          void refresh();
+          router.push(brandLocationHref(brand));
         }}
       />
     </>

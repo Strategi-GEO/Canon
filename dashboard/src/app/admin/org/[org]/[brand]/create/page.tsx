@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { BrandRoute } from "@/components/shell/brand-route";
 import { CreateForBrand } from "@/components/create/create-for-brand";
 import { HOSTED_READONLY } from "@/lib/hosted";
-import { brandHref, useOrgs } from "@/lib/orgs-context";
+import { brandHref } from "@/lib/orgs-context";
 
 /**
  * The ONLY place a blog starts, and it is reachable only from inside a brand.
@@ -17,8 +17,6 @@ import { brandHref, useOrgs } from "@/lib/orgs-context";
  * would have to ask which brand first, which is this page.
  */
 export default function CreatePage() {
-  const { geoMock } = useOrgs();
-
   return (
     <BrandRoute>
       {({ org, brand }) => (
@@ -43,10 +41,11 @@ export default function CreatePage() {
                 brandName={brand.name}
                 // Straight off the client record this route already resolved. Generate warns when a
                 // brand has neither, and the answer is on the brand the route located rather than
-                // behind a fetch of its own.
+                // behind a fetch of its own. custom_instructions is absent on the hosted read, so
+                // it is coalesced to "" there; the whole create surface is engine-only anyway.
+                brandInstructions={brand.custom_instructions ?? ""}
                 hasCanonicalFacts={brand.has_canonical_facts}
                 resourceCount={brand.resource_count}
-                geoMock={geoMock}
               />
               <LocalEngineNote />
             </>

@@ -20,6 +20,7 @@ import { formatCount } from "@/lib/format";
 import { ENGINE_SLOTS } from "@/lib/sessions";
 import { RoadmapTable } from "@/components/create/roadmap-table";
 import { NoFactBaseDialog } from "@/components/create/no-fact-base-dialog";
+import { SessionInstructionsDialog } from "@/components/create/session-instructions-dialog";
 import { EngineErrorNote, detailText } from "@/components/create/engine-error";
 import { seedsFor, type Seed } from "@/components/create/use-run-stream";
 import { isSelectable, resolveRowState, selectableRows } from "@/components/create/row-status";
@@ -38,12 +39,12 @@ import type {
 export function SelectState({
   brandSlug,
   brandName,
+  brandInstructions,
   brandHref,
   roadmapHref,
   resourcesHref,
   hasCanonicalFacts,
   resourceCount,
-  geoMock,
   roadmap,
   roadmapError,
   loading,
@@ -59,6 +60,8 @@ export function SelectState({
 }: {
   brandSlug: string;
   brandName: string;
+  /** The brand's standing blog instructions, shown read-only in the Generate dialog. "" = none. */
+  brandInstructions: string;
   /** The brand overview, for checking facts and resources. The route owns this URL. */
   brandHref: string;
   /** The Content Roadmap tab, which owns getting and deleting the sheet this page reads. */
@@ -72,7 +75,6 @@ export function SelectState({
   hasCanonicalFacts: boolean;
   /** Files in this brand's Resources/, from the same client record. The fact base's input. */
   resourceCount: number;
-  geoMock: boolean;
   roadmap: RoadmapResponse | null;
   roadmapError: ApiError | null;
   loading: boolean;
@@ -91,7 +93,8 @@ export function SelectState({
   /** An article was uploaded against one row: the caller refetches the roadmap and the blogs. */
   onUploaded: () => void;
   onWatch: () => void;
-  onStarted: (runId: string, seeds: Seed[]) => void;
+  /** sessionInstructions is what the operator typed in the Generate dialog, "" when they skipped. */
+  onStarted: (runId: string, seeds: Seed[], sessionInstructions: string) => void;
 }) {
   const rows = React.useMemo(() => roadmap?.rows ?? [], [roadmap]);
 
@@ -99,6 +102,15 @@ export function SelectState({
   const [error, setError] = React.useState<ApiError | null>(null);
   // The fact base confirm, open only when a press earns it. See `submit` below.
   const [warning, setWarning] = React.useState(false);
+  // The session-instructions dialog, opened by every Generate press. See `submit` below.
+  const [sessionOpen, setSessionOpen] = React.useState(false);
+  // Bumped on every open so the dialog REMOUNTS with a blank box: this run's instructions are
+  // this run's, and a component that stayed mounted would carry the last press's text forward.
+  const [sessionToken, setSessionToken] = React.useState(0);
+  // This run's instructions, held between the dialog answering and the fact-base warning
+  // resolving, so Proceed-anyway carries them through. A ref, not state: it steers the next
+  // submit and must not itself cause a render.
+  const pendingSession = React.useRef("");
   const [duplicates, setDuplicates] = React.useState<Map<number, Duplicate>>(new Map());
   const [incomplete, setIncomplete] = React.useState<Map<number, string[]>>(new Map());
   // Filled by the table's rows. A 409 or a 422 scrolls to the offending row by index.
@@ -196,12 +208,13 @@ export function SelectState({
 
   const uploadId = roadmap?.upload_id ?? null;
 
-  const generate = React.useCallback(async () => {
+  const generate = React.useCallback(async (sessionInstructions: string) => {
     setSubmitting(true);
     setError(null);
     setDuplicates(new Map());
     setIncomplete(new Map());
 
+    const session = sessionInstructions.trim();
     const body: GenerateBody = {
       rows: [...selected].sort((a, b) => a - b),
       // The engine re-reads the archived upload instead of trusting rows the browser sends
@@ -210,11 +223,14 @@ export function SelectState({
       // from disk carries no upload_id, and then the engine reads roadmap.csv: also correct,
       // because that is the same sheet this table was built from.
       ...(uploadId ? { upload_id: uploadId } : {}),
+      // Only sent when non-empty: a blank box is an ordinary answer, and omitting the key keeps
+      // the run byte-for-byte the same as before this dialog existed.
+      ...(session ? { session_instructions: session } : {}),
     };
 
     try {
       const accepted = await api.generate(brandSlug, body);
-      onStarted(accepted.run_id, seedsFor(accepted.topics, rows));
+      onStarted(accepted.run_id, seedsFor(accepted.topics, rows), session);
     } catch (cause) {
       const apiError =
         cause instanceof ApiError ? cause : new ApiError(0, String(cause), null);
@@ -257,17 +273,32 @@ export function SelectState({
   /**
    * What pressing Generate MEANS, in one place, because there are two ways to press it.
    *
-   * The hotkey and the button both come through here. They used to both call `generate`, and a
-   * confirm wired to the button alone would be a confirm an operator skips by holding a modifier
-   * down, which is not a confirm.
+   * The hotkey and the button both come through here. Both open the session-instructions dialog
+   * first: it is the one moment to shape this run, and asking on the button alone would let the
+   * hotkey skip a question the operator is meant to answer every time.
    */
   const submit = React.useCallback(() => {
-    if (needsFactBase) {
-      setWarning(true);
-      return;
-    }
-    void generate();
-  }, [needsFactBase, generate]);
+    setSessionToken((token) => token + 1);
+    setSessionOpen(true);
+  }, []);
+
+  /**
+   * The session dialog answered. Hold this run's instructions and run the SAME submit as before:
+   * the fact-base warning still gates it, and its Proceed-anyway carries the held text through.
+   * An empty answer is ordinary, so nothing here branches on whether instructions were typed.
+   */
+  const proceed = React.useCallback(
+    (sessionInstructions: string) => {
+      setSessionOpen(false);
+      pendingSession.current = sessionInstructions;
+      if (needsFactBase) {
+        setWarning(true);
+        return;
+      }
+      void generate(sessionInstructions);
+    },
+    [needsFactBase, generate],
+  );
 
   const canGenerate = !submitting && selected.size > 0;
   const modLabel = useModLabel();
@@ -472,7 +503,9 @@ export function SelectState({
       <Card>
         <CardContent className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
           <div className="min-w-56 flex-1">
-            <RunNotice geoMock={geoMock} />
+            <p className="text-xs text-muted-foreground">
+              Real run. Each blog researches live sources and costs API credits.
+            </p>
             {error ? <EngineErrorNote error={error} className="mt-2" /> : null}
           </div>
           <div className="flex shrink-0 items-center gap-3">
@@ -497,16 +530,27 @@ export function SelectState({
         </CardContent>
       </Card>
 
+      {/* Asked first, before the fact-base warning: every Generate press answers this. It hands
+          back this run's instructions and `proceed` runs the same submit the button always did. */}
+      <SessionInstructionsDialog
+        key={sessionToken}
+        open={sessionOpen}
+        onOpenChange={setSessionOpen}
+        brandName={brandName}
+        brandInstructions={brandInstructions}
+        selectedCount={selected.size}
+        onConfirm={proceed}
+      />
+
       {/* Proceed submits exactly what the button would have submitted: the selection, the
-          upload_id, the same error handling on this page. The dialog decides whether to ask,
-          never what to send. */}
+          upload_id, this run's instructions, the same error handling on this page. The dialog
+          decides whether to ask, never what to send. */}
       <NoFactBaseDialog
         open={warning}
         onOpenChange={setWarning}
         brandName={brandName}
         resourcesHref={resourcesHref}
-        mock={geoMock}
-        onProceed={() => void generate()}
+        onProceed={() => void generate(pendingSession.current)}
       />
     </div>
   );
@@ -601,25 +645,6 @@ function DuplicateWall({
         </Button>
       </CardContent>
     </Card>
-  );
-}
-
-/** Never let an operator start a real batch thinking it is mock. */
-function RunNotice({ geoMock }: { geoMock: boolean }) {
-  if (geoMock) {
-    // GEO_MOCK is global: it makes real brands produce fake output too, so promising a real
-    // run here would be a lie in the operator's favour and a nasty surprise later.
-    return (
-      <p className="text-xs text-muted-foreground">
-        <span className="machine">GEO_MOCK</span> is on for the whole engine. This real brand
-        produces mock blogs, no API calls, nothing is spent.
-      </p>
-    );
-  }
-  return (
-    <p className="text-xs text-muted-foreground">
-      Real run. Each blog researches live sources and costs API credits.
-    </p>
   );
 }
 

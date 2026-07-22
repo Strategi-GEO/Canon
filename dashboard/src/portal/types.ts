@@ -1,4 +1,5 @@
 import type { BlogState } from "@/lib/blog-state";
+import type { ReportDocument } from "@/types";
 
 /**
  * The portal's wire types, mirroring what the Route Handlers actually answer. Deliberately
@@ -31,7 +32,14 @@ export type { BlogState };
 export type PortalOrg = {
   slug: string;
   name: string;
-  brands: { slug: string; name: string }[];
+  brands: {
+    slug: string;
+    name: string;
+    /** The brand's public face, for the overview header and description card. "" when unset. */
+    domain: string;
+    industry: string;
+    description: string;
+  }[];
 };
 
 export type Me = {
@@ -55,8 +63,17 @@ export type PortalBlogCard = {
   title: string;
   state: BlogState;
   date: string;
+  /** When the article was first written: the earliest version's commit stamp. UTC ISO. */
+  created: string;
+  /** The blog's row on the roadmap (0-based), or null when its row is gone from the sheet. */
+  roadmap_index: number | null;
   question_count: number | null;
   word_count: number | null;
+  /**
+   * changes_requested only: the client's comments not yet addressed (open, applying, or a
+   * failed apply; the client is never told which). Null in every other state.
+   */
+  comments_pending: number | null;
   /** Spent holds only: true when the client's answers are recorded and being applied. */
   answered: boolean;
   /** Released states only: when the team sent the article for review. UTC ISO. */
@@ -128,7 +145,10 @@ export type PortalBlogDetail = {
   state: BlogState;
   date: string;
   word_count: number | null;
-  /** Released: the sent article. has_questions: the draft under review. Held: absent. */
+  /**
+   * Released: the served version's bytes, the LATEST committed version in review and the
+   * approved bytes after approval. has_questions: the draft under review. Held: absent.
+   */
   body: string | null;
   questions: PortalQuestion[] | null;
   asked: string | null;
@@ -137,11 +157,12 @@ export type PortalBlogDetail = {
   /** Released states only: the client's own suggestions, oldest first, with their threads. */
   comments: PortalComment[] | null;
   /**
-   * Released states only: the id of the version these bytes came from, carried back on
-   * approve. It is what closes the race where the team re-sends while an approval is in
-   * flight: without it the stamp lands on an article the client never read, and the record
-   * would say they signed off on bytes that appeared after they pressed the button. Null on
-   * a legacy send that predates the stamp, which the record accepts as the matching value.
+   * Released states only: the id of the version `body` came from, stamped by buildDetail from
+   * the SAME row it read the article out of, so the approve button can never name different
+   * bytes than the ones on screen. In review that is the LATEST-served version (the loop keeps
+   * serving the newest committed bytes); after approval it is the approved bytes
+   * (portal_approve_blog re-pins sent_version_id at the stamp). Carried back on approve so
+   * the record can refuse a version the client did not read. Null outside the released states.
    */
   version: string | null;
   /** Released states only: when the team sent the article for review. UTC ISO. */
@@ -266,5 +287,26 @@ export type PortalRoadmapRow = {
 export type PortalRoadmap = {
   brand: string;
   brand_name: string;
+  /** The sheet's header row, so the preview can rebuild the admin's column grid. */
+  columns: string[];
   rows: PortalRoadmapRow[];
+};
+
+/**
+ * One shared monthly report as a client reads it: the month, when it was shared, and the shared
+ * snapshot's report.json (the dashboard components read its `metrics` block). No working copy, no
+ * scores, no audit internals beyond what the report the team chose to send already carries.
+ */
+export type PortalMonthReport = {
+  month: string;
+  shared_at: string;
+  has_pdf: boolean;
+  report: ReportDocument;
+};
+
+export type PortalReports = {
+  brand: string;
+  brand_name: string;
+  current_month: string;
+  months: PortalMonthReport[];
 };

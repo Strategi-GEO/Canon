@@ -15,8 +15,18 @@ export async function GET(
     return unauthenticated();
   }
   const { brand } = await params;
+  // ?month=N narrows to one month's sheet; absent means every row across months. Same
+  // validation as the admin sheet route: malformed is a 400.
+  const monthRaw = new URL(request.url).searchParams.get("month");
+  if (monthRaw !== null && !/^[1-9]\d*$/.test(monthRaw)) {
+    return detail(400, `month must be a positive integer, got '${monthRaw}'`);
+  }
   try {
-    const roadmap = await buildRoadmap(user.token, brand);
+    const roadmap = await buildRoadmap(
+      user.token,
+      brand,
+      monthRaw === null ? undefined : Number(monthRaw),
+    );
     if (roadmap === null) {
       return detail(404, `unknown brand '${brand}'`);
     }

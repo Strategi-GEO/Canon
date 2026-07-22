@@ -9,11 +9,13 @@ import type { PortalBlogDetail, PortalComment, PortalReply } from "@/portal/type
  * nonexistent answer the same 404: a 404 that differed by scope would be an existence
  * oracle for other orgs' work.
  *
- * THE THREADS AND THE VERSION ARE READ HERE, not in buildDetail, and the reason is what
- * each read costs. buildDetail's fold runs for every topic of every brand on the overview,
- * where a card shows neither a conversation nor a version id; a thread is detail material
- * by definition, and the version exists to travel back on ONE button that only the detail
- * page holds. Reading them beside the fold keeps the list request the size it was.
+ * THE THREADS ARE READ HERE, not in buildDetail: buildDetail's fold runs for every topic of
+ * every brand on the overview, where a card shows no conversation, and a thread is detail
+ * material by definition, so reading it beside the fold keeps the list request the size it
+ * was. THE VERSION IS NO LONGER READ HERE. It must be the id of the exact bytes buildDetail
+ * served, and two readers of two pointers is how the approve button and the article drift
+ * apart, so buildDetail stamps `version` into `blog` itself, from the same row it read the
+ * body out of.
  *
  * A client sees their OWN suggestions and every reply on them, and no operator comment of
  * its own: the comments an operator files are instructions to the team's own machinery,
@@ -34,11 +36,10 @@ type ThreadRow = {
   created_at: string;
 };
 
-type TopicRow = { id: string; sent_version_id: string | null };
+type TopicRow = { id: string };
 
 /**
- * The client's suggestions with their conversations, oldest first, and the id of the
- * version on offer.
+ * The client's suggestions with their conversations, oldest first.
  *
  * Replies carry their text in `instruction` and nothing in selected_text, so a reply that
  * leaked into the top-level list would render as a suggestion about no passage at all. The
@@ -49,15 +50,15 @@ async function threadsFor(
   token: string,
   clientId: string,
   topicSlug: string,
-): Promise<{ comments: PortalComment[]; version: string | null }> {
+): Promise<{ comments: PortalComment[] }> {
   const topics = await pg<TopicRow[]>(
     token,
-    `topics?select=id,sent_version_id&client_id=eq.${clientId}` +
+    `topics?select=id&client_id=eq.${clientId}` +
       `&slug=eq.${encodeURIComponent(topicSlug)}&deleted_at=is.null`,
   );
   const topic = topics[0];
   if (topic === undefined) {
-    return { comments: [], version: null };
+    return { comments: [] };
   }
 
   const rows = await pg<ThreadRow[]>(
@@ -94,7 +95,7 @@ async function threadsFor(
       replies: repliesByParent.get(row.id) ?? [],
     }));
 
-  return { comments, version: topic.sent_version_id };
+  return { comments };
 }
 
 export async function GET(
@@ -117,14 +118,14 @@ export async function GET(
     // already answers null for both on the others, so the thread read is skipped rather than
     // run and thrown away.
     if (!clientReadsArticle(blog.state)) {
-      return json({ ...blog, comments: null, version: null } satisfies PortalBlogDetail);
+      return json({ ...blog, comments: null } satisfies PortalBlogDetail);
     }
     const scope = await brandRow(user.token, brand);
     if (scope === null) {
       return detail(404, `no blog '${topic}' for '${brand}'`);
     }
-    const { comments, version } = await threadsFor(user.token, scope.client_id, topic);
-    return json({ ...blog, comments, version } satisfies PortalBlogDetail);
+    const { comments } = await threadsFor(user.token, scope.client_id, topic);
+    return json({ ...blog, comments } satisfies PortalBlogDetail);
   } catch (cause) {
     return failure(cause);
   }

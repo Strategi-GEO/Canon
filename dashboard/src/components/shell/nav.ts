@@ -1,6 +1,7 @@
 // Map is aliased on principle: the bare name shadows the JS Map constructor, and a file that
 // later builds one would break in a way that reads as a typing error rather than an import.
 import {
+  ChartColumnIncreasing,
   FileText,
   FolderOpen,
   LayoutDashboard,
@@ -36,6 +37,9 @@ export const BRAND_NAV: NavItem[] = [
   // After Blogs because it consumes them: repurposing turns shipped blogs into other
   // formats, so it sits downstream of the library it will draw from.
   { section: "/repurpose", label: "Repurpose", icon: Recycle },
+  // The monthly performance report: AI visibility, backlinks and referring domains over time.
+  // It reads the outcome of the work the rows above produce, so it sits after them.
+  { section: "/reports", label: "Reports", icon: ChartColumnIncreasing },
   { section: "/resources", label: "Resources", icon: FolderOpen },
   { section: "/settings", label: "Settings", icon: Settings },
 ];

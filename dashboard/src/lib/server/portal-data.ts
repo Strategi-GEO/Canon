@@ -1,5 +1,6 @@
 import { blogState, clientCanSee, type BlogState, type BlogStateFacts } from "@/lib/blog-state";
-import { inList, pg } from "@/lib/server/postgrest";
+import { inList, pg, rpc } from "@/lib/server/postgrest";
+import type { PortalMonthReport, PortalReports } from "@/portal/types";
 
 /**
  * THE FACT SET EVERY PRODUCER OWES blogState, written as a type rather than as a promise.
@@ -123,22 +124,32 @@ export type ProducedStateFacts = Required<Omit<BlogStateFacts, "live">>;
  */
 
 /**
- * The states whose payload carries the SENT article, so the client reads and annotates exactly
- * the bytes the send stamped. Exported because the blog route needs the same answer for its
- * thread read, and two copies of this list would drift the moment one state was added.
+ * The states whose payload carries the RELEASED article. Exported because the blog route needs
+ * the same answer for its thread read, and two copies of this list would drift the moment one
+ * state was added.
+ *
+ * WHICH version a released state serves is servedVersion below, and it is a split, not one
+ * pointer. In review (client_review, changes_requested) the client reads the LATEST committed
+ * bytes, because the review loop is continuous: the client keeps commenting, the admin keeps
+ * resolving, each resolve commits a new blog_versions row, and both sides read the newest one
+ * on their next load with no re-send step between them. After approval (approved, published)
+ * the read is PINNED to topics.sent_version_id, because portal_approve_blog re-pins that stamp
+ * to the approved version at the moment of approval, so the pin IS the approved bytes; legacy
+ * approved rows can carry a later admin edit as their latest, and the pin is what keeps the
+ * client reading the version they actually approved.
  *
  * `answers_submitted` IS DELIBERATELY ABSENT, and the omission is the load-bearing half of this
  * function rather than an oversight. Every state listed here is at or past a SEND, and three
- * separate things key off that and nothing else: the body served is topics.sent_version_id's
- * bytes, the word count describes the released article, and app/api/blog/[brand]/[topic] reads
- * the suggestion threads and the approve-time version stamp for exactly this set. An article
- * whose client has just answered a question form has never been sent, so it has no sent version
- * to serve, no released length to report, and no thread to read: admitting it here would hand it
- * the LATEST bytes under a name that promises the sent ones, which is the precise failure the
- * anchored-body rule below exists to prevent.
+ * separate things key off that and nothing else: the body served is servedVersion's bytes, the
+ * word count describes that same version, and app/api/blog/[brand]/[topic] reads the
+ * suggestion threads for exactly this set. An article whose client has just answered a question
+ * form has never been sent, so it has no released version to serve, no released length to
+ * report, and no thread to read: admitting it here would hand it a body under a name that
+ * promises a released one, which is the precise failure the anchored-body rule below exists to
+ * prevent.
  *
  * The client DOES read an article in `answers_submitted`, and clientReadsDraft is where that
- * lives. Two predicates because there are two articles: the one a send released, and the one a
+ * lives. Two predicates because there are two articles: the one a release serves, and the one a
  * question form is anchored to.
  */
 export function clientReadsArticle(state: BlogState): boolean {
@@ -148,6 +159,19 @@ export function clientReadsArticle(state: BlogState): boolean {
     state === "approved" ||
     state === "published"
   );
+}
+
+/**
+ * The version a released state serves, used by the body read, the word count, and the detail's
+ * `version` field alike, so the three can never describe different articles. clientReadsArticle
+ * states only. Review states read the latest committed row (the continuous loop above);
+ * approved and published read the pinned one, with fallbacks covering pre-005 sends the
+ * backfill stamped from the shipped version.
+ */
+function servedVersion(fold: TopicFold): VersionRow {
+  return fold.state === "approved" || fold.state === "published"
+    ? (fold.sentVersion ?? fold.shippedVersion ?? fold.latest)
+    : fold.latest;
 }
 
 /**
@@ -249,9 +273,18 @@ export type PortalBlogCard = {
   state: BlogState;
   /** The state's own date: published, approved, suggested, sent, asked or answered. UTC ISO. */
   date: string;
+  /** When the article was first written: the earliest version's commit stamp. UTC ISO. */
+  created: string;
+  /** The blog's row on the roadmap (0-based), or null when its row is gone from the sheet. */
+  roadmap_index: number | null;
   /** has_questions only: the size of the OPEN form. Null once it is answered. */
   question_count: number | null;
   word_count: number | null;
+  /**
+   * changes_requested only: the client's comments not yet addressed (open, applying, or a
+   * failed apply; the client is never told which). Null in every other state.
+   */
+  comments_pending: number | null;
   /** Before a send only: true when the client's answers to the current form are recorded. */
   answered: boolean;
   /** Released states only: when the team sent the article for review. UTC ISO. */
@@ -263,7 +296,14 @@ export type PortalBlogCard = {
 export type PortalOrg = {
   slug: string;
   name: string;
-  brands: { slug: string; name: string }[];
+  brands: {
+    slug: string;
+    name: string;
+    /** The brand's public face, for the overview header and description card. "" when unset. */
+    domain: string;
+    industry: string;
+    description: string;
+  }[];
 };
 
 export type PortalBlogDetail = {
@@ -275,10 +315,17 @@ export type PortalBlogDetail = {
   date: string;
   word_count: number | null;
   /**
-   * Released: the article as sent. has_questions and answers_submitted: the ANCHORED draft, the
-   * one the question form is about. The two `generating` slivers: absent.
+   * Released: servedVersion's bytes (the latest committed version in review, the pinned
+   * approved bytes after approval). has_questions and answers_submitted: the ANCHORED draft,
+   * the one the question form is about. The two `generating` slivers: absent.
    */
   body: string | null;
+  /**
+   * Released states only: the id of the version `body` came from, carried back on approve so
+   * the record can refuse a version the client did not read. Null everywhere else (draft
+   * states, slivers).
+   */
+  version: string | null;
   /** has_questions only: the form to answer. Null once it is answered, because it is spent. */
   questions: PortalQuestion[] | null;
   asked: string | null;
@@ -382,16 +429,24 @@ export function validClientSlug(slug: string): boolean {
  * org_membership view is the authority, so a brand moving between orgs moves with it.
  */
 export async function orgsForUser(token: string, userId: string): Promise<PortalOrg[]> {
-  const [adminRows, grants, membership] = await Promise.all([
+  const [adminRows, grants, membership, meta] = await Promise.all([
     pg<{ user_id: string }[]>(token, `app_admins?select=user_id&user_id=eq.${userId}`),
     pg<{ org_slug: string }[]>(token, `org_members?select=org_slug&user_id=eq.${userId}`),
     pg<MembershipRow[]>(
       token,
       "org_membership?select=org_slug,org_name,client_id,client_slug,client_name",
     ),
+    // The brand's public face, for the portal's overview header and description card: all
+    // three columns are in the granted set on `clients` and RLS scopes the read to brands
+    // the caller can already see, so this widens what the page shows and not what it may.
+    pg<{ slug: string; domain: string | null; industry: string | null; description: string | null }[]>(
+      token,
+      "clients?select=slug,domain,industry,description&deleted_at=is.null",
+    ),
   ]);
   const isAdmin = adminRows.length > 0;
   const granted = new Set(grants.map((grant) => grant.org_slug));
+  const metaBySlug = new Map(meta.map((row) => [row.slug, row]));
 
   const orgs = new Map<string, PortalOrg>();
   for (const row of membership) {
@@ -399,7 +454,14 @@ export async function orgsForUser(token: string, userId: string): Promise<Portal
       continue;
     }
     const org = orgs.get(row.org_slug) ?? { slug: row.org_slug, name: row.org_name, brands: [] };
-    org.brands.push({ slug: row.client_slug, name: row.client_name });
+    const brandMeta = metaBySlug.get(row.client_slug);
+    org.brands.push({
+      slug: row.client_slug,
+      name: row.client_name,
+      domain: brandMeta?.domain ?? "",
+      industry: brandMeta?.industry ?? "",
+      description: brandMeta?.description ?? "",
+    });
     orgs.set(row.org_slug, org);
   }
   const list = [...orgs.values()].sort((a, b) =>
@@ -430,6 +492,10 @@ export async function brandRow(token: string, brandSlug: string): Promise<Member
 type TopicFold = {
   topic: TopicRow;
   latest: VersionRow;
+  /** The earliest version's commit stamp: when the article was first written. */
+  created: string;
+  /** The blog's roadmap row (0-based), or null when no sheet row carries its slug. */
+  roadmapIndex: number | null;
   shippedVersion: VersionRow | null;
   sentVersion: VersionRow | null;
   ledger: LedgerRow | null;
@@ -469,10 +535,13 @@ type BrandData = {
   replies: ReplyParentRow[];
   events: EventRow[];
   comments: CommentRow[];
+  /** Sheet rows keyed later by topic_slug, so a card can carry its roadmap number. */
+  roadmapRows: { topic_slug: string | null; row_index: number }[];
 };
 
 async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
-  const [topics, versions, ledger, notes, children, replies, events, comments] = await Promise.all([
+  const [topics, versions, ledger, notes, children, replies, events, comments, roadmapRows] =
+    await Promise.all([
     pg<TopicRow[]>(
       token,
       // published_at joins the select because it is the TOP of blogState's delivery ladder: a
@@ -594,8 +663,14 @@ async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
       `blog_comments?select=id,topic_id,selected_text,instruction,state,created_at` +
         `&client_id=eq.${clientId}&author=eq.client&parent_id=is.null&order=created_at.asc,id.asc`,
     ),
+    // The sheet rows, for the # column the library table shares with the admin's. Slug and
+    // index only: the plan itself stays on the roadmap surface.
+    pg<{ topic_slug: string | null; row_index: number }[]>(
+      token,
+      `roadmap_rows?select=topic_slug,row_index&client_id=eq.${clientId}&order=row_index.asc`,
+    ),
   ]);
-  return { topics, versions, ledger, notes, children, replies, events, comments };
+  return { topics, versions, ledger, notes, children, replies, events, comments, roadmapRows };
 }
 
 /**
@@ -626,13 +701,26 @@ async function pgPaged<T>(token: string, path: string): Promise<T[]> {
 }
 
 function foldTopics(data: BrandData): TopicFold[] {
-  // Latest committed version per topic: rows arrive version_no.desc within each topic.
+  // Latest committed version per topic: rows arrive version_no.desc within each topic. The
+  // earliest is the last row of each topic's block, and its stamp is when the article was
+  // first written, which is the Created column the library table renders.
   const latest = new Map<string, VersionRow>();
+  const earliest = new Map<string, VersionRow>();
   const versionById = new Map<string, VersionRow>();
   for (const version of data.versions) {
     versionById.set(version.id, version);
     if (!latest.has(version.topic_id)) {
       latest.set(version.topic_id, version);
+    }
+    earliest.set(version.topic_id, version);
+  }
+
+  // The blog's row on the sheet, keyed by topic slug: same 0-based index the admin table
+  // renders + 1. Last write wins across sheets, matching the ledger's own rule below.
+  const rowIndexBySlug = new Map<string, number>();
+  for (const row of data.roadmapRows) {
+    if (row.topic_slug !== null && row.topic_slug !== "") {
+      rowIndexBySlug.set(row.topic_slug, row.row_index);
     }
   }
 
@@ -899,6 +987,8 @@ function foldTopics(data: BrandData): TopicFold[] {
     folds.push({
       topic,
       latest: latestVersion,
+      created: (earliest.get(topic.id) ?? latestVersion).committed_at,
+      roadmapIndex: rowIndexBySlug.get(topic.slug) ?? null,
       shippedVersion,
       sentVersion,
       ledger: entry,
@@ -972,14 +1062,29 @@ function cardOf(
     // from `fold.state`, the real one, and only what leaves gets the client's vocabulary.
     state: clientWireState(fold.state),
     date,
+    created: fold.created,
+    roadmap_index: fold.roadmapIndex,
     // THE OPEN FORM'S SIZE, so it stays null once the form is answered. ActionCard is the only
     // card that renders it and its sentence is "N questions from our editorial review", which is
     // a demand; an answered form makes no demand, and its card is a FrozenRow that reads the
     // `answered` flag below instead.
     question_count: fold.state === "has_questions" ? fold.form.length : null,
-    word_count: released
-      ? ((fold.sentVersion ?? fold.shippedVersion ?? fold.latest).word_count ?? null)
-      : null,
+    word_count: released ? (servedVersion(fold).word_count ?? null) : null,
+    // PENDING IS A DIFFERENT COUNT FROM openSuggestions, on purpose, and neither is a bug to
+    // "fix" into the other. openSuggestions (open + applying) feeds `changes_requested` in
+    // ProducedStateFacts and the send gate, where a failed apply is the team's retry and must
+    // not hold the state machine. THIS count adds `failed`, because to the client a failed
+    // apply is simply a comment not yet addressed: telling them it reads as resolved would be
+    // telling them about machinery they are never shown. Only resolved and dismissed are done.
+    comments_pending:
+      fold.state === "changes_requested"
+        ? fold.comments.filter(
+            (comment) =>
+              comment.state === "open" ||
+              comment.state === "applying" ||
+              comment.state === "failed",
+          ).length
+        : null,
     // KEYED OFF clientReadsArticle, NOT clientCanSee, and the swap is a correctness fix rather
     // than a tidy. This flag means "the client's answers are recorded", and it used to be able to
     // say so only in the states a client could not see, because those were the only states a
@@ -1062,6 +1167,14 @@ export type PortalRoadmapRow = {
 export type PortalRoadmap = {
   brand: string;
   brand_name: string;
+  /**
+   * The sheet's own header row, so the portal preview can rebuild the admin's column grid.
+   * Clients are never granted the raw CSV (admin_roadmap_sheets is admin-gated); the grid
+   * cells are reconstructed from topic/covers/prompts by position and extras by header,
+   * which is exactly how the engine itself reads the sheet. For a month this is that
+   * month's header; without one it is the latest month's.
+   */
+  columns: string[];
   rows: PortalRoadmapRow[];
 };
 
@@ -1075,11 +1188,25 @@ export type PortalRoadmap = {
 export async function buildRoadmap(
   token: string,
   brandSlug: string,
+  month?: number,
 ): Promise<PortalRoadmap | null> {
   const brand = await brandRow(token, brandSlug);
   if (brand === null) {
     return null;
   }
+  // A month narrows the read to that month's sheet. Resolved via roadmap_sheets (id, month
+  // and columns are granted to authenticated; raw_csv is not, so it is never selected here).
+  // A month with no sheet is out of scope, same null-as-404 as an unknown brand. Without a
+  // month the latest sheet still supplies the header row the preview grid renders under.
+  const sheets = await pg<{ id: string; columns: string[] }[]>(
+    token,
+    `roadmap_sheets?select=id,columns&client_id=eq.${brand.client_id}` +
+      (month !== undefined ? `&month=eq.${month}` : "&order=month.desc&limit=1"),
+  );
+  if (month !== undefined && sheets.length === 0) {
+    return null;
+  }
+  const sheetFilter = month !== undefined ? `&sheet_id=eq.${sheets[0].id}` : "";
   const [rows, ledger, sentRows] = await Promise.all([
     pg<{
       row_index: number;
@@ -1091,7 +1218,7 @@ export async function buildRoadmap(
     }[]>(
       token,
       `roadmap_rows?select=row_index,topic,covers,prompts,extras,topic_slug` +
-        `&client_id=eq.${brand.client_id}&order=row_index.asc`,
+        `&client_id=eq.${brand.client_id}${sheetFilter}&order=row_index.asc`,
     ),
     pg<LedgerRow[]>(
       token,
@@ -1117,6 +1244,7 @@ export async function buildRoadmap(
   return {
     brand: brand.client_slug,
     brand_name: brand.client_name,
+    columns: sheets[0]?.columns ?? [],
     rows: rows.map((row) => {
       const slug = row.topic_slug ?? null;
       const entry = slug !== null ? (shipped.get(slug) ?? null) : null;
@@ -1137,6 +1265,31 @@ export async function buildRoadmap(
         topic_slug: slug,
       };
     }),
+  };
+}
+
+/**
+ * The brand's monthly reports as a CLIENT reads them: the SHARED snapshots only, and nothing the
+ * operator has not sent. report_months is a membership-scoped definer function, so a client only
+ * ever gets their own brand's shared reports and never the working copy the operator is still
+ * editing. No score, no eval, no audit internals cross this wire beyond what the shared
+ * report.json itself carries, which is the same report the operator chose to send.
+ */
+export async function buildReports(
+  token: string,
+  brandSlug: string,
+): Promise<PortalReports | null> {
+  const brand = await brandRow(token, brandSlug);
+  if (brand === null) {
+    return null;
+  }
+  const months =
+    (await rpc<PortalMonthReport[]>(token, "report_months", { p_brand: brandSlug })) ?? [];
+  return {
+    brand: brand.client_slug,
+    brand_name: brand.client_name,
+    current_month: new Date().toISOString().slice(0, 7),
+    months,
   };
 }
 
@@ -1162,19 +1315,24 @@ export async function buildDetail(
   // overview response would be most of a megabyte for no screen that shows it.
   const released = clientReadsArticle(fold.state);
   let body: string | null = null;
+  let version: string | null = null;
   if (released) {
-    // The SENT version's bytes, never the latest: a sent blog stays editable on the admin
-    // stage page, so the latest row can be a mid-edit draft nobody released. The client
-    // reviews, suggests against, and approves exactly what the send stamped
-    // (topics.sent_version_id); anything else would let an approval describe an article
-    // the client never saw. The fallbacks cover pre-005 sends the backfill stamped from
-    // the shipped version.
-    const versionId = (fold.sentVersion ?? fold.shippedVersion ?? fold.latest).id;
-    const rows = await pg<{ body: string }[]>(token, `blog_versions?select=body&id=eq.${versionId}`);
+    // The SERVED version's bytes, and which version that is depends on the state. In review
+    // (client_review, changes_requested) it is the LATEST committed row, because the loop is
+    // continuous: the client comments, the admin resolves, each resolve commits a new
+    // blog_versions row, and the client sees it on their next load with no re-send step in
+    // between. After approval (approved, published) it is the PINNED row, because
+    // portal_approve_blog re-pins sent_version_id to the approved version at the stamp, so
+    // the pin IS the approved bytes; legacy approved rows can carry a later admin edit as
+    // their latest, and serving latest there would show bytes the client never approved.
+    // `version` is stamped from the SAME row the body is read from, so the approve button
+    // can never carry a different version than the article on screen.
+    const served = servedVersion(fold);
+    version = served.id;
+    const rows = await pg<{ body: string }[]>(token, `blog_versions?select=body&id=eq.${served.id}`);
     body = rows[0]?.body ?? null;
   } else if (clientReadsDraft(fold.state)) {
-    // THE ANCHORED VERSION'S BYTES, NEVER THE LATEST, and this is the same rule the released
-    // branch above states, applied before the send instead of after it. A client is shown the
+    // THE ANCHORED VERSION'S BYTES, NEVER THE LATEST. A client is shown the
     // draft the QUESTIONS ARE ABOUT, because that is the only draft their answers can be
     // answers to: the form quotes it, the aside tells them it is "the current draft, shown so
     // you can answer in context", and an answer written against other bytes is an answer to a
@@ -1220,10 +1378,9 @@ export async function buildDetail(
     // narrowing cannot open a body the send never released.
     state: clientWireState(fold.state),
     date: card?.date ?? fold.latest.committed_at,
-    word_count: released
-      ? ((fold.sentVersion ?? fold.shippedVersion ?? fold.latest).word_count ?? null)
-      : null,
+    word_count: released ? (servedVersion(fold).word_count ?? null) : null,
     body,
+    version,
     questions:
       fold.state === "has_questions"
         ? fold.form.map((row) => ({

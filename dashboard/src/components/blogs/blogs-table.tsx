@@ -13,11 +13,10 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
 import { formatAbsolute, formatRelative } from "@/lib/format";
-import { blogState } from "@/lib/blog-state";
 import { cn } from "@/lib/utils";
 import type { SortDir, SortKey } from "@/components/blogs/blogs-filter";
 import type { WaitingSignal } from "@/components/blogs/questions-state";
-import type { BlogSummary } from "@/types";
+import type { BlogState } from "@/lib/blog-state";
 
 /**
  * The attribute the library's keyboard moves real focus through: j and k find the active
@@ -26,7 +25,28 @@ import type { BlogSummary } from "@/types";
  */
 export const TRIGGER_ATTR = "data-preview-trigger";
 
-export function BlogsTable({
+/**
+ * What a row must carry to render here. The admin's BlogSummary satisfies it whole; the
+ * client portal maps its PortalBlogCard onto it (title -> topic). Score, shipped, uploaded
+ * and iterations are optional because the CLIENT WIRE NEVER CARRIES THEM by design
+ * (portal/types.ts), and the client columns never render them either: the same table serves
+ * both audiences precisely so the two libraries cannot drift apart visually.
+ */
+export type BlogTableRow = {
+  topic: string;
+  topic_slug: string;
+  created: string;
+  roadmap_index: number | null;
+  /** Unaddressed client comments (open, applying, failed). Splits the changes_requested tag
+   *  live in BOTH vocabularies; absent falls back to the plain state tag. */
+  comments_pending?: number | null;
+  score?: number | null;
+  shipped?: boolean;
+  uploaded?: boolean | null;
+  iterations?: number | null;
+};
+
+export function BlogsTable<T extends BlogTableRow>({
   blogs,
   waiting,
   sortKey,
@@ -35,8 +55,10 @@ export function BlogsTable({
   onSort,
   hrefFor,
   onOpen,
+  stateOf,
+  audience = "admin",
 }: {
-  blogs: BlogSummary[];
+  blogs: T[];
   /**
    * The blogs whose evaluator asked the operator something, keyed by topic slug. A row missing
    * from this map has nothing outstanding, either because no question was ever asked or because
@@ -49,10 +71,23 @@ export function BlogsTable({
   activeSlug: string | null;
   onSort: (key: SortKey) => void;
   /** The blog's own page. The title is a real link, so cmd-click and middle-click work. */
-  hrefFor: (blog: BlogSummary) => string;
+  hrefFor: (blog: T) => string;
   /** The whole-row click, which the parent routes to the same page. */
-  onOpen: (blog: BlogSummary) => void;
+  onOpen: (blog: T) => void;
+  /**
+   * ONE read of where each blog is, provided by the parent: the admin derives it from the
+   * summary's state facts (blogState), the portal's cards already carry it resolved. Passing
+   * the function keeps the derivation beside the data that feeds it.
+   */
+  stateOf: (blog: T) => BlogState;
+  /**
+   * Which library this table is standing in. The client's never renders Score or Iterations,
+   * because those never cross the portal wire, and its tags and chips speak the client
+   * vocabulary.
+   */
+  audience?: "admin" | "client";
 }) {
+  const admin = audience === "admin";
   return (
     <Table>
       <TableHeader>
@@ -82,14 +117,16 @@ export function BlogsTable({
             onSort={onSort}
             className="w-32"
           />
-          <SortableHead
-            label="Score"
-            column="score"
-            sortKey={sortKey}
-            sortDir={sortDir}
-            onSort={onSort}
-            className="w-20"
-          />
+          {admin ? (
+            <SortableHead
+              label="Score"
+              column="score"
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={onSort}
+              className="w-20"
+            />
+          ) : null}
           <SortableHead
             label="Status"
             column="status"
@@ -98,7 +135,9 @@ export function BlogsTable({
             onSort={onSort}
             className="w-32"
           />
-          <TableHead className="machine w-20 text-xs font-medium">Iterations</TableHead>
+          {admin ? (
+            <TableHead className="machine w-20 text-xs font-medium">Iterations</TableHead>
+          ) : null}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -106,6 +145,8 @@ export function BlogsTable({
           <Row
             key={blog.topic_slug}
             blog={blog}
+            state={stateOf(blog)}
+            audience={audience}
             waiting={waiting.get(blog.topic_slug) ?? null}
             active={blog.topic_slug === activeSlug}
             href={hrefFor(blog)}
@@ -117,25 +158,30 @@ export function BlogsTable({
   );
 }
 
-function Row({
+function Row<T extends BlogTableRow>({
   blog,
+  state,
+  audience,
   waiting,
   active,
   href,
   onOpen,
 }: {
-  blog: BlogSummary;
+  blog: T;
+  /**
+   * ONE read of where this blog is, for the whole row, resolved by the parent's stateOf. The
+   * admin derives it from the summary's wire fields (blogState) so this row and the stage page
+   * reach their answer through the same function; the portal's cards carry it resolved. That
+   * divergence is what put a green score on one screen and a plain one on the other.
+   */
+  state: BlogState;
+  audience: "admin" | "client";
   waiting: WaitingSignal | null;
   active: boolean;
   href: string;
-  onOpen: (blog: BlogSummary) => void;
+  onOpen: (blog: T) => void;
 }) {
-  // ONE read of where this blog is, for the whole row. BlogSummary already carries the exact
-  // five fields blogState takes, so this row and the stage page reach their answer through the
-  // same function over the same wire fields rather than each folding the status feed its own
-  // way. That divergence is what put a green score on one screen and a plain one on the other.
-  const state = blogState(blog);
-
+  const admin = audience === "admin";
   return (
     <TableRow
       // The row is a click target for the mouse, but the LINK in the title cell is the
@@ -175,7 +221,7 @@ function Row({
           </span>
           {/* Inside the link, so the chip is part of what a screen reader reads out when it
               lands on the row rather than a colour a sighted operator alone gets to see. */}
-          {waiting !== null ? <WaitingChip signal={waiting} /> : null}
+          {waiting !== null ? <WaitingChip signal={waiting} audience={audience} /> : null}
           <span className="sr-only">Open blog</span>
         </Link>
       </TableCell>
@@ -188,9 +234,15 @@ function Row({
           <TooltipContent className="machine">{formatAbsolute(blog.created)}</TooltipContent>
         </Tooltip>
       </TableCell>
-      <TableCell>
-        <Score score={blog.score} shipped={blog.shipped} uploaded={blog.uploaded === true} />
-      </TableCell>
+      {admin ? (
+        <TableCell>
+          <Score
+            score={blog.score ?? null}
+            shipped={blog.shipped === true}
+            uploaded={blog.uploaded === true}
+          />
+        </TableCell>
+      ) : null}
       {/* ONE TAG, where three elements used to sit: the run status, a delivery chip
           re-deriving sent / approved / changes from the same fields, and a published chip.
           All three answered one question, "where is this article", in three vocabularies that
@@ -214,11 +266,17 @@ function Row({
           refusal to guess the fallback existed for: what it must never do is alias onto
           `running` and report a finished blog as in flight, and it does not. */}
       <TableCell>
-        <BlogStateTag state={state} audience="admin" />
+        <BlogStateTag
+          state={state}
+          audience={audience}
+          commentsPending={blog.comments_pending}
+        />
       </TableCell>
-      <TableCell className="machine text-xs text-muted-foreground">
-        {typeof blog.iterations === "number" ? blog.iterations : ""}
-      </TableCell>
+      {admin ? (
+        <TableCell className="machine text-xs text-muted-foreground">
+          {typeof blog.iterations === "number" ? blog.iterations : ""}
+        </TableCell>
+      ) : null}
     </TableRow>
   );
 }
@@ -236,11 +294,19 @@ function Row({
  * them, and two canonical-facts violations shipped at 96 that way. A row with this chip is a row
  * held for an answer, and the Status column beside it reads "waiting on you" for the same reason.
  */
-function WaitingChip({ signal }: { signal: WaitingSignal }) {
+function WaitingChip({
+  signal,
+  audience,
+}: {
+  signal: WaitingSignal;
+  audience: "admin" | "client";
+}) {
   const noun = signal.count === 1 ? "question" : "questions";
   if (signal.kind === "client_answered") {
     // The portal loop closing: the client answered, no engine ran at their submit, and
     // this row now waits on the operator's Rerun. Green, not amber: the asking is done.
+    // Admin-only by construction: the client's own map never carries this kind, because
+    // "rerun" is the operator's act and this sentence would summon them to it.
     return (
       <span
         title="The client answered these questions from their portal. No revise has run yet: open the blog and click Rerun to apply their answers."
@@ -253,7 +319,14 @@ function WaitingChip({ signal }: { signal: WaitingSignal }) {
   }
   return (
     <span
-      title="The evaluator asked something research cannot settle, so this blog is held until you answer, whatever it scored. Open it to read the questions."
+      // The client title carries no evaluator and no score: that vocabulary never crosses
+      // the portal wire, and the sweep in tests/blog-state.test.ts holds every client
+      // sentence to it.
+      title={
+        audience === "admin"
+          ? "The evaluator asked something research cannot settle, so this blog is held until you answer, whatever it scored. Open it to read the questions."
+          : "Our editorial review needs an answer only you can give. Open the article to answer."
+      }
       className="mt-1.5 inline-flex h-5 shrink-0 items-center gap-1 rounded border border-review/25 bg-review-bg px-1.5 text-[0.6875rem] leading-none font-medium text-review"
     >
       <MessageCircleQuestion className="size-3 shrink-0" aria-hidden />
