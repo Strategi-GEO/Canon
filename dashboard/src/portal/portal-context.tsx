@@ -14,7 +14,7 @@ import type { Overview, PortalBlogCard, PortalOrg } from "@/portal/types";
 
 type PortalState = {
   orgs: PortalOrg[];
-  brands: { slug: string; name: string; org: string }[];
+  brands: { slug: string; name: string; org: string; domain: string; industry: string; description: string }[];
   blogs: PortalBlogCard[];
   loading: boolean;
   error: ApiError | null;

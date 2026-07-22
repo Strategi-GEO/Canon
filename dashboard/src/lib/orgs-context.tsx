@@ -221,6 +221,18 @@ export function brandHref(orgSlug: string, brandSlug: string, section = ""): str
 }
 
 /**
+ * The canonical URL of a brand computed from the brand ALONE. A brand's org slug is its
+ * organisation slug, or its own slug when it stands alone, matching deriveOrgs exactly. This is
+ * how a freshly created brand is routed to WITHOUT re-reading the orgs list first: findBrand
+ * closes over the pre-refresh orgs, so `await refresh(); findBrand(slug)` still misses the brand
+ * that was just made and falls back to "/". The created record already carries its organisation,
+ * so the address is knowable straight away.
+ */
+export function brandLocationHref(brand: Client, section = ""): string {
+  return brandHref(brand.organisation?.slug ?? brand.slug, brand.slug, section);
+}
+
+/**
  * Add a brand, prefilled into an existing org.
  *
  * This is load bearing. A single-brand org now redirects past its own org page, and that page

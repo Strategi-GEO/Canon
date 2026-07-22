@@ -7,12 +7,14 @@ import type {
   PortalBlogDetail,
   PortalResource,
   PortalResourceLink,
+  PortalReports,
   PortalResourceList,
   PortalRoadmap,
   PortalUploadTarget,
   ReplyBody,
   SuggestBody,
 } from "@/portal/types";
+import type { RoadmapMonthsResponse } from "@/types";
 
 /**
  * The portal's API client. Same-origin only: the portal's Route Handlers ARE its backend,
@@ -138,8 +140,25 @@ export const api = {
       `/api/blog/${encodeURIComponent(brand)}/${encodeURIComponent(topic)}/reply`,
       { method: "POST", body },
     ),
-  roadmap: (brand: string, signal?: AbortSignal) =>
-    request<PortalRoadmap>(`/api/roadmap/${encodeURIComponent(brand)}`, { signal }),
+  roadmap: (brand: string, signal?: AbortSignal, month?: number) =>
+    request<PortalRoadmap>(
+      `/api/roadmap/${encodeURIComponent(brand)}` +
+        (month === undefined ? "" : `?month=${month}`),
+      { signal },
+    ),
+
+  /** The months list for the roadmap tab. Sits under /api/clients/{slug}/... for the same
+   *  reason the resources routes do (RLS on the caller's own JWT, only client-granted
+   *  columns): see the comment above `resources:`. */
+  roadmapMonths: (brand: string, signal?: AbortSignal) =>
+    request<RoadmapMonthsResponse>(
+      `/api/clients/${encodeURIComponent(brand)}/roadmap/months`,
+      { signal },
+    ),
+
+  /** The brand's shared monthly reports, read-only. Empty `months` when nothing is shared yet. */
+  reports: (brand: string, signal?: AbortSignal) =>
+    request<PortalReports>(`/api/reports/${encodeURIComponent(brand)}`, { signal }),
 
   /**
    * The brand's own fact base. These four sit under /api/clients/{slug}/... rather than in the

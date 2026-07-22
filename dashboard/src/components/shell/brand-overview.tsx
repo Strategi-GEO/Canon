@@ -15,6 +15,7 @@ import { ReadOnlyText } from "@/components/clients/editable-text";
 import { FactsCard } from "@/components/clients/facts-card";
 import { RoadmapPanel } from "@/components/clients/roadmap-panel";
 import { RoadmapGenerationStatus } from "@/components/roadmap/generation-status";
+import { ReportGenerationStatus } from "@/components/reports/generation-status";
 import { SessionCard } from "@/components/session/session-card";
 import { resourceTypeLabel } from "@/components/clients/resource-type";
 import { Badge } from "@/components/ui/badge";
@@ -55,7 +56,25 @@ export function BrandOverview({ orgSlug, brand }: { orgSlug: string; brand: Clie
 
   return (
     <div className="mx-auto w-full max-w-5xl">
-      <BrandHeader orgSlug={orgSlug} client={client} />
+      <BrandHeader
+        name={client.name}
+        domain={client.domain}
+        industry={client.industry}
+        machineLine={client.slug}
+        action={
+          /* The view's ONE accent action, and it stays that way. The accent means "this is
+              the action here", so a second accent button in the same viewport means neither
+              is. Anything else pointing at /create from this page is outline or a plain
+              link. */
+          <Button size="sm" asChild>
+            <Link href={brandHref(orgSlug, client.slug, "/create")}>
+              <PenLine data-icon="inline-start" aria-hidden />
+              Create blogs
+            </Link>
+          </Button>
+        }
+        footer={<PreflightNote preflight={client.preflight} className="mt-4" />}
+      />
 
       {/*
         A run started on the Create tab is still running when the operator navigates back here,
@@ -77,6 +96,15 @@ export function BrandOverview({ orgSlug, brand }: { orgSlug: string; brand: Clie
         pays for one read and shows nothing.
       */}
       <RoadmapGenerationStatus
+        orgSlug={orgSlug}
+        brandSlug={client.slug}
+        brandName={client.name}
+      />
+
+      {/* The third long-running thing for this brand: a monthly report generation started on the
+          Reports tab. Same reason as the roadmap card above, and it too renders nothing unless a
+          generation is actually running, so an idle Overview pays for one read and shows nothing. */}
+      <ReportGenerationStatus
         orgSlug={orgSlug}
         brandSlug={client.slug}
         brandName={client.name}
@@ -119,45 +147,58 @@ export function BrandOverview({ orgSlug, brand }: { orgSlug: string; brand: Clie
   );
 }
 
-function BrandHeader({ orgSlug, client }: { orgSlug: string; client: Client }) {
+/**
+ * The brand masthead, SHARED with the client portal's overview (portal/views.tsx): name,
+ * domain link and industry badge are both audiences' facts; the slug line, the accent action
+ * and the preflight footer are the admin's and arrive as props, so the portal simply passes
+ * none of them.
+ */
+export function BrandHeader({
+  name,
+  domain,
+  industry,
+  machineLine,
+  action,
+  footer,
+}: {
+  name: string;
+  domain: string;
+  industry: string;
+  /** The admin's slug line. Absent on the portal: a client is never shown machine ids. */
+  machineLine?: string;
+  action?: React.ReactNode;
+  footer?: React.ReactNode;
+}) {
   return (
     <div>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-xl font-semibold tracking-tight text-pretty text-foreground">
-            {client.name}
+            {name}
           </h2>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1">
-            <span className="machine text-xs text-muted-foreground">{client.slug}</span>
-            {client.domain ? (
+            {machineLine !== undefined ? (
+              <span className="machine text-xs text-muted-foreground">{machineLine}</span>
+            ) : null}
+            {domain ? (
               <a
-                href={client.domain}
+                href={domain}
                 target="_blank"
                 rel="noreferrer noopener"
                 className="machine inline-flex min-w-0 items-center gap-1 text-xs text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline"
               >
-                <span className="truncate">{displayDomain(client.domain)}</span>
+                <span className="truncate">{displayDomain(domain)}</span>
                 <ExternalLink className="size-3 shrink-0" aria-hidden />
               </a>
             ) : null}
-            <IndustryBadge industry={client.industry} />
+            <IndustryBadge industry={industry} />
           </div>
         </div>
 
-        {/* The view's ONE accent action, and it stays that way. The accent means "this is the
-            action here", so a second accent button in the same viewport means neither is, and
-            a second one carrying this same label makes the operator stop to work out whether
-            the two do different things. Anything else pointing at /create from this page is
-            outline or a plain link. */}
-        <Button size="sm" asChild>
-          <Link href={brandHref(orgSlug, client.slug, "/create")}>
-            <PenLine data-icon="inline-start" aria-hidden />
-            Create blogs
-          </Link>
-        </Button>
+        {action}
       </div>
 
-      <PreflightNote preflight={client.preflight} className="mt-4" />
+      {footer}
     </div>
   );
 }
@@ -186,7 +227,29 @@ function ResourcesSummary({ orgSlug, client }: { orgSlug: string; client: Client
     return () => controller.abort();
   }, [client.slug]);
 
-  const total = client.resource_count;
+  return (
+    <ResourcesSummaryCard
+      total={client.resource_count}
+      resources={resources}
+      href={brandHref(orgSlug, client.slug, "/resources")}
+    />
+  );
+}
+
+/**
+ * The card itself, SHARED with the client portal's overview: same preview list, same badge,
+ * same defer-to-the-page button. The data arrives as props because the two surfaces fetch on
+ * different wires (engine api here, the portal's Supabase routes there).
+ */
+export function ResourcesSummaryCard({
+  total,
+  resources,
+  href,
+}: {
+  total: number;
+  resources: Pick<Resource, "name" | "content_type">[] | null;
+  href: string;
+}) {
   const shown = resources?.slice(0, RESOURCE_PREVIEW) ?? [];
   const hidden = resources ? resources.length - shown.length : 0;
 
@@ -231,7 +294,7 @@ function ResourcesSummary({ orgSlug, client }: { orgSlug: string; client: Client
         ) : null}
 
         <Button size="sm" variant="outline" className="mt-3" asChild>
-          <Link href={brandHref(orgSlug, client.slug, "/resources")}>
+          <Link href={href}>
             {total === 0 ? "Add resources" : "View resources"}
             <ArrowRight data-icon="inline-end" aria-hidden />
           </Link>
@@ -286,7 +349,8 @@ function BrandStats({
   );
 }
 
-function StatRow({
+/** One label/number line of the stats card. SHARED with the client portal's overview. */
+export function StatRow({
   label,
   value,
   accent = false,

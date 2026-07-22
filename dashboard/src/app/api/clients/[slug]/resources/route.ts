@@ -78,8 +78,8 @@ export async function GET(
  * then refuse the very retry that would have fixed it.
  *
  * All authority lives in portal_resource_add (supabase/migrations/016_resource_client_write.sql).
- * It gates on auth_can_write_client_slug, which has no admin bypass because the product rule is
- * that clients manage their own files, resolves the brand from this slug so no caller can name
+ * It gates on auth_can_write_client_slug (admins plus a brand's own writing members, since
+ * migration 022 made resources common to both), resolves the brand from this slug so no caller can name
  * another org's row, BUILDS the object path itself from the brand it authorised rather than
  * accepting one, refuses a blank or over-long filename, refuses a malformed digest or size,
  * refuses anything over the 25 MiB limit, and refuses BOTH duplicate shapes: a filename the

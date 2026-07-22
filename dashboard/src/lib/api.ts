@@ -23,6 +23,9 @@ import type {
   OrgsResponse,
   OutputFile,
   PublishResult,
+  ReportGenJob,
+  ReportsResponse,
+  ShareReportResult,
   ResourcesResponse,
   RoadmapGenJob,
   RoadmapMonthsResponse,
@@ -645,4 +648,51 @@ export const api = {
     request<PublishResult>(`/api/clients/${slug}/blogs/${topicSlug}/publish`, {
       method: "POST",
     }),
+
+  /**
+   * Every month of reports this brand holds, plus the current month even when it has no report
+   * yet, newest first. Each entry carries the WORKING report the operator owns and its
+   * shared-with-client state. The dashboard draws its KPIs from the selected month and its
+   * trend line from the metrics across all of them. Never a 404: an empty brand is an empty
+   * `reports` array under the current month.
+   */
+  reports: (slug: string, signal?: AbortSignal) =>
+    request<ReportsResponse>(`/api/clients/${slug}/reports`, { signal }),
+
+  /**
+   * Starts this month's report generation and answers 202 with the JOB. Generation always
+   * targets the engine's current calendar month, so this takes no month. 409 when one is
+   * already running, a blog run is live, or a report for this month already exists (delete it
+   * first to regenerate). 422 when the brand has no domain to audit.
+   */
+  generateReport: (slug: string) =>
+    request<ReportGenJob>(`/api/clients/${slug}/reports/generate`, { method: "POST" }),
+
+  /** The brand's report generation job, running or settled, or 404 when there has never been one. */
+  reportGeneration: (slug: string, signal?: AbortSignal) =>
+    request<ReportGenJob>(`/api/clients/${slug}/reports/generate`, { signal }),
+
+  /** Forgets a SETTLED generation job. 409 while it runs. 204, so the caller drops its copy. */
+  clearReportGeneration: (slug: string) =>
+    request<null>(`/api/clients/${slug}/reports/generate`, { method: "DELETE" }),
+
+  /**
+   * Sends one month's working report to the client: copies it into the shared snapshot the
+   * portal reads. Every call re-shares (also after a regenerate). 409 when there is no
+   * generated report for that month to share. Returns the new shared state.
+   */
+  shareReport: (slug: string, month: string) =>
+    request<ShareReportResult>(`/api/clients/${slug}/reports/${month}/share`, { method: "POST" }),
+
+  /**
+   * Deletes one month's WORKING report and NOTHING the client sees: the shared snapshot
+   * survives, so a client keeps seeing the last report sent. There is no way to see the working
+   * copy again, so the caller confirms first. 204, and the caller reloads the list.
+   */
+  deleteReport: (slug: string, month: string) =>
+    request<null>(`/api/clients/${slug}/reports/${month}`, { method: "DELETE" }),
+
+  /** One month's report PDF, as a download blob. Needs the live engine. */
+  reportPdf: (slug: string, month: string, signal?: AbortSignal) =>
+    requestBlob(`/api/clients/${slug}/reports/${month}/pdf`, signal),
 };

@@ -9,9 +9,16 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowRight, Clock, Loader2, RotateCw, TriangleAlert } from "lucide-react";
+import { ArrowRight, Clock, FileText, Loader2, RotateCw, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { TopicProgress } from "@/components/create/topic-progress";
 import { useNow } from "@/components/create/use-now";
 import { formatElapsed } from "@/lib/format";
@@ -32,6 +39,8 @@ type Clock = { since: string; measures: "running" | "waiting" | "building" };
 export function WatchState({
   runId,
   state,
+  brandInstructions,
+  sessionInstructions,
   factsBuild,
   submittedAt,
   runningSince,
@@ -47,6 +56,14 @@ export function WatchState({
    * announced a run in progress over a session on which nothing had run.
    */
   state: RunState;
+  /** The brand's standing blog instructions, for the View instructions panel. "" when none. */
+  brandInstructions: string;
+  /**
+   * What the operator typed for THIS run in the Generate dialog, "" when they skipped OR when
+   * this browser did not start the run (see CreateForBrand). The panel shows a section for it
+   * only when it is non-empty, so an unknown value never claims "none were added".
+   */
+  sessionInstructions: string;
   /**
    * The canonical-facts.md build THIS run is waiting on, or null once its blogs are dispatched.
    * Resolved by factsBuildOf from the engine's own job record, so a settled build, or one
@@ -70,6 +87,12 @@ export function WatchState({
   onRetry: (topicSlug: string) => void;
 }) {
   const { topics, reconnecting } = stream;
+
+  const [instructionsOpen, setInstructionsOpen] = React.useState(false);
+  // Shown only when there is something to show. A run with no brand instructions and no session
+  // instructions has no panel and no button, so the header stays clean for the common case.
+  const hasInstructions =
+    brandInstructions.trim() !== "" || sessionInstructions.trim() !== "";
 
   const queued = state === "queued";
   // Either authority may say so first. The stream's closing frame usually wins, and the run
@@ -168,6 +191,18 @@ export function WatchState({
           <p className="machine mt-1 text-xs wrap-break-word text-muted-foreground">{runId}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {/* The instructions this run is being written under, one click away rather than
+              cluttering the progress list. Only rendered when there is something to show. */}
+          {hasInstructions ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setInstructionsOpen(true)}
+            >
+              <FileText aria-hidden data-icon="inline-start" />
+              View instructions
+            </Button>
+          ) : null}
           {/* Available while the run is live too. The run is in the engine, so leaving this
               view cannot touch it, and an operator who wants to queue more topics has to be
               able to get back to the roadmap without waiting for the slowest blog. */}
@@ -372,6 +407,13 @@ export function WatchState({
         </Card>
       ) : null}
 
+      <RunInstructionsDialog
+        open={instructionsOpen}
+        onOpenChange={setInstructionsOpen}
+        brandInstructions={brandInstructions}
+        sessionInstructions={sessionInstructions}
+      />
+
       <Card className="overflow-hidden p-0">
         <ul className="divide-y divide-border">
           {topics.map((topic) =>
@@ -402,6 +444,62 @@ export function WatchState({
         </ul>
       </Card>
     </div>
+  );
+}
+
+/**
+ * What this run is being written under: the brand's standing instructions and, when this browser
+ * started the run, the note typed for this run specifically.
+ *
+ * Each section renders only when its text is non-empty, so an empty session note never asserts
+ * "none were added" for a run this browser cannot see the instructions of. The button that opens
+ * this is itself gated on there being at least one non-empty section.
+ */
+function RunInstructionsDialog({
+  open,
+  onOpenChange,
+  brandInstructions,
+  sessionInstructions,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  brandInstructions: string;
+  sessionInstructions: string;
+}) {
+  const brand = brandInstructions.trim();
+  const session = sessionInstructions.trim();
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Instructions for this run</DialogTitle>
+          <DialogDescription>
+            The engine follows these as a major priority while it writes, never above the
+            brand&apos;s canonical facts. Each blog&apos;s dossier also records the run-specific
+            note it was written under.
+          </DialogDescription>
+        </DialogHeader>
+
+        {session ? (
+          <div className="rounded-lg border border-border bg-muted/40 px-3 py-2">
+            <p className="text-xs font-medium text-foreground">Added for this run</p>
+            <p className="mt-1 max-h-48 overflow-y-auto text-xs whitespace-pre-wrap text-muted-foreground">
+              {session}
+            </p>
+          </div>
+        ) : null}
+
+        {brand ? (
+          <div className="rounded-lg border border-border bg-muted/40 px-3 py-2">
+            <p className="text-xs font-medium text-foreground">Standing brand instructions</p>
+            <p className="mt-1 max-h-48 overflow-y-auto text-xs whitespace-pre-wrap text-muted-foreground">
+              {brand}
+            </p>
+          </div>
+        ) : null}
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -31,6 +31,13 @@ export type Client = {
    */
   preflight: Preflight;
   description: string;
+  /**
+   * The operator's standing blog instructions for this brand, edited from Settings and obeyed
+   * by the generation agents as a major priority. Operator material: the engine's own record
+   * carries it, and the hosted read-only mirror does NOT (that read never selects the column),
+   * so it can be "" there. Absent-safe with `?? ""` at every read.
+   */
+  custom_instructions: string;
   domain: string;
   industry: string;
   has_roadmap: boolean;
@@ -93,6 +100,12 @@ export type CreateClientBody = {
    * single-brand org.
    */
   organisation_name?: string;
+  /**
+   * The brand's standing blog instructions. Optional on create; the real editing surface is
+   * Settings, which PATCHes it through UpdateClientBody. Empty string clears it; omitted means
+   * "not sent" and leaves the record alone.
+   */
+  custom_instructions?: string;
 };
 
 export type UpdateClientBody = Partial<CreateClientBody>;
@@ -326,6 +339,11 @@ export type FactsGenJob = {
 export type GenerateBody = {
   rows: number[];
   upload_id?: string;
+  /**
+   * Instructions specific to THIS run's blogs, typed in the dialog after Generate. Optional and
+   * usually short or empty: the engine trims it, so a blank box behaves exactly as omitting it.
+   */
+  session_instructions?: string;
 };
 
 export type GenerateAccepted = {
@@ -553,6 +571,14 @@ export type BlogSummary = {
    * is above zero. Optional on the wire for the same engine-age reason as sent_to_client.
    */
   changes_requested?: number;
+  /**
+   * The HUMAN-facing count: the same comments plus the failed applies, exactly as the
+   * client's own comments_pending counts them (portal-data.ts). The changes_requested tag
+   * splits "Changes requested" from "With client" on this number and never on the send-gate
+   * count above, so a failed apply cannot read resolved to the admin while still pending to
+   * the client. Optional on the wire for the same engine-age reason as sent_to_client.
+   */
+  comments_pending?: number;
   /**
    * Whether the client has asked for anything SINCE the last send. The round, not the queue.
    *
@@ -912,3 +938,140 @@ export const OUTPUT_FILES = [
 ] as const;
 
 export type OutputFile = (typeof OUTPUT_FILES)[number];
+
+// ---------------------------------------------------------------------------
+// Monthly reports
+// ---------------------------------------------------------------------------
+
+/** One engine's AI-mention count for a month. `engine` is "ChatGPT" | "Gemini" | "Claude". */
+export type ReportEngineMention = { engine: string; value: number };
+
+/**
+ * The dashboard-facing KPI block the geo-site-report skill emits. Every value is an ABSOLUTE
+ * count for its month: deltas and the all-months trend are derived in the UI from the stored
+ * history of earlier months, never sent here. `total` is derived from `by_engine`.
+ */
+export type ReportMetrics = {
+  month_label?: string | null;
+  ai_mentions: { total?: number; by_engine: ReportEngineMention[] };
+  backlinks: number | null;
+  referring_domains: number | null;
+  note?: string | null;
+};
+
+/**
+ * One Google Lighthouse category, as the geo-site-report skill pulls it from DataForSEO's
+ * `on_page_lighthouse`. Both scores are real measurements: `desktop` is always run, `mobile`
+ * only when a second call was made (null otherwise, which the UI shows as "n/a"). A score may
+ * arrive as 61 or 0.61; the UI normalises both to 61.
+ */
+export type ReportLighthouseScore = {
+  category: string;
+  desktop: number | null;
+  mobile?: number | null;
+};
+
+/** One Core-Web-Vitals-style row under the Lighthouse scores (value + target + severity). */
+export type ReportLighthouseMetric = {
+  metric: string;
+  value: string;
+  target?: string | null;
+  status?: string | null;
+};
+
+/**
+ * The Lighthouse block. Real Google Lighthouse numbers from DataForSEO, never inferred: when the
+ * lookup does not return, the whole block is absent rather than filled with a guess.
+ */
+export type ReportLighthouse = {
+  scores: ReportLighthouseScore[];
+  metrics?: ReportLighthouseMetric[];
+  form_factor_note?: string | null;
+  seo_score_caveat?: string | null;
+};
+
+/**
+ * One action in the plan of action. `fix` is the suggested solution, `why` its rationale/impact,
+ * `effort` a free-text pill ("Quick win"), `severity` colours it. Ordered quick-wins-first by
+ * the skill.
+ */
+export type ReportPriorityFix = {
+  fix: string;
+  why?: string | null;
+  effort?: string | null;
+  severity?: string | null;
+};
+
+/**
+ * The full report.json a report session writes. The dashboard reads `metrics`, `lighthouse` and
+ * `priority_fixes` (the plan of action); the remaining audit prose (modules, AI standing, verify
+ * list) rides in the PDF, so the rest is left loose rather than typed field by field.
+ */
+export type ReportDocument = {
+  metrics: ReportMetrics;
+  lighthouse?: ReportLighthouse | null;
+  priority_fixes?: ReportPriorityFix[];
+  site_name?: string;
+  url?: string;
+  audit_date?: string;
+  snapshot?: { verdict?: string | null; lines?: string[] };
+  [key: string]: unknown;
+};
+
+/**
+ * The four states a month sits in, all derived server-side from one row's timestamps:
+ * - `none`               nothing generated for this month.
+ * - `generated_unshared` a working report the client has not been sent (also the state after a
+ *                        regenerate, when generated_at is newer than the last share).
+ * - `generated_shared`   a working report the client is seeing the same version of.
+ * - `deleted_shared`     the working report was deleted, but the client still sees the snapshot
+ *                        that was shared before the delete.
+ */
+export type ReportStatus = "none" | "generated_unshared" | "generated_shared" | "deleted_shared";
+
+/**
+ * One month, as the admin dashboard sees it. `report` is the WORKING copy the operator owns:
+ * null for a deleted month (the deleted report is deliberately unseeable to the operator) and
+ * null for a month never generated. The client's shared snapshot is never returned here.
+ */
+export type MonthReport = {
+  month: string; // YYYY-MM
+  status: ReportStatus;
+  report: ReportDocument | null;
+  has_pdf: boolean;
+  generated_at: string | null;
+  generated_by: string | null;
+  shared_at: string | null;
+  shared_by: string | null;
+};
+
+export type ReportsResponse = {
+  /** The engine's current calendar month: the one Generate targets. */
+  current_month: string;
+  /** Every month this brand holds plus the current month, newest first. */
+  reports: MonthReport[];
+};
+
+/** Same three-state shape as every other engine job: "running" is the only one with a clock. */
+export type ReportGenJobState = "running" | "done" | "failed";
+
+/** One report generation, as the engine remembers it. Survives a refresh, read from GET. */
+export type ReportGenJob = {
+  client: string;
+  month: string;
+  state: ReportGenJobState;
+  started: string;
+  finished: string | null;
+  /** The agent's final message: the numbers it pulled and whether the PDF rendered. */
+  summary: string | null;
+  error: string | null;
+  /** Whether a PDF landed with the report. Absent while running. */
+  has_pdf?: boolean;
+};
+
+export type ShareReportResult = {
+  month: string;
+  status: "generated_shared";
+  shared_at: string;
+  shared_by: string;
+};

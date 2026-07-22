@@ -31,6 +31,13 @@ type LiveRun = {
   submittedAt: string;
   /** When the engine took the lock and work began. Null while queued. The RUNNING clock. */
   runningSince: string | null;
+  /**
+   * What the operator typed in the Generate dialog for THIS run, "" when they skipped. Known only
+   * for a run this browser started: it is ephemeral engine input with no run-list field, so a
+   * re-attached run carries "" and the run view shows the brand instructions alone. Each blog's
+   * dossier records this run's instructions, which is where a re-attached run reads them back.
+   */
+  sessionInstructions: string;
 };
 
 const NO_SEEDS: Seed[] = [];
@@ -51,12 +58,15 @@ export function CreateForBrand({
   orgSlug,
   brandSlug,
   brandName,
+  brandInstructions,
   hasCanonicalFacts,
   resourceCount,
 }: {
   orgSlug: string;
   brandSlug: string;
   brandName: string;
+  /** The brand's standing blog instructions, off the client record the route already holds. */
+  brandInstructions: string;
   /**
    * Whether this brand's canonical-facts.md exists, and how many resources it holds. Both come
    * from the client record the route already has, so the warning below costs no fetch of its
@@ -213,6 +223,9 @@ export function CreateForBrand({
       state: runStateOf(attachable),
       submittedAt: attachable.started,
       runningSince: attachable.started_running,
+      // Not this browser's run, so its session instructions are not recoverable here; the run
+      // view shows the brand instructions alone, and each blog's dossier carries this run's.
+      sessionInstructions: "",
     });
     setWatching(true);
   }
@@ -277,6 +290,8 @@ export function CreateForBrand({
       <WatchState
         runId={run.runId}
         state={run.state}
+        brandInstructions={brandInstructions}
+        sessionInstructions={run.sessionInstructions}
         // Resolved against THIS run's id, so a build the engine still holds from an earlier run
         // cannot put a live phase over a run that is past it.
         factsBuild={factsBuildOf(run.runId, factsGen.job)}
@@ -311,6 +326,7 @@ export function CreateForBrand({
       // prop: a component that derives its own routes can point at the wrong brand.
       roadmapHref={brandHref(orgSlug, brandSlug, "/roadmap")}
       resourcesHref={brandHref(orgSlug, brandSlug, "/resources")}
+      brandInstructions={brandInstructions}
       hasCanonicalFacts={hasCanonicalFacts}
       resourceCount={resourceCount}
       roadmap={roadmap}
@@ -339,7 +355,7 @@ export function CreateForBrand({
         void loadBlogs();
       }}
       onWatch={() => setWatching(true)}
-      onStarted={(runId, seeds) => {
+      onStarted={(runId, seeds, sessionInstructions) => {
         // QUEUED, not running, and that is not a guess: runner.py's register_run marks every
         // run queued at the instant the POST lands, and only CLIENT_LOCK promotes it. On an
         // idle engine that is over in milliseconds and the next poll says so. Assuming the
@@ -355,6 +371,9 @@ export function CreateForBrand({
           state: "queued",
           submittedAt: new Date().toISOString(),
           runningSince: null,
+          // Held so the run view can show this run's instructions without a fetch: they are
+          // ephemeral engine input the run list never carries back.
+          sessionInstructions,
         });
         // This run may have just started a fact base build, and the poll stopped looking the
         // moment it read a settled job or a 404, which is exactly what a brand with no fact base

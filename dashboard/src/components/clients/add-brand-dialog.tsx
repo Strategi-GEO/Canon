@@ -15,38 +15,12 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ApiError, api } from "@/lib/api";
+import { ApiError } from "@/lib/api";
 import { HOSTED_READONLY } from "@/lib/hosted";
-import { cn } from "@/lib/utils";
 import { useDescribe } from "@/lib/describe-context";
 import { FieldError } from "@/components/clients/engine-error";
 import { createClient } from "@/components/clients/wire";
 import type { Client } from "@/types";
-
-/** The engine reads these off disk, so a hardcoded list would drift the moment one lands. */
-function useIndustries(open: boolean) {
-  const [industries, setIndustries] = React.useState<string[]>([]);
-  const [error, setError] = React.useState<ApiError | null>(null);
-
-  React.useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const controller = new AbortController();
-    api.industries(controller.signal).then(
-      (data) => setIndustries(data.industries),
-      (cause: unknown) => {
-        if (cause instanceof DOMException && cause.name === "AbortError") {
-          return;
-        }
-        setError(cause instanceof ApiError ? cause : new ApiError(0, String(cause), null));
-      },
-    );
-    return () => controller.abort();
-  }, [open]);
-
-  return { industries, error };
-}
 
 /**
  * Adds a BRAND, optionally inside an ORG.
@@ -75,12 +49,10 @@ export function AddBrandDialog({
   const [name, setName] = React.useState("");
   const [organisation, setOrganisation] = React.useState(defaultOrganisationName);
   const [domain, setDomain] = React.useState("");
-  const [industry, setIndustry] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
 
   const { start: startDescribe } = useDescribe();
-  const { industries, error: industriesError } = useIndustries(open);
   const listId = React.useId();
 
   // After every hook, so the hook order stays constant. Creating a brand is an engine write
@@ -93,7 +65,6 @@ export function AddBrandDialog({
     setName("");
     setOrganisation(defaultOrganisationName);
     setDomain("");
-    setIndustry("");
     setError(null);
   }
 
@@ -105,16 +76,18 @@ export function AddBrandDialog({
       const brand = await createClient({
         name: name.trim(),
         domain: domain.trim(),
-        industry,
+        // Industry is detected from the site by the describe session, exactly like the
+        // description, so it is not asked here.
+        industry: "",
         // Blank is meaningful: it tells the engine to write no organisation key, which is
         // exactly how a brand states that it is its own single-brand org.
         organisation_name: organisation.trim(),
       });
       toast.success(`Added ${brand.name}`);
-      // Start the description draft the instant the brand exists, so the operator never has to
-      // type one or press Draft with Claude. The session lives in DescribeProvider above every
-      // route, so it survives closing this dialog and the redirect that follows, and the draft
-      // lands on the brand's page for review.
+      // Start the description AND industry draft the instant the brand exists, so the operator
+      // never has to type either or press Draft with Claude. The session lives in DescribeProvider
+      // above every route, so it survives closing this dialog and the redirect that follows, and
+      // the draft lands on the brand's page for review.
       void startDescribe(brand.slug);
       setOpen(false);
       reset();
@@ -223,40 +196,12 @@ export function AddBrandDialog({
             </p>
           </div>
 
-          <div>
-            <Label htmlFor="brand-industry">Industry</Label>
-            <select
-              id="brand-industry"
-              value={industry}
-              onChange={(e) => setIndustry(e.target.value)}
-              required
-              className={cn(
-                "mt-1.5 h-9 w-full rounded-lg border border-input bg-background px-2.5 text-sm",
-                "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-              )}
-            >
-              <option value="" disabled>
-                Select an industry
-              </option>
-              {industries.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Picks the industry reference the writer loads. Skipping it produces generic
-              content.
-            </p>
-            {industriesError ? <FieldError error={industriesError} /> : null}
-          </div>
-
-          {/* No description field on purpose. The moment the brand is added, Claude reads the
-              brand website and writes the description to the record automatically. It is not
-              typed here and it is not editable later. */}
+          {/* No industry picker and no description field on purpose. The moment the brand is
+              added, Claude reads the brand website and writes BOTH the description and the
+              detected industry to the record automatically. Neither is typed here. */}
           <p className="rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground">
-            The description is generated automatically from the website once you add the brand,
-            so there is nothing to write here.
+            The description and the industry are detected automatically from the brand website
+            once you add the brand, so there is nothing to pick or write here.
           </p>
 
           {generalError ? <FieldError error={generalError} /> : null}

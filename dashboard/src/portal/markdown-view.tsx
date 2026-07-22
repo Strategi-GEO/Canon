@@ -5,15 +5,16 @@ import { cn } from "@/lib/utils";
 import { renderMarkdown } from "@/portal/markdown";
 
 /**
- * Typography for a rendered article, the portal's one document surface: Georgia headings,
- * a measure that stops around seventy characters, rhythm from the heading levels rather
- * than rules and boxes. Copied from the admin dashboard's article variant; the portal has
- * no second (denser) variant because it renders articles and nothing else.
+ * Typography for a rendered article, the portal's one document surface: sans headings (no
+ * serif anywhere on this surface, by the operator's instruction), a measure that stops
+ * around seventy characters, rhythm from the heading levels rather than rules and boxes.
+ * Adapted from the admin dashboard's article variant; the portal has no second (denser)
+ * variant because it renders articles and nothing else.
  */
 
 const ARTICLE = [
   "text-foreground",
-  "[&_.md-h]:font-serif [&_.md-h]:font-normal [&_.md-h]:text-foreground [&_.md-h]:text-pretty [&_.md-h]:tracking-tight",
+  "[&_.md-h]:font-semibold [&_.md-h]:text-foreground [&_.md-h]:text-pretty [&_.md-h]:tracking-tight",
   "[&_.md-h1]:mt-0",
   "[&_.md-list]:pl-5 [&_.md-ul]:list-disc [&_.md-ol]:list-decimal",
   "[&_.md-list_li]:pl-1 [&_.md-list_li]:marker:text-muted-foreground",
@@ -40,7 +41,7 @@ const ARTICLE = [
   "[&_.md-h6]:mt-5 [&_.md-h6]:mb-1 [&_.md-h6]:text-xs",
   "[&_.md-p]:my-4",
   "[&_.md-list]:my-4 [&_.md-list]:space-y-2",
-  "[&_.md-quote]:my-6 [&_.md-quote]:border-l-2 [&_.md-quote]:border-primary/50 [&_.md-quote]:pl-4 [&_.md-quote]:font-serif [&_.md-quote]:text-base [&_.md-quote]:text-muted-foreground",
+  "[&_.md-quote]:my-6 [&_.md-quote]:border-l-2 [&_.md-quote]:border-primary/50 [&_.md-quote]:pl-4 [&_.md-quote]:text-base [&_.md-quote]:text-muted-foreground",
   "[&_.md-hr]:my-10",
   "[&_.md-code]:text-[0.8125em]",
   "[&_.md-pre]:my-5",

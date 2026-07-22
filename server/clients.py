@@ -151,6 +151,7 @@ def exists(slug):
 # blog version, which is the record's answer to what _blog_count used to glob off disk.
 _CLIENT_SELECT = """
     select c.slug, c.name, c.domain, c.industry, c.description,
+           c.custom_instructions,
            c.created_at,
            exists (select 1 from roadmap_sheets r where r.client_id = c.id)
              as has_roadmap,
@@ -169,7 +170,7 @@ _CLIENT_SELECT = """
 
 
 def _client_from_row(row):
-    (slug, name, domain, industry, description,
+    (slug, name, domain, industry, description, custom_instructions,
      created_at, has_roadmap, has_facts, resource_count, blog_count,
      org_slug, org_name) = row
     return {
@@ -185,6 +186,10 @@ def _client_from_row(row):
         "domain": domain or "",
         "industry": industry or "",
         "description": description or "",
+        # The brand's standing blog instructions, so the Settings tab can show and edit them.
+        # Operator material: present on the engine's own record (owner connection), never on the
+        # hosted authenticated read, which does not select this column.
+        "custom_instructions": custom_instructions or "",
         "has_roadmap": bool(has_roadmap),
         "has_canonical_facts": bool(has_facts),
         "resource_count": resource_count,
@@ -548,7 +553,7 @@ def create_client(name, domain, industry, description="",
 
 
 def update_client(slug, description=None, name=None, organisation_name=None,
-                  domain=None, industry=None):
+                  domain=None, industry=None, custom_instructions=None):
     """Update only what was passed. A None field is untouched, so a PATCH carrying one key
     cannot blank the others, and gates keys this function was not given survive."""
     cid = db.client_id(slug)
@@ -559,6 +564,13 @@ def update_client(slug, description=None, name=None, organisation_name=None,
     if description is not None:
         sets.append("description = %s")
         params.append(str(description))
+    # The brand's standing blog instructions. Column only, never the gates blob: nothing in
+    # gates reads it, and the next agent run reads clients/<slug>/custom-instructions.md, which
+    # sync.materialize_client lays down from this column below. Empty string is a real value
+    # here (the operator clearing their instructions), so only None means "not sent".
+    if custom_instructions is not None:
+        sets.append("custom_instructions = %s")
+        params.append(str(custom_instructions))
     if name is not None:
         new_name = str(name).strip()
         if not new_name:

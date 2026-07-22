@@ -40,13 +40,20 @@ export function useLatest<T>(value: T): React.RefObject<T> {
 /**
  * Captures a text selection inside `containerRef`, on every input a person actually has.
  *
- * THIS LISTENS FOR selectionchange, NOT mouseup, and that is the whole point. Selection on a
- * touch device does not end in a mouseup over the passage: a long press opens the handles,
- * dragging a handle adjusts the range, and no mouse event describes any of it. The old
- * mouseup capture therefore made commenting impossible on a tablet, which is where a good
+ * THIS LISTENS FOR selectionchange, NOT mouseup alone, and that is the whole point. Selection
+ * on a touch device does not end in a mouseup over the passage: a long press opens the
+ * handles, dragging a handle adjusts the range, and no mouse event describes any of it. The
+ * old mouseup capture therefore made commenting impossible on a tablet, which is where a good
  * share of the reading happens. selectionchange covers mouse, touch and shift-arrow keyboard
  * selection with one listener, and the debounce above is what keeps a drag from firing a
  * hundred captures.
+ *
+ * A MOUSE DRAG STILL REPORTS ONLY ON RELEASE. The debounce alone is not that: a reader who
+ * pauses mid-drag for 150ms has a composer appear under a selection they are still making,
+ * and every extension of the drag after that re-fires it. So while the primary mouse button
+ * is down, selection changes only mark a capture as pending, and pointerup is what publishes
+ * it, immediately, so the card reads as a response to letting go. Touch and keyboard have no
+ * such release moment, which is why they keep the settle debounce and nothing else changes.
  *
  * WHEN IT REPORTS null, AND WHEN IT SAYS NOTHING. A collapsed selection inside the article
  * clears the capture: the reader clicked the text, so they are done with that passage. A
@@ -119,15 +126,51 @@ export function useSelectionCapture({
       });
     }
 
+    // Whether the primary mouse button is down, and whether a selection changed under it.
+    // Plain locals, not state: they exist only between one press and its release.
+    let mouseDown = false;
+    let pending = false;
+
     function onSelectionChange() {
+      if (mouseDown) {
+        pending = true;
+        return;
+      }
       window.clearTimeout(timer);
       timer = window.setTimeout(read, SETTLE_MS);
     }
 
+    function onPointerDown(event: PointerEvent) {
+      if (event.pointerType === "mouse" && event.button === 0) {
+        mouseDown = true;
+        pending = false;
+      }
+    }
+
+    // pointercancel too: a press the browser aborts would otherwise leave mouseDown stuck
+    // true and every later selection silently marked pending forever.
+    function onPointerEnd(event: PointerEvent) {
+      if (event.pointerType !== "mouse" || !mouseDown) {
+        return;
+      }
+      mouseDown = false;
+      if (pending) {
+        pending = false;
+        window.clearTimeout(timer);
+        read();
+      }
+    }
+
     document.addEventListener("selectionchange", onSelectionChange);
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("pointerup", onPointerEnd);
+    document.addEventListener("pointercancel", onPointerEnd);
     return () => {
       window.clearTimeout(timer);
       document.removeEventListener("selectionchange", onSelectionChange);
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("pointerup", onPointerEnd);
+      document.removeEventListener("pointercancel", onPointerEnd);
     };
   }, [containerRef, enabled, contextChars, latest]);
 }

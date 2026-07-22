@@ -135,6 +135,12 @@ create table clients (
   -- gates.json MINUS "organisation" (modelled by org_id above).
   gates       jsonb not null default '{}'::jsonb,
 
+  -- The operator's standing blog instructions for this brand, edited from Settings and obeyed
+  -- by the R/W/E agents as a MAJOR priority (above house style, never above canonical_facts).
+  -- Operator material like client_md: protected by the column-scoped grant below, which does
+  -- NOT list it. sync.materialize_client lays it down at clients/<slug>/custom-instructions.md.
+  custom_instructions text not null default '',
+
   created_at  timestamptz not null default now(),
   deleted_at  timestamptz,
 
@@ -759,8 +765,9 @@ create table blog_comments (
   id              uuid primary key default gen_random_uuid(),
   topic_id        uuid not null,
   client_id       uuid not null,
-  -- The version the selection was made against: topics.sent_version_id at filing time
-  -- for client suggestions, null for engine-filed operator comments (their apply always
+  -- The version the selection was made against: the topic's latest committed version at
+  -- filing time for client suggestions (023; the portal renders the latest version to a
+  -- client in review), null for engine-filed operator comments (their apply always
   -- runs against the record's latest body). Informational anchor with deliberately NO
   -- FK: a comment must outlive the version it quotes, the way ledger_entries outlive
   -- the topics they record, or pruning history silently deletes a client's request.
@@ -967,13 +974,16 @@ create or replace function auth_can_read_client_slug(cslug text) returns boolean
       )
 $$;
 
--- The WRITE predicate, deliberately not the read predicate under another name. It drops the
--- admin bypass, because only clients upload and manage resources, and it requires the
--- writing role, matching every other portal write door (portal_suggest_change,
--- portal_approve_blog): a viewer is a read seat.
+-- The WRITE predicate. Admin-inclusive: a Strategi operator manages any brand's resources
+-- from the console, and a client member manages their own. For a member the writing role is
+-- still required, matching every other portal write door (portal_suggest_change,
+-- portal_approve_blog): a viewer is a read seat. The admin bypass is the deliberate change
+-- from the original resource design, where only clients could write; resources are now common
+-- to both, so this mirrors auth_can_read_client_slug rather than dropping its bypass.
 create or replace function auth_can_write_client_slug(cslug text) returns boolean
   language sql stable security definer set search_path = public as $$
-  select exists (
+  select auth_is_admin()
+      or exists (
     select 1 from org_membership m
     join org_members om on om.org_slug = m.org_slug
     where m.client_slug = cslug
@@ -1385,7 +1395,7 @@ declare
   v_cid       uuid;
   v_tid       uuid;
   v_sent_at   timestamptz;
-  v_sent_ver  uuid;
+  v_latest    uuid;
   v_open      int;
   v_id        uuid;
 begin
@@ -1425,8 +1435,8 @@ begin
     raise exception 'PORTAL:ROLE:this account is not allowed to suggest changes for this brand';
   end if;
 
-  select t.id, t.sent_to_client_at, t.sent_version_id
-    into v_tid, v_sent_at, v_sent_ver
+  select t.id, t.sent_to_client_at
+    into v_tid, v_sent_at
   from topics t
   where t.client_id = v_cid and t.slug = p_topic and t.deleted_at is null;
   if v_tid is null then
@@ -1454,11 +1464,20 @@ begin
     raise exception 'PORTAL:LIMIT:ten suggestions are already with the team; they will follow up once those are addressed';
   end if;
 
+  -- The anchor: the topic's latest committed version, the same selection
+  -- admin_send_blog_to_client (009) uses. The client in review reads the latest
+  -- version, so this names the bytes the selection was actually made against.
+  select v.id into v_latest
+  from blog_versions v
+  where v.topic_id = v_tid
+  order by v.version_no desc
+  limit 1;
+
   insert into blog_comments
     (topic_id, client_id, blog_version_id, author, author_email,
      selected_text, context_before, context_after, instruction, state)
   values
-    (v_tid, v_cid, v_sent_ver, 'client', v_email,
+    (v_tid, v_cid, v_latest, 'client', v_email,
      p_selected, coalesce(p_before, ''), coalesce(p_after, ''), p_instruction, 'open')
   returning id into v_id;
 
@@ -1598,13 +1617,19 @@ grant execute on function portal_reply_comment(text, text, uuid, text) to authen
 -- that context. Already-approved refuses rather than re-stamps, because the stamp
 -- records WHEN the client accepted the release and a moving date falsifies that.
 --
--- p_version IS THE VERSION THE CLIENT ACTUALLY READ, and it closes a real race: the team
--- presses Send again while the client's approval is in flight, mark_sent moves
--- sent_version_id to bytes nobody has seen, and the approval lands on them as though the
--- client had read them. An approval is a statement about specific text, so it refuses
--- (PORTAL:STALE) when the version it names is no longer the one on offer, and the portal
--- reloads and asks again. The client sees a refresh; the alternative is a signature on a
--- document that changed underneath it.
+-- p_version IS THE VERSION THE CLIENT ACTUALLY READ, and that is the topic's LATEST
+-- committed version (023), not sent_version_id: the race the STALE refusal closes is a
+-- resolve committing a new version while the approval is in flight, landing the approval
+-- on bytes nobody has seen. An approval is a statement about specific text, so it refuses
+-- (PORTAL:STALE) when the version it names is no longer the newest committed one, and the
+-- portal reloads and asks again. The client sees a refresh; the alternative is a
+-- signature on a document that changed underneath it.
+--
+-- The stamp RE-PINS sent_version_id to the approved version: server/cms/gate.py publishes
+-- from sent_version_id and refuses when it diverges from latest, and 013 locks an
+-- approved article against further edits, so sent == approved == latest holds from the
+-- stamp onward and the publish gate keeps meaning "nothing moved after the approval"
+-- without changing a line of it.
 create or replace function portal_approve_blog(
   p_brand   text,
   p_topic   text,
@@ -1622,7 +1647,7 @@ declare
   v_cid       uuid;
   v_tid       uuid;
   v_sent_at   timestamptz;
-  v_sent_ver  uuid;
+  v_latest    uuid;
   v_approved  timestamptz;
 begin
   if v_uid is null then
@@ -1654,8 +1679,8 @@ begin
     raise exception 'PORTAL:ROLE:this account is not allowed to approve for this brand';
   end if;
 
-  select t.id, t.sent_to_client_at, t.sent_version_id, t.client_approved_at
-    into v_tid, v_sent_at, v_sent_ver, v_approved
+  select t.id, t.sent_to_client_at, t.client_approved_at
+    into v_tid, v_sent_at, v_approved
   from topics t
   where t.client_id = v_cid and t.slug = p_topic and t.deleted_at is null;
   if v_tid is null then
@@ -1668,16 +1693,26 @@ begin
   if v_approved is not null then
     raise exception 'PORTAL:APPROVED:this article is already approved';
   end if;
-  -- `is distinct from` and not `<>`, because either side can be null: a pre-005 send has
-  -- no sent_version_id, and a portal that failed to read one sends null. Both are the
-  -- same refusal, since neither can prove which bytes the client approved.
-  if p_version is distinct from v_sent_ver then
-    raise exception 'PORTAL:STALE:the team sent a newer version while you were reading; reload and take another look';
+
+  -- The topic's newest committed bytes, the same `order by version_no desc limit 1`
+  -- selection admin_send_blog_to_client (009) uses to pick what a send releases.
+  select v.id into v_latest
+  from blog_versions v
+  where v.topic_id = v_tid
+  order by v.version_no desc
+  limit 1;
+
+  -- `is distinct from` and not `<>`, because either side can be null: a topic with no
+  -- committed version has no latest, and a portal that failed to read one sends null.
+  -- Both are the same refusal, since neither can prove which bytes the client approved.
+  if p_version is distinct from v_latest then
+    raise exception 'PORTAL:STALE:the team updated this article while you were reading; reload and take another look';
   end if;
 
   update topics
      set client_approved_at = now(),
-         client_approved_by = v_email
+         client_approved_by = v_email,
+         sent_version_id    = p_version
    where id = v_tid;
 end
 $$;
@@ -1694,9 +1729,8 @@ grant execute on function portal_approve_blog(text, text, uuid) to authenticated
 --
 -- It is a function rather than an INSERT grant because `authenticated` holds SELECT and nothing
 -- else on every table here, and RLS filters ROWS without stopping a caller from writing a row
--- that satisfies the filter. It is portal_ rather than admin_ because ONLY clients upload and
--- manage resources, so it reuses auth_can_write_client_slug, which has no admin bypass, rather
--- than answering that question a second time.
+-- that satisfies the filter. It reuses auth_can_write_client_slug (admins plus a brand's own
+-- writing members) rather than answering that scope question a second time.
 --
 -- IT TAKES A SLUG AND A SHA, NEVER AN object_path. A caller-supplied path is the pointer to the
 -- bytes themselves: `resources/<other-brand>/<sha>` would index another brand's private
@@ -2143,7 +2177,8 @@ create policy resources_read_scoped on storage.objects for select to authenticat
     and auth_can_read_client_slug((storage.foldername(name))[1])
   );
 
--- INSERT and DELETE are client-only and role-gated. The depth check exists because storage
+-- INSERT and DELETE allow admins and a brand's own writing members (auth_can_write_client_slug).
+-- The depth check exists because storage
 -- keys are literal strings never validated against the client_slug domain: `mine/../yours/x`
 -- has first segment `mine`, so it could never be read as another brand's, but every
 -- legitimate key is exactly one folder deep and requiring that removes the question.
@@ -2302,5 +2337,85 @@ alter default privileges in schema public revoke all on functions from anon;
 
 revoke all on all tables    in schema public from anon;
 revoke all on all sequences in schema public from anon;
+
+-- ---------------------------------------------------------------------------
+-- Monthly GEO performance reports (020, folded in here for fresh builds)
+-- ---------------------------------------------------------------------------
+-- One per brand per CALENDAR month (YYYY-MM). WORKING copy (report/pdf/generated_at) is the
+-- operator's, shown in the admin dashboard, served as a PDF, removed by Delete. SHARED snapshot
+-- (shared_report/shared_pdf/shared_at) is the client's, set by Share, immutable to Generate and
+-- surviving a working Delete so a client keeps seeing the last sent report. Regenerating after a
+-- share leaves generated_at > shared_at, read as "not shared yet". RLS on, all authenticated
+-- grants revoked: the local engine reads over the owner connection, the hosted site ONLY through
+-- the definer functions below. See 020_client_reports.sql for the full account.
+create table if not exists client_reports (
+  id            uuid primary key default gen_random_uuid(),
+  client_id     uuid not null references clients(id) on delete cascade,
+  month         text not null check (month ~ '^\d{4}-(0[1-9]|1[0-2])$'),
+  report        jsonb,
+  pdf           bytea,
+  generated_at  timestamptz,
+  generated_by  text,
+  shared_report jsonb,
+  shared_pdf    bytea,
+  shared_at     timestamptz,
+  shared_by     text,
+  created_at    timestamptz not null default now(),
+  unique (client_id, month)
+);
+create index if not exists client_reports_client on client_reports (client_id);
+alter table client_reports enable row level security;
+revoke all on client_reports from authenticated, anon;
+
+create or replace function report_months(p_brand text)
+returns jsonb language sql stable security definer set search_path to 'public' as $$
+  select coalesce(jsonb_agg(
+           jsonb_build_object('month', r.month, 'shared_at', r.shared_at,
+                              'report', r.shared_report, 'has_pdf', (r.shared_pdf is not null))
+           order by r.month desc), '[]'::jsonb)
+  from client_reports r
+  join clients c on c.id = r.client_id
+  where c.slug = p_brand
+    and r.shared_at is not null
+    and r.shared_report is not null
+    and auth_can_read_client_slug(p_brand);
+$$;
+
+create or replace function report_pdf(p_brand text, p_month text)
+returns bytea language sql stable security definer set search_path to 'public' as $$
+  select r.shared_pdf
+  from client_reports r
+  join clients c on c.id = r.client_id
+  where c.slug = p_brand and r.month = p_month
+    and r.shared_at is not null
+    and auth_can_read_client_slug(p_brand);
+$$;
+
+create or replace function admin_report_months(p_brand text)
+returns jsonb language sql stable security definer set search_path to 'public' as $$
+  select coalesce(jsonb_agg(
+           jsonb_build_object(
+             'month', r.month, 'report', r.report, 'has_pdf', (r.pdf is not null),
+             'generated_at', r.generated_at, 'generated_by', r.generated_by,
+             'shared_at', r.shared_at, 'shared_by', r.shared_by,
+             'has_shared', (r.shared_report is not null))
+           order by r.month desc), '[]'::jsonb)
+  from client_reports r
+  join clients c on c.id = r.client_id
+  where c.slug = p_brand and auth_is_admin();
+$$;
+
+create or replace function admin_report_pdf(p_brand text, p_month text)
+returns bytea language sql stable security definer set search_path to 'public' as $$
+  select r.pdf
+  from client_reports r
+  join clients c on c.id = r.client_id
+  where c.slug = p_brand and r.month = p_month and auth_is_admin();
+$$;
+
+revoke all on function report_months(text), report_pdf(text, text),
+  admin_report_months(text), admin_report_pdf(text, text) from public, anon;
+grant execute on function report_months(text), report_pdf(text, text),
+  admin_report_months(text), admin_report_pdf(text, text) to authenticated;
 
 commit;

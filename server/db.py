@@ -148,10 +148,41 @@ AGENT_ENV_ALLOW = (
 )
 
 
+def _venv_bin_dir() -> pathlib.Path | None:
+    """The running venv's bin/Scripts dir, or None outside a venv."""
+    import sys
+    if sys.prefix == sys.base_prefix:
+        return None
+    d = pathlib.Path(sys.prefix) / ("Scripts" if sys.platform.startswith("win") else "bin")
+    return d if d.is_dir() else None
+
+
 def agent_env() -> dict[str, str]:
     """The child env for every Claude CLI subprocess: the allowlist, never the
-    whole environment. tests/env_check.py bans the copy-everything idiom."""
-    return {k: v for k, v in os.environ.items() if k in AGENT_ENV_ALLOW}
+    whole environment. tests/env_check.py bans the copy-everything idiom.
+
+    The venv's bin/Scripts dir is prepended to PATH so `python3` in an agent
+    session resolves to THIS engine's interpreter, the one that has the skill
+    dependencies (bs4, jinja2, playwright) installed. Every prompt, skill, and
+    CLAUDE.md itself says `python3`; a Windows venv ships only python.exe, so a
+    python3.exe copy is planted beside it once, which is cheaper than teaching
+    every prompt a second interpreter name."""
+    env = {k: v for k, v in os.environ.items() if k in AGENT_ENV_ALLOW}
+    venv_bin = _venv_bin_dir()
+    if venv_bin is not None:
+        import sys
+        if sys.platform.startswith("win"):
+            py3 = venv_bin / "python3.exe"
+            if not py3.exists():
+                try:
+                    import shutil
+                    shutil.copy2(venv_bin / "python.exe", py3)
+                except OSError:
+                    pass  # read-only venv: python3 stays unresolvable, sessions report it
+        path = env.get("PATH", "")
+        if str(venv_bin) not in path.split(os.pathsep):
+            env["PATH"] = str(venv_bin) + os.pathsep + path
+    return env
 
 
 # ---------------------------------------------------------------------------

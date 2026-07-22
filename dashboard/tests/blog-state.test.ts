@@ -19,12 +19,14 @@ import assert from "node:assert/strict";
 import {
   adminActions,
   adminCan,
+  adminCommentsTag,
   adminTag,
   adminUrgency,
   blogState,
   clientActions,
   clientCan,
   clientCanSee,
+  clientCommentsTag,
   clientTag,
   type AdminAction,
   type BlogState,
@@ -264,7 +266,10 @@ test("clientActions: the full policy, state by state", () => {
     answers_submitted: [],
     internal_review: [],
     client_review: ["approve", "suggest", "reply"],
-    changes_requested: ["reply"],
+    // The full client_review bench survives a filed comment: the client reads the latest
+    // committed version continuously, so they keep suggesting against current bytes and may
+    // approve mid-round (migration 005's portal_approve_blog has no open-comment refusal).
+    changes_requested: ["approve", "suggest", "reply"],
     approved: ["reply"],
     published: [],
     failed: [],
@@ -386,7 +391,9 @@ const EXIT_OWNER: Record<BlogState, "run" | "client" | "admin"> = {
   // nothing for the admin to do.
   client_review: "client",
   // The round stays open until a re-send, so the admin resolving the last suggestion does not
-  // move the article: pressing Send does.
+  // move the article: pressing Send does. The client now shares this exit, because approving
+  // mid-round also leaves the state, but the send is still the act the state exists to demand
+  // and a client approval is never owed, so the admin bench is the one that must not be empty.
   changes_requested: "admin",
   // Locked, and publish is the one remaining act.
   approved: "admin",
@@ -1080,16 +1087,21 @@ test("no client bench offers an act the layers under it refuse", () => {
     }
   }
 
-  // THE ENUMERATION IS THE FINDING, so it is asserted rather than left implicit. These six pairs
-  // are every client act the bench grants anywhere, and every one of them is accepted by its
-  // layer for every record its state can hold. The client bench does NOT carry the defect the
-  // admin bench carried four times, and this is the list that says so.
+  // THE ENUMERATION IS THE FINDING, so it is asserted rather than left implicit. These eight
+  // pairs are every client act the bench grants anywhere, and every one of them is accepted by
+  // its layer for every record its state can hold. The client bench does NOT carry the defect
+  // the admin bench carried four times, and this is the list that says so. changes_requested
+  // appears twice per act because both of its reachable records are audited.
   assert.deepEqual(checked, [
     "has_questions:answer",
     "client_review:approve",
     "client_review:suggest",
     "client_review:reply",
+    "changes_requested:approve",
+    "changes_requested:suggest",
     "changes_requested:reply",
+    "changes_requested:approve",
+    "changes_requested:suggest",
     "changes_requested:reply",
     "approved:reply",
   ]);
@@ -1128,6 +1140,46 @@ test("a client who answered keeps the article, read-only", () => {
   assert.deepEqual([...clientActions("answers_submitted")], []);
   assert.equal(clientCan("answers_submitted", "answer"), false, "the form is already spent");
   assert.equal(clientCan("answers_submitted", "approve"), false, "nothing has been sent yet");
+});
+
+test("clientCommentsTag: pending splits the changes_requested vocabulary", () => {
+  // Pending > 0 is the CLIENT_TAGS entry itself, by reference, so the two can never drift.
+  assert.equal(clientCommentsTag(3), clientTag("changes_requested"));
+  assert.equal(clientCommentsTag(1).label, "Pending comments");
+
+  const resolved = clientCommentsTag(0);
+  assert.equal(resolved.label, "Comments resolved");
+  assert.equal(resolved.tone, "ship", "resolved reads green: the round of notes ended well");
+
+  // The same leak standard the totality test below holds every client tag to. The resolved
+  // variant is not in CLIENT_TAGS, so that sweep never sees it and this one has to.
+  const leaks = ["score", "evaluator", "iteration", "gate", "dossier", "eval"];
+  for (const tag of [clientCommentsTag(1), resolved]) {
+    const text = `${tag.label} ${tag.detail}`.toLowerCase();
+    for (const word of leaks) {
+      assert.ok(!text.includes(word), `clientCommentsTag leaks "${word}": ${text}`);
+    }
+  }
+});
+
+test("adminCommentsTag: the admin face of the same split, on the same count", () => {
+  // Pending > 0 is the ADMIN_TAGS entry itself, by reference, so the two can never drift.
+  assert.equal(adminCommentsTag(2), adminTag("changes_requested"));
+  assert.equal(adminCommentsTag(1).label, "Changes requested");
+
+  // Every comment addressed: the ball is back with the client, so the label says so. Tone
+  // waiting, not ship: nothing has shipped, the operator just owes nothing right now.
+  const resolved = adminCommentsTag(0);
+  assert.equal(resolved.label, "With client");
+  assert.equal(resolved.tone, "waiting");
+
+  // The split answers the user's requirement that the two audiences move TOGETHER: at the
+  // moment the client's tag turns "Comments resolved", the admin's stops claiming changes
+  // are still requested. Both fold the same failed-inclusive count, so a failed apply keeps
+  // BOTH on the pending face rather than one on each.
+  assert.equal(clientCommentsTag(0).label, "Comments resolved");
+  assert.equal(adminCommentsTag(1), adminTag("changes_requested"));
+  assert.equal(clientCommentsTag(1), clientTag("changes_requested"));
 });
 
 test("both tag maps are total, and no client label leaks internal vocabulary", () => {

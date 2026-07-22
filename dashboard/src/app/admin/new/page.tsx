@@ -9,10 +9,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ApiError, api } from "@/lib/api";
+import { ApiError } from "@/lib/api";
 import { HOSTED_READONLY } from "@/lib/hosted";
-import { cn } from "@/lib/utils";
-import { brandHref, useOrgs } from "@/lib/orgs-context";
+import { brandLocationHref, useOrgs } from "@/lib/orgs-context";
 import { useDescribe } from "@/lib/describe-context";
 import { FieldError } from "@/components/clients/engine-error";
 import { createClient } from "@/components/clients/wire";
@@ -87,7 +86,7 @@ function NewForm() {
  */
 function OrganisationBootstrap() {
   const router = useRouter();
-  const { refresh, findBrand } = useOrgs();
+  const { refresh } = useOrgs();
   const [open, setOpen] = React.useState(true);
 
   return (
@@ -120,18 +119,11 @@ function OrganisationBootstrap() {
       <AddOrganisationDialog
         open={open}
         onOpenChange={setOpen}
-        onCreated={async (brand) => {
-          // The org grouping is derived from the client list, so the new brand only has an org
-          // to route to once the list has been re-read.
-          await refresh();
-          const located = findBrand(brand.slug);
-          router.push(
-            located
-              ? brandHref(located.org.slug, located.brand.slug)
-              : // The engine accepted it, so the brand exists even if this browser has not seen
-                // the grouping yet. Root resolves an org rather than guessing one here.
-                "/",
-          );
+        onCreated={(brand) => {
+          // The address comes from the created record itself, so the redirect does not wait on
+          // the orgs list; refresh only repopulates the nav behind it.
+          void refresh();
+          router.push(brandLocationHref(brand));
         }}
       />
     </>
@@ -144,33 +136,13 @@ function OrganisationBootstrap() {
  */
 function AddBrandToOrgForm({ joiningOrg }: { joiningOrg: string }) {
   const router = useRouter();
-  const { refresh, findBrand, orgs } = useOrgs();
+  const { refresh, orgs } = useOrgs();
   const { start: startDescribe } = useDescribe();
 
   const [name, setName] = React.useState("");
   const [domain, setDomain] = React.useState("");
-  const [industry, setIndustry] = React.useState("");
-  const [industries, setIndustries] = React.useState<string[]>([]);
-  const [industriesError, setIndustriesError] = React.useState<ApiError | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
-
-  // The engine reads these off disk, so a hardcoded list would drift the moment one lands.
-  React.useEffect(() => {
-    const controller = new AbortController();
-    api.industries(controller.signal).then(
-      (data) => setIndustries(data.industries),
-      (cause: unknown) => {
-        if (cause instanceof DOMException && cause.name === "AbortError") {
-          return;
-        }
-        setIndustriesError(
-          cause instanceof ApiError ? cause : new ApiError(0, String(cause), null),
-        );
-      },
-    );
-    return () => controller.abort();
-  }, []);
 
   const trimmedName = name.trim();
   const existingOrg = orgs.find((org) => org.name.toLowerCase() === joiningOrg.toLowerCase());
@@ -190,19 +162,22 @@ function AddBrandToOrgForm({ joiningOrg }: { joiningOrg: string }) {
       const client = await createClient({
         name: trimmedName,
         domain: domain.trim(),
-        industry,
+        // Industry is detected from the site by the describe session, exactly like the
+        // description, so it is not asked here.
+        industry: "",
         ...(ownOrg ? {} : { organisation_name: joiningOrg }),
       });
       toast.success(`Added ${client.name}`);
 
-      // Start the description draft the instant the brand exists, so the operator never has to
-      // type one or press Draft with Claude. The session runs in DescribeProvider above every
-      // route, so it survives this redirect and lands on the brand's page for review.
+      // Start the description AND industry draft the instant the brand exists, so the operator
+      // never has to type either or press Draft with Claude. The session runs in DescribeProvider
+      // above every route, so it survives this redirect and lands on the brand's page for review.
       void startDescribe(client.slug);
 
-      await refresh();
-      const located = findBrand(client.slug);
-      router.push(located ? brandHref(located.org.slug, located.brand.slug) : "/");
+      // The address comes from the created record itself, so the redirect does not wait on the
+      // orgs list; refresh only repopulates the nav behind it.
+      void refresh();
+      router.push(brandLocationHref(client));
     } catch (cause) {
       // 409 names the slug that already exists and 422 names the field, so the engine's own
       // sentence goes next to the field it is about rather than into a generic banner.
@@ -270,40 +245,12 @@ function AddBrandToOrgForm({ joiningOrg }: { joiningOrg: string }) {
               </p>
             </div>
 
-            <div>
-              <Label htmlFor="new-industry">Industry</Label>
-              <select
-                id="new-industry"
-                value={industry}
-                onChange={(e) => setIndustry(e.target.value)}
-                required
-                className={cn(
-                  "mt-1.5 h-9 w-full rounded-lg border border-input bg-background px-2.5 text-sm",
-                  "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-                )}
-              >
-                <option value="" disabled>
-                  Select an industry
-                </option>
-                {industries.map((item) => (
-                  <option key={item} value={item}>
-                    {item}
-                  </option>
-                ))}
-              </select>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Picks the industry reference the writer loads. Skipping it produces generic
-                content.
-              </p>
-              {industriesError ? <FieldError error={industriesError} /> : null}
-            </div>
-
-            {/* No description field on purpose. The moment the brand is added, Claude reads the
-                brand website and writes the description to the record automatically. It is not
-                typed here and it is not editable later. */}
+            {/* No industry picker and no description field on purpose. The moment the brand is
+                added, Claude reads the brand website and writes BOTH the description and the
+                detected industry to the record automatically. Neither is typed here. */}
             <p className="rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground">
-              The description is generated automatically from the website once you add the brand,
-              so there is nothing to write here.
+              The description and the industry are detected automatically from the brand website
+              once you add the brand, so there is nothing to pick or write here.
             </p>
 
             {generalError ? <FieldError error={generalError} /> : null}

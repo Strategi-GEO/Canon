@@ -14,7 +14,7 @@ import {
   Loader2,
   Lock,
 } from "lucide-react";
-import { ActionCard, ApprovedCard, FrozenRow, ReadyCard, SectionHeading } from "@/portal/blog-cards";
+import { ActionCard, ReadyCard, SectionHeading } from "@/portal/blog-cards";
 import { AnswerForm } from "@/portal/answer-form";
 import { MarkdownView } from "@/portal/markdown-view";
 import { CommentedArticle } from "@/portal/comments-rail";
@@ -31,12 +31,23 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
+import { BlogsTable } from "@/components/blogs/blogs-table";
+import { BrandHeader, ResourcesSummaryCard, StatRow } from "@/components/shell/brand-overview";
+import { ReadOnlyText } from "@/components/clients/editable-text";
+import {
+  PREVIEW_ROWS,
+  PreviewFooter,
+  PreviewList,
+} from "@/components/clients/roadmap-panel";
 import { clientCan, clientCanSee } from "@/lib/blog-state";
 import { ApiError, api, detailText, isStaleVersion } from "@/portal/api";
 import { formatDate, formatRelative, readingTime } from "@/portal/format";
-import { brandHref } from "@/portal/nav";
+import { blogHref, brandHref } from "@/portal/nav";
+import type { SortDir, SortKey } from "@/components/blogs/blogs-filter";
+import type { WaitingSignal } from "@/components/blogs/questions-state";
 import { cn } from "@/lib/utils";
 import { usePortal } from "@/portal/portal-context";
 import { useBlogDetail } from "@/portal/use-blog-detail";
@@ -70,23 +81,26 @@ import type { PortalAnswerView, PortalBlogCard, ReplyBody, SuggestBody } from "@
  *   needsAnswers  has_questions        -> Needs answers tab, "Waiting on you"
  *   answered      answers_submitted    -> Needs answers tab, tagged "Answered" (ready for our rerun)
  *   clientReview  client_review        -> Ready to post tab, "Ready for your review"
- *   withTeam      changes_requested,   -> Ready to post tab, "With our team"
- *                 + the generating slivers
+ *   commented     changes_requested    -> Ready to post tab, same section: once sent, the
+ *                                         approve path never closes, so a round of comments is
+ *                                         still an approvable card, tagged by where the notes
+ *                                         stand rather than filed away with the team
+ *   withTeam      the generating       -> Ready to post tab, the quiet "In progress" rows
+ *                 slivers (!clientCanSee)
  *   signedOff     approved, published  -> Approved tab; the tag on each card says which
  *
  * `answered` is split out from the other with-the-team states DELIBERATELY, at the operator's
  * request: the client answered the review questions, so it sits beside the questions it settles
- * rather than beside a change request that is the team's to work. The !clientCanSee arm still
- * catches the `generating` slivers portal-data.ts keeps visible, so they are grouped, never lost.
+ * rather than beside work that is the team's alone. The !clientCanSee arm catches the
+ * `generating` slivers portal-data.ts keeps visible, so they are grouped, never lost.
  */
 function partition(blogs: PortalBlogCard[]) {
   return {
     needsAnswers: blogs.filter((blog) => blog.state === "has_questions"),
     answered: blogs.filter((blog) => blog.state === "answers_submitted"),
     clientReview: blogs.filter((blog) => blog.state === "client_review"),
-    withTeam: blogs.filter(
-      (blog) => blog.state === "changes_requested" || !clientCanSee(blog.state),
-    ),
+    commented: blogs.filter((blog) => blog.state === "changes_requested"),
+    withTeam: blogs.filter((blog) => !clientCanSee(blog.state)),
     signedOff: blogs.filter((blog) => blog.state === "approved" || blog.state === "published"),
   };
 }
@@ -151,16 +165,21 @@ export function OrgChooser({ org: orgSlug }: { org: string }) {
     );
   }
 
-  // The org chooser shows only what is OWED, so it buckets on the two states whose
-  // clientActions carry an act: answer and approve. Everything else waits on the team.
+  // The org chooser shows only what is OWED, so it buckets on the states whose clientActions
+  // carry an act: answer, and approve, which client_review and changes_requested both grant
+  // now that a round of comments no longer closes the approve path. Everything else waits on
+  // the team. One filter over both states, so the incoming newest-activity order is preserved
+  // rather than reassembled from two groups.
   const mine = blogs.filter((blog) => blog.org === org.slug);
   const action = mine.filter((blog) => blog.state === "has_questions");
-  const ready = mine.filter((blog) => blog.state === "client_review");
+  const ready = mine.filter(
+    (blog) => blog.state === "client_review" || blog.state === "changes_requested",
+  );
 
   return (
     <div className="space-y-10">
       <div>
-        <h1 className="font-serif text-2xl tracking-tight">{org.name}</h1>
+        <h1 className="text-xl font-semibold tracking-tight text-foreground">{org.name}</h1>
         {action.length > 0 ? (
           <p className="mt-1 text-sm text-review">
             {action.length === 1
@@ -226,93 +245,58 @@ export function OrgChooser({ org: orgSlug }: { org: string }) {
 // overview answers "how many" and one click answers "which".
 // ---------------------------------------------------------------------------
 
-type StatTone = "owed" | "ready" | "ship" | "muted";
-
-const STAT_TONES: Record<StatTone, { surface: string; value: string }> = {
-  owed: { surface: "bg-review-bg ring-review/20", value: "text-review" },
-  ready: { surface: "bg-primary/5 ring-primary/20", value: "text-primary" },
-  ship: { surface: "bg-ship-bg ring-ship/20", value: "text-ship" },
-  muted: { surface: "bg-card ring-foreground/10", value: "text-foreground" },
-};
-
-function StatTile({
-  value,
-  label,
-  hint,
-  tone,
-  href,
-}: {
-  value: number;
-  label: string;
-  hint?: string;
-  tone: StatTone;
-  href?: string;
-}) {
-  const t = STAT_TONES[tone];
-  const body = (
-    <>
-      <span className={cn("font-serif text-3xl leading-none tabular-nums", t.value)}>{value}</span>
-      <span className="mt-2 block text-sm font-medium text-foreground">{label}</span>
-      {hint ? <span className="mt-0.5 block text-xs text-muted-foreground">{hint}</span> : null}
-    </>
-  );
-  const shell = cn("block rounded-xl p-5 ring-1", t.surface);
-  if (href === undefined) {
-    return <div className={shell}>{body}</div>;
-  }
-  return (
-    <Link
-      href={href}
-      className={cn(
-        shell,
-        "outline-none transition-shadow hover:shadow-md hover:shadow-black/5",
-        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-      )}
-    >
-      {body}
-    </Link>
-  );
-}
-
 export function BrandOverview({ org, brand: brandSlug }: { org: string; brand: string }) {
   const { blogs, brands, loading, error, refresh, isSingleBrand } = usePortal();
   const single = isSingleBrand(org);
 
-  // The roadmap drives the "Planned" count, the one figure not derivable from the blog cards. It
-  // is SECONDARY: a brand with no roadmap, or a transient read error, drops that single tile
-  // rather than blocking the whole overview. The result is TAGGED WITH ITS BRAND rather than
-  // reset in the effect: switching brands then reads as null (its own fetch has not landed yet)
-  // without a synchronous setState, and a failed read for the new brand never shows the old
-  // brand's count.
-  const [plannedFor, setPlannedFor] = React.useState<{ brand: string; count: number } | null>(null);
+  // The roadmap card numbers: total topics and the not-yet-delivered remainder. SECONDARY by
+  // design: a brand with no roadmap, or a transient read error, drops those rows rather than
+  // blocking the overview. Tagged with the brand rather than reset in the effect, so switching
+  // brands reads as null until its own fetch lands.
+  const [sheetFor, setSheetFor] = React.useState<{ brand: string; topics: number } | null>(null);
   React.useEffect(() => {
     const controller = new AbortController();
     api
       .roadmap(brandSlug, controller.signal)
       .then((data) => {
         if (!controller.signal.aborted) {
-          setPlannedFor({ brand: brandSlug, count: data.rows.filter((row) => !row.delivered).length });
+          setSheetFor({ brand: brandSlug, topics: data.rows.length });
         }
       })
       .catch(() => {
-        // No roadmap in place, or a transient failure. The tile hides itself; nothing on the
+        // No roadmap in place, or a transient failure. The row hides itself; nothing on the
         // overview depends on it.
       });
     return () => controller.abort();
   }, [brandSlug]);
-  const planned = plannedFor !== null && plannedFor.brand === brandSlug ? plannedFor.count : null;
+  const topics = sheetFor !== null && sheetFor.brand === brandSlug ? sheetFor.topics : null;
+
+  // The resources preview, same card the admin overview renders (ResourcesSummaryCard), over
+  // the portal's own wire. A failed read costs the card its list, not the page its render.
+  const [resourcesFor, setResourcesFor] = React.useState<{
+    brand: string;
+    resources: { name: string; content_type: string }[];
+  } | null>(null);
+  React.useEffect(() => {
+    const controller = new AbortController();
+    api.resources(brandSlug, controller.signal).then(
+      (data) => setResourcesFor({ brand: brandSlug, resources: data.resources }),
+      () => setResourcesFor({ brand: brandSlug, resources: [] }),
+    );
+    return () => controller.abort();
+  }, [brandSlug]);
+  const resources = resourcesFor?.brand === brandSlug ? resourcesFor.resources : null;
 
   if (error !== null) {
     return <ErrorCard message="Could not load this brand" detail={detailText(error)} onRetry={refresh} />;
   }
   if (loading) {
     return (
-      <div className="space-y-6" aria-busy>
+      <div className="mx-auto w-full max-w-5xl space-y-6" aria-busy>
         <div className="h-6 w-48 animate-pulse rounded bg-muted" />
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {[0, 1, 2, 3, 4, 5].map((i) => (
-            <div key={i} className="h-28 animate-pulse rounded-xl bg-muted" />
-          ))}
+        <div className="grid gap-4 lg:grid-cols-3">
+          <div className="h-64 animate-pulse rounded-xl bg-muted lg:col-span-2" />
+          <div className="h-64 animate-pulse rounded-xl bg-muted" />
         </div>
       </div>
     );
@@ -324,13 +308,11 @@ export function BrandOverview({ org, brand: brandSlug }: { org: string; brand: s
   }
 
   const mine = blogs.filter((blog) => blog.brand === brand.slug && blog.org === org);
-  const { needsAnswers, answered, clientReview, withTeam } = partition(mine);
-  const approvedCount = mine.filter((blog) => blog.state === "approved").length;
-  const publishedCount = mine.filter((blog) => blog.state === "published").length;
-  const inProgress = answered.length + withTeam.length;
-
-  const blogsBase = brandHref(org, brand.slug, single, "/blogs");
-  const roadmapHref = brandHref(org, brand.slug, single, "/roadmap");
+  const { needsAnswers, clientReview, commented } = partition(mine);
+  const delivered = mine.filter(
+    (blog) => blog.state === "approved" || blog.state === "published",
+  ).length;
+  const reviewable = clientReview.length + commented.length;
 
   const attention = [
     needsAnswers.length > 0
@@ -338,87 +320,132 @@ export function BrandOverview({ org, brand: brandSlug }: { org: string; brand: s
         ? "1 article waiting on your answers"
         : `${needsAnswers.length} articles waiting on your answers`
       : null,
-    clientReview.length > 0
-      ? clientReview.length === 1
+    reviewable > 0
+      ? reviewable === 1
         ? "1 ready for you to approve"
-        : `${clientReview.length} ready for you to approve`
+        : `${reviewable} ready for you to approve`
       : null,
   ].filter(Boolean);
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="font-serif text-2xl tracking-tight">{brand.name}</h1>
-        <p className={cn("mt-1 text-sm", attention.length > 0 ? "text-review" : "text-muted-foreground")}>
-          {attention.length > 0
-            ? attention.join(" · ")
-            : mine.length > 0
-              ? "Nothing needs your attention right now."
-              : "Articles appear here as our team prepares and delivers them."}
-        </p>
-      </div>
+    <div className="mx-auto w-full max-w-5xl">
+      {/* The ADMIN overview's own masthead (components/shell/brand-overview.tsx), minus what
+          a client is never shown: no slug line, no preflight, no Create button. The footer
+          carries the one sentence a client actually needs on arrival. */}
+      <BrandHeader
+        name={brand.name}
+        domain={brand.domain}
+        industry={brand.industry}
+        footer={
+          <p
+            className={cn(
+              "mt-2 text-sm",
+              attention.length > 0 ? "text-review" : "text-muted-foreground",
+            )}
+          >
+            {attention.length > 0
+              ? attention.join(" \u{b7} ")
+              : mine.length > 0
+                ? "Nothing needs your attention right now."
+                : "Articles appear here as our team prepares and delivers them."}
+          </p>
+        }
+      />
 
-      <section className="space-y-3" aria-label="At a glance">
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <StatTile
-            value={needsAnswers.length}
-            label="Need your answers"
-            hint="Questions only you can settle"
-            tone="owed"
-            href={`${blogsBase}?tab=needs-answers`}
+      <div className="mt-6 grid gap-4 lg:grid-cols-3">
+        <div className="flex flex-col gap-4 lg:col-span-2">
+          <ReadOnlyText
+            title="Description"
+            help="How we describe your brand to the writers. Generated from your website."
+            value={brand.description}
+            emptyText="No description yet. It is generated from your website shortly after your brand is added."
           />
-          <StatTile
-            value={clientReview.length}
-            label="Ready to post"
-            hint="Waiting for your review"
-            tone="ready"
-            href={`${blogsBase}?tab=ready`}
-          />
-          <StatTile
-            value={inProgress}
-            label="With our team"
-            hint="Answered, or being worked on"
-            tone="muted"
-            href={blogsBase}
-          />
-          <StatTile
-            value={approvedCount}
-            label="Approved"
-            hint="Signed off, on the way to your site"
-            tone="ship"
-            href={`${blogsBase}?tab=approved`}
-          />
-          <StatTile
-            value={publishedCount}
-            label="Published"
-            hint="Live on your site"
-            tone="ship"
-            href={`${blogsBase}?tab=approved`}
-          />
-          {planned !== null ? (
-            <StatTile
-              value={planned}
-              label="Planned"
-              hint="On the roadmap, not yet written"
-              tone="muted"
-              href={roadmapHref}
-            />
-          ) : null}
+          <RecentBlogsCard cards={mine} href={brandHref(org, brand.slug, single, "/blogs")} />
         </div>
-        <p className="text-xs text-muted-foreground">
-          {mine.length === 1 ? "1 article in your library" : `${mine.length} articles in your library`}
-          {planned !== null && planned > 0 ? `, ${planned} more planned` : ""}.
-        </p>
-      </section>
+
+        <div className="flex flex-col gap-4">
+          {/* The admin's "Where this brand stands" card, with the client's own numbers: no
+              failed count and no score-bearing rows, which never cross this wire at all. */}
+          <Card>
+            <CardContent>
+              <p className="text-sm font-medium text-foreground">Where this brand stands</p>
+              <dl className="mt-3 flex flex-col gap-2">
+                <StatRow label="Blogs delivered" value={delivered} accent />
+                <StatRow label="Waiting on you" value={needsAnswers.length} />
+                <StatRow label="Resources" value={resources === null ? null : resources.length} />
+                <StatRow label="Roadmap topics" value={topics} />
+              </dl>
+            </CardContent>
+          </Card>
+          <ResourcesSummaryCard
+            total={resources?.length ?? 0}
+            resources={resources}
+            href={brandHref(org, brand.slug, single, "/resources")}
+          />
+        </div>
+      </div>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Blogs library: three tabs over the same partition, the horizontal bar the operator asked for.
-// The tab a group sits in is decided HERE, once; partition() above is only the states. The tab
-// bar replaces the old stacked sections that made this page a copy of the overview.
-// ---------------------------------------------------------------------------
+/**
+ * The admin overview's roadmap card shape (clients/roadmap-panel.tsx PreviewList and
+ * PreviewFooter, the same components), filled with the client's own articles: newest first,
+ * each wearing the roadmap number the Blogs tabs also show and the same client-safe state
+ * tag, with one outline door into the full library.
+ */
+function RecentBlogsCard({ cards, href }: { cards: PortalBlogCard[]; href: string }) {
+  const recent = [...cards].sort((a, b) => b.created.localeCompare(a.created));
+  const preview = recent.slice(0, PREVIEW_ROWS);
+  const remaining = recent.length - preview.length;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-semibold text-foreground">Blogs</CardTitle>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Your articles, newest first. Open the Blogs tab to read, answer, or approve them.
+        </p>
+      </CardHeader>
+      <CardContent>
+        {preview.length === 0 ? (
+          <p className="text-sm text-foreground">
+            No articles yet. They appear here as our team prepares and delivers them.
+          </p>
+        ) : (
+          <>
+            <PreviewList
+              items={preview.map((card) => ({
+                key: `${card.brand}/${card.topic_slug}`,
+                /* The same roadmap number the Blogs tabs print, so a row read here is
+                   findable there. Absent when the row is gone from the sheet, exactly as
+                   the table leaves that cell blank. */
+                number: card.roadmap_index !== null ? card.roadmap_index + 1 : undefined,
+                title: card.title,
+                meta: formatRelative(card.created),
+                right: <BlogStateTag state={card.state} audience="client" />,
+              }))}
+            />
+            <PreviewFooter
+              note={
+                remaining > 0 ? (
+                  <>
+                    <span className="machine">{remaining}</span> more in the Blogs tab.
+                  </>
+                ) : (
+                  "That is every article so far."
+                )
+              }
+              href={href}
+              cta="View all blogs"
+            />
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 
 const BLOG_TABS = ["needs-answers", "ready", "approved"] as const;
 type BlogTab = (typeof BLOG_TABS)[number];
@@ -428,12 +455,19 @@ function isBlogTab(value: string | null): value is BlogTab {
 }
 
 /** A small count beside a tab label. Absent at zero: a tab that wants nothing says nothing. */
-function TabCount({ n }: { n: number }) {
+function TabCount({ n, tone = "default" }: { n: number; tone?: "default" | "review" }) {
   if (n === 0) {
     return null;
   }
   return (
-    <span className="ml-1.5 rounded-full bg-foreground/10 px-1.5 py-0.5 text-[0.6875rem] font-medium tabular-nums text-muted-foreground">
+    <span
+      className={cn(
+        "ml-1.5 rounded-full px-1.5 py-0.5 text-[0.6875rem] font-medium tabular-nums",
+        // Amber on the needs-answers tab: those articles are waiting on the client, and the
+        // count is the one glanceable cue of that before the tab is even opened.
+        tone === "review" ? "bg-review-bg text-review" : "bg-foreground/10 text-muted-foreground",
+      )}
+    >
       {n}
     </span>
   );
@@ -441,7 +475,7 @@ function TabCount({ n }: { n: number }) {
 
 function EmptyTab({ title, body }: { title: string; body: string }) {
   return (
-    <div className="mx-auto max-w-md rounded-xl border bg-card p-8 text-center">
+    <div className="mx-auto max-w-md rounded-xl border border-dashed bg-card p-8 text-center">
       <Inbox className="mx-auto size-6 text-muted-foreground" aria-hidden />
       <p className="mt-3 text-sm font-medium">{title}</p>
       <p className="mt-1 text-xs text-muted-foreground">{body}</p>
@@ -459,13 +493,17 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
     return <ErrorCard message="Could not load the blogs" detail={detailText(error)} onRetry={refresh} />;
   }
   if (loading) {
+    // Shaped like what it becomes: header card, tab line, then stacked article cards. The old
+    // three-column grid skeleton resolved into a stacked list, so the page visibly rearranged
+    // itself the moment real data landed.
     return (
-      <div className="space-y-4" aria-busy>
+      <div className="space-y-5" aria-busy>
+        <div className="h-16 animate-pulse rounded-lg bg-muted" />
         <div className="h-8 w-72 animate-pulse rounded-lg bg-muted" />
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <div className="h-32 animate-pulse rounded-xl bg-muted" />
-          <div className="h-32 animate-pulse rounded-xl bg-muted" />
-          <div className="h-32 animate-pulse rounded-xl bg-muted" />
+        <div className="space-y-3">
+          <div className="h-24 animate-pulse rounded-xl bg-muted" />
+          <div className="h-24 animate-pulse rounded-xl bg-muted" />
+          <div className="h-24 animate-pulse rounded-xl bg-muted" />
         </div>
       </div>
     );
@@ -492,13 +530,18 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
     );
   }
 
-  const { needsAnswers, answered, clientReview, withTeam, signedOff } = partition(mine);
+  const { needsAnswers, answered, clientReview, commented, withTeam, signedOff } = partition(mine);
   const needsCount = needsAnswers.length + answered.length;
-  const readyCount = clientReview.length + withTeam.length;
+  // ONE approvable list for the Ready tab: client_review and changes_requested render the same
+  // ReadyCard, because a round of comments no longer closes the approve path. Merged and sorted
+  // by newest activity rather than concatenated by group, so a fresh send and a round the team
+  // just moved interleave in honest order. `date` is each card's newest-activity stamp.
+  const reviewable = [...clientReview, ...commented].sort((a, b) => b.date.localeCompare(a.date));
+  const readyCount = reviewable.length + withTeam.length;
   const doneCount = signedOff.length;
 
   // The active tab defaults to whatever most wants attention, but a ?tab= from a link always
-  // wins: the overview tiles deep-link straight to the group they count, and the "With our team"
+  // wins: the overview tiles deep-link straight to the group they count, and the "In progress"
   // tile links with NO tab, which this fallback then resolves to the tab that actually holds
   // those articles (needs-answers when answers are in, ready otherwise).
   const fallback: BlogTab = needsCount > 0 ? "needs-answers" : readyCount > 0 ? "ready" : "approved";
@@ -513,11 +556,24 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
   };
 
   return (
-    <Tabs value={active} onValueChange={setTab} className="gap-6">
+    <div className="space-y-5">
+      {/* The same header card Resources and Reports open with, so every tab in the sidebar
+          lands on the same shape: what this page is, in one sentence, then the content. */}
+      <div className="rounded-lg border bg-card px-4 py-3">
+        <h2 className="text-sm font-semibold text-foreground">Your articles</h2>
+        <p className="mt-1 max-w-prose text-xs leading-relaxed text-muted-foreground">
+          Everything we write for {brand.name}, in three stages: questions only you can answer,
+          finished drafts waiting for your approval, and the library of what you have signed off.
+        </p>
+      </div>
+
+      <Tabs value={active} onValueChange={setTab} className="gap-6">
       <TabsList variant="line" className="w-full justify-start gap-4">
         <TabsTrigger value="needs-answers" className="flex-none">
           Needs answers
-          <TabCount n={needsCount} />
+          {/* Amber only where open questions are actually waiting on the client; articles
+              already answered sit in this tab too but summon nobody. */}
+          <TabCount n={needsCount} tone={needsAnswers.length > 0 ? "review" : "default"} />
         </TabsTrigger>
         <TabsTrigger value="ready" className="flex-none">
           Ready to post
@@ -529,109 +585,54 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
         </TabsTrigger>
       </TabsList>
 
-      {/* NEEDS ANSWERS: the questions flow. Open questions on top, then articles the client has
-          already answered, tagged "Answered", so an answered article stays here rather than
-          vanishing the moment it is off the client's plate. */}
-      <TabsContent value="needs-answers" className="space-y-8">
-        {needsAnswers.length > 0 ? (
-          <section className="space-y-3" aria-label="Waiting on you">
-            <SectionHeading tone="review" count={needsAnswers.length}>
-              Waiting on you
-            </SectionHeading>
-            <p className="text-xs text-muted-foreground">
+      {/* Each tab is the ADMIN's own BlogsTable (audience="client"): #, Title, Created,
+          Status, and never Score or Iterations, which the portal wire does not even carry.
+          The tag and the questions chip say everything the cards used to. */}
+      <TabsContent value="needs-answers" className="space-y-3">
+        {needsCount > 0 ? (
+          <>
+            <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">
               Our editorial review needs a few answers only you can give. Each one takes a
-              minute, and the article stays on hold until it has them.
+              minute, and the article stays on hold until it has them. Articles you have
+              already answered stay here, marked Answered, until they move on.
             </p>
-            <div className="space-y-3">
-              {needsAnswers.map((blog) => (
-                <ActionCard key={blog.topic_slug} card={blog} showBrand={false} />
-              ))}
-            </div>
-          </section>
-        ) : null}
-
-        {answered.length > 0 ? (
-          <section className="space-y-3" aria-label="Answered">
-            <SectionHeading count={answered.length}>Answered, with our team</SectionHeading>
-            <p className="text-xs text-muted-foreground">
-              You have answered these, so each is marked Answered and ready for our team to work
-              your answers in. You will see it again if we need anything further, or once it is
-              ready for your review.
-            </p>
-            <div className="space-y-2">
-              {answered.map((blog) => (
-                <FrozenRow key={blog.topic_slug} card={blog} showBrand={false} />
-              ))}
-            </div>
-          </section>
-        ) : null}
-
-        {needsCount === 0 ? (
+            <LibraryTable cards={[...needsAnswers, ...answered]} />
+          </>
+        ) : (
           <EmptyTab
             title="No open questions"
             body="When our editorial review needs something only you can answer, it appears here."
           />
-        ) : null}
+        )}
       </TabsContent>
 
-      {/* READY TO POST: the review-and-approve flow. Articles ready for the client on top, then
-          the ones back with the team (a change the client asked for, or a rerun still in flight). */}
-      <TabsContent value="ready" className="space-y-8">
-        {clientReview.length > 0 ? (
-          <section className="space-y-3" aria-label="Ready for your review">
-            <SectionHeading count={clientReview.length}>Ready for your review</SectionHeading>
-            <p className="text-xs text-muted-foreground">
-              Our team has finished these articles. Read each one, then approve it, or select any
-              text in it to leave a note for the team.
+      <TabsContent value="ready" className="space-y-3">
+        {readyCount > 0 ? (
+          <>
+            <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">
+              Read each article, leave a note on any text, and approve when you are happy. If you
+              leave notes, the article stays here and updates as our team works them in. Rows
+              marked In progress are still with our team and appear ready as soon as they finish.
             </p>
-            <div className="space-y-3">
-              {clientReview.map((blog) => (
-                <ReadyCard key={blog.topic_slug} card={blog} showBrand={false} />
-              ))}
-            </div>
-          </section>
-        ) : null}
-
-        {withTeam.length > 0 ? (
-          <section className="space-y-3" aria-label="With our team">
-            <SectionHeading count={withTeam.length}>With our team</SectionHeading>
-            <p className="text-xs text-muted-foreground">
-              These are being worked on, including any changes you asked for. You will see each
-              one here again once it is ready for you to review and approve.
-            </p>
-            <div className="space-y-2">
-              {withTeam.map((blog) => (
-                <FrozenRow key={blog.topic_slug} card={blog} showBrand={false} />
-              ))}
-            </div>
-          </section>
-        ) : null}
-
-        {readyCount === 0 ? (
+            <LibraryTable cards={[...reviewable, ...withTeam]} />
+          </>
+        ) : (
           <EmptyTab
             title="Nothing ready to post"
             body="Finished articles appear here for your review before they go live."
           />
-        ) : null}
+        )}
       </TabsContent>
 
-      {/* APPROVED: everything the client has signed off. Approved and published both, because the
-          client's question here is "which articles are done", and the tag on each card answers
-          the finer one, approved-and-on-its-way versus already live. */}
       <TabsContent value="approved" className="space-y-3">
-        {signedOff.length > 0 ? (
-          <section className="space-y-3" aria-label="Signed off">
-            <SectionHeading count={signedOff.length}>Signed off</SectionHeading>
-            <p className="text-xs text-muted-foreground">
+        {doneCount > 0 ? (
+          <>
+            <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">
               Everything you have approved. The tag on each article shows whether it is approved
               and on its way, or already live on your site.
             </p>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {signedOff.map((blog) => (
-                <ApprovedCard key={blog.topic_slug} card={blog} showBrand={false} />
-              ))}
-            </div>
-          </section>
+            <LibraryTable cards={signedOff} />
+          </>
         ) : (
           <EmptyTab
             title="Nothing approved yet"
@@ -639,7 +640,83 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
           />
         )}
       </TabsContent>
-    </Tabs>
+      </Tabs>
+    </div>
+  );
+}
+
+/**
+ * One tab's articles in the SHARED BlogsTable, the same component the admin library renders.
+ * audience="client" drops Score and Iterations at the component, and the wire never carried
+ * them anyway. Sorting is local to the tab: created desc to start, any header toggles.
+ */
+function LibraryTable({ cards }: { cards: PortalBlogCard[] }) {
+  const { isSingleBrand } = usePortal();
+  const router = useRouter();
+  const [sort, setSort] = React.useState<{ key: SortKey; dir: SortDir }>({
+    key: "created",
+    dir: "desc",
+  });
+
+  const rows = React.useMemo(() => {
+    const compare = (a: PortalBlogCard, b: PortalBlogCard): number => {
+      switch (sort.key) {
+        case "roadmap":
+          return (a.roadmap_index ?? Infinity) - (b.roadmap_index ?? Infinity);
+        case "topic":
+          return a.title.localeCompare(b.title);
+        case "status":
+          return a.state.localeCompare(b.state);
+        default:
+          return a.created.localeCompare(b.created);
+      }
+    };
+    const sorted = [...cards].sort((a, b) => {
+      const order = compare(a, b);
+      return sort.dir === "asc" ? order : -order;
+    });
+    // The table's row shape is the admin's: `topic` is the title's wire name there.
+    return sorted.map((card) => ({ ...card, topic: card.title }));
+  }, [cards, sort]);
+
+  // The questions chip, from the card's own count: only an OPEN form summons anybody, so only
+  // has_questions rows enter the map, and the client never sees the admin's rerun variant.
+  const waiting = React.useMemo(
+    () =>
+      new Map<string, WaitingSignal>(
+        cards
+          .filter((card) => card.state === "has_questions" && (card.question_count ?? 0) > 0)
+          .map((card) => [
+            card.topic_slug,
+            { kind: "held" as const, count: card.question_count ?? 0 },
+          ]),
+      ),
+    [cards],
+  );
+
+  return (
+    <Card className="overflow-hidden p-0">
+      <BlogsTable
+        blogs={rows}
+        waiting={waiting}
+        stateOf={(row) => row.state}
+        audience="client"
+        sortKey={sort.key}
+        sortDir={sort.dir}
+        activeSlug={null}
+        onSort={(key) =>
+          setSort((cur) =>
+            cur.key === key
+              ? { key, dir: cur.dir === "asc" ? "desc" : "asc" }
+              : { key, dir: key === "created" ? "desc" : "asc" },
+          )
+        }
+        hrefFor={(row) => blogHref(row.org, row.brand, isSingleBrand(row.org), row.topic_slug)}
+        onOpen={(row) =>
+          router.push(blogHref(row.org, row.brand, isSingleBrand(row.org), row.topic_slug))
+        }
+      />
+    </Card>
   );
 }
 
@@ -718,15 +795,28 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
    * they are the whole of what a client may do to an article, and each one is a lookup rather
    * than a condition this file invented:
    *   answer   has_questions only
-   *   approve  client_review only
-   *   suggest  client_review only, so an approved article no longer collects requests
-   *   reply    client_review and changes_requested, so a thread stays usable while the team
-   *            works, and closes when the article is signed off
+   *   approve  client_review and changes_requested: once sent, the approve path never closes,
+   *            and approving mid-round is the client saying the remaining notes no longer
+   *            block them
+   *   suggest  client_review and changes_requested, always against the latest version this
+   *            page shows; an approved article still collects no new requests
+   *   reply    client_review, changes_requested and approved, so a thread stays usable while
+   *            the team works and a question can still be answered after sign-off
    */
   const canAnswer = clientCan(blog.state, "answer");
   const canApprove = clientCan(blog.state, "approve");
   const canSuggest = clientCan(blog.state, "suggest");
   const canReply = clientCan(blog.state, "reply");
+
+  // The one fact the changes_requested state cannot carry: how many of this client's notes are
+  // still unaddressed. open + applying + failed all count, matching the server's
+  // comments_pending: a failed apply is the team's retry, never named to the client, and a note
+  // it failed on was not addressed. Only resolved and dismissed are done. Computed once here so
+  // the header tag and the banner below read the same number and cannot disagree.
+  const pendingComments = (blog.comments ?? []).filter(
+    (comment) =>
+      comment.state === "open" || comment.state === "applying" || comment.state === "failed",
+  ).length;
 
   // Whether this payload carries the SENT article rather than the ANCHORED DRAFT a question
   // form is about. Both arrive in `body`, so the state is the only thing that tells them apart,
@@ -754,25 +844,27 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
           Blogs
         </Link>
         {/* The one badge, in the client's vocabulary, from the one state. Inside the portal
-            shell's TooltipProvider, like every other tag on this surface. */}
-        <BlogStateTag state={blog.state} audience="client" />
+            shell's TooltipProvider, like every other tag on this surface. commentsPending only
+            matters in changes_requested, where it splits Pending comments from Comments
+            resolved; every other state ignores it. */}
+        <BlogStateTag state={blog.state} audience="client" commentsPending={pendingComments} />
       </div>
 
       <header className="space-y-2">
         <p className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
           {blog.brand_name}
         </p>
-        <h1 className="font-serif text-3xl leading-tight tracking-tight text-pretty">
+        <h1 className="text-3xl font-semibold leading-tight tracking-tight text-pretty">
           {blog.title}
         </h1>
         {/* Dates and reading time only. The tag above already said WHERE the article is, and a
             second sentence repeating it in other words is how two vocabularies start again. */}
-        <p className="text-xs text-muted-foreground">
+        <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">
           {blog.state === "client_review"
             ? `Sent to you ${formatRelative(blog.sent ?? blog.date)}`
             : null}
           {blog.state === "changes_requested"
-            ? `You asked for changes ${formatRelative(blog.date)}`
+            ? `You left notes ${formatRelative(blog.date)}`
             : null}
           {blog.state === "approved"
             ? `Approved ${formatDate(blog.approved ?? blog.date)}`
@@ -806,11 +898,23 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
       */}
       {reading && blog.body !== null ? (
         <div className="space-y-6">
-          {blog.state === "client_review" ? (
+          {/* ONE approvable banner for client_review AND changes_requested, because the two
+              states offer the same acts now: canApprove covers both, this page always shows the
+              newest version, and a round of notes never closes the approve path. Only the
+              sentence differs, and in changes_requested it splits on the same pendingComments
+              the tag above reads, so banner and tag cannot contradict. */}
+          {blog.state === "client_review" || blog.state === "changes_requested" ? (
             <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 sm:flex sm:items-center sm:justify-between sm:gap-4">
               <p className="text-sm leading-relaxed">
-                This article is ready for you. Approve it and our team takes it live. To ask
-                for a change, select any text in the article and leave a note beside it.
+                {blog.state === "client_review"
+                  ? "This article is ready for you. Approve it and our team takes it live. To " +
+                    "ask for a change, select any text in the article and leave a note beside it."
+                  : pendingComments > 0
+                    ? "Our team is working through your notes. This page always shows the " +
+                      "newest version of the article, so you can follow along, add more notes, " +
+                      "or approve when you are happy."
+                    : "All your notes are addressed. Read the updated article and approve it, " +
+                      "or add another note."}
               </p>
               {canApprove ? (
                 <div className="mt-3 flex shrink-0 items-center gap-2 sm:mt-0">
@@ -824,17 +928,6 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
                   />
                 </div>
               ) : null}
-            </div>
-          ) : null}
-
-          {blog.state === "changes_requested" ? (
-            <div className="flex items-start gap-2 rounded-lg border bg-card px-4 py-3 text-sm">
-              <Clock className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
-              <span className="leading-relaxed">
-                The changes you asked for are with our editorial team. Read the article as it
-                stands and reply in any note to add to it. We send it back for your approval
-                once your notes are in.
-              </span>
             </div>
           ) : null}
 

@@ -7,6 +7,7 @@ import { resolveClientRoute } from "@/portal/nav";
 import { usePortal } from "@/portal/portal-context";
 import { BlogDetail, BlogsLibrary, BrandOverview, OrgChooser } from "@/portal/views";
 import { RoadmapView } from "@/portal/roadmap-view";
+import { ReportsView } from "@/portal/reports-view";
 import { ResourcesView } from "@/portal/resources";
 import { detailText } from "@/portal/api";
 import { Button } from "@/components/ui/button";
@@ -84,6 +85,11 @@ export default function ClientCatchAll() {
   }
   if (route.section === "/roadmap") {
     return <RoadmapView org={route.org} brand={route.brand} />;
+  }
+  // No org prop: the reports view reads only its own brand's shared reports and links nowhere
+  // into the blog library.
+  if (route.section === "/reports") {
+    return <ReportsView brand={route.brand} />;
   }
   // No org prop: unlike the roadmap, nothing on the resources page links back into the blog
   // library, so the brand slug is the whole of what it needs to read and write.

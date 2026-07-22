@@ -237,6 +237,12 @@ CLIENT_WRITES = {
     # [name] child.
     "portal_resource_add",
     "portal_resource_remove",
+    # The one client READ that goes through a definer function rather than a base-table select.
+    # client_reports has RLS on and every authenticated grant revoked (see 020_client_reports.sql),
+    # so the portal cannot read it directly at all: report_months is the only door, and it returns
+    # the SHARED snapshot only, membership-scoped, never the operator's working copy. It writes
+    # nothing, so it is not a CLIENT_WRITE_DOOR below, only a vetted call the scan must not reject.
+    "report_months",
 }
 CLIENT_WRITE_DOORS = {"portal_submit_answers", "portal_suggest_change", "portal_reply_comment",
                       "portal_approve_blog"}

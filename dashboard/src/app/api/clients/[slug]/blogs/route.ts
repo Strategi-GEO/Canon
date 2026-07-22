@@ -176,12 +176,21 @@ export async function GET(
     // back on if the apply fails. resolved/failed/dismissed rows are settled or the
     // team's to retry, so they never gate a re-send.
     const openByTopic = new Map<string, number>();
+    // comments_pending, the HUMAN-facing count: the same fold plus `failed`, mirroring the
+    // engine's _blog_history and portal-data.ts's client count. A failed apply is the team's
+    // retry, so to both humans that comment is simply not yet addressed; the state tags split
+    // "Changes requested" from "With client" on THIS count, never on the send-gate one, or a
+    // failed apply would read resolved to the admin while still pending to the client.
+    const pendingByTopic = new Map<string, number>();
     for (const comment of comments) {
-      if (
-        comment.author === "client" &&
-        (comment.state === "open" || comment.state === "applying")
-      ) {
+      if (comment.author !== "client") {
+        continue;
+      }
+      if (comment.state === "open" || comment.state === "applying") {
         openByTopic.set(comment.topic_id, (openByTopic.get(comment.topic_id) ?? 0) + 1);
+      }
+      if (comment.state === "open" || comment.state === "applying" || comment.state === "failed") {
+        pendingByTopic.set(comment.topic_id, (pendingByTopic.get(comment.topic_id) ?? 0) + 1);
       }
     }
 
@@ -320,6 +329,9 @@ export async function GET(
         // THE SEVEN STATE FACTS, built and typed above. They land here rather than being written
         // out inline so that one type governs both producers of this fact set.
         ...stateFacts,
+        // NOT a state fact: blogState never reads it. It is the display count the
+        // changes_requested tag splits on, see BlogSummary's field doc.
+        comments_pending: pendingByTopic.get(topic.id) ?? 0,
         cms_status: null,
         // `live` IS DELIBERATELY ABSENT FROM THIS OBJECT, and it is the one fact the engine's
         // twin emits that neither of this app's two producers does. ProducedStateFacts omits it

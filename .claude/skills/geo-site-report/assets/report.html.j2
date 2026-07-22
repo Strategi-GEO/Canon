@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ site_name }} GEO Site Report</title>
+<style>{{ css }}</style>
+{% if brand_overrides %}<style>:root { {{ brand_overrides }} }</style>{% endif %}
+</head>
+<body>
+
+{# ---------------- 1. COVER ---------------- #}
+<section class="cover">
+  <div class="cover-band">
+    <div class="wordmark">{{ org_name | default("Strategi") }}</div>
+    <div class="doctype">Technical and GEO Site Report</div>
+  </div>
+  <div class="cover-main">
+    <h1>{{ site_name }}</h1>
+    <div class="site-url">{{ url }}</div>
+    {% if snapshot and snapshot.verdict %}
+    <div class="cover-verdict">{{ snapshot.verdict }}</div>
+    {% endif %}
+  </div>
+  <dl class="cover-meta">
+    <div><dt>Audit date</dt><dd>{{ audit_date }}</dd></div>
+    <div><dt>Report</dt><dd>{{ report_index | default("1 of 1") }}</dd></div>
+    <div><dt>Stack</dt><dd>{{ stack | default("Not identified") }}</dd></div>
+    <div><dt>Tier</dt><dd>{{ tier | default("Not set") }}</dd></div>
+  </dl>
+</section>
+
+{# ---------------- 2. LIGHTHOUSE ---------------- #}
+{# ---------------- 1b. MONTHLY METRICS (KPIs) ---------------- #}
+{% if metrics %}
+<h2 class="section"><span class="num">00</span>This month at a glance{% if metrics.month_label %} ({{ metrics.month_label }}){% endif %}</h2>
+{% if metrics.ai_mentions %}
+<div class="stat-row">
+  <div class="stat">
+    <div class="stat-value">{{ metrics.ai_mentions.total }}</div>
+    <div class="stat-label">AI mentions across ChatGPT, Gemini and Claude</div>
+  </div>
+  {% for e in metrics.ai_mentions.by_engine %}
+  <div class="stat">
+    <div class="stat-value">{{ e.value }}</div>
+    <div class="stat-label">{{ e.engine }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+<div class="stat-row">
+  <div class="stat">
+    <div class="stat-value">{{ metrics.backlinks if metrics.backlinks is not none else "n/a" }}</div>
+    <div class="stat-label">Backlinks</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value">{{ metrics.referring_domains if metrics.referring_domains is not none else "n/a" }}</div>
+    <div class="stat-label">Referring domains</div>
+  </div>
+</div>
+{% if metrics.note %}<p class="muted">{{ metrics.note }}</p>{% endif %}
+{% endif %}
+
+<h2 class="section"><span class="num">01</span>Google Lighthouse</h2>
+{% if lighthouse %}
+<table>
+  <thead>
+    <tr>
+      <th>Category</th>
+      <th class="num">Desktop</th>
+      <th class="num">Mobile</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for s in lighthouse.scores %}
+    <tr>
+      <td>{{ s.category }}</td>
+      <td class="num">{{ score_cell(s.desktop) }}</td>
+      <td class="num">{{ score_cell(s.mobile) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if lighthouse.metrics %}
+<h3 class="sub">Metrics</h3>
+<table>
+  <thead>
+    <tr><th>Metric</th><th class="num">Measured</th><th class="num">Target</th><th>Verdict</th></tr>
+  </thead>
+  <tbody>
+  {% for m in lighthouse.metrics %}
+    <tr>
+      <td>{{ m.metric }}</td>
+      <td class="num">{{ m.value }}</td>
+      <td class="num muted">{{ m.target | default("") }}</td>
+      <td><span class="pill pill-{{ (m.status | default('low')) | lower }}">{{ m.status | default("Low") }}</span></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if lighthouse.form_factor_note %}
+<div class="callout">
+  <div class="callout-title">Form factor</div>
+  {{ lighthouse.form_factor_note }}
+</div>
+{% endif %}
+{% if lighthouse.seo_score_caveat %}
+<div class="callout accent">
+  <div class="callout-title">What the SEO score does and does not check</div>
+  {{ lighthouse.seo_score_caveat }}
+</div>
+{% endif %}
+{% else %}
+<p class="muted">Lighthouse did not return. Nothing is inferred in its place.</p>
+{% endif %}
+
+{# ---------------- 3. SNAPSHOT ---------------- #}
+<h2 class="section"><span class="num">02</span>Snapshot</h2>
+{% for line in snapshot.lines %}
+<p class="lede">{{ line }}</p>
+{% endfor %}
+
+{# ---------------- 4. AI STANDING ---------------- #}
+<h2 class="section"><span class="num">03</span>AI standing</h2>
+{% if ai %}
+<div class="stat-row">
+  <div class="stat">
+    <div class="stat-value">{{ ai.presence_rate_pct }}%</div>
+    <div class="stat-label">Presence rate</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value">{{ ai.named_runs }}/{{ ai.total_runs }}</div>
+    <div class="stat-label">Runs naming the brand</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value">{{ ai.cited_runs }}/{{ ai.total_runs }}</div>
+    <div class="stat-label">Runs citing the domain</div>
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr><th>Prompt</th><th>Engine</th><th>Named</th><th>Cited</th><th>Named instead</th></tr>
+  </thead>
+  <tbody>
+  {% for r in ai.runs %}
+    <tr>
+      <td>{{ r.prompt }}</td>
+      <td>{{ r.engine }}</td>
+      <td>{% if r.named %}<span class="yes">Yes</span>{% else %}<span class="no">No</span>{% endif %}</td>
+      <td>{% if r.cited %}<span class="yes">Yes</span>{% else %}<span class="no">No</span>{% endif %}</td>
+      <td class="muted">{{ r.named_instead | default("") }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if ai.competitors_named %}
+<h3 class="sub">Who the engines named instead</h3>
+<table>
+  <thead><tr><th>Brand</th><th class="num">Mentions</th><th>Engines</th></tr></thead>
+  <tbody>
+  {% for c in ai.competitors_named %}
+    <tr><td>{{ c.name }}</td><td class="num">{{ c.mentions }}</td><td class="muted">{{ c.engines }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if ai.domains_cited %}
+<h3 class="sub">Domains the engines actually cited</h3>
+<table>
+  <thead><tr><th>Domain</th><th class="num">Citations</th><th>Type</th></tr></thead>
+  <tbody>
+  {% for d in ai.domains_cited %}
+    <tr><td class="mono">{{ d.domain }}</td><td class="num">{{ d.citations }}</td><td class="muted">{{ d.type | default("") }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if ai.organic %}
+<h3 class="sub">Organic baseline</h3>
+<table>
+  <thead><tr><th>Keywords</th><th class="num">Top 10</th><th class="num">ETV</th><th>New / Up / Down</th></tr></thead>
+  <tbody>
+    <tr>
+      <td class="num">{{ ai.organic.keywords }}</td>
+      <td class="num">{{ ai.organic.top10 }}</td>
+      <td class="num">{{ ai.organic.etv }}</td>
+      <td>{{ ai.organic.movement }}</td>
+    </tr>
+  </tbody>
+</table>
+{% if ai.organic.note %}<p class="muted">{{ ai.organic.note }}</p>{% endif %}
+{% endif %}
+
+<div class="callout">
+  <div class="callout-title">Coverage and limits</div>
+  <ul class="tight">
+    <li>Engines measured: {{ ai.engines | join(", ") }}.</li>
+    {% if ai.models_line %}<li>Models queried: {{ ai.models_line }}.</li>{% endif %}
+    {% if ai.web_search_note %}<li>{{ ai.web_search_note }}</li>{% endif %}
+    {% if ai.not_covered %}<li>Not covered: {{ ai.not_covered }}</li>{% endif %}
+    {% for l in ai.limits %}<li>{{ l }}</li>{% endfor %}
+  </ul>
+</div>
+{% else %}
+<p class="muted">AI standing was not generated for this report.</p>
+{% endif %}
+
+{# ---------------- 5. MODULE FINDINGS ---------------- #}
+<h2 class="section"><span class="num">04</span>Module findings</h2>
+{% for mod in modules %}
+<div class="module">
+  <h3 class="sub">{{ mod.name }}<span class="status status-{{ mod.status | lower }}">{{ mod.status }}</span></h3>
+  <ul class="findings">
+  {% for f in mod.findings %}
+    <li>
+      <span class="pill pill-{{ f.severity | lower }}">{{ f.severity }}</span>
+      <span class="f-text">{{ f.text }}</span>
+      {% if f.evidence %}<span class="f-evidence">{{ f.evidence }}</span>{% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+</div>
+{% endfor %}
+
+{# ---------------- 6. PRIORITY FIXES ---------------- #}
+<h2 class="section"><span class="num">05</span>Priority fixes</h2>
+<ol class="fixes">
+{% for f in priority_fixes %}
+  <li>
+    <div class="fix-head">{{ f.fix }}{% if f.effort or f.severity %} <span class="pill pill-{{ f.severity | default('medium') | lower }}">{{ f.effort | default(f.severity) }}</span>{% endif %}</div>
+    {% if f.why %}<div class="fix-why">{{ f.why }}</div>{% endif %}
+  </li>
+{% endfor %}
+</ol>
+{% if root_causes %}
+<div class="callout accent">
+  <div class="callout-title">Shared root causes</div>
+  <ul class="tight">
+  {% for r in root_causes %}<li>{{ r }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{# ---------------- 7. VERIFY EXTERNALLY ---------------- #}
+<h2 class="section"><span class="num">06</span>Verify externally</h2>
+<table>
+  <thead><tr><th>Check</th><th>Tool</th><th>Instruction</th></tr></thead>
+  <tbody>
+  {% for v in verify_externally %}
+    <tr><td>{{ v.check }}</td><td class="muted">{{ v.tool }}</td><td>{{ v.instruction }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{# ---------------- 8. DECK NOTE ---------------- #}
+<h2 class="section"><span class="num">07</span>Notes for the deck</h2>
+<div class="callout accent">
+  <div class="callout-title">The one sentence this site hands you</div>
+  {{ deck_note }}
+</div>
+
+</body>
+</html>

@@ -1,0 +1,307 @@
+/* ---------------------------------------------------------------
+   Strategi GEO site report: print stylesheet.
+
+   BRAND TOKENS. These five lines are the only things to change when
+   the brand changes. Everything else derives from them, so nobody has
+   to hunt through the file. build_report.py can also override any of
+   them at render time from the "brand" key in report.json.
+   --------------------------------------------------------------- */
+:root {
+  --brand-ink:      #0F1419;   /* headings, body text */
+  --brand-accent:   #1A5FD4;   /* rules, cover band, section marks */
+  --brand-muted:    #6B7480;   /* captions, secondary text */
+  --brand-hairline: #DFE3E8;   /* table borders, dividers */
+  --brand-wash:     #F5F7FA;   /* table header fill, callout fill */
+
+  --sev-high:   #C0392B;
+  --sev-medium: #B7791F;
+  --sev-low:    #57606A;
+  --sev-verify: #6B4FBB;
+
+  --status-strong:  #1E7B4F;
+  --status-weak:    #B7791F;
+  --status-failing: #C0392B;
+  --status-verify:  #6B4FBB;
+
+  --font-sans: "Carlito", "DejaVu Sans", "Liberation Sans", sans-serif;
+  --font-mono: "DejaVu Sans Mono", "Liberation Mono", monospace;
+}
+
+@page {
+  size: A4;
+  margin: 18mm 16mm 20mm 16mm;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: var(--font-sans);
+  font-size: 9.6pt;
+  line-height: 1.5;
+  color: var(--brand-ink);
+  margin: 0;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+/* ---------- cover ---------- */
+.cover {
+  page-break-after: always;
+  display: flex;
+  flex-direction: column;
+  height: 253mm;
+}
+.cover-band {
+  background: var(--brand-accent);
+  color: #fff;
+  padding: 8mm 7mm;
+  /* Aligned to the content column rather than bled to the page edge. Chromium
+     clips painted content to the print margin box, so a bleed would mean giving
+     up the page.pdf() margins, which are also what make room for the footer.
+     Pagination beats a flourish. */
+  margin: 0 0 0 0;
+}
+.cover-band .wordmark {
+  font-size: 11pt;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-weight: 700;
+  opacity: 0.92;
+}
+.cover-band .doctype {
+  font-size: 8.5pt;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.75;
+  margin-top: 1mm;
+}
+.cover-main { flex: 1; padding: 14mm 0 0 0; }
+.cover-main h1 {
+  font-size: 30pt;
+  line-height: 1.12;
+  margin: 0 0 3mm 0;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+.cover-main .site-url {
+  font-family: var(--font-mono);
+  font-size: 10pt;
+  color: var(--brand-accent);
+  word-break: break-all;
+}
+.cover-verdict {
+  margin-top: 10mm;
+  padding: 5mm 6mm;
+  background: var(--brand-wash);
+  border-left: 3pt solid var(--brand-accent);
+  font-size: 11pt;
+  line-height: 1.45;
+}
+.cover-meta {
+  margin-top: auto;
+  border-top: 1pt solid var(--brand-hairline);
+  padding-top: 4mm;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 3mm 8mm;
+}
+.cover-meta dt {
+  font-size: 7.5pt;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--brand-muted);
+  font-weight: 700;
+}
+.cover-meta dd { margin: 0.6mm 0 0 0; font-size: 9.5pt; }
+
+/* ---------- sections ---------- */
+h2.section {
+  font-size: 13pt;
+  margin: 9mm 0 3mm 0;
+  padding-bottom: 1.6mm;
+  border-bottom: 1.5pt solid var(--brand-accent);
+  page-break-after: avoid;
+  letter-spacing: -0.01em;
+}
+h2.section:first-of-type { margin-top: 0; }
+h2.section .num {
+  color: var(--brand-accent);
+  font-variant-numeric: tabular-nums;
+  margin-right: 2.5mm;
+}
+h3.sub {
+  font-size: 10pt;
+  margin: 5mm 0 1.8mm 0;
+  page-break-after: avoid;
+}
+p { margin: 0 0 2.2mm 0; }
+.lede { font-size: 10.5pt; }
+.muted { color: var(--brand-muted); }
+
+/* ---------- tables ---------- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 2.5mm 0 3.5mm 0;
+  font-size: 8.8pt;
+  page-break-inside: avoid;
+}
+thead { display: table-header-group; }
+th {
+  background: var(--brand-wash);
+  text-align: left;
+  font-size: 7.6pt;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--brand-muted);
+  padding: 2mm 2.2mm;
+  border-bottom: 1pt solid var(--brand-hairline);
+  font-weight: 700;
+}
+td {
+  padding: 2mm 2.2mm;
+  border-bottom: 0.5pt solid var(--brand-hairline);
+  vertical-align: top;
+}
+tr { page-break-inside: avoid; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+code, .mono { font-family: var(--font-mono); font-size: 8.2pt; }
+.quote-value {
+  font-family: var(--font-mono);
+  font-size: 8pt;
+  background: var(--brand-wash);
+  padding: 0.4mm 1.2mm;
+  border-radius: 1.5pt;
+  word-break: break-all;
+}
+
+/* ---------- score cells ---------- */
+.score { font-weight: 700; font-variant-numeric: tabular-nums; }
+.score-good { color: var(--status-strong); }
+.score-mid  { color: var(--status-weak); }
+.score-bad  { color: var(--status-failing); }
+.score-na   { color: var(--brand-muted); font-weight: 400; }
+
+/* ---------- pills ---------- */
+.pill {
+  display: inline-block;
+  font-size: 7pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.6mm 1.8mm;
+  border-radius: 6pt;
+  color: #fff;
+  white-space: nowrap;
+}
+.pill-high   { background: var(--sev-high); }
+.pill-medium { background: var(--sev-medium); }
+.pill-low    { background: var(--sev-low); }
+.pill-verify { background: var(--sev-verify); }
+
+.status {
+  display: inline-block;
+  font-size: 7.6pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.7mm 2.2mm;
+  border-radius: 2pt;
+  color: #fff;
+  margin-left: 2mm;
+  vertical-align: 1.2pt;
+}
+.status-strong  { background: var(--status-strong); }
+.status-weak    { background: var(--status-weak); }
+.status-failing { background: var(--status-failing); }
+.status-verify  { background: var(--status-verify); }
+
+.yes { color: var(--status-strong); font-weight: 700; }
+.no  { color: var(--status-failing); font-weight: 700; }
+
+/* ---------- callouts ---------- */
+.callout {
+  background: var(--brand-wash);
+  border-left: 2.5pt solid var(--brand-muted);
+  padding: 3mm 4mm;
+  margin: 3mm 0;
+  font-size: 8.6pt;
+  page-break-inside: avoid;
+}
+.callout.accent { border-left-color: var(--brand-accent); }
+.callout .callout-title {
+  font-weight: 700;
+  font-size: 7.6pt;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--brand-muted);
+  margin-bottom: 1.2mm;
+}
+
+/* ---------- headline stat ---------- */
+.stat-row {
+  display: flex;
+  gap: 4mm;
+  margin: 3mm 0 4mm 0;
+  page-break-inside: avoid;
+}
+.stat {
+  flex: 1;
+  border: 1pt solid var(--brand-hairline);
+  border-top: 2.5pt solid var(--brand-accent);
+  padding: 3mm;
+  text-align: center;
+}
+.stat .stat-value {
+  font-size: 20pt;
+  font-weight: 700;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+.stat .stat-label {
+  font-size: 7.2pt;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--brand-muted);
+  margin-top: 1.2mm;
+}
+
+/* ---------- action plan ---------- */
+ol.fixes { margin: 3mm 0 0 0; padding: 0; list-style: none; counter-reset: fix; }
+ol.fixes > li {
+  counter-increment: fix;
+  border: 0.75pt solid var(--brand-hairline);
+  border-left: 2.5pt solid var(--brand-accent);
+  padding: 2.6mm 3mm 2.6mm 3.2mm;
+  margin-bottom: 2.2mm;
+  page-break-inside: avoid;
+}
+ol.fixes .fix-head { font-weight: 700; }
+ol.fixes .fix-head::before {
+  content: counter(fix) ".";
+  color: var(--brand-accent);
+  font-variant-numeric: tabular-nums;
+  margin-right: 1.6mm;
+}
+ol.fixes .fix-why { color: var(--brand-muted); font-size: 8.6pt; margin-top: 0.9mm; }
+
+ul.tight { margin: 1.5mm 0; padding-left: 5mm; }
+ul.tight li { margin-bottom: 1mm; }
+
+.findings { margin: 0; padding: 0; list-style: none; }
+.findings li {
+  padding: 1.8mm 0;
+  border-bottom: 0.5pt solid var(--brand-hairline);
+  page-break-inside: avoid;
+}
+.findings li:last-child { border-bottom: none; }
+.findings .f-text { margin-left: 1.5mm; }
+.findings .f-evidence {
+  display: block;
+  margin: 1mm 0 0 1.5mm;
+  font-family: var(--font-mono);
+  font-size: 7.8pt;
+  color: var(--brand-muted);
+  word-break: break-word;
+}
+.module { page-break-inside: avoid; margin-bottom: 4mm; }

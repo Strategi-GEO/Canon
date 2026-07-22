@@ -84,7 +84,8 @@ const TABS: { name: OutputFile; label: string }[] = [
  *
  * `answers_submitted` IS DELIBERATELY NOT REACHED BY THIS TEST, and the line it draws is a SEND
  * rather than "with the team". Every state that reaches it is at or past a send, which is the only
- * way a client suggestion can exist: clientActions offers `suggest` in client_review alone.
+ * way a client suggestion can exist: clientActions offers `suggest` only in client_review and
+ * changes_requested, both of which sit past a send.
  * `answers_submitted` carries no send stamp by construction, because a send outranks it in
  * blogState's ladder, so there is no client conversation for the margin to omit.
  *
@@ -372,6 +373,21 @@ function StageBody({
   // A client's suggestion arriving is NOT watched for: it lands in the bell at the next read
   // of the blogs library, which is what a refresh is for.
   const comments = useBlogComments(brandSlug, topicSlug, commentsVisible);
+  // The header tag's comment split follows the LIVE rail once it has landed, because this page
+  // is where resolving happens and the count the row arrived with is stale by the first resolve.
+  // Same fold as both wires: top-level client comments still open, applying or failed. Until the
+  // rail lands, the row's own count keeps the tag honest instead of flickering through the
+  // resolved face.
+  const commentsPending =
+    comments.comments !== null
+      ? comments.comments.filter(
+          (comment) =>
+            comment.author === "client" &&
+            (comment.state === "open" ||
+              comment.state === "applying" ||
+              comment.state === "failed"),
+        ).length
+      : (blog.comments_pending ?? null);
   /**
    * HOW MANY CHANGES ARE MID-APPLY, or "unread" when nobody has told this page yet.
    *
@@ -645,7 +661,7 @@ function StageBody({
                 page, so the badge was contradicting the buttons under it. The tag names the
                 one state this blog is in, and its tooltip names who owes the next act, which
                 is the sentence that explains every control this page then declines to show. */}
-            <BlogStateTag state={state} audience="admin" />
+            <BlogStateTag state={state} audience="admin" commentsPending={commentsPending} />
             {/* An uploaded blog gets the provenance chip INSTEAD of a score trail. A bare
                 "no score" beside a shipped article reads as a missing number, which invites
                 the operator to go looking for the evaluation that failed to run. There was

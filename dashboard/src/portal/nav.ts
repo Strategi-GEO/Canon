@@ -10,7 +10,7 @@
 // (RLS-scoped, so it only ever holds their orgs). resolveClientRoute() is that one resolver,
 // used by the client catch-all page to render and by the shell to light the active nav, so
 // the two can never disagree about where the caller is.
-import { FileText, FolderOpen, LayoutDashboard, Map as MapIcon } from "lucide-react";
+import { ChartColumnIncreasing, FileText, FolderOpen, LayoutDashboard, Map as MapIcon } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 export type NavItem = {
@@ -37,6 +37,10 @@ export const BRAND_NAV: NavItem[] = [
   { section: "", label: "Overview", icon: LayoutDashboard },
   { section: "/roadmap", label: "Content Roadmap", icon: MapIcon },
   { section: "/blogs", label: "Blogs", icon: FileText },
+  // The monthly performance report, but only the versions the team has shared. Same section
+  // word and icon as the admin dashboard's Reports row, so a client reading over an operator's
+  // shoulder sees the same tab.
+  { section: "/reports", label: "Reports", icon: ChartColumnIncreasing },
   // Same section, label and icon as the admin dashboard's own Resources row
   // (components/shell/nav.ts), because it is the same files under both roofs and a client
   // reading over an operator's shoulder should not have to translate.
@@ -51,7 +55,7 @@ const RESERVED = new Set(["admin", "login", "api", "_next", "favicon.ico"]);
  * section word, so a section missing from this set resolves to not-found for a multi-brand
  * org and, worse, silently to the brand overview for a single-brand one.
  */
-const SECTIONS = new Set(["blogs", "roadmap", "resources"]);
+const SECTIONS = new Set(["blogs", "roadmap", "reports", "resources"]);
 
 export type OrgLite = {
   slug: string;

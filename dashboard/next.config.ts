@@ -12,6 +12,10 @@ const nextConfig: NextConfig = {
   // account. No basePath, because basePath would confine the whole app under one prefix and
   // leave no room for the client routes at the root. The FastAPI engine calls are cross
   // origin and unaffected (API_BASE).
+
+  // No floating dev-tools badge: it overlaps the sidebar's attention pills and the card tags
+  // in dev, and it photographs into every screenshot as apparent UI. Dev-only either way.
+  devIndicators: false,
 };
 
 export default nextConfig;

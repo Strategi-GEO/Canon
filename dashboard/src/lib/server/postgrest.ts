@@ -1,4 +1,7 @@
-import { supabaseAnonKey, supabaseUrl } from "@/lib/server/env";
+// Relative with the extension, not "@/lib/server/env": tests import this module through plain
+// `node --test`, which resolves value imports at runtime, and the @/ alias only exists for the
+// bundler. allowImportingTsExtensions is on in tsconfig for exactly this (see its own note).
+import { supabaseAnonKey, supabaseUrl } from "./env.ts";
 
 /**
  * The one PostgREST client for the hosted-mode Route Handlers.
@@ -78,4 +81,20 @@ export async function rpc<T>(token: string, fn: string, args: Record<string, unk
 /** PostgREST `in.(...)` needs each value quoted; uuids and slugs are safe but quote anyway. */
 export function inList(values: string[]): string {
   return `in.(${values.map((value) => `"${value}"`).join(",")})`;
+}
+
+/**
+ * A scalar filter value (`name=eq.<this>`) for an arbitrary string such as a filename.
+ *
+ * NOT quoted, and the asymmetry with inList above is the whole lesson: PostgREST strips double
+ * quotes inside an `in.(...)` list but reads a scalar `eq.` value literally, so a quoted value
+ * matches the literal `"…"` and silently finds nothing. That 404'd every resource whose name
+ * this was built from. Percent-encoding is the correct defence for a scalar; ( and ) are
+ * encoded on top of encodeURIComponent because PostgREST reads them as logic grouping.
+ */
+export function eqValue(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[()]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
+  );
 }

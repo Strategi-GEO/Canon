@@ -25,3 +25,16 @@ PyJWT[crypto]>=2.13.0
 # resolving these two lines for the CI target (cp312, manylinux) lands on that same pair.
 psycopg[binary]>=3.2
 psycopg-pool>=3.2
+
+# The geo-site-report skill (.claude/skills/geo-site-report) is what a monthly report session
+# runs: page_digest.py parses scraped HTML with BeautifulSoup, and build_report.py renders
+# report.json into a branded PDF with Jinja2 (markupsafe rides with it) driving a headless
+# Chromium through Playwright. report_gen.py treats the PDF as best-effort, so a missing browser
+# only costs the download, not the report. launcher.py fetches the browser automatically after
+# any dependency install; to fetch it by hand:
+#     .venv/bin/python -m playwright install chromium          (macOS / Linux)
+#     .venv\Scripts\python.exe -m playwright install chromium  (Windows)
+beautifulsoup4>=4.12
+jinja2>=3.1
+markupsafe>=2.1
+playwright>=1.48

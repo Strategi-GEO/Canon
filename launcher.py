@@ -188,8 +188,18 @@ def venv_python() -> Path:
     return REPO_ROOT / ".venv" / "bin" / "python"
 
 
+def _requirements_hash() -> str:
+    import hashlib
+    return hashlib.sha256((REPO_ROOT / "requirements.txt").read_bytes()).hexdigest()
+
+
 def ensure_venv_raise(base_python: str | None = None) -> Path:
     """Create .venv and install requirements if missing; return its python.
+
+    A stamp file records the hash of requirements.txt that was last installed,
+    so a release that adds a dependency reaches machines that already have a
+    .venv: without it, upgraders would keep a stale environment and the new
+    feature would fail only at runtime, on their machine, not ours.
 
     `base_python` is the interpreter used to create the venv. It defaults to
     sys.executable, which is correct for the CLI; the tray app passes an
@@ -197,21 +207,26 @@ def ensure_venv_raise(base_python: str | None = None) -> Path:
     sys.executable is the app binary, not a Python interpreter.
     """
     py = venv_python()
+    stamp = REPO_ROOT / ".venv" / "requirements.sha256"
+    want = _requirements_hash()
     if py.exists():
-        log("VENV: .venv already present, reusing it")
-        return py
-
-    log("VENV: .venv missing, creating it (one-time, takes a minute)")
-    result = subprocess.run(
-        [base_python or sys.executable, "-m", "venv", str(REPO_ROOT / ".venv")],
-        cwd=str(REPO_ROOT),
-    )
-    if result.returncode != 0 or not py.exists():
-        raise LauncherError(
-            "could not create the Python virtual environment (.venv). "
-            "Check that your Python install includes the `venv` module, "
-            "then delete the .venv folder if one half-exists and retry."
+        have = stamp.read_text(encoding="utf-8").strip() if stamp.is_file() else ""
+        if have == want:
+            log("VENV: .venv already present and up to date, reusing it")
+            return py
+        log("VENV: requirements.txt changed since last install, updating dependencies")
+    else:
+        log("VENV: .venv missing, creating it (one-time, takes a minute)")
+        result = subprocess.run(
+            [base_python or sys.executable, "-m", "venv", str(REPO_ROOT / ".venv")],
+            cwd=str(REPO_ROOT),
         )
+        if result.returncode != 0 or not py.exists():
+            raise LauncherError(
+                "could not create the Python virtual environment (.venv). "
+                "Check that your Python install includes the `venv` module, "
+                "then delete the .venv folder if one half-exists and retry."
+            )
 
     log("VENV: installing Python dependencies from requirements.txt")
     result = subprocess.run(
@@ -223,7 +238,23 @@ def ensure_venv_raise(base_python: str | None = None) -> Path:
             "pip install failed. Check your internet connection, then delete the "
             ".venv folder and double-click the starter again for a clean retry."
         )
+    stamp.write_text(want + "\n", encoding="utf-8")
     log("VENV: dependencies installed")
+
+    # The report PDF renders through Playwright's own Chromium, which pip does
+    # not fetch. Best-effort on purpose: report_gen treats a missing browser as
+    # "no PDF download", never as a failed report, so setup must not die here
+    # either. Playwright skips the download when the browser is already cached.
+    log("VENV: fetching Playwright Chromium for report PDFs (skipped if cached)")
+    try:
+        result = subprocess.run(
+            [str(py), "-m", "playwright", "install", "chromium"],
+            cwd=str(REPO_ROOT), timeout=900,
+        )
+        if result.returncode != 0:
+            log("VENV: WARNING, Chromium fetch failed; reports will generate without a PDF download")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log(f"VENV: WARNING, Chromium fetch failed ({exc}); reports will generate without a PDF download")
     return py
 
 

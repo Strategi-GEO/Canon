@@ -5,12 +5,10 @@ import { CircleDot, FileSpreadsheet } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import { formatCount } from "@/lib/format";
 import { useRuns } from "@/lib/runs-context";
 import { useRoadmap } from "@/lib/use-roadmap";
 import { useRoadmapGen } from "@/lib/use-roadmap-gen";
 import { HOSTED_READONLY } from "@/lib/hosted";
-import { cn } from "@/lib/utils";
 import { EngineDown } from "@/components/clients/engine-error";
 import { RoadmapUploader } from "@/components/create/roadmap-uploader";
 import { GenerateRoadmapDialog } from "@/components/roadmap/generate-roadmap-dialog";
@@ -19,6 +17,7 @@ import { RoadmapGeneration } from "@/components/roadmap/roadmap-generation";
 import { RoadmapPreviewDialog } from "@/components/roadmap/roadmap-preview-dialog";
 import { roadmapStats } from "@/components/roadmap/roadmap-stats";
 import { deriveTheme } from "@/components/roadmap/roadmap-theme";
+import { StatTile, ThemeCard } from "@/components/roadmap/shared";
 import type { BlogSummary } from "@/types";
 
 function plural(count: number, one: string, many: string): string {
@@ -327,84 +326,10 @@ export function RoadmapOverview({
             ) : null}
           </div>
 
-          <Card className="mt-4">
-            <CardContent className="py-8">
-              <p className="text-sm font-medium text-foreground">What these blogs are about</p>
-              {theme.length > 0 ? (
-                <>
-                  <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-muted-foreground">
-                    The terms that recur across the topics, counted from the sheet. The number is
-                    how many topics carry each one.
-                  </p>
-                  <ul className="mt-4 flex flex-wrap gap-2">
-                    {theme.map((term) => (
-                      <li
-                        key={term.term}
-                        className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm text-foreground"
-                      >
-                        {term.term}
-                        <span className="machine text-xs text-muted-foreground">
-                          {formatCount(term.topics)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              ) : (
-                <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-muted-foreground">
-                  This roadmap has no single recurring theme: no term appears in more than one
-                  topic. That is a real answer about the sheet rather than a gap, and a roadmap
-                  of unrelated topics is a legitimate thing to have.
-                </p>
-              )}
-            </CardContent>
-          </Card>
-
+          <ThemeCard theme={theme} />
         </>
       )}
     </div>
-  );
-}
-
-type Tone = "plain" | "ship" | "review" | "fail";
-
-const TONES: Record<Tone, string> = {
-  plain: "text-foreground",
-  ship: "text-ship",
-  review: "text-review",
-  fail: "text-fail",
-};
-
-/**
- * One number, big, with the sentence that says what it means.
- *
- * The note is not decoration. "Needs review: 3" and "Failed: 3" look identical at a glance and
- * mean opposite things, and the colour alone cannot carry that difference to someone who reads
- * the number before the palette.
- */
-function StatTile({
-  label,
-  value,
-  note,
-  tone = "plain",
-}: {
-  label: string;
-  value: number;
-  note: string;
-  tone?: Tone;
-}) {
-  return (
-    <Card className="[--card-spacing:--spacing(6)]">
-      <CardContent className="flex flex-col">
-        <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-          {label}
-        </p>
-        <p className={cn("machine mt-4 text-4xl font-semibold", TONES[tone])}>
-          {formatCount(value)}
-        </p>
-        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{note}</p>
-      </CardContent>
-    </Card>
   );
 }
 

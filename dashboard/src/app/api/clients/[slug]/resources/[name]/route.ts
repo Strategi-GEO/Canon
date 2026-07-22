@@ -3,7 +3,7 @@ import { unauthenticated, verifyRequest } from "@/lib/server/auth";
 import { clientId } from "@/lib/server/clients";
 import { supabaseAnonKey, supabaseUrl } from "@/lib/server/env";
 import { detail, failure, json, noContent } from "@/lib/server/http";
-import { pg, rpc } from "@/lib/server/postgrest";
+import { eqValue, pg, rpc } from "@/lib/server/postgrest";
 
 /**
  * The hosted half of GET /api/clients/{slug}/resources/{name}, and it deliberately does NOT
@@ -52,19 +52,6 @@ import { pg, rpc } from "@/lib/server/postgrest";
 const SIGNED_URL_TTL = 60;
 
 /**
- * A resource name is an arbitrary filename: the schema preserves it verbatim because
- * canonical-facts.md refers to the brochure by exact filename, so it contains spaces and can
- * contain commas, dots and parentheses, all of which are PostgREST filter syntax. Wrapping the
- * value in double quotes makes PostgREST read it literally; backslash and the quote itself are
- * escaped first so a name containing a quote cannot close the string early. This is the same
- * defence inList() applies for the same reason.
- */
-function eqFilter(value: string): string {
-  const quoted = `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-  return encodeURIComponent(quoted);
-}
-
-/**
  * Storage returns signedURL as a path relative to /storage/v1 ("/object/sign/resources/..."),
  * so it is joined here rather than handed to the browser as-is. Absolute is what the caller
  * needs anyway, since the browser does not hold SUPABASE_URL.
@@ -102,7 +89,7 @@ export async function GET(
     const rows = await pg<{ object_path: string; content_type: string | null; size_bytes: number }[]>(
       user.token,
       `client_resources?select=object_path,content_type,size_bytes` +
-        `&client_id=eq.${cid}&name=eq.${eqFilter(name)}`,
+        `&client_id=eq.${cid}&name=eq.${eqValue(name)}`,
     );
     const row = rows[0];
     if (row === undefined) {
