@@ -245,11 +245,16 @@ jobs:
       # TAG ONLY. The small code-only update package (the staged tree: engine + prebuilt dashboard,
       # NO runtimes) goes to the private 'releases' Supabase bucket, so the desktop app's "Update
       # now" fetches tens of MB, not the 300 MB installer. Unified bash (git-bash exists on the
-      # Windows runner too); python does the hashing/JSON so no shasum-vs-sha256sum split. Skips
-      # cleanly with a message when the secrets are absent, so a release still ships its main asset
-      # before in-app updates are switched on. See app_update.py and migration 029.
+      # Windows runner too). Hashing/JSON use openssl + printf, NOT python: git-bash tar/curl want
+      # POSIX paths while Windows python wants backslash paths, and mixing the two is what broke the
+      # Windows leg once. See app_update.py and migration 029.
+      #
+      # continue-on-error: the app installers are the release deliverable; this publish is a
+      # nice-to-have. A failure here shows red but must NEVER skip the Attach-to-release step below,
+      # which is exactly how a broken publish step once shipped a release with no Windows asset.
       - name: Publish update package to Supabase (tag only)
         if: startsWith(github.ref, 'refs/tags/v')
+        continue-on-error: true
         shell: bash
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -261,6 +266,15 @@ jobs:
             echo "Skipping update-package publish; add them to enable in-app updates."
             exit 0
           fi
+          # The Windows runner hands CANON_TREE and RUNNER_TEMP as Windows paths (D:\a\...), which
+          # git-bash tar/curl cannot write ("Cannot write: Broken pipe"). cygpath makes them POSIX;
+          # it does not exist on macOS, where the paths are already POSIX, so that branch is a no-op.
+          if command -v cygpath >/dev/null 2>&1; then
+            CANON_TREE="$(cygpath -u "$CANON_TREE")"
+            TMP="$(cygpath -u "$RUNNER_TEMP")"
+          else
+            TMP="$RUNNER_TEMP"
+          fi
           case "$RUNNER_OS" in
             macOS)   PLATFORM=macos ;;
             Windows) PLATFORM=windows ;;
@@ -270,9 +284,11 @@ jobs:
           test -f "$CANON_TREE/launcher.py" || { echo "staged tree missing launcher.py"; exit 1; }
           test -f "$CANON_TREE/VERSION" || { echo "staged tree missing VERSION"; exit 1; }
           test ! -e "$CANON_TREE/server/.env" || { echo "REFUSING: server/.env in the update package"; exit 1; }
-          PKG="$RUNNER_TEMP/canon-update.tar.gz"
+          PKG="$TMP/canon-update.tar.gz"
           tar -czf "$PKG" -C "$CANON_TREE" .
-          SHA=$(python -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$PKG")
+          # openssl (on both macOS and git-bash) takes the same POSIX path tar/curl use, so there is
+          # no python-wants-backslashes split. Same digest as app_update.py's hashlib.sha256.
+          SHA=$(openssl dgst -sha256 "$PKG" | awk '{print $NF}')
           BASE="${SUPABASE_URL%/}/storage/v1/object/releases/latest/$PLATFORM"
           echo "Publishing $PLATFORM update v$VERSION ($(wc -c < "$PKG") bytes, sha256 $SHA)"
           # Package first, THEN manifest, so a reader never sees a manifest pointing at a package
@@ -281,9 +297,9 @@ jobs:
             -H "Authorization: Bearer $SUPABASE_SECRET_KEY" -H "apikey: $SUPABASE_SECRET_KEY" \
             -H "x-upsert: true" -H "Content-Type: application/gzip" \
             --data-binary @"$PKG" >/dev/null
-          MANIFEST="$RUNNER_TEMP/manifest.json"
-          python -c "import json,sys;json.dump({'version':sys.argv[1],'sha256':sys.argv[2],'published':sys.argv[3]},open(sys.argv[4],'w'))" \
-            "$VERSION" "$SHA" "$GITHUB_REF_NAME" "$MANIFEST"
+          MANIFEST="$TMP/manifest.json"
+          printf '{"version":"%s","sha256":"%s","published":"%s"}\n' \
+            "$VERSION" "$SHA" "$GITHUB_REF_NAME" > "$MANIFEST"
           curl -fsS -X POST "$BASE/manifest.json" \
             -H "Authorization: Bearer $SUPABASE_SECRET_KEY" -H "apikey: $SUPABASE_SECRET_KEY" \
             -H "x-upsert: true" -H "Content-Type: application/json" \
