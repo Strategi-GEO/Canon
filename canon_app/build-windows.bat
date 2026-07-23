@@ -39,6 +39,7 @@ if exist dist rmdir /s /q dist
     --icon build_assets\canon.ico ^
     --hidden-import pystray._win32 ^
     --hidden-import secrets_bootstrap ^
+    --hidden-import certifi ^
     --add-data "bootstrap.json;." ^
     tray.py
 if errorlevel 1 exit /b 1

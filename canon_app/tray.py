@@ -1069,6 +1069,18 @@ def main() -> int:
     tlog(f"=== {APP_NAME} tray starting (frozen={IS_FROZEN}, platform={sys.platform}) ===")
     augment_path()
 
+    # CA CERTIFICATES, BEFORE ANY HTTPS. This frozen app's bundled Python has no CA bundle wired
+    # into OpenSSL, so secrets_bootstrap's Supabase sign-in fails CERTIFICATE_VERIFY_FAILED. Point
+    # OpenSSL at the bundled certifi. Set in os.environ so the engine child inherits it too
+    # (build_engine_env copies the environment); the engine also sets it from its own certifi.
+    if IS_FROZEN:
+        try:
+            import certifi
+            os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+            tlog(f"SSL_CERT_FILE -> {os.environ.get('SSL_CERT_FILE')}")
+        except Exception:
+            tlog("certifi unavailable; HTTPS falls back to the platform default CA path")
+
     repo = discover_repo()
     if repo is None:
         native_error(

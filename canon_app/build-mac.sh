@@ -31,6 +31,7 @@ rm -rf build dist
     --osx-bundle-identifier is.strategi.canon \
     --hidden-import pystray._darwin \
     --hidden-import secrets_bootstrap \
+    --hidden-import certifi \
     --add-data "bootstrap.json:." \
     tray.py
 

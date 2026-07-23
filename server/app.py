@@ -14,6 +14,19 @@ the terminal line. Each site that makes that choice says so in one sentence.
 Run with ONE uvicorn worker. The client lock and topic semaphore in runner.py
 are in-process primitives, so --workers N silently multiplies the cap to 5N.
 """
+# CA CERTIFICATES, BEFORE ANY HTTPS. The desktop app ships a portable Python with no CA bundle
+# wired into OpenSSL's default paths, so every urllib HTTPS call (GoTrue login/JWKS in auth.py,
+# Supabase Storage in db.py, app updates in app_update.py) fails CERTIFICATE_VERIFY_FAILED.
+# certifi is always installed (httpx depends on it); point OpenSSL at it unless an operator set
+# SSL_CERT_FILE themselves. setdefault, so a corporate/system bundle a deployment exports still
+# wins. Must run before the `from . import ... auth ...` below, which is why it is at the very top.
+import os as _os
+try:
+    import certifi as _certifi
+    _os.environ.setdefault("SSL_CERT_FILE", _certifi.where())
+except Exception:  # noqa: BLE001 (no certifi = fall back to the platform default, never crash boot)
+    pass
+
 import asyncio
 import json
 import logging
