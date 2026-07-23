@@ -80,12 +80,56 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The SAME major the app runs on: fetch_runtimes bundles Node 24.18.0, so the standalone
+      # dashboard is built with it here. Building on a different major and running on 24 is the
+      # kind of mismatch that works until one native addon does not.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+
+      # THE DASHBOARD IS COMPILED HERE, ONCE, so the shipped package serves an already-built
+      # dashboard instead of running `next dev` (which JIT-compiles each page on first visit) or
+      # `npm install` on the user's machine. `output: standalone` (next.config.ts) emits a
+      # self-contained Node server; static assets and public/ are copied in beside it, which is
+      # the one manual step standalone leaves to the packager. NEXT_PUBLIC_API_BASE is baked to
+      # the engine's default local port (8000): it is a browser value read at build time, so it
+      # cannot be deferred to runtime, and the launcher runs the engine on that port.
+      - name: Build dashboard (production, standalone)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dashboard
+          npm ci
+          NEXT_PUBLIC_API_BASE=http://localhost:8000 npm run build
+          cp -r .next/static .next/standalone/.next/static
+          if [ -d public ]; then cp -r public .next/standalone/public; fi
+          test -f .next/standalone/server.js || { echo "standalone server.js was not produced"; exit 1; }
+
       # Downloads Node and CPython into canon_app/build_assets/runtimes, with
       # checksum verification and a smoke test. Both build scripts also call
       # this, but it runs here explicitly so the package step can rely on it
       # having happened even if a build script is changed later.
       - name: Fetch bundled runtimes
         run: python canon_app/fetch_runtimes.py
+
+      # SINGLE-APP (macOS): stage the tree the .app will carry inside it, BEFORE the build so
+      # build-mac.sh can embed and seal it. git archive for the same two reasons as the package
+      # assembly below (tracked files only, so server/.env cannot ship; no .venv/node_modules
+      # dead weight), then the prebuilt dashboard on top, then a stamp tray.py compares to know
+      # when to re-materialize after an upgrade.
+      - name: Stage Canon tree for embedding (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          TREE="$RUNNER_TEMP/canon-tree"
+          mkdir -p "$TREE"
+          git archive --format=tar HEAD | tar -x -C "$TREE"
+          mkdir -p "$TREE/dashboard/.next"
+          ditto "dashboard/.next/standalone" "$TREE/dashboard/.next/standalone"
+          git rev-parse HEAD > "$TREE/.canon-tree-stamp"
+          test -f "$TREE/dashboard/.next/standalone/server.js" || { echo "prebuilt dashboard missing from staged tree"; exit 1; }
+          test ! -e "$TREE/server/.env" || { echo "REFUSING: server/.env in staged tree"; exit 1; }
+          echo "CANON_TREE=$TREE" >> "$GITHUB_ENV"
 
       - name: Build launcher (macOS)
         if: runner.os == 'macOS'
@@ -107,27 +151,28 @@ jobs:
       # would be 262 MB of bytes nothing reads. Shipping both took the package
       # from 367 MB to 594 MB, measured. Stripping them from the .app instead
       # would be worse: it breaks the code signature that seals its Resources.
+      # SINGLE-APP PACKAGE (macOS): the zip carries ONE thing, the .app, which itself carries
+      # the whole tree (Resources/canon-tree), the runtimes, and the prebuilt dashboard. The
+      # operator unzips, drops their .env beside the app, and opens it; tray.py materializes
+      # the tree to Application Support on first launch and runs from there.
       - name: Assemble package (macOS)
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          STAGE="$RUNNER_TEMP/stage/Strategi Canon"
-          mkdir -p "$STAGE"
-          git archive --format=tar HEAD | tar -x -C "$STAGE"
-          ditto "canon_app/dist/Strategi Canon.app" "$STAGE/Strategi Canon.app"
-          RT="$STAGE/Strategi Canon.app/Contents/Resources/runtimes"
-          test -f "$STAGE/launcher.py" || { echo "package is missing launcher.py"; exit 1; }
+          APP="canon_app/dist/Strategi Canon.app"
+          RT="$APP/Contents/Resources/runtimes"
+          TREE="$APP/Contents/Resources/canon-tree"
           test -x "$RT/node/bin/node" || { echo "bundled node missing from the app"; exit 1; }
           test -x "$RT/python/bin/python3" || { echo "bundled python missing from the app"; exit 1; }
-          # The launcher must sit INSIDE the tree or discover_repo() walks up from
-          # it and finds nothing, which is exactly the dead end this package fixes.
-          test -f "$STAGE/server/app.py" || { echo "package is missing server/app.py"; exit 1; }
-          # A release carrying server/.env would leak the Supabase service key to
-          # everyone with repo access. git archive cannot include it, and this
-          # asserts that rather than trusting it.
-          test ! -e "$STAGE/server/.env" || { echo "REFUSING: server/.env is in the package"; exit 1; }
-          cd "$RUNNER_TEMP/stage"
-          ditto -c -k --sequesterRsrc --keepParent "Strategi Canon" "$GITHUB_WORKSPACE/${{ matrix.artifact }}.zip"
+          test -f "$TREE/launcher.py" || { echo "canon-tree missing launcher.py"; exit 1; }
+          test -f "$TREE/server/app.py" || { echo "canon-tree missing server/app.py"; exit 1; }
+          test -f "$TREE/dashboard/.next/standalone/server.js" || { echo "canon-tree missing the prebuilt dashboard"; exit 1; }
+          test -f "$TREE/.canon-tree-stamp" || { echo "canon-tree missing its stamp"; exit 1; }
+          # A release carrying server/.env would leak the Supabase service key to everyone
+          # with repo access. git archive cannot include it; this asserts it rather than
+          # trusting it.
+          test ! -e "$TREE/server/.env" || { echo "REFUSING: server/.env is in the app"; exit 1; }
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$GITHUB_WORKSPACE/${{ matrix.artifact }}.zip"
 
       - name: Assemble package (Windows)
         if: runner.os == 'Windows'
@@ -139,6 +184,12 @@ jobs:
           $tar = Join-Path $env:RUNNER_TEMP "source.tar"
           git archive --format=tar -o $tar HEAD
           tar -x -f $tar -C $stage
+          # The prebuilt dashboard, injected on top of the tracked tree (.next is gitignored, so
+          # git archive never carried it). This is what makes the package serve a compiled
+          # dashboard instead of running next dev on the user's machine.
+          New-Item -ItemType Directory -Force -Path (Join-Path $stage "dashboard\.next") | Out-Null
+          Copy-Item -Recurse -Force "dashboard\.next\standalone" (Join-Path $stage "dashboard\.next\standalone")
+          if (!(Test-Path (Join-Path $stage "dashboard\.next\standalone\server.js"))) { throw "prebuilt dashboard missing from package" }
           # As on macOS: the runtimes ship ONCE, inside the launcher folder that
           # build-windows.bat already populated. tray.py resolves exe_dir/runtimes
           # for this onedir layout, so a second copy would be dead weight.
@@ -179,21 +230,29 @@ jobs:
         with:
           files: ${{ matrix.artifact }}.zip
           body: |
-            Download the zip for your platform, unzip it anywhere, and open the
-            launcher inside. Everything the engine needs is in the package:
-            you do NOT need to install Node or Python.
+            Everything the engine needs is inside: you do NOT need to install
+            Node or Python.
 
-            **macOS:** the app is unsigned, so the first launch needs
-            right-click (or Control-click) > Open > Open. Once only.
-            **Windows:** SmartScreen shows "Windows protected your PC" the first
-            time. More info > Run anyway. Once only.
+            **macOS: one app.** Unzip, put "Strategi Canon.app" anywhere
+            (Applications is fine), and drop the `.env` file from your admin in
+            the SAME folder as the app (name it `.env`, or `canon.env` if you
+            want to see it in Finder). Open the app; it sets itself up in
+            ~/Library/Application Support on first launch. The app is unsigned,
+            so the first open needs right-click (or Control-click) > Open >
+            Open. Once only.
 
-            You still need, one time:
-            - **Claude Code, logged in with your own account.** This is what pays
-              for generation, out of your own subscription. Install it from
-              https://claude.com/claude-code, run `claude`, log in, type `/exit`.
-            - **`server/.env` from your admin**, placed in the `server/` folder.
+            **Windows: one folder.** Unzip anywhere and open "Strategi Canon"
+            inside. Put the `.env` from your admin at `server\.env` in that
+            folder. SmartScreen shows "Windows protected your PC" the first
+            time: More info > Run anyway. Once only.
 
-            First start takes a few minutes while it builds its Python
-            environment and installs dashboard dependencies. Later starts are
-            seconds.
+            You still need, one time: **Claude Code, logged in with your own
+            account.** This is what pays for generation, out of your own
+            subscription. Install it from https://claude.com/claude-code, run
+            `claude`, log in, type `/exit`.
+
+            The dashboard ships pre-built, so it comes up in a second or two
+            with no compile step. First start still spends a minute or two
+            building the Python environment; after that, starts are seconds.
+            Turn on "Start at login" from the menu and it stays running in the
+            background, ready the moment you open it.

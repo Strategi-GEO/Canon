@@ -62,6 +62,25 @@ find "$APP/Contents/Resources/runtimes/python" -name '__pycache__' -type d -prun
 PYC_COUNT=$(find "$APP/Contents/Resources/runtimes/python" -name '*.pyc' | wc -l | tr -d ' ')
 echo "    precompiled $PYC_COUNT .pyc files"
 
+# SINGLE-APP MODE: embed the whole Canon source tree (server, prebuilt dashboard, launcher,
+# client templates) into the bundle, beside the runtimes. CI stages the tree with git archive
+# and passes CANON_TREE; a local build without it produces the classic launcher-only app that
+# runs from a sibling folder. ditto for the same symlink/exec-bit reasons as the runtimes.
+# BEFORE signing, so the tree is sealed with everything else. The engine never RUNS from this
+# copy (tray.py materializes it to Application Support first), so nothing writes into the
+# sealed bundle at runtime.
+if [ -n "${CANON_TREE:-}" ]; then
+    echo "==> embedding the Canon source tree (single-app mode)"
+    ditto "$CANON_TREE" "$APP/Contents/Resources/canon-tree"
+    test -f "$APP/Contents/Resources/canon-tree/launcher.py" \
+        || { echo "canon-tree is missing launcher.py"; exit 1; }
+    test -f "$APP/Contents/Resources/canon-tree/server/app.py" \
+        || { echo "canon-tree is missing server/app.py"; exit 1; }
+    if [ -e "$APP/Contents/Resources/canon-tree/server/.env" ]; then
+        echo "REFUSING: server/.env is inside the staged tree"; exit 1
+    fi
+fi
+
 # Menu-bar-only app: no Dock icon, no app switcher entry. PyInstaller has no
 # flag for LSUIElement, so stamp it into the bundle's Info.plist after the fact.
 PLIST="$APP/Contents/Info.plist"
@@ -89,15 +108,19 @@ fi
 # Sign inside-out: nested code first, bundle last. Apple deprecated --deep for
 # distribution signing precisely because it applies the outer bundle's
 # entitlements to nested binaries, and the notary service rejects the result.
-echo "    signing nested Mach-O binaries under Resources/runtimes"
+echo "    signing nested Mach-O binaries under Resources/runtimes (and canon-tree when embedded)"
+SIGN_ROOTS=("$APP/Contents/Resources/runtimes")
+if [ -d "$APP/Contents/Resources/canon-tree" ]; then
+    SIGN_ROOTS+=("$APP/Contents/Resources/canon-tree")
+fi
 NESTED=0
 while IFS= read -r bin; do
     codesign "${SIGN_ARGS[@]}" "$bin" 2>/dev/null || {
         echo "    WARNING: could not sign $bin" >&2
     }
     NESTED=$((NESTED + 1))
-done < <(find "$APP/Contents/Resources/runtimes" -type f \
-             \( -perm -u+x -o -name '*.dylib' -o -name '*.so' \) \
+done < <(find "${SIGN_ROOTS[@]}" -type f \
+             \( -perm -u+x -o -name '*.dylib' -o -name '*.so' -o -name '*.node' \) \
          | while read -r f; do file -b "$f" | grep -q 'Mach-O' && echo "$f"; done)
 echo "    signed $NESTED nested binaries"
 

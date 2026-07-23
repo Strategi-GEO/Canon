@@ -179,11 +179,159 @@ def looks_like_repo(p: Path) -> bool:
     return (p / "launcher.py").is_file() and (p / "server" / "app.py").is_file()
 
 
+def bundled_tree_dir() -> Path | None:
+    """The Canon source tree shipped INSIDE the app bundle (single-app builds), or None.
+
+    The single-app package embeds the whole tree (server/, dashboard with its prebuilt
+    standalone build, launcher.py, .claude/, clients/ templates) at
+    Contents/Resources/canon-tree, beside the runtimes. A folder-release build has no such
+    directory, which is exactly how the two layouts are told apart."""
+    if not IS_FROZEN:
+        return None
+    exe_dir = Path(sys.executable).resolve().parent
+    candidates = []
+    if IS_MAC:
+        candidates.append(exe_dir.parent / "Resources" / "canon-tree")  # .app/Contents/Resources
+    candidates.append(exe_dir / "canon-tree")                           # onedir sibling (Windows)
+    for candidate in candidates:
+        if (candidate / "launcher.py").is_file() and (candidate / "server" / "app.py").is_file():
+            return candidate
+    return None
+
+
+def data_tree_dir() -> Path:
+    """Where the single-app build RUNS the tree from: a writable per-user data folder.
+
+    The bundle's insides are sealed by its signature and must stay read-only, but the engine
+    writes beside its code (.venv, outputs/, clients/ scratch, status files), so the tree is
+    copied out once and run from here. Rebuildable state only: the record stays in Supabase,
+    so losing this folder costs a re-materialize, never data."""
+    if IS_WINDOWS:
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "StrategiCanon" / "app"
+    return Path.home() / "Library" / "Application Support" / "StrategiCanon" / "app"
+
+
+def app_folder() -> Path:
+    """The folder the user sees the app in: where the .app (or .exe folder) sits, and where
+    the single-app layout looks for the operator's .env."""
+    exe = Path(sys.executable).resolve()
+    if IS_MAC and IS_FROZEN:
+        # .app/Contents/MacOS/binary -> parents[2] is the .app, parents[3] its folder.
+        try:
+            return exe.parents[3] if exe.parents[2].suffix == ".app" else exe.parent
+        except IndexError:
+            return exe.parent
+    return exe.parent
+
+
+def external_env_path() -> Path | None:
+    """The operator's env file beside the app, or None. `.env` is the name admins already
+    hand out; `canon.env` is accepted too because Finder hides dotfiles and a visible name
+    is the difference between 'drop the file next to the app' working and not."""
+    folder = app_folder()
+    for name in (".env", "canon.env"):
+        candidate = folder / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def sync_external_env(tree: Path) -> None:
+    """Copy the env beside the app into the tree the engine reads (server/.env). Runs at
+    every startup and restart, so editing the file beside the app takes effect on Restart.
+    A copy, not a symlink: a symlink dangles when the user moves the app, and a dangling
+    server/.env fails much more confusingly than a stale one."""
+    src = external_env_path()
+    if src is None:
+        return
+    try:
+        dest = tree / "server" / ".env"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(src.read_bytes())
+        tlog(f"env synced from {src}")
+    except OSError as exc:
+        tlog(f"could not sync {src} into the tree: {exc}")
+
+
+def _copy_tree(src: Path, dest: Path) -> None:
+    """ditto on macOS (preserves symlinks, modes and executable bits, battle-tested for the
+    runtimes in this repo), shutil fallback elsewhere."""
+    if IS_MAC and shutil_which("ditto"):
+        subprocess.run(["ditto", str(src), str(dest)], check=True)
+        return
+    import shutil
+    shutil.copytree(src, dest, symlinks=True)
+
+
+def shutil_which(name: str) -> str | None:
+    import shutil
+    return shutil.which(name)
+
+
+def materialize_bundled_tree(bundle: Path) -> Path:
+    """Lay the bundled tree down in the data folder and return it. Idempotent and stamped:
+    the CI writes .canon-tree-stamp (the commit sha) into the bundle, and a matching stamp on
+    disk means the copy is current, so every launch after the first is a stat and a read.
+
+    ON UPGRADE (stamp mismatch) CODE IS REPLACED AND STATE IS KEPT: every top-level entry the
+    bundle carries is replaced EXCEPT outputs/ and clients/, which are per-user scratch the
+    record can rebuild but local runs may be ahead of. server/.env is stashed across the
+    server/ replace and restored, so an upgrade never costs the operator their keys even if
+    the copy beside the app was deleted."""
+    dest = data_tree_dir()
+    stamp_name = ".canon-tree-stamp"
+    try:
+        bundle_stamp = (bundle / stamp_name).read_text(encoding="utf-8").strip()
+    except OSError:
+        bundle_stamp = "unstamped"
+    try:
+        dest_stamp = (dest / stamp_name).read_text(encoding="utf-8").strip()
+    except OSError:
+        dest_stamp = None
+
+    if dest_stamp == bundle_stamp and looks_like_repo(dest):
+        return dest
+
+    tlog(f"materializing bundled tree {bundle_stamp!r} over {dest_stamp!r} at {dest}")
+    dest.mkdir(parents=True, exist_ok=True)
+    env_stash = None
+    env_file = dest / "server" / ".env"
+    if env_file.is_file():
+        env_stash = env_file.read_bytes()
+
+    import shutil
+    for entry in sorted(bundle.iterdir()):
+        if entry.name == stamp_name:
+            continue
+        target = dest / entry.name
+        if entry.name in ("outputs", "clients") and target.exists():
+            continue
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        elif target.exists() or target.is_symlink():
+            target.unlink()
+        if entry.is_dir():
+            _copy_tree(entry, target)
+        else:
+            shutil.copy2(entry, target)
+
+    if env_stash is not None and not env_file.is_file():
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        env_file.write_bytes(env_stash)
+    (dest / stamp_name).write_text(bundle_stamp + "\n", encoding="utf-8")
+    tlog(f"materialized bundled tree at {dest}")
+    return dest
+
+
 def discover_repo() -> Path | None:
-    """(a) walk UP from the executable/frozen location and from this file,
-    (b) the stored path in ~/.strategi-canon.json, (c) a tkinter folder picker
-    persisted to (b). Returns None when all three fail; the caller shows a
-    native-ish error and exits."""
+    """(a) walk UP from the executable/frozen location and from this file, (b) the tree
+    bundled inside a single-app build, materialized to the data folder, (c) the stored path
+    in ~/.strategi-canon.json, (d) a tkinter folder picker persisted to (c). Returns None
+    when all fail; the caller shows a native-ish error and exits.
+
+    The walk-up stays FIRST so the folder release keeps working exactly as before: its .app
+    sits inside the tree, has no bundled canon-tree, and finds the siblings it always found."""
     starts: list[Path] = []
     if IS_FROZEN:
         starts.append(Path(sys.executable).resolve())
@@ -196,6 +344,16 @@ def discover_repo() -> Path | None:
                     return candidate
             except OSError:
                 continue
+
+    bundle = bundled_tree_dir()
+    if bundle is not None:
+        try:
+            tree = materialize_bundled_tree(bundle)
+            sync_external_env(tree)
+            return tree
+        except Exception:
+            tlog("bundled tree materialization failed:\n" + traceback.format_exc())
+            # Fall through: the stored path or the picker may still rescue this launch.
 
     try:
         cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -420,6 +578,92 @@ def dot_image(color: str):
 
 
 # ---------------------------------------------------------------------------
+# Start at login: keep Canon resident so the project is up the moment it is opened
+# ---------------------------------------------------------------------------
+
+AUTOSTART_LABEL = "com.strategi.canon"
+
+_MAC_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{label}</string>
+  <key>ProgramArguments</key><array><string>{program}</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Interactive</string>
+</dict>
+</plist>
+"""
+
+
+def _mac_launch_agent_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{AUTOSTART_LABEL}.plist"
+
+
+def autostart_supported() -> bool:
+    """Only the packaged app can start at login: a login item points at a stable executable, and
+    a source checkout run through a system Python has none. So the menu offers this only when
+    frozen, on the two platforms the package targets."""
+    return IS_FROZEN and (IS_MAC or IS_WINDOWS)
+
+
+def _autostart_target() -> str:
+    """What a login item launches: the .app binary on macOS, the tray .exe on Windows, both of
+    which are sys.executable inside a PyInstaller build."""
+    return str(Path(sys.executable).resolve())
+
+
+def autostart_enabled() -> bool:
+    """Whether the login item is installed. Any failure reads as 'off' rather than raising into
+    the menu, which polls this on every open."""
+    try:
+        if IS_MAC:
+            return _mac_launch_agent_path().is_file()
+        if IS_WINDOWS:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r"Software\Microsoft\Windows\CurrentVersion\Run") as key:
+                try:
+                    winreg.QueryValueEx(key, "StrategiCanon")
+                    return True
+                except FileNotFoundError:
+                    return False
+    except OSError:
+        return False
+    return False
+
+
+def set_autostart(enable: bool) -> None:
+    """Install or remove the login item. It WRITES the file/registry value only and never starts
+    a process, so toggling it on while the app is already running does not spawn a second copy:
+    the item takes effect at the next login. Once on, the app launches at login and its tray
+    keeps the engine and the prebuilt dashboard resident, so opening it shows the project at once."""
+    if IS_MAC:
+        plist = _mac_launch_agent_path()
+        if enable:
+            plist.parent.mkdir(parents=True, exist_ok=True)
+            plist.write_text(
+                _MAC_PLIST.format(label=AUTOSTART_LABEL, program=_autostart_target()),
+                encoding="utf-8")
+        else:
+            plist.unlink(missing_ok=True)
+        return
+    if IS_WINDOWS:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Run", 0,
+                            winreg.KEY_SET_VALUE) as key:
+            if enable:
+                winreg.SetValueEx(key, "StrategiCanon", 0, winreg.REG_SZ,
+                                  f'"{_autostart_target()}"')
+            else:
+                try:
+                    winreg.DeleteValue(key, "StrategiCanon")
+                except FileNotFoundError:
+                    pass
+
+
+# ---------------------------------------------------------------------------
 # The app
 # ---------------------------------------------------------------------------
 
@@ -427,6 +671,10 @@ class CanonTray:
     def __init__(self, repo: Path, launcher) -> None:
         self.repo = repo
         self.launcher = launcher
+        # Single-app mode: this tray is running a tree it materialized from its own bundle,
+        # so the operator's .env lives BESIDE THE APP and is re-synced on every (re)start,
+        # and the preflight's env message points there instead of at server/.env.
+        self.single_app = bundled_tree_dir() is not None and repo == data_tree_dir()
         self.engine_port = self._env_port("CANON_ENGINE_PORT", 8000)
         self.dash_port = self._env_port("CANON_DASHBOARD_PORT", 3000)
         self.no_dashboard = os.environ.get("CANON_NO_DASHBOARD") == "1"
@@ -487,6 +735,12 @@ class CanonTray:
         yield Item("Restart", self.on_restart, default=(self.state == "dead"))
         yield Item("Check setup again", self.on_check_setup)
         yield Item("Open logs", self.on_open_logs)
+        if autostart_supported():
+            # A checkbox: pystray re-reads `checked` each time the menu opens, so it reflects the
+            # login item's real state even if it was changed elsewhere. Only shown on the packaged
+            # app (autostart_supported), where a login item has a stable executable to point at.
+            yield Item("Start at login", self.on_toggle_autostart,
+                       checked=lambda item: autostart_enabled())
         yield Menu.SEPARATOR
         yield Item("Quit", self.on_quit)
 
@@ -494,7 +748,15 @@ class CanonTray:
 
     def run_preflight(self) -> list[dict]:
         checks = list(self.launcher.preflight_checks())
-        checks.append(self.launcher.env_file_check())
+        env_check = self.launcher.env_file_check()
+        if self.single_app and not env_check.get("ok"):
+            # The launcher's wording points at server/.env inside the tree, which the
+            # single-app operator never sees. Their env lives beside the app.
+            env_check = dict(env_check, problem="No .env file found next to the app.",
+                             fix='Put the .env file from your admin in the same folder as '
+                                 '"Strategi Canon.app" (name it .env or canon.env), then '
+                                 'choose "Check again".')
+        checks.append(env_check)
         if IS_FROZEN and not self.launcher.venv_python().exists() and find_system_python() is None:
             # The launcher's own python check tests the interpreter bundled
             # inside this app, which is always fine; what a frozen app needs
@@ -522,6 +784,10 @@ class CanonTray:
                 return
             try:
                 self._set_state("starting", "Checking setup...")
+                if self.single_app:
+                    # Before preflight, which reads server/.env: a fresh or edited env beside
+                    # the app must count on this very (re)start.
+                    sync_external_env(self.repo)
                 problems = self.run_preflight()
                 if problems:
                     self.problems = problems
@@ -653,6 +919,16 @@ class CanonTray:
 
     def on_open_dashboard(self, icon=None, item=None) -> None:
         webbrowser.open(f"http://localhost:{self.dash_port}/")
+
+    def on_toggle_autostart(self, icon=None, item=None) -> None:
+        """Flip the login item. Failures are logged, never raised into pystray's callback, and
+        the menu is refreshed so the checkmark matches what actually landed on disk."""
+        try:
+            set_autostart(not autostart_enabled())
+        except OSError as exc:
+            tlog(f"start-at-login toggle failed: {exc}")
+        if self.icon is not None:
+            self.icon.update_menu()
 
     def on_restart(self, icon=None, item=None) -> None:
         def work():

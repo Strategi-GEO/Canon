@@ -46,11 +46,18 @@ a GitHub token when asked.
 ### If you cannot use the Terminal at all
 
 There are prebuilt zips on the repository's **Releases** page
-(`Strategi-Canon-macos.zip`, about 330 MB). Unzip it, put the `server/.env` file
-your admin sends you into the folder's `server/` directory, and open
-**Strategi Canon.app** inside. macOS will refuse the first launch; open
-**System Settings > Privacy & Security**, scroll to the bottom, and choose
+(`Strategi-Canon-macos.zip`, about 330 MB). On macOS the zip contains ONE app.
+Unzip it, put **Strategi Canon.app** anywhere (Applications is fine), and drop
+the `.env` file your admin sends you into the SAME folder as the app (keep the
+name `.env`, or rename it `canon.env` if you want to see it in Finder). Open the
+app: on first launch it copies its working files to
+`~/Library/Application Support/StrategiCanon` and runs from there, so the app
+itself never needs anything else beside it. macOS will refuse the first launch;
+open **System Settings > Privacy & Security**, scroll to the bottom, and choose
 **Open Anyway**. That is needed once per machine, not once per launch.
+
+On Windows the zip is a folder; open **Strategi Canon** inside it and put the
+`.env` at `server\.env` within that folder.
 
 The installer route above avoids that step entirely, which is why it is the one
 this guide leads with.
@@ -59,13 +66,18 @@ The dot is the whole interface:
 
 | Dot | Meaning |
 |---|---|
-| **Green** | Everything is running. The menu has "Open dashboard", "Restart", "Open logs", "Quit". |
+| **Green** | Everything is running. The menu has "Open dashboard", "Restart", "Open logs", "Start at login", "Quit". |
 | **Amber** | Setup needs attention. Open the menu: it lists each problem with its fix in plain English. Fix it, then choose "Check again". |
 | **Red** | The engine or dashboard died. Choose "Restart". If it stays red, "Open logs" shows why. |
 
-The first start is slow (it builds the engine's Python environment and runs
-`npm install` once). Later starts take seconds. Quit from the menu when you
-are done; that stops the engine and the dashboard too.
+The dashboard ships pre-built, so it comes up in a second or two with no compile
+step and no `npm install`. The first start still spends a minute or two building
+the engine's Python environment once; later starts take seconds. Quit from the
+menu when you are done; that stops the engine and the dashboard too.
+
+Turn on **"Start at login"** from the menu to keep Canon running in the
+background: it launches at login and stays resident, so the project is already
+up the moment you open the dashboard. Toggle it off from the same menu.
 
 ### First-launch warnings (the app is unsigned)
 
@@ -147,7 +159,7 @@ has to be rotated for everybody.
 | Engine is up but dashboard login fails | `server/.env` is missing/stale, or your dashboard user was never provisioned | Ask the admin for the current `server/.env` and confirm they created your account. Replace the file, then "Restart" |
 | Blogs will not generate, viewing works | Firecrawl / DataForSEO keys were found nowhere | Have the admin set up the MCP servers in your Claude Code, or set the three variables from Prerequisites step 4, then "Restart" |
 | **Post to CMS** says "No CMS write key configured for org ..." | That client org has no key on this machine | Add the line the message names to `server/.env` (see Posting blogs to the client CMS), then "Restart". The message names the exact variable |
-| First start sits for minutes | One-time setup: pip and npm downloading dependencies | Normal. Later starts skip both |
+| First start sits for minutes | One-time setup: pip building the engine's Python environment | Normal. Later starts skip it. The dashboard is pre-built, so it never compiles or runs npm install |
 | Port already in use messages in logs | A previous run left a server behind | The launcher reclaims its ports automatically on start; "Restart" is usually enough. Otherwise reboot |
 
 Logs live in `~/Library/Logs/StrategiCanon` (macOS) or

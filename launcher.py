@@ -522,11 +522,31 @@ def ensure_dashboard_deps() -> None:
         die(str(exc))
 
 
+def prebuilt_dashboard_server() -> Path | None:
+    """The packaged production dashboard's server, or None when running from source.
+
+    The release ships a Next.js `standalone` build at dashboard/.next/standalone/server.js: an
+    already-compiled, self-contained Node server. When it is present the launcher runs it
+    directly, which is the whole of the "instant, no compile each launch" change: there is no
+    `npm install`, no `next build`, and no `next dev` compiling a page the first time it is
+    visited. When it is absent (a source checkout a developer runs) the launcher falls back to
+    `next dev`, so nothing about the dev workflow changes."""
+    server = REPO_ROOT / "dashboard" / ".next" / "standalone" / "server.js"
+    return server if server.is_file() else None
+
+
 def clear_next_cache() -> None:
     # Dev and production builds cannot share one .next: `next build`
     # overwrites the manifests `next dev` reads and dev then 500s on every
     # route. Rebuilding the cache from clean on each start costs seconds and
     # removes the most common way the app looks broken when nothing is wrong.
+    #
+    # NEVER when a prebuilt dashboard is present: dashboard/.next IS that build, so wiping it
+    # would delete the very server the packaged app runs and force the dev path that has no
+    # node_modules to fall back to. The caller already skips this in the prebuilt case; the
+    # guard is here too so a future caller cannot reintroduce the deletion.
+    if prebuilt_dashboard_server() is not None:
+        return
     next_cache = REPO_ROOT / "dashboard" / ".next"
     if next_cache.exists():
         log("DASHBOARD DEPS: clearing dashboard/.next dev cache (rebuilt automatically)")
@@ -572,9 +592,27 @@ def start_engine(py: Path, env: dict[str, str], port: int,
 
 
 def start_dashboard(port: int, stdout=None, stderr=None) -> subprocess.Popen:
-    log(f"START: dashboard on http://localhost:{port}")
     dash_env = dict(os.environ)
-    dash_env["PORT"] = str(port)  # next dev honors PORT
+    dash_env["PORT"] = str(port)  # both next dev and the standalone server honor PORT
+
+    server = prebuilt_dashboard_server()
+    if server is not None:
+        # THE PACKAGED PATH: a compiled standalone server, ready in a second or two with no
+        # per-page compile. HOSTNAME pins it to loopback so it is never exposed on the network,
+        # matching the engine's 127.0.0.1 bind. Run with node directly, not a shell: the binary
+        # is on PATH (the tray's augment_path adds the bundled node), and there is no npm.cmd
+        # indirection to resolve. The engine URL the browser calls is baked in at build time
+        # (NEXT_PUBLIC_API_BASE), so the engine must run on the port that build targeted (8000).
+        dash_env["HOSTNAME"] = "127.0.0.1"
+        node = which_any("node", "node.exe") or "node"
+        log(f"START: dashboard (prebuilt) on http://localhost:{port}")
+        return spawn(
+            [node, str(server)], cwd=server.parent, env=dash_env,
+            use_shell_on_windows=False, stdout=stdout, stderr=stderr,
+        )
+
+    # THE SOURCE PATH: a developer running the repo, where next dev compiles on demand.
+    log(f"START: dashboard (dev) on http://localhost:{port}")
     return spawn(
         ["npm", "run", "dev"],
         cwd=REPO_ROOT / "dashboard", env=dash_env,
@@ -753,10 +791,15 @@ def main() -> int:
     if not args.no_dashboard:
         reclaim_port(args.dashboard_port)
 
-    # g: dashboard deps
+    # g: dashboard deps. A packaged (prebuilt) dashboard needs neither: it carries its own
+    # traced node_modules inside the standalone bundle and there is no dev cache to clear, so
+    # skipping both is what turns first launch from "a few minutes" into "seconds".
     if not args.no_dashboard:
-        ensure_dashboard_deps()
-        clear_next_cache()
+        if prebuilt_dashboard_server() is None:
+            ensure_dashboard_deps()
+            clear_next_cache()
+        else:
+            log("DASHBOARD: prebuilt production build present, skipping npm install and dev cache clear")
 
     engine_proc: subprocess.Popen | None = None
     dash_proc: subprocess.Popen | None = None

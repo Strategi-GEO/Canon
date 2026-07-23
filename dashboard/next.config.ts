@@ -1,6 +1,20 @@
 import type { NextConfig } from "next";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const nextConfig: NextConfig = {
+  // SELF-HOSTED PRODUCTION BUILD. `standalone` emits `.next/standalone/server.js`, a
+  // self-contained Node server with only the traced dependencies, so the packaged desktop app
+  // serves an ALREADY-COMPILED dashboard instead of running `next dev` (which JIT-compiles each
+  // page on first visit, every launch) and instead of needing `npm install` on the user's
+  // machine. The launcher runs `node server.js` when this output exists and falls back to
+  // `next dev` from source when it does not. Vercel ignores this field and uses its own output.
+  //
+  // outputFileTracingRoot is pinned to this folder so the standalone root is `dashboard/` and
+  // server.js lands at `.next/standalone/server.js`, not nested under an inferred monorepo root.
+  output: "standalone",
+  outputFileTracingRoot: dirname(fileURLToPath(import.meta.url)),
+
   // No rewrite proxy to the FastAPI engine on purpose. The dashboard calls it cross origin
   // from the browser so the SSE run feed streams straight from the engine, and a proxy hop
   // would buffer those frames and stall the live view. CORS is configured server side.
