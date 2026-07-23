@@ -351,6 +351,21 @@ def materialize_bundled_tree(bundle: Path) -> Path:
     return dest
 
 
+def _mac_choose_folder() -> str | None:
+    """A folder picker via osascript (choose folder), returning a POSIX path or None if cancelled.
+    Used instead of tkinter.filedialog on macOS, where Tk crashes the pystray app (see the picker
+    call site and secrets_bootstrap._prompt_login_mac)."""
+    script = ('POSIX path of (choose folder with prompt '
+              '"Select the Strategi Canon folder (the one containing launcher.py)")')
+    try:
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=600)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.rstrip("\n") or None
+
+
 def discover_repo() -> Path | None:
     """(a) walk UP from the executable/frozen location and from this file, (b) the tree
     bundled inside a single-app build, materialized to the data folder, (c) the stored path
@@ -393,15 +408,21 @@ def discover_repo() -> Path | None:
         pass
 
     try:
-        import tkinter
-        import tkinter.filedialog
-        root = tkinter.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        chosen = tkinter.filedialog.askdirectory(
-            title="Select the Strategi Canon folder (the one containing launcher.py)"
-        )
-        root.destroy()
+        if IS_MAC:
+            # osascript, NOT tkinter: importing Tk installs TKApplication as the shared NSApp and
+            # the next pystray menu validation panics (SIGABRT). Same reason as the sign-in dialog,
+            # see secrets_bootstrap._prompt_login_mac.
+            chosen = _mac_choose_folder()
+        else:
+            import tkinter
+            import tkinter.filedialog
+            root = tkinter.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            chosen = tkinter.filedialog.askdirectory(
+                title="Select the Strategi Canon folder (the one containing launcher.py)"
+            )
+            root.destroy()
         if chosen and looks_like_repo(Path(chosen)):
             CONFIG_PATH.write_text(json.dumps({"repo": chosen}), encoding="utf-8")
             tlog(f"repo picked and persisted to {CONFIG_PATH}: {chosen}")
@@ -852,8 +873,14 @@ class CanonTray:
 
                 if not self.no_dashboard:
                     self._set_state("starting", "Preparing dashboard...")
-                    self.launcher.ensure_dashboard_deps_raise()
-                    self.launcher.clear_next_cache()
+                    # A packaged (prebuilt) dashboard needs NEITHER: it ships its own traced
+                    # node_modules inside .next/standalone and has no dev cache to clear. Mirror
+                    # launcher.main()'s guard, which the tray was missing: without it the packaged
+                    # app ran a multi-minute `npm install` and sat on "Preparing dashboard..."
+                    # instead of starting the compiled server in a second.
+                    if self.launcher.prebuilt_dashboard_server() is None:
+                        self.launcher.ensure_dashboard_deps_raise()
+                        self.launcher.clear_next_cache()
                     self._set_state("starting", f"Starting dashboard on :{self.dash_port}...")
                     dash_log = self._open_child_log("dashboard.log")
                     self.dash_proc = self.launcher.start_dashboard(

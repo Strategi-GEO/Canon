@@ -19,10 +19,13 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+IS_MAC = sys.platform == "darwin"
 
 # The engine refuses to start without these three (launcher.ENV_FILE_KEYS), so a provision that
 # does not deliver them is a failure worth reporting, not a half-written file the engine chokes on.
@@ -175,10 +178,81 @@ def provision(cfg: dict, tree: Path, email: str, password: str) -> None:
     write_env(tree, secrets)
 
 
+def _osascript(script: str) -> tuple[int, str]:
+    """Run one AppleScript, returning (exit code, stdout with the trailing newline stripped). A
+    cancelled dialog exits non-zero (osascript maps Cancel/Esc to error -128)."""
+    try:
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=600)
+    except Exception:
+        return 1, ""
+    return r.returncode, r.stdout.rstrip("\n")
+
+
+def _as_str(s: str) -> str:
+    """Quote s as an AppleScript string literal: escape backslash and double-quote, flatten
+    newlines/tabs to spaces (AppleScript literals do not decode \\n), and pass UTF-8 through
+    (osascript -e reads UTF-8). json.dumps would \\uXXXX-escape non-ASCII, which AppleScript
+    cannot decode, so a localized OS/TLS error in a message would make the script fail to compile
+    and its dialog never show."""
+    s = s.replace("\\", "\\\\").replace('"', '\\"')
+    for ws in ("\n", "\r", "\t"):
+        s = s.replace(ws, " ")
+    return '"' + s + '"'
+
+
+def _mac_ask(prompt: str, hidden: bool = False, default: str = "") -> str | None:
+    """One text field via osascript. Returns the entered text (raw, unstripped so a password keeps
+    every character) or None when the operator cancelled. `default` pre-fills the field, so a
+    failed attempt can re-show the email already typed."""
+    script = ("display dialog " + _as_str(prompt) + " default answer " + _as_str(default)
+              + ' with title "Strategi Canon"')
+    if hidden:
+        script += " with hidden answer"
+    code, out = _osascript(script)
+    if code != 0:
+        return None
+    marker = "text returned:"           # osascript emits "button returned:OK, text returned:VALUE"
+    i = out.find(marker)                # VALUE is the last field, so everything after it is the value
+    return out[i + len(marker):] if i >= 0 else ""
+
+
+def _mac_notify(message: str) -> None:
+    _osascript("display dialog " + _as_str(message) +
+               ' with title "Strategi Canon" buttons {"OK"} default button "OK" with icon caution')
+
+
+def _prompt_login_mac(cfg: dict, tree: Path) -> bool:
+    """The macOS sign-in, via osascript rather than Tk. Tkinter cannot coexist with pystray's
+    NSApplication in one process: initialising Tk installs TKApplication as the shared NSApp, and
+    the next menu validation panics (Tcl_Panic -> SIGABRT), which is exactly what crashed the app
+    after a sign-in. osascript spawns a separate process, so nothing touches this app's NSApp."""
+    email = ""
+    while True:
+        email = _mac_ask("Sign in to Strategi Canon with your Canon account. Email:", default=email)
+        if email is None:
+            return False
+        email = email.strip()
+        password = _mac_ask("Password:", hidden=True)
+        if password is None:
+            return False
+        try:
+            provision(cfg, tree, email, password)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            # Parity with the Tk path, whose Tkinter callback swallowed EVERY exception and kept
+            # the dialog open: catch all (not just BootstrapError), so a write_env OSError or a
+            # truncated-read HTTPException still loops for a retry rather than escaping into
+            # ensure_secrets, which must NEVER raise. The operator can always Cancel to stop.
+            _mac_notify(str(exc))
+
+
 def prompt_login(cfg: dict, tree: Path) -> bool:
-    """A minimal Tk sign-in dialog that loops until the operator provisions or cancels. Returns
-    True once server/.env is written, False if they cancelled or Tk is unavailable (headless),
-    in which case the caller falls back to its 'no env' state exactly as before."""
+    """Loops a sign-in until the operator provisions or cancels. Returns True once server/.env is
+    written, False if they cancelled or no UI is available (headless), in which case the caller
+    falls back to its 'no env' state exactly as before. macOS uses osascript (see _prompt_login_mac
+    for why Tk crashes there); every other platform keeps the Tk dialog."""
+    if IS_MAC:
+        return _prompt_login_mac(cfg, tree)
     try:
         import tkinter as tk
         from tkinter import ttk
