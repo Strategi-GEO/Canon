@@ -702,6 +702,11 @@ class CanonTray:
         # so the operator's .env lives BESIDE THE APP and is re-synced on every (re)start,
         # and the preflight's env message points there instead of at server/.env.
         self.single_app = bundled_tree_dir() is not None and repo == data_tree_dir()
+        # The marker app_update.stage() writes beside the tree after a download. The watcher sees
+        # it and restarts the app to apply the staged update (apply_pending runs in main()). Name
+        # mirrors app_update._PENDING; a launch-time marker is already consumed by apply_pending in
+        # main() before the watcher starts, so the watcher only ever sees one written THIS session.
+        self._pending_marker = repo.parent / ".canon-update-pending"
         self.engine_port = self._env_port("CANON_ENGINE_PORT", 8000)
         self.dash_port = self._env_port("CANON_DASHBOARD_PORT", 3000)
         self.no_dashboard = os.environ.get("CANON_NO_DASHBOARD") == "1"
@@ -900,6 +905,14 @@ class CanonTray:
         icon and status line on change; a died child turns the dot RED with
         Restart highlighted as the path back."""
         while not self._quitting.wait(10):
+            # A staged update is the operator having clicked "Update now"; apply it by relaunching
+            # the app (main() -> app_update.apply_pending). Checked FIRST and in every state, so an
+            # update downloaded while the engine is amber or dead still gets applied.
+            if IS_FROZEN and self._pending_marker.exists():
+                tlog("watcher: staged update detected, restarting to apply")
+                self._set_state("starting", "Applying update, restarting...")
+                self.restart_app()
+                return
             if self.state not in ("running", "dead"):
                 continue  # starting or amber: nothing to watch yet
             if self.engine_proc is None:
@@ -963,6 +976,34 @@ class CanonTray:
             self.stop_children()
             self.startup()
         threading.Thread(target=work, name="canon-restart", daemon=True).start()
+
+    def restart_app(self) -> None:
+        """Relaunch the WHOLE app (not just the children) so main() re-runs and app_update.
+        apply_pending swaps a staged update in before the engine and dashboard restart on the new
+        code. This is the auto-apply half of an update: the engine stages the package and writes
+        the pending marker, the watcher sees it and calls this. Unlike on_restart, which restarts
+        the children under the same launcher held in memory, a relaunch also refreshes launcher.py
+        and the tray itself."""
+        self._quitting.set()
+        self.stop_children()
+        exe = str(Path(sys.executable).resolve())
+        tlog(f"restart_app: relaunching {exe} to apply a staged update")
+        try:
+            if IS_WINDOWS:
+                # Windows has no in-place execv for a windowed app, so spawn a fresh DETACHED
+                # instance and let this one fall out of the run loop and exit.
+                DETACHED_PROCESS, CREATE_NEW_PROCESS_GROUP = 0x00000008, 0x00000200
+                subprocess.Popen([exe], creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                                 close_fds=True)
+                if self.icon is not None:
+                    self.icon.stop()
+            else:
+                # Replace this process image, so there is never a second menu-bar icon and the same
+                # pid re-enters main(). Children were stopped above, so nothing is left holding a port.
+                os.execv(exe, [exe])
+        except Exception:
+            tlog("restart_app failed; the update applies on the next manual restart instead:\n"
+                 + traceback.format_exc())
 
     def on_check_setup(self, icon=None, item=None) -> None:
         def work():

@@ -299,24 +299,44 @@ async def api_app_version(user: auth.Identity = Depends(auth.require_user)):
     return {"version": app_update.current_version()}
 
 
+def _any_live_run():
+    """Any brand's run live right now. The app updater refuses while one is: applying an update
+    restarts the whole app, and a restart mid-run kills that live Claude session."""
+    return any(run.get("live") for run in runner.list_runs())
+
+
 @app.get("/api/app/update/check")
 async def api_app_update_check(user: auth.Identity = Depends(auth.require_admin)):
+    # runs_active rides along so the panel can DISABLE the button and say why, rather than letting
+    # the operator click into a 409. The POST re-checks it authoritatively, since a run can start
+    # between this read and the click.
     import app_update
-    return await asyncio.to_thread(app_update.check)
+    result = await asyncio.to_thread(app_update.check)
+    result["runs_active"] = _any_live_run()
+    return result
 
 
 @app.post("/api/app/update")
 async def api_app_update(user: auth.Identity = Depends(auth.require_admin)):
-    # Downloads and stages the newest package; the swap happens at the next tray restart, which
-    # is why the response says restart_required. A "no update / bad checksum / cannot reach
-    # Storage" is the operator's to see, so it comes back 400 with the reason, not a bare 500.
+    # NEVER update while a blog run (a live local Claude session) is in flight: the tray restart
+    # that applies the update would kill it. This is the authoritative guard; the panel also
+    # disables the button off the check's runs_active, but a run can start after that read.
+    if _any_live_run():
+        raise HTTPException(
+            status_code=409,
+            detail="A blog is generating right now. Wait for it to finish, then update.")
+    # Downloads and stages the newest package. stage() writes the pending marker; the tray watcher
+    # sees it and RESTARTS THE APP to apply it, so the response says restarting rather than asking
+    # the operator to restart. A "no update / bad checksum / cannot reach Storage" comes back 400
+    # with the reason, not a bare 500.
     import app_update
     try:
-        return await asyncio.to_thread(app_update.stage)
+        result = await asyncio.to_thread(app_update.stage)
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001 (surface the reason instead of a blank 500)
         raise HTTPException(status_code=500, detail=f"update failed: {exc}")
+    return {**result, "restarting": True}
 
 
 def _scope(user):

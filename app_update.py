@@ -239,6 +239,10 @@ def apply_pending(tree: Path = TREE) -> dict | None:
     except Exception as exc:  # noqa: BLE001 (roll back whatever we touched, then report)
         _rollback(tree, backup, moved)
         _restore_env(tree, env_bytes)
+        # Clear the marker even on failure. The tray auto-restarts when it SEES this marker, so a
+        # broken package that kept its marker would restart, fail, and restart again forever. A
+        # discarded update is re-downloadable; a boot loop is not recoverable from the UI.
+        _clear_pending(tree)
         return {"applied": False, "error": str(exc)}
 
     shutil.rmtree(backup, ignore_errors=True)
@@ -356,6 +360,7 @@ def _demo() -> None:
         assert current_version(tree) == "0.1.0", "version must not move on a failed swap"
         assert (tree / "server" / "app.py").read_text() == "# v0.1.0", "code must be original"
         assert (tree / "server" / ".env").read_text() == "SUPABASE_URL=x\n"
+        assert not (base / _PENDING).exists(), "failed apply must clear the marker (no boot loop)"
 
     print("app_update self-test: OK")
 

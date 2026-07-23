@@ -121,13 +121,13 @@ export function SettingsDialog({ trigger }: { trigger: React.ReactNode }) {
             {error ? (
               <FieldError error={error} />
             ) : staged ? (
-              /* Downloaded: the swap is pending a restart, so say so plainly. */
+              /* Downloaded: the app restarts itself to apply it, so the page is about to drop. */
               <div className="flex items-start gap-2.5 rounded-lg border border-border px-3.5 py-3 text-sm">
                 <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
                 <p className="text-foreground">
-                  Update <span className="font-mono">v{staged}</span> downloaded. Restart Strategi
-                  Canon to finish: click the Strategi Canon icon in your menu bar or system tray and
-                  choose Restart (or quit and reopen). Your keys and work are kept.
+                  Update <span className="font-mono">v{staged}</span> downloaded. Strategi Canon is
+                  restarting to apply it, so this page will disconnect and reconnect in a few
+                  seconds. Your keys and work are kept.
                 </p>
               </div>
             ) : checking ? (
@@ -137,11 +137,20 @@ export function SettingsDialog({ trigger }: { trigger: React.ReactNode }) {
               </p>
             ) : check?.update_available ? (
               <div className="flex items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 px-3.5 py-3">
-                <p className="text-sm text-foreground">
-                  Update available:{" "}
-                  <span className="font-mono font-medium">v{check.latest}</span>
-                </p>
-                <Button size="sm" onClick={runUpdate} disabled={busy}>
+                <div>
+                  <p className="text-sm text-foreground">
+                    Update available:{" "}
+                    <span className="font-mono font-medium">v{check.latest}</span>
+                  </p>
+                  {/* Updating restarts the app, which would kill a live run, so the engine refuses
+                      it (409) and the button is disabled until the run finishes. */}
+                  {check.runs_active ? (
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      A blog is generating. You can update once it finishes.
+                    </p>
+                  ) : null}
+                </div>
+                <Button size="sm" onClick={runUpdate} disabled={busy || check.runs_active}>
                   {busy ? (
                     <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
                   ) : (

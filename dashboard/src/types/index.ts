@@ -101,19 +101,22 @@ export type AppVersion = {
 };
 
 /** Whether a newer app package exists. `notes` carries the reason when none does (up to date,
- *  dev checkout, or a network miss), so the Settings panel always has something to show. */
+ *  dev checkout, or a network miss), so the Settings panel always has something to show.
+ *  `runs_active` disables the button: updating restarts the app, which would kill a live run. */
 export type AppUpdateCheck = {
   current: string;
   latest: string | null;
   update_available: boolean;
   notes: string;
+  runs_active: boolean;
 };
 
-/** The result of staging an update: it is downloaded, and applies on the next restart. */
+/** The result of staging an update: it is downloaded, and the app restarts itself to apply it. */
 export type AppUpdateResult = {
   ok: boolean;
   staged_version: string;
   restart_required: boolean;
+  restarting: boolean;
 };
 
 export type CreateClientBody = {
