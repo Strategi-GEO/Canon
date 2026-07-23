@@ -5,6 +5,9 @@ import type {
   AnalysisGenJob,
   AnalysisResponse,
   AnswersBody,
+  AppUpdateCheck,
+  AppUpdateResult,
+  AppVersion,
   BlogComment,
   BlogCommentReply,
   BlogCommentsResponse,
@@ -762,4 +765,22 @@ export const api = {
   /** One month's analysis PDF, as a download blob. Needs the live engine. */
   analysisPdf: (slug: string, month: string, signal?: AbortSignal) =>
     requestBlob(`/api/clients/${slug}/analysis/${month}/pdf`, signal),
+
+  /**
+   * The running desktop app's version. Engine-only, so the Settings panel that reads it is hidden
+   * on the hosted build (there is no app to version there). 'dev' for a source checkout.
+   */
+  appVersion: (signal?: AbortSignal) =>
+    request<AppVersion>("/api/app/version", { signal }),
+
+  /** Whether a newer app package exists in the releases bucket. Never rejects on a network miss:
+   * the engine answers update_available false with a note the panel shows. Admin-only. */
+  checkAppUpdate: (signal?: AbortSignal) =>
+    request<AppUpdateCheck>("/api/app/update/check", { signal }),
+
+  /**
+   * Downloads and STAGES the newest package; it applies on the next restart, so the result says
+   * restart_required. 400 with a reason when there is no update or the download fails. Admin-only.
+   */
+  updateApp: () => request<AppUpdateResult>("/api/app/update", { method: "POST" }),
 };

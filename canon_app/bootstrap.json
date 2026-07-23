@@ -1,0 +1,5 @@
+{
+  "_comment": "PUBLIC Supabase config the desktop app uses to log an operator in and fetch the engine secrets (migration 028). These two values are NOT secret: they are the exact same project URL and anon/publishable key the Vercel website already ships to every browser, so committing them here is safe. Fill them once. Leave them empty and the app falls back to reading server/.env from beside the app, exactly as before. CI can override at build time with CANON_SUPABASE_URL / CANON_SUPABASE_ANON_KEY.",
+  "supabase_url": "https://xxbqdoxdohoyqtoxjtze.supabase.co",
+  "supabase_anon_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh4YnFkb3hkb2hveXF0b3hqdHplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyODI3MzcsImV4cCI6MjA5OTg1ODczN30.EZxCC1ptsbwW976iygjLBHx2tPKn6x860L5dYiK-J4Q"
+}

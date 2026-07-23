@@ -283,6 +283,42 @@ async def api_me(user: auth.Identity = Depends(auth.require_user)):
             "is_admin": user.is_admin, "orgs": orgs, "clients": slugs}
 
 
+# ---------------------------------------------------------------------------
+# App version + in-place update (desktop app only)
+# ---------------------------------------------------------------------------
+# app_update.py lives at the tree root beside launcher.py, and the engine runs from that tree,
+# so `import app_update` resolves to the live tree it would swap. Imported lazily inside the
+# handlers so any problem in it can never stop the engine from starting. These routes are only
+# reachable on the desktop app: the hosted Vercel build has no engine behind /api and the
+# Settings panel that calls them is hidden there (HOSTED_READONLY), so the client dashboard never
+# touches this. See app_update.py for the two-phase (stage now, apply at next launch) design.
+
+@app.get("/api/app/version")
+async def api_app_version(user: auth.Identity = Depends(auth.require_user)):
+    import app_update
+    return {"version": app_update.current_version()}
+
+
+@app.get("/api/app/update/check")
+async def api_app_update_check(user: auth.Identity = Depends(auth.require_admin)):
+    import app_update
+    return await asyncio.to_thread(app_update.check)
+
+
+@app.post("/api/app/update")
+async def api_app_update(user: auth.Identity = Depends(auth.require_admin)):
+    # Downloads and stages the newest package; the swap happens at the next tray restart, which
+    # is why the response says restart_required. A "no update / bad checksum / cannot reach
+    # Storage" is the operator's to see, so it comes back 400 with the reason, not a bare 500.
+    import app_update
+    try:
+        return await asyncio.to_thread(app_update.stage)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001 (surface the reason instead of a blank 500)
+        raise HTTPException(status_code=500, detail=f"update failed: {exc}")
+
+
 def _scope(user):
     """The brand slugs this caller may read, or None for see-everything.
 

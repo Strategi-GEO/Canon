@@ -2,18 +2,24 @@ import type { NextConfig } from "next";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// SELF-HOSTED PRODUCTION BUILD, DESKTOP APP ONLY. `standalone` emits `.next/standalone/server.js`,
+// a self-contained Node server, so the packaged desktop app serves an ALREADY-COMPILED dashboard
+// instead of running `next dev`. It is gated behind CANON_STANDALONE and OFF by default, which is
+// the whole point: the Vercel deployment of the client-facing dashboard never sets that flag, so
+// it builds with the EXACT config it always had and nothing about the hosted site changes. Only
+// the desktop build (CI sets CANON_STANDALONE=1 before `next build`) turns it on.
+// outputFileTracingRoot pins the standalone root to this folder so server.js lands at
+// `.next/standalone/server.js`, not nested under an inferred monorepo root.
+const standalone =
+  process.env.CANON_STANDALONE === "1"
+    ? {
+        output: "standalone" as const,
+        outputFileTracingRoot: dirname(fileURLToPath(import.meta.url)),
+      }
+    : {};
+
 const nextConfig: NextConfig = {
-  // SELF-HOSTED PRODUCTION BUILD. `standalone` emits `.next/standalone/server.js`, a
-  // self-contained Node server with only the traced dependencies, so the packaged desktop app
-  // serves an ALREADY-COMPILED dashboard instead of running `next dev` (which JIT-compiles each
-  // page on first visit, every launch) and instead of needing `npm install` on the user's
-  // machine. The launcher runs `node server.js` when this output exists and falls back to
-  // `next dev` from source when it does not. Vercel ignores this field and uses its own output.
-  //
-  // outputFileTracingRoot is pinned to this folder so the standalone root is `dashboard/` and
-  // server.js lands at `.next/standalone/server.js`, not nested under an inferred monorepo root.
-  output: "standalone",
-  outputFileTracingRoot: dirname(fileURLToPath(import.meta.url)),
+  ...standalone,
 
   // No rewrite proxy to the FastAPI engine on purpose. The dashboard calls it cross origin
   // from the browser so the SSE run feed streams straight from the engine, and a proxy hop

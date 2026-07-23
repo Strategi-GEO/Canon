@@ -95,6 +95,27 @@ export type MeResponse = {
   clients: string[];
 };
 
+/** The running desktop app's version ('dev' for a source checkout). */
+export type AppVersion = {
+  version: string;
+};
+
+/** Whether a newer app package exists. `notes` carries the reason when none does (up to date,
+ *  dev checkout, or a network miss), so the Settings panel always has something to show. */
+export type AppUpdateCheck = {
+  current: string;
+  latest: string | null;
+  update_available: boolean;
+  notes: string;
+};
+
+/** The result of staging an update: it is downloaded, and applies on the next restart. */
+export type AppUpdateResult = {
+  ok: boolean;
+  staged_version: string;
+  restart_required: boolean;
+};
+
 export type CreateClientBody = {
   name: string;
   domain: string;

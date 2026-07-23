@@ -38,8 +38,22 @@ if exist dist rmdir /s /q dist
     --name "Strategi Canon" ^
     --icon build_assets\canon.ico ^
     --hidden-import pystray._win32 ^
+    --hidden-import secrets_bootstrap ^
+    --add-data "bootstrap.json;." ^
     tray.py
 if errorlevel 1 exit /b 1
+
+rem SINGLE-APP MODE: embed the whole Canon tree beside the exe so tray.py finds it at
+rem exe_dir\canon-tree and materializes it to %LOCALAPPDATA% on first run. CI sets CANON_TREE;
+rem a local build without it produces the classic launcher-that-runs-a-sibling-folder app.
+if defined CANON_TREE (
+    echo ==^> embedding the Canon tree ^(single-app mode^)
+    xcopy "%CANON_TREE%" "dist\Strategi Canon\canon-tree" /E /I /Q /Y
+    if errorlevel 1 exit /b 1
+    if not exist "dist\Strategi Canon\canon-tree\launcher.py" ( echo canon-tree missing launcher.py & exit /b 1 )
+    if not exist "dist\Strategi Canon\canon-tree\server\app.py" ( echo canon-tree missing server\app.py & exit /b 1 )
+    if exist "dist\Strategi Canon\canon-tree\server\.env" ( echo REFUSING: server\.env is in the tree & exit /b 1 )
+)
 
 rem Copy the runtimes in after PyInstaller rather than via --add-data, which
 rem resolves symlinks and would break Python's bin\python3 and npm's shims.

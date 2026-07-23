@@ -2,13 +2,15 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Box, Plus } from "lucide-react";
+import { Box, Plus, Settings } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BRAND_NAV, isActiveSection, parseBrandPath, parseOrgPath } from "@/components/shell/nav";
 import { OrgSwitcher } from "@/components/shell/org-switcher";
 import { BrandSwitcher } from "@/components/shell/brand-switcher";
+import { SettingsDialog } from "@/components/shell/settings-dialog";
 import { AddOrganisationDialog } from "@/components/clients/add-organisation-dialog";
 import { addBrandHref, brandHref, brandLocationHref, orgHref, useOrgs } from "@/lib/orgs-context";
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { cn } from "@/lib/utils";
 import type { Org } from "@/types";
 
@@ -243,6 +245,21 @@ export function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
       <div className="flex-1 overflow-y-auto px-2.5 pb-4">
         <SidebarNav onNavigate={onNavigate} />
       </div>
+      {/* Pinned to the bottom, DESKTOP APP ONLY. On the hosted Vercel build HOSTED_READONLY is
+          true and there is no local app to version or update, so the gear simply does not render
+          and the client-facing dashboard is untouched. */}
+      {!HOSTED_READONLY ? (
+        <div className="border-t border-border px-2.5 py-2">
+          <SettingsDialog
+            trigger={
+              <button type="button" className={NAV_ROW_BUTTON}>
+                <Settings className="size-4 shrink-0" aria-hidden />
+                <span className="min-w-0 flex-1 truncate">Settings</span>
+              </button>
+            }
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

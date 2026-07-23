@@ -30,6 +30,8 @@ rm -rf build dist
     --icon build_assets/canon.icns \
     --osx-bundle-identifier is.strategi.canon \
     --hidden-import pystray._darwin \
+    --hidden-import secrets_bootstrap \
+    --add-data "bootstrap.json:." \
     tray.py
 
 APP="dist/Strategi Canon.app"

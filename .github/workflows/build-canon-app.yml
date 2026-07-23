@@ -100,7 +100,10 @@ jobs:
           set -euo pipefail
           cd dashboard
           npm ci
-          NEXT_PUBLIC_API_BASE=http://localhost:8000 npm run build
+          # CANON_STANDALONE=1 turns on the standalone output (next.config.ts), which is OFF by
+          # default so the Vercel build of the client dashboard is never affected. Only this
+          # desktop build sets it.
+          CANON_STANDALONE=1 NEXT_PUBLIC_API_BASE=http://localhost:8000 npm run build
           cp -r .next/static .next/standalone/.next/static
           if [ -d public ]; then cp -r public .next/standalone/public; fi
           test -f .next/standalone/server.js || { echo "standalone server.js was not produced"; exit 1; }
@@ -127,6 +130,10 @@ jobs:
           mkdir -p "$TREE/dashboard/.next"
           ditto "dashboard/.next/standalone" "$TREE/dashboard/.next/standalone"
           git rev-parse HEAD > "$TREE/.canon-tree-stamp"
+          # VERSION is what app_update.current_version() reads and what the updater compares. A tag
+          # gives the real number; a dispatch build has no tag, so 0.0.0 (never offers an update).
+          VERSION="0.0.0"; case "$GITHUB_REF" in refs/tags/v*) VERSION="${GITHUB_REF_NAME#v}";; esac
+          printf '%s\n' "$VERSION" > "$TREE/VERSION"
           test -f "$TREE/dashboard/.next/standalone/server.js" || { echo "prebuilt dashboard missing from staged tree"; exit 1; }
           test ! -e "$TREE/server/.env" || { echo "REFUSING: server/.env in staged tree"; exit 1; }
           echo "CANON_TREE=$TREE" >> "$GITHUB_ENV"
@@ -134,6 +141,29 @@ jobs:
       - name: Build launcher (macOS)
         if: runner.os == 'macOS'
         run: ./canon_app/build-mac.sh
+
+      # SINGLE-APP (Windows): stage the tree build-windows.bat embeds beside the exe, same shape
+      # as the macOS stage step. git archive (tracked files only, so no server/.env), then the
+      # prebuilt dashboard, then the stamp. CANON_TREE is exported for the build step below.
+      - name: Stage Canon tree for embedding (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tree = Join-Path $env:RUNNER_TEMP "canon-tree"
+          New-Item -ItemType Directory -Force -Path $tree | Out-Null
+          $tar = Join-Path $env:RUNNER_TEMP "source.tar"
+          git archive --format=tar -o $tar HEAD
+          tar -x -f $tar -C $tree
+          New-Item -ItemType Directory -Force -Path (Join-Path $tree "dashboard\.next") | Out-Null
+          Copy-Item -Recurse -Force "dashboard\.next\standalone" (Join-Path $tree "dashboard\.next\standalone")
+          git rev-parse HEAD | Out-File -Encoding ascii -NoNewline (Join-Path $tree ".canon-tree-stamp")
+          # VERSION for app_update.current_version(): the tag number, or 0.0.0 on a dispatch build.
+          $version = if ($env:GITHUB_REF -like 'refs/tags/v*') { $env:GITHUB_REF_NAME -replace '^v','' } else { '0.0.0' }
+          $version | Out-File -Encoding ascii -NoNewline (Join-Path $tree "VERSION")
+          if (!(Test-Path (Join-Path $tree "dashboard\.next\standalone\server.js"))) { throw "prebuilt dashboard missing from staged tree" }
+          if (Test-Path (Join-Path $tree "server\.env")) { throw "REFUSING: server/.env in staged tree" }
+          "CANON_TREE=$tree" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
 
       - name: Build launcher (Windows)
         if: runner.os == 'Windows'
@@ -172,39 +202,93 @@ jobs:
           # with repo access. git archive cannot include it; this asserts it rather than
           # trusting it.
           test ! -e "$TREE/server/.env" || { echo "REFUSING: server/.env is in the app"; exit 1; }
-          ditto -c -k --sequesterRsrc --keepParent "$APP" "$GITHUB_WORKSPACE/${{ matrix.artifact }}.zip"
+          ASSET="$GITHUB_WORKSPACE/${{ matrix.artifact }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$ASSET"
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+          echo "ASSET_NAME=${{ matrix.artifact }}.zip" >> "$GITHUB_ENV"
 
-      - name: Assemble package (Windows)
+      # SINGLE-APP (Windows): wrap the onedir app (exe + runtimes + embedded canon-tree) in ONE
+      # installer, Strategi-Canon-windows-setup.exe, so the Windows download is a single file the
+      # operator runs once, not a folder they unzip and dig through. Per-user install, no admin
+      # prompt (canon.iss says why).
+      - name: Build installer (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $stage = Join-Path $env:RUNNER_TEMP "stage\Strategi Canon"
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          $tar = Join-Path $env:RUNNER_TEMP "source.tar"
-          git archive --format=tar -o $tar HEAD
-          tar -x -f $tar -C $stage
-          # The prebuilt dashboard, injected on top of the tracked tree (.next is gitignored, so
-          # git archive never carried it). This is what makes the package serve a compiled
-          # dashboard instead of running next dev on the user's machine.
-          New-Item -ItemType Directory -Force -Path (Join-Path $stage "dashboard\.next") | Out-Null
-          Copy-Item -Recurse -Force "dashboard\.next\standalone" (Join-Path $stage "dashboard\.next\standalone")
-          if (!(Test-Path (Join-Path $stage "dashboard\.next\standalone\server.js"))) { throw "prebuilt dashboard missing from package" }
-          # As on macOS: the runtimes ship ONCE, inside the launcher folder that
-          # build-windows.bat already populated. tray.py resolves exe_dir/runtimes
-          # for this onedir layout, so a second copy would be dead weight.
-          Copy-Item -Recurse -Force "canon_app\dist\Strategi Canon" (Join-Path $stage "Strategi Canon")
-          $rt = Join-Path $stage "Strategi Canon\runtimes"
-          if (!(Test-Path (Join-Path $stage "launcher.py"))) { throw "package is missing launcher.py" }
-          if (!(Test-Path (Join-Path $stage "server\app.py"))) { throw "package is missing server/app.py" }
+          $rt = "canon_app\dist\Strategi Canon\runtimes"
+          $tree = "canon_app\dist\Strategi Canon\canon-tree"
           if (!(Test-Path (Join-Path $rt "node\node.exe"))) { throw "bundled node missing from the app" }
           if (!(Test-Path (Join-Path $rt "python\python.exe"))) { throw "bundled python missing from the app" }
-          if (Test-Path (Join-Path $stage "server\.env")) { throw "REFUSING: server/.env is in the package" }
-          Compress-Archive -Path $stage -DestinationPath "$env:GITHUB_WORKSPACE\${{ matrix.artifact }}.zip"
+          if (!(Test-Path (Join-Path $tree "launcher.py"))) { throw "canon-tree missing launcher.py" }
+          if (!(Test-Path (Join-Path $tree "server\app.py"))) { throw "canon-tree missing server/app.py" }
+          if (!(Test-Path (Join-Path $tree "dashboard\.next\standalone\server.js"))) { throw "canon-tree missing the prebuilt dashboard" }
+          if (Test-Path (Join-Path $tree "server\.env")) { throw "REFUSING: server/.env is in the app" }
+          # Inno Setup is not preinstalled; choco is. iscc lands in Program Files (x86).
+          choco install innosetup --no-progress -y
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          if (-not $version) { $version = "0.0.0" }
+          & $iscc "/DMyAppVersion=$version" "canon_app\canon.iss"
+          if ($LASTEXITCODE -ne 0) { throw "iscc failed ($LASTEXITCODE)" }
+          $exe = "canon_app\Strategi-Canon-windows-setup.exe"
+          if (!(Test-Path $exe)) { throw "installer was not produced" }
+          $dest = Join-Path $env:GITHUB_WORKSPACE "Strategi-Canon-windows-setup.exe"
+          Move-Item -Force $exe $dest
+          "ASSET=$dest" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          "ASSET_NAME=Strategi-Canon-windows-setup.exe" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
 
       - name: Report package size
         shell: bash
-        run: ls -lh "${{ matrix.artifact }}.zip"
+        run: ls -lh "$ASSET"
+
+      # TAG ONLY. The small code-only update package (the staged tree: engine + prebuilt dashboard,
+      # NO runtimes) goes to the private 'releases' Supabase bucket, so the desktop app's "Update
+      # now" fetches tens of MB, not the 300 MB installer. Unified bash (git-bash exists on the
+      # Windows runner too); python does the hashing/JSON so no shasum-vs-sha256sum split. Skips
+      # cleanly with a message when the secrets are absent, so a release still ships its main asset
+      # before in-app updates are switched on. See app_update.py and migration 029.
+      - name: Publish update package to Supabase (tag only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_SECRET_KEY:-}" ]; then
+            echo "SUPABASE_URL / SUPABASE_SECRET_KEY repo secrets are not set."
+            echo "Skipping update-package publish; add them to enable in-app updates."
+            exit 0
+          fi
+          case "$RUNNER_OS" in
+            macOS)   PLATFORM=macos ;;
+            Windows) PLATFORM=windows ;;
+            *) echo "unexpected runner OS: $RUNNER_OS"; exit 1 ;;
+          esac
+          VERSION="${GITHUB_REF_NAME#v}"
+          test -f "$CANON_TREE/launcher.py" || { echo "staged tree missing launcher.py"; exit 1; }
+          test -f "$CANON_TREE/VERSION" || { echo "staged tree missing VERSION"; exit 1; }
+          test ! -e "$CANON_TREE/server/.env" || { echo "REFUSING: server/.env in the update package"; exit 1; }
+          PKG="$RUNNER_TEMP/canon-update.tar.gz"
+          tar -czf "$PKG" -C "$CANON_TREE" .
+          SHA=$(python -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$PKG")
+          BASE="${SUPABASE_URL%/}/storage/v1/object/releases/latest/$PLATFORM"
+          echo "Publishing $PLATFORM update v$VERSION ($(wc -c < "$PKG") bytes, sha256 $SHA)"
+          # Package first, THEN manifest, so a reader never sees a manifest pointing at a package
+          # that is not up yet. x-upsert overwrites the previous 'latest'.
+          curl -fsS -X POST "$BASE/canon-update.tar.gz" \
+            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" -H "apikey: $SUPABASE_SECRET_KEY" \
+            -H "x-upsert: true" -H "Content-Type: application/gzip" \
+            --data-binary @"$PKG" >/dev/null
+          MANIFEST="$RUNNER_TEMP/manifest.json"
+          python -c "import json,sys;json.dump({'version':sys.argv[1],'sha256':sys.argv[2],'published':sys.argv[3]},open(sys.argv[4],'w'))" \
+            "$VERSION" "$SHA" "$GITHUB_REF_NAME" "$MANIFEST"
+          curl -fsS -X POST "$BASE/manifest.json" \
+            -H "Authorization: Bearer $SUPABASE_SECRET_KEY" -H "apikey: $SUPABASE_SECRET_KEY" \
+            -H "x-upsert: true" -H "Content-Type: application/json" \
+            --data-binary @"$MANIFEST" >/dev/null
+          echo "Published $PLATFORM update v$VERSION."
 
       # DISPATCH ONLY, and best-effort. This lets a human download a build that has
       # no release. continue-on-error because the Actions artifact quota (separate
@@ -217,7 +301,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.zip
+          path: ${{ env.ASSET }}
           if-no-files-found: error
 
       # TAG ONLY. Each matrix leg appends its own zip to the release for this tag.
@@ -228,23 +312,28 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.artifact }}.zip
+          files: ${{ env.ASSET }}
           body: |
             Everything the engine needs is inside: you do NOT need to install
             Node or Python.
 
-            **macOS: one app.** Unzip, put "Strategi Canon.app" anywhere
-            (Applications is fine), and drop the `.env` file from your admin in
-            the SAME folder as the app (name it `.env`, or `canon.env` if you
-            want to see it in Finder). Open the app; it sets itself up in
-            ~/Library/Application Support on first launch. The app is unsigned,
-            so the first open needs right-click (or Control-click) > Open >
-            Open. Once only.
+            **macOS: one app.** Download `Strategi-Canon-macos.zip`, unzip it,
+            put "Strategi Canon.app" anywhere (Applications is fine). Open the
+            app; it sets itself up in ~/Library/Application Support on first
+            launch. The app is unsigned, so the first open needs right-click (or
+            Control-click) > Open > Open. Once only.
 
-            **Windows: one folder.** Unzip anywhere and open "Strategi Canon"
-            inside. Put the `.env` from your admin at `server\.env` in that
-            folder. SmartScreen shows "Windows protected your PC" the first
-            time: More info > Run anyway. Once only.
+            **Windows: one installer.** Download
+            `Strategi-Canon-windows-setup.exe` and run it. It installs for your
+            user (no admin prompt), adds a Start-menu entry, and can start at
+            login. SmartScreen shows "Windows protected your PC" the first time:
+            More info > Run anyway. Once only.
+
+            **Signing in:** if your deployment is set up for it, the app asks you
+            to sign in with your Canon account on first launch and fetches its
+            keys itself, so there is no `.env` file to place. Otherwise, put the
+            `.env` from your admin beside the app (macOS: same folder as the app,
+            as `.env` or `canon.env`; Windows: in the installed folder).
 
             You still need, one time: **Claude Code, logged in with your own
             account.** This is what pays for generation, out of your own
@@ -254,5 +343,11 @@ jobs:
             The dashboard ships pre-built, so it comes up in a second or two
             with no compile step. First start still spends a minute or two
             building the Python environment; after that, starts are seconds.
-            Turn on "Start at login" from the menu and it stays running in the
-            background, ready the moment you open it.
+            Turn on "Start at login" so it stays running in the background,
+            ready the moment you open it.
+
+            **Updating:** open Settings (the gear at the bottom of the sidebar)
+            to see your version and, when a newer release exists, "Update now".
+            It downloads only the changed code (tens of MB, not the whole app),
+            keeps your keys and work, and applies on the next Restart. No
+            re-download, no reinstall, no re-entering keys.

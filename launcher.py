@@ -66,6 +66,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent
 IS_WINDOWS = sys.platform.startswith("win")
 
+# NO CONSOLE WINDOWS ON WINDOWS. The tray is a windowed (console-less) app, and every console
+# child it spawns, the engine, the dashboard, pip, npm, would otherwise pop its own black window,
+# which is exactly the "app opens a thousand windows" an operator sees. CREATE_NO_WINDOW gives
+# each child no console at all. Zero elsewhere, where the flag does not exist and is not needed.
+_CREATE_NO_WINDOW = 0x08000000 if IS_WINDOWS else 0
+
 # Credential names the engine needs for research fetches. Values are lifted
 # from ~/.claude.json (the Claude Code CLI's own MCP server definitions) or
 # taken from the environment the launcher was started in. Names only, here and
@@ -219,7 +225,7 @@ def ensure_venv_raise(base_python: str | None = None) -> Path:
         log("VENV: .venv missing, creating it (one-time, takes a minute)")
         result = subprocess.run(
             [base_python or sys.executable, "-m", "venv", str(REPO_ROOT / ".venv")],
-            cwd=str(REPO_ROOT),
+            cwd=str(REPO_ROOT), creationflags=_CREATE_NO_WINDOW,
         )
         if result.returncode != 0 or not py.exists():
             raise LauncherError(
@@ -231,7 +237,7 @@ def ensure_venv_raise(base_python: str | None = None) -> Path:
     log("VENV: installing Python dependencies from requirements.txt")
     result = subprocess.run(
         [str(py), "-m", "pip", "install", "-r", str(REPO_ROOT / "requirements.txt")],
-        cwd=str(REPO_ROOT),
+        cwd=str(REPO_ROOT), creationflags=_CREATE_NO_WINDOW,
     )
     if result.returncode != 0:
         raise LauncherError(
@@ -249,7 +255,7 @@ def ensure_venv_raise(base_python: str | None = None) -> Path:
     try:
         result = subprocess.run(
             [str(py), "-m", "playwright", "install", "chromium"],
-            cwd=str(REPO_ROOT), timeout=900,
+            cwd=str(REPO_ROOT), timeout=900, creationflags=_CREATE_NO_WINDOW,
         )
         if result.returncode != 0:
             log("VENV: WARNING, Chromium fetch failed; reports will generate without a PDF download")
@@ -504,9 +510,11 @@ def ensure_dashboard_deps_raise() -> None:
         return
     log("DASHBOARD DEPS: node_modules missing, running npm install (one-time, takes a few minutes)")
     if IS_WINDOWS:
-        result = subprocess.run("npm install", cwd=str(dash), shell=True)
+        result = subprocess.run("npm install", cwd=str(dash), shell=True,
+                                creationflags=_CREATE_NO_WINDOW)
     else:
-        result = subprocess.run(["npm", "install"], cwd=str(dash))
+        result = subprocess.run(["npm", "install"], cwd=str(dash),
+                                creationflags=_CREATE_NO_WINDOW)
     if result.returncode != 0:
         raise LauncherError(
             "npm install failed in dashboard/. Check your internet connection, then "
@@ -564,10 +572,13 @@ def spawn(cmd, cwd: Path, env: dict[str, str], use_shell_on_windows: bool = Fals
     has no console for the children to inherit."""
     if IS_WINDOWS:
         if use_shell_on_windows:
-            # npm is npm.cmd on Windows; the shell resolves it.
+            # npm is npm.cmd on Windows; the shell resolves it. CREATE_NO_WINDOW so neither the
+            # cmd.exe nor node shows a console window.
             return subprocess.Popen(" ".join(cmd), cwd=str(cwd), env=env, shell=True,
-                                    stdout=stdout, stderr=stderr)
-        return subprocess.Popen(cmd, cwd=str(cwd), env=env, stdout=stdout, stderr=stderr)
+                                    stdout=stdout, stderr=stderr,
+                                    creationflags=_CREATE_NO_WINDOW)
+        return subprocess.Popen(cmd, cwd=str(cwd), env=env, stdout=stdout, stderr=stderr,
+                                creationflags=_CREATE_NO_WINDOW)
     # Its own session (= its own process group), so one killpg later takes the
     # whole tree down: uvicorn's children, next dev's compiled workers, all of it.
     return subprocess.Popen(cmd, cwd=str(cwd), env=env, start_new_session=True,

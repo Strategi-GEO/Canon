@@ -269,6 +269,23 @@ def shutil_which(name: str) -> str | None:
     return shutil.which(name)
 
 
+def _tree_version(path: Path) -> tuple[int, ...] | None:
+    """The VERSION file's dotted number as a comparable tuple, or None when absent or not a clean
+    number. Used to keep an in-app update (app_update.apply_pending bumps VERSION) from being
+    reverted by an OLDER bundle on the next launch: materialize compares versions, not just the sha
+    stamp, so a data tree that is the same version or newer than the bundle is never re-laid."""
+    try:
+        s = (path / "VERSION").read_text(encoding="utf-8").strip().lstrip("v")
+    except OSError:
+        return None
+    if not s:
+        return None
+    try:
+        return tuple(int(p) for p in s.split("."))
+    except ValueError:
+        return None
+
+
 def materialize_bundled_tree(bundle: Path) -> Path:
     """Lay the bundled tree down in the data folder and return it. Idempotent and stamped:
     the CI writes .canon-tree-stamp (the commit sha) into the bundle, and a matching stamp on
@@ -290,8 +307,18 @@ def materialize_bundled_tree(bundle: Path) -> Path:
     except OSError:
         dest_stamp = None
 
-    if dest_stamp == bundle_stamp and looks_like_repo(dest):
-        return dest
+    if looks_like_repo(dest):
+        bundle_ver, dest_ver = _tree_version(bundle), _tree_version(dest)
+        if bundle_ver is not None and dest_ver is not None:
+            # VERSION on both: the version decides. A data tree the SAME version or NEWER than the
+            # bundle is left alone, which is exactly what protects an in-app update (VERSION bumped
+            # above the shipped bundle) from being reverted here. A newer bundle (a freshly
+            # installed .app) wins and re-lays.
+            if dest_ver >= bundle_ver:
+                return dest
+        elif dest_stamp == bundle_stamp:
+            # Pre-VERSION build (either side): fall back to the sha-stamp equality this always used.
+            return dest
 
     tlog(f"materializing bundled tree {bundle_stamp!r} over {dest_stamp!r} at {dest}")
     dest.mkdir(parents=True, exist_ok=True)
@@ -1009,6 +1036,37 @@ def main() -> int:
             "folder when asked, then open the app again."
         )
         return 1
+
+    # SECRETS BOOTSTRAP (frozen only, fallback-safe): if there is no usable server/.env and the
+    # app carries a filled-in public config, sign the operator in and fetch the engine keys from
+    # Supabase, so they were never handed a .env file. Blank config (the shipped default) or an
+    # existing env makes this a no-op, so the folder release and any machine that already has an
+    # env are untouched. Runs here, before pystray takes the main thread, so the Tk sign-in
+    # dialog has it.
+    if IS_FROZEN:
+        try:
+            import secrets_bootstrap
+            outcome = secrets_bootstrap.ensure_secrets(repo)
+            tlog(f"secrets bootstrap: {outcome}")
+        except Exception:
+            tlog("secrets bootstrap error (continuing to the env-file path):\n"
+                 + traceback.format_exc())
+
+    # APPLY A STAGED UPDATE, if one is pending, BEFORE anything reads code or starts a child. The
+    # engine's "Update now" only DOWNLOADS and stages a package; the swap lands here, at launch,
+    # when no process holds the files (the safe moment on Windows). apply_pending keeps outputs/,
+    # clients/ and server/.env, rolls back on any failure, and is a no-op when nothing is pending.
+    if IS_FROZEN:
+        try:
+            spec = importlib.util.spec_from_file_location("app_update", repo / "app_update.py")
+            app_update = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(app_update)
+            applied = app_update.apply_pending(repo)
+            if applied is not None:
+                tlog(f"app update: {applied}")
+        except Exception:
+            tlog("app update apply error (continuing with the current version):\n"
+                 + traceback.format_exc())
 
     try:
         launcher = load_launcher(repo)
