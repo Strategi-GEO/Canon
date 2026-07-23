@@ -17,6 +17,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError, api } from "@/lib/api";
 import { brandHref } from "@/lib/orgs-context";
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { blogState } from "@/lib/blog-state";
 import { formatCount } from "@/lib/format";
 import {
@@ -380,6 +381,8 @@ function Library({
                     setPicked(blog.topic_slug);
                     router.push(blogHref(blog.topic_slug));
                   }}
+                  brandSlug={HOSTED_READONLY ? undefined : brandSlug}
+                  onDeleted={HOSTED_READONLY ? undefined : () => void refresh()}
                 />
               )}
             </Card>

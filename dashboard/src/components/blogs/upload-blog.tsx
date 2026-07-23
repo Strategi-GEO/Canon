@@ -154,20 +154,24 @@ function UploadDialog({
     }
     setError(null);
     // Two checks only, and both are things the engine cannot do for us cheaply: that the file
-    // looks like markdown, and that it is not absurdly large. Everything subtler (is there an
-    // article in it, does it break a gate) is the engine's answer to give.
-    if (!/\.(md|markdown|txt)$/i.test(picked.name)) {
+    // is one of the shapes we accept (markdown or a Word .docx), and that it is not absurdly
+    // large. Everything subtler (is there an article in it, does it break a gate) is the
+    // engine's answer to give.
+    if (!/\.(md|markdown|txt|docx)$/i.test(picked.name)) {
       setError(
         new ApiError(
           0,
-          `${picked.name} is not a markdown file. Upload the article as .md.`,
+          `${picked.name} is not a markdown or Word file. Upload the article as .md or .docx.`,
           null,
         ),
       );
       return;
     }
-    if (picked.size > MAX_BYTES) {
-      setError(new ApiError(0, `${picked.name} is over 1 MB, which no blog is.`, null));
+    // A .docx is zipped, so it runs larger than the 1 MB the extracted markdown is held to;
+    // the engine enforces the real ceiling after unzipping. Markdown keeps the tight 1 MB bar.
+    const ceiling = /\.docx$/i.test(picked.name) ? MAX_BYTES * 8 : MAX_BYTES;
+    if (picked.size > ceiling) {
+      setError(new ApiError(0, `${picked.name} is too large to be an article.`, null));
       return;
     }
     setFile(picked);
@@ -180,13 +184,20 @@ function UploadDialog({
     setBusy(true);
     setError(null);
     try {
-      // Read here rather than posting multipart: a markdown article is text, and this route
-      // takes the same JSON body shape the manual save already takes.
-      const text = await file.text();
-      const uploaded = await api.uploadBlog(brandSlug, row.topic_slug, text, replacing);
+      // A .docx is binary and carries comments, so it posts multipart to the docx route; a
+      // markdown article is text and posts the same JSON body the manual save takes. The
+      // engine converts the docx body and turns its Word comments into open change requests.
+      const isDocx = /\.docx$/i.test(file.name);
+      const uploaded = isDocx
+        ? await api.uploadBlogDocx(brandSlug, row.topic_slug, file, replacing)
+        : await api.uploadBlog(brandSlug, row.topic_slug, await file.text(), replacing);
       setResult(uploaded);
+      const commentsNote =
+        typeof uploaded.comments_added === "number" && uploaded.comments_added > 0
+          ? `, ${uploaded.comments_added} comment${uploaded.comments_added === 1 ? "" : "s"} imported`
+          : "";
       toast.success(uploaded.replaced ? "Article replaced" : "Article uploaded", {
-        description: `"${row.topic}" is in admin review with ${uploaded.word_count} words.`,
+        description: `"${row.topic}" is in admin review with ${uploaded.word_count} words${commentsNote}.`,
       });
       onUploaded(uploaded);
     } catch (cause) {
@@ -249,7 +260,7 @@ function UploadDialog({
             <input
               ref={inputRef}
               type="file"
-              accept=".md,.markdown,text/markdown,text/plain"
+              accept=".md,.markdown,text/markdown,text/plain,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
               className="sr-only"
               onChange={(event) => choose(event.target.files?.[0])}
             />
@@ -286,12 +297,12 @@ function UploadDialog({
             >
               <FileUp className="size-5 text-muted-foreground" aria-hidden />
               <span className="text-sm font-medium text-foreground">
-                {file ? file.name : "Choose a markdown file, or drop one here"}
+                {file ? file.name : "Choose a markdown or Word file, or drop one here"}
               </span>
               <span className="text-xs text-muted-foreground">
                 {file
                   ? `${(file.size / 1024).toFixed(0)} KB, ready to upload`
-                  : "The article as .md, up to 1 MB"}
+                  : "The article as .md or .docx. Word comments become review notes."}
               </span>
             </button>
           </>

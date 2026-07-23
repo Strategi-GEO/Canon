@@ -912,6 +912,8 @@ export type UploadBlogResult = {
   /** Whether this overwrote an article that was already there. */
   replaced: boolean;
   gates: UploadGateReport;
+  /** How many Word comments were imported as open change requests. Absent on a markdown upload. */
+  comments_added?: number;
 };
 
 /**

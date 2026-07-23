@@ -145,9 +145,11 @@ def resource_note(client_slug):
             f"clients/{client_slug}/Resources/ is empty or absent. The operator was warned about "
             "this and chose to proceed without them, so this is a settled fact about the run and "
             "not a setup mistake. Do not look for files, do not ask for them, and do not treat "
-            "their absence as a fact about the brand. Stage 1 is a no-op: build this file from "
-            "the live site and Stage 3, and say plainly in §8 that no client materials were "
-            "available."
+            "their absence as a fact about the brand. STAGE 1 is a no-op: build this file from the "
+            "live site (STAGE 2) and the research tools (STAGE 3). If there is also no live site to "
+            "map, follow the section 'WHEN THERE ARE NO UPLOADED RESOURCES AND NO LIVE SITE' and "
+            "research the brand from the open web with Firecrawl search and DataForSEO. Say plainly "
+            "in §8 that no client materials were available."
         )
     named = ", ".join(f"{entry['name']} ({_human_size(entry['size'])})" for entry in entries)
     return (
@@ -274,16 +276,19 @@ def build_prompt(client_slug):
     values = {
         "CLIENT_NAME": str(config.get("name") or client_slug),
         "CLIENT_SLUG": client_slug,
-        # A brand with no recorded domain still gets a fact base, because the resources are the
-        # primary reference and they are what the operator uploaded for exactly this. Saying so
-        # plainly beats an empty value: the prompt's Stage 2 tells the agent to map and scrape
-        # this URL, and a blank there reads as a value the server failed to send rather than a
-        # site that does not exist. §3 records only URLs it fetched, so an empty §3 is a truthful
-        # outcome for such a brand, not a broken one.
+        # A brand with no recorded domain still gets a fact base. When it HAS uploaded resources,
+        # those are the primary reference and the file rests on them. When it has neither domain nor
+        # resources, the file rests on open-web research instead, and the empty branch points the
+        # agent there rather than at a dead end. Saying so plainly beats an empty value: the
+        # prompt's STAGE 2 tells the agent to map and scrape this URL, and a blank there reads as a
+        # value the server failed to send rather than a site that does not exist. §3 records only
+        # URLs it fetched, so an empty §3 is a truthful outcome for such a brand, not a broken one.
         "BRAND_URL": str(config.get("domain") or "").strip() or (
-            "(no domain recorded for this brand: there is no site to map or scrape, so Stage 2 "
-            "is a no-op, §3 records no URLs, and §8 says the fact base rests on the resources "
-            "alone)"
+            "(no domain recorded for this brand: there is no site to map or scrape, so STAGE 2 is a "
+            "no-op and §3 records no URLs. Build from the uploaded resources where there are any; "
+            "where there are none either, follow the section 'WHEN THERE ARE NO UPLOADED RESOURCES "
+            "AND NO LIVE SITE' and build from open-web research with Firecrawl search and "
+            "DataForSEO. Say so in §8.)"
         ),
         "INDUSTRY": str(config.get("industry") or "").strip() or "(not recorded)",
         "CLIENT_DIR": str(client_dir),

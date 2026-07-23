@@ -1,7 +1,9 @@
 // Map is aliased on principle: the bare name shadows the JS Map constructor, and a file that
 // later builds one would break in a way that reads as a typing error rather than an import.
 import {
+  BriefcaseBusiness,
   ChartColumnIncreasing,
+  Feather,
   FileText,
   FolderOpen,
   LayoutDashboard,
@@ -35,6 +37,10 @@ export const BRAND_NAV: NavItem[] = [
   { section: "/roadmap", label: "Content Roadmap", icon: MapIcon },
   { section: "/create", label: "Create Blogs", icon: PenLine },
   { section: "/blogs", label: "Blogs", icon: FileText },
+  // Distribution channels for POSTED blogs (the `published` state). Each shows the Blogs table
+  // filtered to blogs already pushed out, so they sit right after Blogs and before Repurpose.
+  { section: "/linkedin", label: "LinkedIn", icon: BriefcaseBusiness },
+  { section: "/medium", label: "Medium", icon: Feather },
   // After Blogs because it consumes them: repurposing turns shipped blogs into other
   // formats, so it sits downstream of the library it will draw from.
   { section: "/repurpose", label: "Repurpose", icon: Recycle },

@@ -314,12 +314,18 @@ def reconcile_stranded():
 
 def add_comment(client_slug, topic_slug, *, selected_text, instruction,
                 context_before="", context_after="", author="operator",
-                author_email=""):
+                author_email="", auto_apply=True):
     """File one comment and return its wire dict. Operator comments start in 'applying'
     because the route auto-applies them, exactly as phase 1 did; client comments never
     pass through here (portal_suggest_change inserts them as 'open' with no engine
     behind them). The caller has already refused demo clients, non-done topics, live
-    runs, and the in-flight cap."""
+    runs, and the in-flight cap.
+
+    auto_apply=False forces 'open' regardless of author: the imported .docx comments take
+    this door, because they are notes a person left in Word that the operator resolves one
+    by one from the rail, NOT edits to run immediately. An 'applying' row with no
+    start_apply behind it would wedge on the in-flight cap and get failed by the stranded
+    sweep, so a comment nobody is about to apply must be born 'open'."""
     tid = db.topic_id(client_slug, topic_slug)
     if tid is None:
         raise EditError(f"no topic {topic_slug!r} for client {client_slug!r}")
@@ -329,7 +335,7 @@ def add_comment(client_slug, topic_slug, *, selected_text, instruction,
     # gives for closing top-level comments alongside versions. The trigger still exempts
     # parent_id rows, which portal_submit_answers writes for a client's question answers.
     _refuse_if_approved(client_slug, topic_slug, "a Claude edit")
-    state = "applying" if author == "operator" else "open"
+    state = "open" if not auto_apply else ("applying" if author == "operator" else "open")
     # applying_since is stamped by the same expression that sets the state, so the two can
     # never disagree: an 'applying' row with no stamp is a row the stranded sweep cannot
     # age, and an 'open' row with one would age a comment nobody is applying.

@@ -118,6 +118,38 @@ Everything numeric you record must come from a source you actually read. You may
 
 ---
 
+## WHEN THERE ARE NO UPLOADED RESOURCES AND NO LIVE SITE
+
+Read this only when STAGE 1 and STAGE 2 are both no-ops: the Resources folder is empty AND no
+BRAND_URL was recorded, so there is neither a document to read nor a site to map. This is a
+supported, settled case, not a failure. The operator chose to build this fact base from research
+alone, so your research tools become the PRIMARY and only source. Lean on them hard rather than
+stopping with a stub.
+
+1. **`firecrawl_search`** on the brand name "{{CLIENT_NAME}}", its obvious variants, and the
+   industry. This is how you find a brand when nobody handed you its site: its own site if one
+   exists but was never recorded, its directory and marketplace listings, news, reviews, and any
+   third party page that describes it. If the search turns up the brand's real site, map and scrape
+   it exactly as STAGE 2 says and treat it as the live site from that point on.
+2. **`firecrawl_scrape`** every promising result in FULL. A search snippet is a lead, never a
+   source: record a fact only from a page you actually opened and read.
+3. **DataForSEO lookups that need no domain.** `ai_opt_llm_ment_search` on the brand for how AI
+   engines describe it today, and `business_data_business_listings_search` where it has physical
+   locations, for the name, addresses and hours that go stale first.
+4. Build sections 1 through 9 from what those sources VERIFIABLY say, under the exact same
+   discipline as every other stage: every fact carries the source URL you read it from and the
+   fetch date, marketing language is positioning and never fact, a competitor's page is not a
+   source for a claim about this brand, and anything you cannot pin to a source you actually read
+   goes in the unverified section, not the fact base.
+
+A brand that research describes thinly yields a SMALL fact base with a full unverified section and
+an honest §8, and that is a valid outcome, not a failed run. The one thing you must never do is
+invent facts to fill the gap: a thin honest file is correct, a padded confident one poisons every
+blog that inherits it. This file must still be written to `{{OUTPUT_PATH}}` and must still carry §6
+and §9.
+
+---
+
 ## STAGE 4: write the file
 
 Follow this structure. It is the shape of a fact base this factory has already run a whole client

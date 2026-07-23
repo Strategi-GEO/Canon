@@ -202,12 +202,59 @@ def test_facts_prompt_survives_a_client_with_no_roadmap():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_facts_prompt_researches_a_brand_with_no_resources_and_no_domain():
+    """A brand with an EMPTY knowledge base and no domain still builds its fact base, from research.
+
+    The knowledge base is optional: an operator who uploads nothing and records no domain still
+    gets a canonical-facts.md, built by researching the brand on the open web with Firecrawl search
+    and DataForSEO. Before this, the two empty branches pointed at each other ('build from the live
+    site' vs 'rests on the resources alone'), a dead end that left the session with a stub the
+    validator rejected, failing the whole run. This pins the fallback: both notes now redirect to
+    the research section, and the section itself names the tools.
+
+    Monkeypatched rather than pointed at a resource-less client on disk, so it keeps testing the
+    handler after anyone uploads a file for whichever client that was.
+    """
+    print("\ntest_facts_prompt_researches_a_brand_with_no_resources_and_no_domain")
+
+    orig_res = facts_gen.clients_mod.list_resources
+    orig_cfg = facts_gen.runner.load_client_config
+    facts_gen.clients_mod.list_resources = lambda slug: []
+    facts_gen.runner.load_client_config = lambda slug: {
+        "name": "Nomad Coldbrew", "industry": "beverages"}  # no 'domain' key
+    try:
+        prompt = facts_gen.build_prompt(ROADMAP_CLIENT)
+    finally:
+        facts_gen.clients_mod.list_resources = orig_res
+        facts_gen.runner.load_client_config = orig_cfg
+
+    check("the research fallback section exists in the prompt",
+          "WHEN THERE ARE NO UPLOADED RESOURCES AND NO LIVE SITE" in prompt)
+    check("the fallback names Firecrawl search as the way to find the brand",
+          "firecrawl_search" in prompt)
+    check("the fallback names DataForSEO brand lookups that need no domain",
+          "ai_opt_llm_ment_search" in prompt and "business_data_business_listings_search" in prompt)
+    check("the empty-resources note redirects to the research fallback, not a dead end",
+          "no live site to map" in prompt and "open web with Firecrawl search and DataForSEO" in prompt)
+    check("the no-domain note no longer rests on resources alone",
+          "rests on the resources\nalone" not in prompt and "rests on the resources alone" not in prompt)
+    check("the no-domain note points to the same research fallback",
+          "WHEN THERE ARE NO UPLOADED RESOURCES AND NO LIVE SITE' and build from open-web" in prompt)
+    check("research or not, the fallback still demands the file carry §6 and §9",
+          "must still carry §6" in prompt)
+    check("the empty-KB prompt still leaves no unsubstituted {{TOKEN}} behind",
+          facts_gen._PLACEHOLDER.findall(prompt) == [])
+    check("the empty-KB prompt has no em dash or en dash",
+          "—" not in prompt and "–" not in prompt)
+
+
 def main():
     print("facts_check: static checks only. No CLI spawned, no query() called, "
           "no blog generated.")
     for test in (test_facts_prompt_is_built_to_serve_the_roadmap,
                  test_facts_prompt_attributes_without_unlocking,
-                 test_facts_prompt_survives_a_client_with_no_roadmap):
+                 test_facts_prompt_survives_a_client_with_no_roadmap,
+                 test_facts_prompt_researches_a_brand_with_no_resources_and_no_domain):
         test()
     print(f"\n{CHECKS[0] - len(FAILURES)}/{CHECKS[0]} checks passed")
     if FAILURES:

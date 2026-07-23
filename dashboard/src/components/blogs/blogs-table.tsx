@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
+import { DeleteBlogDialog } from "@/components/blogs/delete-blog-dialog";
 import { formatAbsolute, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { SortDir, SortKey } from "@/components/blogs/blogs-filter";
@@ -57,6 +58,8 @@ export function BlogsTable<T extends BlogTableRow>({
   onOpen,
   stateOf,
   audience = "admin",
+  brandSlug,
+  onDeleted,
 }: {
   blogs: T[];
   /**
@@ -86,8 +89,16 @@ export function BlogsTable<T extends BlogTableRow>({
    * vocabulary.
    */
   audience?: "admin" | "client";
+  /**
+   * The brand these blogs belong to, and a callback to refetch after one is deleted. Present
+   * only on the admin library: passing both turns on the trailing delete column. The client
+   * portal never passes them, so its table has no delete control at all.
+   */
+  brandSlug?: string;
+  onDeleted?: () => void;
 }) {
   const admin = audience === "admin";
+  const canDelete = admin && brandSlug !== undefined && onDeleted !== undefined;
   return (
     <Table>
       <TableHeader>
@@ -138,6 +149,9 @@ export function BlogsTable<T extends BlogTableRow>({
           {admin ? (
             <TableHead className="machine w-20 text-xs font-medium">Iterations</TableHead>
           ) : null}
+          {/* Actions column, header intentionally blank: an icon column needs no label, and a
+              screen reader gets the per-button sr-only text instead. */}
+          {canDelete ? <TableHead className="w-12" /> : null}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -151,6 +165,8 @@ export function BlogsTable<T extends BlogTableRow>({
             active={blog.topic_slug === activeSlug}
             href={hrefFor(blog)}
             onOpen={onOpen}
+            brandSlug={canDelete ? brandSlug : undefined}
+            onDeleted={canDelete ? onDeleted : undefined}
           />
         ))}
       </TableBody>
@@ -166,6 +182,8 @@ function Row<T extends BlogTableRow>({
   active,
   href,
   onOpen,
+  brandSlug,
+  onDeleted,
 }: {
   blog: T;
   /**
@@ -180,6 +198,9 @@ function Row<T extends BlogTableRow>({
   active: boolean;
   href: string;
   onOpen: (blog: T) => void;
+  /** Present only when this table's parent enabled deletion (admin library). */
+  brandSlug?: string;
+  onDeleted?: () => void;
 }) {
   const admin = audience === "admin";
   return (
@@ -275,6 +296,16 @@ function Row<T extends BlogTableRow>({
       {admin ? (
         <TableCell className="machine text-xs text-muted-foreground">
           {typeof blog.iterations === "number" ? blog.iterations : ""}
+        </TableCell>
+      ) : null}
+      {brandSlug !== undefined && onDeleted !== undefined ? (
+        <TableCell className="py-2.5 text-right align-top">
+          <DeleteBlogDialog
+            brandSlug={brandSlug}
+            topicSlug={blog.topic_slug}
+            title={blog.topic}
+            onDeleted={onDeleted}
+          />
         </TableCell>
       ) : null}
     </TableRow>

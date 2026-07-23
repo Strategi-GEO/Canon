@@ -619,6 +619,30 @@ export const api = {
     }),
 
   /**
+   * Uploads a Word .docx instead of markdown. The engine converts the body and turns each
+   * tracked Word comment into an OPEN change request on its passage, so the review rail shows
+   * them with a Resolve with Claude button. Multipart because the payload is a binary file;
+   * `replace` rides as a query param for the same reason. Same result shape as uploadBlog plus
+   * `comments_added`. Local engine only (Vercel has no converter), like uploadBlog.
+   */
+  uploadBlogDocx: (slug: string, topicSlug: string, file: File, replace: boolean) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<UploadBlogResult>(
+      `/api/clients/${slug}/blogs/${topicSlug}/upload-docx?replace=${replace ? "true" : "false"}`,
+      { method: "POST", form },
+    );
+  },
+
+  /**
+   * Deletes one blog: soft-deletes the topic and drops its scratch, which clears it from the
+   * library and re-frees its roadmap row for regeneration. 409 while a run is live. Idempotent
+   * 204 on an unknown or already-deleted topic. Local engine only.
+   */
+  deleteBlog: (slug: string, topicSlug: string) =>
+    request<void>(`/api/clients/${slug}/blogs/${topicSlug}`, { method: "DELETE" }),
+
+  /**
    * Releases one shipped blog to the client portal, or releases it AGAIN after the client's
    * suggestions were resolved. Every call re-stamps the send and clears any approval,
    * because the client is approving an exact article and a re-send replaces it. 409 while

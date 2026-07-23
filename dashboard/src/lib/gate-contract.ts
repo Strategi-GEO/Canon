@@ -1054,11 +1054,13 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/blog_edit.py",
     symbol: "add_comment",
     kind: "python",
-    fingerprint: "7d05f2035e971c74",
+    fingerprint: "dcc9bef338eac73b",
     gates: ["comments"],
     what:
-      "Inserts the operator's comment in state 'applying', which is what makes filing one an edit " +
-      "rather than a note, and calls the approved lock before it does.",
+      "Inserts the operator's comment in state 'applying' by default, which is what makes filing " +
+      "one through the auto-apply route an edit rather than a note, and calls the approved lock " +
+      "before it does. The auto_apply=False path (docx import) inserts 'open' instead, a note the " +
+      "operator resolves by hand from the rail, and the approved lock still precedes it.",
     exemptions: [
       {
         id: "add_comment_topic_unknown",

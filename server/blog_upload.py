@@ -43,7 +43,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-from . import blog_edit, db, ledger, runner, sync
+from . import blog_edit, db, docx_import, ledger, runner, sync
 
 log = logging.getLogger("engine.blog_upload")
 
@@ -322,6 +322,49 @@ def upload_blog(client_slug: str, topic_slug: str, title: str, covers: str,
         "replaced": existing is not None,
         "gates": gates,
     }
+
+
+def upload_docx(client_slug: str, topic_slug: str, title: str, covers: str,
+                prompts, data: bytes, email: str, replace: bool) -> dict:
+    """Ingest a Word .docx: its body becomes the article, its tracked comments become open
+    change requests on the passages they bracket. SYNC, same contract as upload_blog (call
+    via to_thread, under blog_edit.APPLY_LOCK).
+
+    THE BODY GOES THROUGH upload_blog UNCHANGED, so a docx upload is a markdown upload with a
+    converter in front: same refusals, same commit, same 'done' line naming the uploader, same
+    ledger interlock. The only thing this adds is the comments, and they are added AFTER the
+    commit, because a comment needs the topic row upload_blog creates. They land 'open' (see
+    blog_edit.add_comment auto_apply=False), so each shows a Resolve with Claude button in the
+    review rail rather than running an edit on ingest.
+
+    A comment insert that fails is logged and skipped, never fatal: the article is already
+    committed and shipping it is right, and a dropped note is a smaller harm than refusing an
+    upload that otherwise worked. The count of comments actually filed rides back in the
+    response so the dialog can say how many were imported."""
+    try:
+        markdown, comments = docx_import.parse(data)
+    except docx_import.DocxError as exc:
+        raise UploadError(str(exc), status=422) from exc
+
+    result = upload_blog(client_slug, topic_slug, title, covers, prompts, markdown,
+                         email, replace)
+
+    added = 0
+    for c in comments:
+        try:
+            blog_edit.add_comment(
+                client_slug, topic_slug,
+                selected_text=c["selected_text"], instruction=c["instruction"],
+                # The Word comment's author is a person's name, not the operator|client enum,
+                # so it rides in author_email (what the rail shows as the commenter) while
+                # author stays 'operator'. auto_apply=False keeps it 'open' for the rail.
+                author="operator", author_email=c["author"], auto_apply=False)
+            added += 1
+        except Exception:
+            log.exception("could not file an imported comment for %s/%s", client_slug, topic_slug)
+
+    result["comments_added"] = added
+    return result
 
 
 def _restore(blog_path, prev_bytes) -> None:

@@ -20,6 +20,7 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 import time
 import uuid
 from datetime import datetime, timezone
@@ -2547,27 +2548,7 @@ async def api_upload_blog(slug: str, topic: str, payload: UploadBlogRequest,
     article and a slug; it never gets to tell the engine what topic it is, exactly as
     api_generate re-reads its rows rather than trusting the posted ones.
     """
-    _client_or_404(slug, user)
-    if runner.slugify(topic) != topic:
-        raise HTTPException(status_code=404, detail="not found")
-
-    rows = _load_roadmap_or_404(slug, user)["rows"]
-    row = next((r for r in rows if r.get("topic_slug") == topic), None)
-    if row is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"no roadmap row for {topic!r}; a blog can only be uploaded against a "
-                   f"topic this brand's roadmap plans")
-
-    # The live-run refusal /content already makes, for the same reason and at the same
-    # breadth: while a session is open the engine owns the scratch tree, and an upload
-    # landing beside it races materialize and commit for a file both are writing.
-    if _client_has_live_run(slug):
-        raise HTTPException(
-            status_code=409,
-            detail=f"a run for {slug!r} is live; upload once it finishes so the engine's "
-                   f"own writes are not raced",
-        )
+    row = _upload_row_or_refuse(slug, topic, user)
 
     # Under the comment-apply lock, exactly as a manual save is: a replace landing inside
     # an apply's read-session-write window would be overwritten by the apply's stale base.
@@ -2581,6 +2562,94 @@ async def api_upload_blog(slug: str, topic: str, payload: UploadBlogRequest,
             )
         except blog_upload.UploadError as exc:
             raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+
+def _upload_row_or_refuse(slug: str, topic: str, user: auth.Identity) -> dict:
+    """The shared preamble for every upload door (markdown and .docx): the roadmap row the
+    slug names, or a refusal. THE ROADMAP IS THE AUTHORITY on what may be uploaded and the
+    title/scope/prompts come from it, never from the browser, exactly as api_generate re-reads
+    its rows. NO _topic_or_404 and NO _require_done: a first upload's topic does not exist yet
+    (see api_upload_blog). The live-run refusal is the one /content makes for the same reason,
+    that the engine owns the scratch tree while a session is open."""
+    _client_or_404(slug, user)
+    if runner.slugify(topic) != topic:
+        raise HTTPException(status_code=404, detail="not found")
+    rows = _load_roadmap_or_404(slug, user)["rows"]
+    row = next((r for r in rows if r.get("topic_slug") == topic), None)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no roadmap row for {topic!r}; a blog can only be uploaded against a "
+                   f"topic this brand's roadmap plans")
+    if _client_has_live_run(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"a run for {slug!r} is live; upload once it finishes so the engine's "
+                   f"own writes are not raced",
+        )
+    return row
+
+
+@app.post("/api/clients/{slug}/blogs/{topic}/upload-docx")
+async def api_upload_blog_docx(slug: str, topic: str, replace: bool = False,
+                              file: UploadFile = File(...),
+                              user: auth.Identity = Depends(auth.require_admin)):
+    """Ingest a Word .docx in place of markdown, carrying its tracked comments into the review
+    rail. The body becomes the article and each Word comment becomes an OPEN change request on
+    the passage it bracketed, so the operator resolves them one by one with Claude exactly as
+    they would a client's suggestion. Same warrant and same downstream path as api_upload_blog;
+    the only difference is a converter in front and the comments behind. `replace` is a query
+    param because the payload is the multipart file, not JSON."""
+    row = _upload_row_or_refuse(slug, topic, user)
+    data = await file.read()
+    if len(data) > blog_upload.MAX_BLOG_BYTES * 8:
+        # A .docx is zipped XML plus any embedded media, so it runs larger than the 1 MB the
+        # extracted markdown is held to. Eight times is generous headroom for a text article
+        # while still refusing a whole media deck uploaded by mistake before it is unzipped.
+        raise HTTPException(status_code=413, detail="that .docx is too large to be an article")
+    async with blog_edit.APPLY_LOCK:
+        try:
+            return await asyncio.to_thread(
+                blog_upload.upload_docx, slug, topic,
+                row.get("topic") or topic, row.get("covers") or "",
+                row.get("prompts") or [], data,
+                getattr(user, "email", "") or "", bool(replace),
+            )
+        except blog_upload.UploadError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+
+@app.delete("/api/clients/{slug}/blogs/{topic}", status_code=204)
+async def api_delete_blog(slug: str, topic: str,
+                          user: auth.Identity = Depends(auth.require_admin)):
+    """Remove one blog: soft-delete the topic and drop its scratch tree. `topics.deleted_at`
+    IS this app's delete (it clears the blog from every listing and re-frees the roadmap row
+    for regeneration, since ledger.live_slugs and every read filter on deleted_at is null).
+    The scratch dir must go with it, or the startup reconciler would find bytes ahead of the
+    record and re-commit them, un-deleting the topic via ensure_topic. Refused while a run is
+    live, because the engine is writing that scratch tree right now. Idempotent: deleting an
+    unknown or already-deleted topic is a 204 no-op.
+
+    ponytail: soft delete, so a later regenerate of the same slug reuses the topic row and its
+    old comments/versions resurface. That is the codebase's existing topics.deleted_at model,
+    not new debt; hard-delete-with-cascade only if resurfacing ever bites."""
+    _client_or_404(slug, user)
+    if _client_has_live_run(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"a run for {slug!r} is live; delete once it finishes so the engine's "
+                   f"own writes are not raced")
+    await asyncio.to_thread(_delete_blog, slug, topic)
+    return None
+
+
+def _delete_blog(slug: str, topic_slug: str) -> None:
+    tid = db.topic_id(slug, topic_slug)
+    if tid is not None:
+        db.q("update topics set deleted_at = now() where id = %s", (tid,), fetch="none")
+    tdir = runner.output_dir(slug, topic_slug)
+    if tdir.is_dir():
+        shutil.rmtree(tdir, ignore_errors=True)
 
 
 @app.get("/api/pending-reruns")
