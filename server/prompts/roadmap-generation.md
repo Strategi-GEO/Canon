@@ -140,6 +140,40 @@ Firecrawl returned too little to do that, say so and stop. Do not proceed on gue
 
 ---
 
+## STAGE 1.5: the client's own blog is a HARD exclusion
+
+Stage 0.5 stopped you re-proposing an earlier MONTH's planned topic. This stage stops you proposing
+a topic the client has ALREADY PUBLISHED on their own site. Both are the same failure, a roadmap
+worth nothing to the client, reached from two different directions: the earlier one lives in the
+database, this one lives on the live site you just mapped.
+
+Refer to the CLIENT'S OWN blog only. Not a competitor's blog, not the ledger, not memory: this stage
+is exclusively about what THIS brand has already written on THIS domain.
+
+1. From the `firecrawl_map` inventory in Stage 1, find the brand's blog or resource section. If it is
+   not obvious, run `firecrawl_map` on `BRAND_URL` again with targeted `search` strings, one per
+   call: `blog`, `insights`, `resources`, `articles`, `news`, `stories`, `guides`. Use the section
+   that actually holds their published posts.
+2. `firecrawl_scrape` the blog INDEX / listing page(s), not a sample of individual posts, to
+   enumerate the FULL set of post titles the client has already published. If the listing paginates
+   or lazy-loads, scrape each page until the titles stop being new. You are building the complete
+   published-topic list, not a flavour sample. The three-to-five-post scrape in Stage 1 was for
+   voice and depth; this is for coverage.
+3. If the site has no blog, or Firecrawl cannot read it, say so in your report and treat the
+   published-topic list as empty. Do not guess at what they might have written.
+
+**This is a HARD exclusion, exactly like Stage 0.5.** Every row you write must be a NEW topic that
+the client has not already MAJORLY covered on their blog. Distinct means a different buyer question,
+not the same question retitled: if they already published "How to choose a weekend home near
+Bengaluru", then "A buyer's guide to second homes around Bangalore" is the same ground and does not
+ship. A row that adds a genuinely new angle, a newer data cut, or a different buyer's question to a
+topic they touched only in passing is fine; a row that re-covers what they already own in depth is
+not. When in doubt, treat substantial overlap as a duplicate and pick the next real question. If the
+exclusion leaves fewer than `PIECE_COUNT` genuinely new topics, deliver fewer and say so, exactly as
+Stage 0.5 requires.
+
+---
+
 ## STAGE 2: DataForSEO demand and competitor intel
 
 Everything numeric comes from here. You may not estimate a volume, a difficulty, or an intent
@@ -215,6 +249,7 @@ Score every candidate topic on four axes. Cut anything that fails a gate.
 - It only exists to pad the count.
 - **(ENGINE)** It cannot be written without a claim `canonical-facts.md` forbids. See Stage 0.
 - **(ENGINE)** It duplicates or substantially overlaps a topic already planned in an earlier month. See Stage 0.5: earlier months own that ground, and a repeat is worth nothing to the client.
+- It duplicates or substantially overlaps a topic the client has ALREADY PUBLISHED on their own blog. See Stage 1.5: they already own that ground, and re-covering it wins the client nothing.
 
 If you cannot find `PIECE_COUNT` topics that clear the gates, deliver fewer and say why in your
 report. A short honest roadmap beats a padded one.
@@ -368,7 +403,7 @@ Before you write, verify:
 - [ ] Every row has exactly 3 prompts, pipe-separated
 - [ ] Every Est. Monthly Volume value comes from a live call, or is blank; none is estimated
 - [ ] No prompt contains a brand name (except the navigational row)
-- [ ] No row duplicates existing client content
+- [ ] No row duplicates or majorly overlaps a topic already published on the client's own blog (Stage 1.5)
 - [ ] No row duplicates or overlaps a topic from an earlier month (Stage 0.5)
 - [ ] Every commercial row traces to something they sell
 - [ ] No row requires a claim `canonical-facts.md` forbids
