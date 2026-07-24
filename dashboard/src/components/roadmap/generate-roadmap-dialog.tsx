@@ -15,6 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { ViewInstructionsButton } from "@/components/instructions-viewer";
 import { ApiError, api } from "@/lib/api";
 import { FieldError } from "@/components/clients/engine-error";
 import {
@@ -208,7 +209,18 @@ export function GenerateRoadmapDialog({
           </div>
 
           <div>
-            <Label htmlFor="gen-notes">Notes</Label>
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="gen-notes">Notes</Label>
+              {/* A markdown preview of the notes, in the same viewer the blog surfaces use.
+                  Single pane (no tabs) because a roadmap has one instruction source. Hides
+                  itself until something is typed. */}
+              <ViewInstructionsButton
+                title="Roadmap notes"
+                label="View notes"
+                variant="ghost"
+                tabs={[{ value: "notes", label: "Notes", source: notes }]}
+              />
+            </div>
             <p className="mt-1 text-xs text-muted-foreground">{NOTES_HELP}</p>
             <Textarea
               id="gen-notes"
@@ -216,7 +228,7 @@ export function GenerateRoadmapDialog({
               onChange={(e) => setNotes(e.target.value)}
               rows={4}
               placeholder="Lock to Bengaluru buyers. Do not plan anything on returns or appreciation. Treat Kodagu resorts as the competitive set."
-              className="mt-1.5"
+              className="mt-1.5 max-h-64"
             />
           </div>
 

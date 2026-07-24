@@ -11,6 +11,7 @@ import Link from "next/link";
 import { ArrowRight, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { ViewInstructionsButton } from "@/components/instructions-viewer";
 import { useNow } from "@/components/create/use-now";
 import { workingLine } from "@/components/roadmap/generation-copy";
 import { formatElapsed } from "@/lib/format";
@@ -86,6 +87,13 @@ export function RoadmapGenerationStatus({
           {elapsed !== null ? (
             <span className="machine text-xs text-muted-foreground">{elapsed} elapsed</span>
           ) : null}
+          {/* The notes this generation was started with, one click away in the shared viewer.
+              Self-hides when none were given. */}
+          <ViewInstructionsButton
+            title="Roadmap notes"
+            label="View notes"
+            tabs={[{ value: "notes", label: "Notes", source: job.notes }]}
+          />
           {/* Outline, never the accent: the accent on this page is Create blogs and stays
               there. */}
           <Button variant="outline" size="sm" asChild>

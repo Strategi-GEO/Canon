@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { ViewInstructionsButton } from "@/components/instructions-viewer";
 
 /**
  * The question asked every time Generate is pressed: anything specific to just these blogs?
@@ -52,11 +53,9 @@ export function SessionInstructionsDialog({
   // the last run's text riding along: the reset is a fresh mount, not an effect that fights it.
   const [value, setValue] = React.useState("");
 
-  const brand = brandInstructions.trim();
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Instructions for this run</DialogTitle>
           <DialogDescription>
@@ -68,16 +67,20 @@ export function SessionInstructionsDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {brand ? (
-          <div className="rounded-lg border border-border bg-muted/40 px-3 py-2">
-            <p className="text-xs font-medium text-foreground">
-              Already in force for {brandName} (from Settings)
-            </p>
-            <p className="mt-1 max-h-32 overflow-y-auto text-xs whitespace-pre-wrap text-muted-foreground">
-              {brand}
-            </p>
-          </div>
-        ) : null}
+        {/* View what is already in force for the brand, plus a markdown preview of this run's note,
+            as tabs. Hides itself when the brand has no standing instructions and nothing is typed.
+            Instructions are authored in markdown, so the read view renders markdown. */}
+        <div className="flex justify-end">
+          <ViewInstructionsButton
+            title="Instructions for this run"
+            label="View instructions"
+            variant="ghost"
+            tabs={[
+              { value: "brand", label: `Brand instructions`, source: brandInstructions },
+              { value: "session", label: "This run", source: value },
+            ]}
+          />
+        </div>
 
         <Textarea
           autoFocus
@@ -85,7 +88,7 @@ export function SessionInstructionsDialog({
           onChange={(e) => setValue(e.target.value)}
           rows={5}
           placeholder="e.g. Lead every blog with a statistic. Keep them under 900 words for this batch."
-          className="min-h-28"
+          className="max-h-64 min-h-28"
         />
 
         <DialogFooter>

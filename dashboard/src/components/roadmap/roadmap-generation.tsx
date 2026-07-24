@@ -13,6 +13,7 @@ import { CheckCircle2, Loader2, TriangleAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { MarkdownView } from "@/components/blogs/markdown-view";
+import { ViewInstructionsButton } from "@/components/instructions-viewer";
 import { FieldError, errorLines } from "@/components/clients/engine-error";
 import { useNow } from "@/components/create/use-now";
 import {
@@ -290,9 +291,18 @@ function Inputs({ job }: { job: RoadmapGenJob }) {
         </dd>
       </div>
       {job.notes.trim() !== "" ? (
-        <div className="flex min-w-0 basis-full items-baseline gap-1.5">
+        <div className="flex min-w-0 basis-full items-center gap-1.5">
           <dt className="shrink-0">Notes</dt>
-          <dd className="min-w-0 text-pretty text-foreground">{job.notes}</dd>
+          <dd className="min-w-0">
+            {/* Rendered in the shared viewer as markdown, the same way the blog run shows its
+                notes. Single pane, no tabs: a roadmap has one instruction source. */}
+            <ViewInstructionsButton
+              title="Roadmap notes"
+              label="View notes"
+              variant="ghost"
+              tabs={[{ value: "notes", label: "Notes", source: job.notes }]}
+            />
+          </dd>
         </div>
       ) : null}
     </dl>
