@@ -9,20 +9,35 @@
  */
 
 import type { BlogStatus, BlogSummary } from "@/types";
-import { adminUrgency, blogState } from "@/lib/blog-state";
+import { adminUrgency, blogState, type BlogState } from "@/lib/blog-state";
 
 export type SortKey = "created" | "score" | "status" | "topic" | "roadmap";
 export type SortDir = "asc" | "desc";
-export type StatusFilter = BlogStatus | "all";
+
+/**
+ * The filter is over the DERIVED state (blogState), the same axis the Status column's tag shows,
+ * so an operator can filter to exactly what they can see: "With client", "Approved", "Published"
+ * and the rest, not just the six raw run statuses the loop happens to end on. It used to filter
+ * on the raw status, which meant every delivered article was one indistinguishable "done" and the
+ * tags naming where it actually sat could not be filtered for at all. "all" is the escape hatch.
+ * Ordered by lifecycle so the dropdown reads like a blog's journey.
+ */
+export type StateFilter = BlogState | "all";
 
 export const SORT_KEYS: SortKey[] = ["created", "score", "status", "topic", "roadmap"];
-export const STATUS_FILTERS: StatusFilter[] = [
+export const STATE_FILTERS: StateFilter[] = [
   "all",
-  "done",
-  "needs_review",
+  "generating",
+  "has_questions",
+  "answers_submitted",
+  "internal_review",
+  "client_review",
+  "changes_requested",
+  "approved",
+  "published",
   "failed",
-  "running",
   "stopped",
+  "unknown",
 ];
 
 /**
@@ -76,10 +91,10 @@ export function sortBlogs(blogs: BlogSummary[], key: SortKey, dir: SortDir): Blo
       // is mine to move": held and changes-requested first, then the mute ones that cannot
       // explain themselves, then the bench, then everything waiting on somebody else.
       //
-      // THE FILTER STILL WORKS ON THE RAW RUN STATUS and that is not an inconsistency to tidy
-      // away. Sorting asks "what should I look at first", which is a question about the whole
-      // article; filtering asks "show me only the failed ones", which is a question about how
-      // the loop ended. Those are different axes and the STATUS_FILTERS list names the second.
+      // SORT AND FILTER NOW SHARE THE DERIVED-STATE AXIS. Both read blogState: the filter shows
+      // exactly the states this column's tag shows, and this sort ranks those states by how much
+      // each wants a human. Neither reads the raw run status any more, so the column, the filter
+      // and this ordering can never name three different things.
       return adminUrgency(blogState(a)) - adminUrgency(blogState(b));
     }
     if (key === "topic") {
@@ -133,12 +148,12 @@ export function matchesQuery(blog: BlogSummary, query: string): boolean {
 export function selectBlogs(
   blogs: BlogSummary[],
   query: string,
-  status: StatusFilter,
+  state: StateFilter,
   key: SortKey,
   dir: SortDir,
 ): BlogSummary[] {
   const filtered = blogs.filter(
-    (blog) => (status === "all" || blog.status === status) && matchesQuery(blog, query),
+    (blog) => (state === "all" || blogState(blog) === state) && matchesQuery(blog, query),
   );
   return sortBlogs(filtered, key, dir);
 }

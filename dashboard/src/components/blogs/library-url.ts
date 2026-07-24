@@ -4,10 +4,10 @@ import * as React from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   SORT_KEYS,
-  STATUS_FILTERS,
+  STATE_FILTERS,
   type SortDir,
   type SortKey,
-  type StatusFilter,
+  type StateFilter,
 } from "@/components/blogs/blogs-filter";
 
 /**
@@ -25,7 +25,7 @@ import {
 
 export const DEFAULTS = {
   q: "",
-  status: "all" as StatusFilter,
+  status: "all" as StateFilter,
   sort: "created" as SortKey,
   dir: "desc" as SortDir,
 };
@@ -40,14 +40,14 @@ function one<T extends string>(raw: string | null, allowed: readonly T[], fallba
 
 export type LibraryUrl = {
   query: string;
-  status: StatusFilter;
+  status: StateFilter;
   sortKey: SortKey;
   sortDir: SortDir;
   /** The topic_slug a LEGACY ?blog link names, or null. The library redirects it to the
    *  blog's own page; nothing writes this param any more. */
   previewSlug: string | null;
   setQuery: (value: string) => void;
-  setStatus: (value: StatusFilter) => void;
+  setStatus: (value: StateFilter) => void;
   /** Both filters in ONE write. Calling setQuery then setStatus in the same tick would lose
    *  the first: each builds its next URL from the params of the render it was created in, so
    *  the second write starts from a snapshot that never saw the first. */
@@ -61,7 +61,7 @@ export function useLibraryUrl(): LibraryUrl {
   const params = useSearchParams();
 
   const query = params.get(PARAM.q) ?? DEFAULTS.q;
-  const status = one(params.get(PARAM.status), STATUS_FILTERS, DEFAULTS.status);
+  const status = one(params.get(PARAM.status), STATE_FILTERS, DEFAULTS.status);
   const sortKey = one(params.get(PARAM.sort), SORT_KEYS, DEFAULTS.sort);
   const sortDir = one(params.get(PARAM.dir), ["asc", "desc"] as const, DEFAULTS.dir);
   const previewSlug = params.get(PARAM.blog);

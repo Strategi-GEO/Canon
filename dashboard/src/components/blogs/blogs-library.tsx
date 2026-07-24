@@ -18,7 +18,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError, api } from "@/lib/api";
 import { brandHref } from "@/lib/orgs-context";
 import { HOSTED_READONLY } from "@/lib/hosted";
-import { blogState } from "@/lib/blog-state";
+import { adminTag, blogState } from "@/lib/blog-state";
 import { formatCount } from "@/lib/format";
 import {
   loadObservedReview,
@@ -31,7 +31,7 @@ import { useNotifications } from "@/lib/notifications-context";
 import { useBlogQuestions } from "@/lib/use-blog-questions";
 import { useHotkey } from "@/lib/use-hotkey";
 import { cn } from "@/lib/utils";
-import { selectBlogs, type StatusFilter } from "@/components/blogs/blogs-filter";
+import { selectBlogs, STATE_FILTERS, type StateFilter } from "@/components/blogs/blogs-filter";
 import { BlogsTable, TRIGGER_ATTR } from "@/components/blogs/blogs-table";
 import { useLibraryUrl } from "@/components/blogs/library-url";
 import {
@@ -41,16 +41,13 @@ import {
 } from "@/components/blogs/questions-state";
 import type { BlogSummary } from "@/types";
 
-const FILTERS: { value: StatusFilter; label: string }[] = [
-  { value: "all", label: "All statuses" },
-  { value: "done", label: "Shipped" },
-  // Named for the act it summons someone for, matching the badge. The filter an operator reaches
-  // for is "what do I owe", and that is what this word now means at every score.
-  { value: "needs_review", label: "Waiting on you" },
-  { value: "failed", label: "Failed" },
-  { value: "running", label: "Running" },
-  { value: "stopped", label: "Stopped" },
-];
+// Built FROM the admin tags, so an option and the tag it filters for carry the identical word.
+// Add a state to blogState and its filter option appears here labelled the same, with nothing to
+// keep in sync by hand: that drift is exactly what this derives its way out of.
+const FILTERS: { value: StateFilter; label: string }[] = STATE_FILTERS.map((value) => ({
+  value,
+  label: value === "all" ? "All statuses" : adminTag(value).label,
+}));
 
 /**
  * One BRAND's blogs. The brand arrives as a prop and is never read from a context or the URL:
@@ -327,7 +324,7 @@ function Library({
           </div>
           <select
             value={url.status}
-            onChange={(event) => url.setStatus(event.target.value as StatusFilter)}
+            onChange={(event) => url.setStatus(event.target.value as StateFilter)}
             aria-label="Filter by status"
             className={cn(
               "h-8 rounded-lg border border-input bg-background px-2 text-xs",
