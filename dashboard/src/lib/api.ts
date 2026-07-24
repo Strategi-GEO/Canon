@@ -9,7 +9,6 @@ import type {
   AppUpdateResult,
   AppVersion,
   BlogComment,
-  BlogCommentReply,
   BlogCommentsResponse,
   BlogQuestions,
   BlogReviewState,

@@ -88,7 +88,9 @@ export default function ClientCatchAll() {
   // No org prop: the reports view reads only its own brand's shared reports and links nowhere
   // into the blog library.
   if (route.section === "/reports") {
-    return <ReportsView brand={route.brand} />;
+    // key on the brand so switching brand remounts fresh (no stale report flashing while the
+    // next brand's data loads), which is what the in-effect reset used to do.
+    return <ReportsView key={route.brand} brand={route.brand} />;
   }
   // No /resources branch: resources are admin-only (migration 024), and the resolver no longer
   // classifies "resources" as a section, so that URL is not-found before it reaches here.

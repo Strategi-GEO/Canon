@@ -92,17 +92,20 @@ export function CreateForBrand({
   /**
    * A retry arriving FROM THE BLOGS TAB: the failed blog's page links here with
    * ?retry=<topic-slug>, and it lands exactly as the in-tab retry does, by seeding the same
-   * retry state so the select view mounts with the row pre-ticked. An effect rather than the
-   * initializer, so a second failed blog's link pre-ticks its row without a remount; the same
-   * slug twice is a no-op, which is fine, because its row is already ticked.
+   * retry state so the select view mounts with the row pre-ticked. Done by adjusting state
+   * during render when the param changes (React's documented prop-change pattern) rather than in
+   * an effect, so a second failed blog's link pre-ticks its row without remounting this
+   * component; the same slug twice is a no-op, because seenRetry already matches it.
    */
   const retryParam = useSearchParams().get("retry");
-  React.useEffect(() => {
-    if (retryParam) {
-      setRetry({ token: Date.now(), slugs: [retryParam] });
-      setWatching(false);
-    }
-  }, [retryParam]);
+  const [seenRetry, setSeenRetry] = React.useState<string | null>(null);
+  if (retryParam !== null && retryParam !== seenRetry) {
+    setSeenRetry(retryParam);
+    // Token increments off the previous one so it stays unique and forces the select view to
+    // remount with the row pre-ticked, exactly as the in-tab retry's Date.now() token does.
+    setRetry((prev) => ({ token: (prev?.token ?? 0) + 1, slugs: [retryParam] }));
+    setWatching(false);
+  }
 
   /**
    * The engine-wide run list, from the ONE poll above this tree rather than a read of its own.

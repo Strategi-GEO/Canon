@@ -32,12 +32,13 @@ export function ReportsView({ brand }: { brand: string }) {
 
   React.useEffect(() => {
     const controller = new AbortController();
-    setData(null);
-    setError(null);
     api
       .reports(brand, controller.signal)
       .then((res) => {
-        if (!controller.signal.aborted) setData(res);
+        if (!controller.signal.aborted) {
+          setData(res);
+          setError(null);
+        }
       })
       .catch((cause) => {
         if (controller.signal.aborted) return;
@@ -53,7 +54,15 @@ export function ReportsView({ brand }: { brand: string }) {
     return (
       <div className="rounded-lg border bg-card px-4 py-3">
         <p className="text-sm text-muted-foreground">{detailText(error)}</p>
-        <Button className="mt-2" variant="outline" size="sm" onClick={() => setAttempt((n) => n + 1)}>
+        <Button
+          className="mt-2"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            setError(null);
+            setAttempt((n) => n + 1);
+          }}
+        >
           Try again
         </Button>
       </div>

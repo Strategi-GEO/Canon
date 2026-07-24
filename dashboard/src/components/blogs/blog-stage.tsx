@@ -552,7 +552,15 @@ function StageBody({
   const historyRef = React.useRef<{ past: string[]; future: string[] }>({ past: [], future: [] });
   const lastTextRef = React.useRef<string | null>(null);
   const timeTravelRef = React.useRef(false);
-  const [, bumpHistory] = React.useReducer((n: number) => n + 1, 0);
+  // The stacks live in a ref (the articleText effect pushes to them without a stale closure),
+  // but the Undo/Redo buttons need their LENGTHS at render time. Reading historyRef.current in
+  // render is a bug the linter rightly flags, so mirror the counts into reducer state and sync
+  // it wherever the ref changes. A useReducer dispatch inside an effect is fine; a ref read in
+  // render is not.
+  const [historyCounts, syncHistoryCounts] = React.useReducer(
+    (_prev: { past: number; future: number }, next: { past: number; future: number }) => next,
+    { past: 0, future: 0 },
+  );
   const [travelling, setTravelling] = React.useState(false);
 
   React.useEffect(() => {
@@ -560,6 +568,7 @@ function StageBody({
     historyRef.current = { past: [], future: [] };
     lastTextRef.current = null;
     timeTravelRef.current = false;
+    syncHistoryCounts({ past: 0, future: 0 });
   }, [topicSlug]);
 
   React.useEffect(() => {
@@ -580,7 +589,10 @@ function StageBody({
     // undoable and any redo line is abandoned, exactly as an editor's history behaves.
     historyRef.current.past.push(last);
     historyRef.current.future = [];
-    bumpHistory();
+    syncHistoryCounts({
+      past: historyRef.current.past.length,
+      future: historyRef.current.future.length,
+    });
   }, [articleText]);
 
   const travel = React.useCallback(
@@ -601,7 +613,10 @@ function StageBody({
         from.pop();
         to.push(current);
         timeTravelRef.current = true;
-        bumpHistory();
+        syncHistoryCounts({
+          past: historyRef.current.past.length,
+          future: historyRef.current.future.length,
+        });
         articleReload();
         onChanged();
       } catch (cause) {
@@ -931,9 +946,7 @@ function StageBody({
                   <Button
                     size="sm"
                     variant="ghost"
-                    disabled={
-                      historyRef.current.past.length === 0 || travelling || !editStanding.act
-                    }
+                    disabled={historyCounts.past === 0 || travelling || !editStanding.act}
                     onClick={() => void travel("undo")}
                     aria-label="Undo the last change to the article"
                   >
@@ -943,9 +956,7 @@ function StageBody({
                   <Button
                     size="sm"
                     variant="ghost"
-                    disabled={
-                      historyRef.current.future.length === 0 || travelling || !editStanding.act
-                    }
+                    disabled={historyCounts.future === 0 || travelling || !editStanding.act}
                     onClick={() => void travel("redo")}
                     aria-label="Redo the undone change to the article"
                   >

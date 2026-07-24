@@ -37,12 +37,12 @@ export function PortalDataProvider({ children }: { children: React.ReactNode }) 
 
   React.useEffect(() => {
     const controller = new AbortController();
-    setError(null);
     api
       .overview(controller.signal)
       .then((data) => {
         if (!controller.signal.aborted) {
           setOverview(data);
+          setError(null);
         }
       })
       .catch((cause) => {
@@ -58,7 +58,10 @@ export function PortalDataProvider({ children }: { children: React.ReactNode }) 
     return () => controller.abort();
   }, [attempt]);
 
-  const refresh = React.useCallback(() => setAttempt((n) => n + 1), []);
+  const refresh = React.useCallback(() => {
+    setError(null);
+    setAttempt((n) => n + 1);
+  }, []);
 
   const value = React.useMemo<PortalState>(() => {
     const orgs = overview?.orgs ?? [];
