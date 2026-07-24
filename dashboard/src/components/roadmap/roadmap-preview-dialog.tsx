@@ -222,6 +222,7 @@ function PreviewBody({
             </button>
             <RoadmapDownloadButton
               brandSlug={brandSlug}
+              brandName={brandName}
               month={m.month}
               label={m.label}
               compact

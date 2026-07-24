@@ -188,6 +188,13 @@ def main() -> None:
     for f, t in joined.items():
         if f.endswith("globals.css"):
             continue
+        # roadmap-xlsx.ts writes an .xlsx FILE, not the DOM. write-excel-file colours every cell
+        # with a literal hex string and cannot read a CSS custom property, so an xlsx palette is
+        # the one place a hardcoded hex is not a token bypass. Pinned to this one file, exactly
+        # like the markdown.ts and theme.ts allowances above, and for the same reason: the
+        # allowance is earned by a guarantee this file has (it renders no DOM) and no other does.
+        if f.endswith("src/lib/roadmap-xlsx.ts"):
+            continue
         for hit in re.findall(r"#[0-9a-fA-F]{6}\b", t):
             if hit.upper() != "#D45512":
                 stray_hex.add(f"{f}:{hit}")

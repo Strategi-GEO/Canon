@@ -168,7 +168,7 @@ export function RoadmapOverview({
             locked={locked}
             onChanged={roadmap.reload}
           />
-          <RoadmapDownloadButton brandSlug={brandSlug} label="the latest roadmap" />
+          <RoadmapDownloadButton brandSlug={brandSlug} brandName={brandName} label="the latest roadmap" />
           {/* Adding a month is an engine write, so the hosted build previews and downloads but
               offers neither way in. A month is added by UPLOADING a CSV or by GENERATING one, and
               both stay available once a roadmap exists because each just appends the next month. */}
