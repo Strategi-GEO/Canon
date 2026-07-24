@@ -1,21 +1,22 @@
 "use client";
 
 import { BrandRoute } from "@/components/shell/brand-route";
-import { PostedLibrary } from "@/components/blogs/posted-library";
+import { ChannelLibrary } from "@/components/blogs/channel-library";
 
-/** Posted blogs for one brand, ready to share on LinkedIn. Same table as Blogs, filtered to
- *  the `published` ("posted") state. */
+/** Posted blogs for one brand, each generating into a native LinkedIn post. Same published set
+ *  the Blogs and Medium tabs read, with a per-blog Generate -> Review pipeline. */
 export default function LinkedInPage() {
   return (
     <BrandRoute>
       {({ org, brand }) => (
-        <PostedLibrary
+        <ChannelLibrary
           key={brand.slug}
           orgSlug={org.slug}
           brandSlug={brand.slug}
           brandName={brand.name}
+          channel="linkedin"
           title="LinkedIn"
-          blurb={`Posted blogs ready to share on LinkedIn for ${brand.name}.`}
+          blurb={`Turn posted blogs into native LinkedIn posts for ${brand.name}.`}
         />
       )}
     </BrandRoute>

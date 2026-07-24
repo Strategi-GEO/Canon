@@ -33,6 +33,10 @@ import type {
   ResourcesResponse,
   RoadmapGenJob,
   RoadmapMonthsResponse,
+  RepurposeArtifact,
+  RepurposeBody,
+  RepurposeChannel,
+  RepurposeListing,
   RoadmapResponse,
   RoadmapSheet,
   RunSummary,
@@ -420,6 +424,33 @@ export const api = {
 
   generate: (slug: string, body: GenerateBody) =>
     request<GenerateAccepted>(`/api/clients/${slug}/generate`, { method: "POST", body }),
+
+  /**
+   * Start one repurpose run (a shipped blog -> a LinkedIn post or a Medium article). Returns a
+   * {run_id, topics} 202 exactly like generate, so the same run poll and SSE stream watch it and
+   * it shows up as a running session. 409 when a run for the same (blog, channel) is already live.
+   */
+  repurpose: (slug: string, body: RepurposeBody) =>
+    request<GenerateAccepted>(`/api/clients/${slug}/repurpose`, { method: "POST", body }),
+
+  /** Which published blogs already have a <channel> piece, so the tab can label every row. */
+  repurposeListing: (slug: string, channel: RepurposeChannel, signal?: AbortSignal) =>
+    request<RepurposeListing>(
+      `/api/clients/${slug}/repurpose?channel=${channel}`,
+      { signal },
+    ),
+
+  /** One generated channel artifact. 404 (ApiError.status 404) when it was never generated. */
+  repurposeArtifact: (
+    slug: string,
+    topicSlug: string,
+    channel: RepurposeChannel,
+    signal?: AbortSignal,
+  ) =>
+    request<RepurposeArtifact>(
+      `/api/clients/${slug}/repurpose/${encodeURIComponent(topicSlug)}/${channel}`,
+      { signal },
+    ),
 
   runs: (signal?: AbortSignal) => request<RunsResponse>("/api/runs", { signal }),
 

@@ -47,7 +47,7 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
                                StreamingResponse)
 from pydantic import BaseModel
 
-from . import analysis_gen, auth, blog_edit, blog_upload, client_answers, db, describe, facts_gen, ledger, report_gen, roadmap, roadmap_gen, runner, sync
+from . import analysis_gen, auth, blog_edit, blog_upload, client_answers, db, describe, facts_gen, ledger, report_gen, repurpose, roadmap, roadmap_gen, runner, sync
 # Aliased for the same reason clients is: "questions" is the natural name for the list of
 # questions inside a handler, and the shadowing bug that causes is silent.
 from . import questions as questions_mod
@@ -795,6 +795,12 @@ def _live_run_slugs(slug):
     in_flight = set()
     for run in runner.list_runs():
         if run.get("client") != slug or not run.get("live"):
+            continue
+        # A repurpose run's topic_slug is the synthetic "<topic>/repurpose/<channel>", not a real
+        # blog, so it must never count as a blog in flight: it would falsely block a regenerate of
+        # the source blog and surface as a phantom row in the Blogs library. Repurpose duplicate
+        # protection lives in api_repurpose, keyed on the synthetic slug, not here.
+        if run.get("kind") == "repurpose":
             continue
         for topic in run.get("topics", []):
             # A topic whose session already settled (mark_topic_terminal) is not in flight,
@@ -3055,6 +3061,129 @@ async def api_generate(slug: str, body: GenerateRequest,
     runner.register_run_task(run_id, task)
     task.add_done_callback(lambda _task: runner._discard_run_task(run_id))
     return {"run_id": run_id, "topics": topics}
+
+
+# ---------------------------------------------------------------------------
+# Repurpose: a shipped blog -> one channel-native piece (LinkedIn post, Medium article).
+# A repurpose run reuses the blog run's registry, semaphore, status feed, SSE tail and stop
+# path (see server/repurpose.py), so it shows up as a running session and is stoppable exactly
+# like a blog run. It is generate -> review only: no eval, no ledger, no record.
+# ---------------------------------------------------------------------------
+
+class RepurposeRequest(BaseModel):
+    topic_slug: str
+    channel: str
+
+
+def _resolve_blog_markdown(slug, topic_slug):
+    """The source blog's markdown: disk when it is there (always, on the local engine, and
+    authoritative for a topic a live run holds), the record otherwise (hosted, or after a scratch
+    reclaim). None when there is no shipped blog to repurpose."""
+    path = runner.output_dir(slug, topic_slug) / "blog.md"
+    if path.is_file():
+        text = path.read_text(encoding="utf-8")
+        if text.strip():
+            return text
+    return _record_artifact(slug, topic_slug, "blog.md")
+
+
+async def _repurpose_task(run_id, slug, topic_slug, channel, source_body):
+    try:
+        await repurpose.run_repurpose(slug, topic_slug, channel, source_body, run_id=run_id)
+    except Exception:
+        # CancelledError is not an Exception, so a stop unwinds past this into the finally, exactly
+        # as _batch_task relies on. A real crash already left a failed line in status.jsonl.
+        log.exception("repurpose run %s for %s/%s/%s crashed", run_id, slug, topic_slug, channel)
+    finally:
+        runner.finish_run(run_id)
+
+
+@app.post("/api/clients/{slug}/repurpose", status_code=202)
+async def api_repurpose(slug: str, body: RepurposeRequest,
+                        user: auth.Identity = Depends(auth.require_admin)):
+    """Start one repurpose run. Mirrors api_generate: resolve, refuse duplicates, register the
+    run (so it is visible and stoppable before the task is scheduled), launch the task."""
+    _client_or_404(slug, user)
+
+    channel = (body.channel or "").strip().lower()
+    if channel not in repurpose.CHANNELS:
+        raise HTTPException(status_code=400,
+                            detail=f"unknown channel {body.channel!r}; expected one of "
+                                   f"{', '.join(repurpose.CHANNELS)}")
+
+    topic_slug = body.topic_slug
+    # Same slug-format guard api_output_file uses: the source must be a real blog slug, so a
+    # topic_slug smuggling separators or dot-dots is refused before any path is built.
+    if runner.slugify(topic_slug) != topic_slug:
+        raise HTTPException(status_code=404, detail="not found")
+
+    source_body = _resolve_blog_markdown(slug, topic_slug)
+    if not source_body:
+        raise HTTPException(status_code=404,
+                            detail=f"no shipped blog for {topic_slug!r} to repurpose")
+
+    # Duplicate protection, keyed on the SYNTHETIC slug: one live repurpose per (blog, channel).
+    # A second is refused rather than run, so two clicks do not race two sessions onto one post.md.
+    synthetic = repurpose.synthetic_slug(topic_slug, channel)
+    for run in runner.list_runs():
+        if (run.get("client") == slug and run.get("live")
+                and run.get("kind") == "repurpose"):
+            if any(t.get("topic_slug") == synthetic for t in run.get("topics", [])):
+                raise HTTPException(status_code=409,
+                                    detail=f"a {channel} repurpose for this blog is already "
+                                           f"running")
+
+    run_id = uuid.uuid4().hex
+    # status.jsonl survives across regenerates, so start this run's tail after the existing lines
+    # (0 on the first run), the same offset discipline api_generate uses.
+    status_path = repurpose.repurpose_dir(slug, topic_slug, channel) / "status.jsonl"
+    try:
+        tail_offset = status_path.stat().st_size
+    except OSError:
+        tail_offset = 0
+    topics = [{
+        "index": 0,
+        "topic_slug": synthetic,
+        "tail_offset": tail_offset,
+        # Carried for the UI: the synthetic slug is the SSE key, but the tab matches a run to a
+        # published blog by its source slug and channel.
+        "source_topic_slug": topic_slug,
+        "channel": channel,
+    }]
+    runner.register_run(run_id, slug, topics, kind="repurpose", channel=channel)
+    task = asyncio.create_task(_repurpose_task(run_id, slug, topic_slug, channel, source_body))
+    runner.register_run_task(run_id, task)
+    task.add_done_callback(lambda _task: runner._discard_run_task(run_id))
+    return {"run_id": run_id, "topics": topics}
+
+
+@app.get("/api/clients/{slug}/repurpose")
+async def api_repurpose_listing(slug: str, channel: str,
+                                user: auth.Identity = Depends(auth.require_user)):
+    """{source_topic_slug: {generated_at, chars}} for every published blog that already has a
+    <channel> artifact. One call, so the channel tab can label every row without N probes."""
+    _client_or_404(slug, user)
+    channel = channel.strip().lower()
+    if channel not in repurpose.CHANNELS:
+        raise HTTPException(status_code=400,
+                            detail=f"unknown channel {channel!r}")
+    return {"artifacts": repurpose.listing(slug, channel)}
+
+
+@app.get("/api/clients/{slug}/repurpose/{topic_slug}/{channel}")
+async def api_repurpose_artifact(slug: str, topic_slug: str, channel: str,
+                                 user: auth.Identity = Depends(auth.require_user)):
+    """One channel artifact's text plus its stamp. 404 when it was never generated."""
+    _client_or_404(slug, user)
+    if runner.slugify(topic_slug) != topic_slug:
+        raise HTTPException(status_code=404, detail="not found")
+    channel = channel.strip().lower()
+    if channel not in repurpose.CHANNELS:
+        raise HTTPException(status_code=404, detail="not found")
+    art = repurpose.artifact(slug, topic_slug, channel)
+    if art is None:
+        raise HTTPException(status_code=404, detail="not generated")
+    return art
 
 
 # ---------------------------------------------------------------------------

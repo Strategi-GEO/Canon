@@ -436,6 +436,32 @@ export type RunTopic = {
   index: number;
   topic_slug: string;
   tail_offset: number;
+  /**
+   * Repurpose runs only. `topic_slug` is the synthetic "<blog>/repurpose/<channel>" (the SSE
+   * key); these two say which published blog and channel it belongs to, so a channel tab can
+   * match a live run to a blog row. Absent on blog runs.
+   */
+  source_topic_slug?: string;
+  channel?: RepurposeChannel;
+};
+
+export type RepurposeChannel = "linkedin" | "medium";
+
+export type RepurposeBody = {
+  topic_slug: string;
+  channel: RepurposeChannel;
+};
+
+/** One generated channel artifact, from GET /api/clients/{slug}/repurpose/{topic}/{channel}. */
+export type RepurposeArtifact = {
+  content: string;
+  generated_at: string;
+  chars: number;
+};
+
+/** GET /api/clients/{slug}/repurpose?channel=... : the published blogs that already have a piece. */
+export type RepurposeListing = {
+  artifacts: Record<string, { generated_at: string; chars: number }>;
 };
 
 export type RunSummary = {
@@ -466,6 +492,13 @@ export type RunSummary = {
    *  so the facts build's minutes are never billed to the blogs. */
   phase_started?: string | null;
   topics: RunTopic[];
+  /**
+   * "blog" (a Create-Blogs run) or "repurpose" (a LinkedIn/Medium piece). Optional so an engine
+   * one restart behind, which omits it, reads as "blog" and every existing reader is unchanged.
+   */
+  kind?: "blog" | "repurpose";
+  /** The repurpose target, on repurpose runs only. Null/absent on blog runs. */
+  channel?: RepurposeChannel | null;
 };
 
 export type RunsResponse = {

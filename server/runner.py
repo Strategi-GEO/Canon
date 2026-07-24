@@ -209,7 +209,7 @@ def _discard_run_task(run_id):
     return RUN_TASKS.pop(run_id, None)
 
 
-def register_run(run_id, client, topics):
+def register_run(run_id, client, topics, kind="blog", channel=None):
     """Record a submitted run. It starts QUEUED, never running.
 
     Registration happens the moment the operator's POST lands, because their own submit has to
@@ -218,10 +218,18 @@ def register_run(run_id, client, topics):
     minutes. Reporting that as running would tell six operators that work is happening on their
     topics when nothing has started, and the honest answer, "queued behind another session", is
     the one that tells them whether to wait or go do something else.
+
+    `kind` distinguishes a blog run from a repurpose run (server/repurpose.py). It defaults to
+    "blog" so every existing caller and every existing reader is unchanged, and it is the ONE
+    field blog code keys on to skip repurpose runs: a repurpose run's synthetic topic_slug is
+    not a real blog, so app._live_run_slugs excludes it. `channel` is the repurpose target
+    ("linkedin"|"medium"), None for a blog.
     """
     RUNS[run_id] = {
         "run_id": run_id,
         "client": client,
+        "kind": kind,
+        "channel": channel,
         # When the operator pressed Generate. Not when the engine picked the work up: see
         # started_running below. Two different questions, so two different fields.
         "started": datetime.now(timezone.utc).isoformat(),
