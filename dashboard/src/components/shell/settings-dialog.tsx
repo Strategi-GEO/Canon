@@ -109,7 +109,7 @@ export function SettingsDialog({ trigger }: { trigger: React.ReactNode }) {
               <p className="text-xs text-muted-foreground">The desktop app on this computer</p>
             </div>
             <span className="rounded-md bg-muted px-2 py-1 font-mono text-xs text-foreground">
-              {version ? `v${version}` : checking ? "…" : "—"}
+              {version ? `v${version}` : checking ? "…" : "n/a"}
             </span>
           </div>
 
