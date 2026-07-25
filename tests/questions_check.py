@@ -6,23 +6,20 @@ no real brand. It pins one table and nothing else, because that table is the who
 `needs_review` means:
 
   | Questions                      | Score              | Status       |
-  | current                        | >= 95              | done         |
-  | current                        | < 95, or none      | needs_review |
+  | current                        | any, incl. none    | needs_review |
   | none/stale/unreadable/answered | >= 95              | done         |
   | none/stale/unreadable/answered | < 95, or none      | failed       |
 
-THE SCORE IS CHECKED FIRST NOW, AND 95+ PASSES REGARDLESS OF QUESTIONS. At or above the ship bar
-the draft passes to internal admin review, and any question the evaluator raised rides there with
-it for the admin, who is the backstop and can dispatch it to the client ("Get it answered") or
-send the blog as-is. This REVERSES the earlier rule (a current question held the blog at any
-score, 96 included) on the product owner's explicit call: above the bar the score decides, and the
-admin, not a client-facing hold, weighs whatever the evaluator could not settle.
+THE QUESTION STATE IS CHECKED FIRST AND THE SCORE DECIDES ONLY THE NOTHING-TO-ANSWER BRANCH.
+That order is the rule, not an implementation detail. A current question holds the blog at 96,
+because a 96 with an unconfirmed source is not less wrong for scoring well: the old score-first
+rule shipped two canonical-facts violations at 96, and that is what these checks exist to keep
+from coming back. `needs_review` is a WORKFLOW STATE, not a verdict. A blog held at 96 has a
+verdict and the verdict is SHIP; it is waiting on a human, not on a better number.
 
-BELOW THE BAR THE QUESTION STATE STILL HOLDS. A current question under 95 is needs_review, the
-client-facing hold, because a sub-95 draft has not earned a pass to override it. With no current
-question the score decides the rest: below 95 the loop exhausted itself and is failed, and no score
-is failed too, since an evaluator that died before writing its scored end line has no question in a
-dead session. stale, unreadable and answered group with none because THE APP ALREADY REFUSES THEM,
+Score None falls to failed on purpose: an evaluator that died before writing its scored end line
+must never become a permanent hold, because there is no question in a dead session. stale,
+unreadable and answered group with none for the same one reason: THE APP ALREADY REFUSES THEM,
 so they summon nobody, and a hold on a form nobody can submit is a blog with no exit.
 
 The second half pins `questions.has_area_question`, the predicate behind the in-loop rule that A
@@ -134,14 +131,12 @@ def _write_answers(out, slug, iteration):
     }), encoding="utf-8")
 
 
-def test_a_passing_blog_ships_over_a_current_question():
-    """THE HEADLINE REVERSAL. A 96 with a current question now PASSES to internal admin review.
+def test_a_current_question_holds_a_passing_blog():
+    """THE HEADLINE INVERSION. A 96 with a current question is HELD, not shipped.
 
-    The earlier rule held it and called the question a demand no score could dismiss. The product
-    owner reversed it: above the ship bar the score decides, the blog passes to done, and the
-    question rides into internal review for the admin to weigh (dispatch to the client, or send
-    the blog as-is). Below the bar a current question still holds; the score is what changed the
-    outcome here, which is why the reason is no longer None.
+    The old rule shipped it and called the question an offer the operator could decline forever.
+    It is now a demand at every score: the questions are checked before the number, and the
+    number does not enter the needs_review definition at all.
     """
     with _Roots():
         out = _seed_blog(score=96)
@@ -152,10 +147,9 @@ def test_a_passing_blog_ships_over_a_current_question():
               f"got {runner._questions_state('brand', 'topic-0')!r}")
 
         status, reason = runner._resolve_needs_review("brand", "topic-0", 96)
-        check("a 96 with a current question passes to internal review", status == "done",
-              f"got {status}")
-        check("the pass carries a reason naming the question riding into internal review",
-              reason is not None and "internal" in reason.lower(), f"got {reason!r}")
+        check("a 96 with a current question is held", status == "needs_review", f"got {status}")
+        check("a standing hold needs no explanation, because the questions are the explanation",
+              reason is None, f"got {reason!r}")
 
 
 def test_a_current_question_holds_a_failing_blog_too():
@@ -254,12 +248,9 @@ def test_an_answers_file_from_an_earlier_round_does_not_answer_these_questions()
         check("an old answers file leaves the new form current",
               runner._questions_state("brand", "topic-0") == "current",
               f"got {runner._questions_state('brand', 'topic-0')!r}")
-        # The form is genuinely current (not answered by the previous round's file), which is the
-        # point of this test. At 96 that current question no longer holds: 95+ passes and carries
-        # the question into internal review. Below the bar it would still be needs_review.
         status, _ = runner._resolve_needs_review("brand", "topic-0", 96)
-        check("a current form the previous round did not answer passes at 96", status == "done",
-              f"got {status}")
+        check("a form answered only in a previous round still holds the blog",
+              status == "needs_review", f"got {status}")
 
 
 def test_a_sourcing_question_is_reported_and_the_other_areas_are_not():
@@ -336,7 +327,7 @@ def test_no_form_at_all_reports_nothing():
 def main():
     print("questions_check: the needs_review resolver and the Sourcing-question predicate. No "
           "model called, no real brand touched.")
-    for test in (test_a_passing_blog_ships_over_a_current_question,
+    for test in (test_a_current_question_holds_a_passing_blog,
                  test_a_current_question_holds_a_failing_blog_too,
                  test_a_current_question_holds_a_blog_with_no_score,
                  test_nothing_to_answer_lets_the_score_decide,

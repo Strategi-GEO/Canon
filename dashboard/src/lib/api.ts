@@ -422,14 +422,6 @@ export const api = {
   clearFactsGeneration: (slug: string) =>
     request<null>(`/api/clients/${slug}/facts/generate`, { method: "DELETE" }),
 
-  /**
-   * Deletes the brand's canonical-facts.md entirely: the file, its report, and the record.
-   * After it, has_canonical_facts is false and the next blog run drafts a fresh one. 409 when a
-   * fact-base build or a blog run is live for the brand. 204, so the caller re-reads its list.
-   */
-  deleteFacts: (slug: string) =>
-    request<null>(`/api/clients/${slug}/facts`, { method: "DELETE" }),
-
   generate: (slug: string, body: GenerateBody) =>
     request<GenerateAccepted>(`/api/clients/${slug}/generate`, { method: "POST", body }),
 
@@ -707,20 +699,6 @@ export const api = {
     request<BlogReviewState>(`/api/clients/${slug}/blogs/${topicSlug}/promote`, {
       method: "POST",
     }),
-
-  /**
-   * CASE C: dispatch a PASSED blog's evaluator question to the client's Needs answers tab.
-   * The engine flips the status done -> needs_review (blog_edit.dispatch_question_to_client) so
-   * the client sees the anchored draft and the answer form; answering starts the same rerun a
-   * held blog owes. Ships and ledgers nothing (the blog was already ledgered at its 95+ ship).
-   * 409 unless the topic is terminal `done` with a current unanswered form, not approved, not
-   * out with the client, and no live run holds it.
-   */
-  dispatchQuestion: (slug: string, topicSlug: string) =>
-    request<{ status: string; topic: string }>(
-      `/api/clients/${slug}/blogs/${topicSlug}/get-answered`,
-      { method: "POST" },
-    ),
 
   /**
    * Pushes one shipped blog to the Strategi CMS as a draft for a human to review.

@@ -22,19 +22,6 @@ export function formatCount(value: number): string {
 }
 
 /**
- * House score bands, ONE place, every score number. 95+ ships (green), 90-94 is close (amber),
- * below 90 is a miss (red). The colour comes from the NUMBER and nothing else: not from ledger
- * membership and not from run status. An operator-promoted blog that scored 92 is in the ledger
- * but it is not a 95, so it must read amber, never green. Returns a semantic text-colour token
- * so the theme owns the actual hue (ship=green, review=amber, fail=red).
- */
-export function scoreTone(score: number): string {
-  if (score >= 95) return "text-ship";
-  if (score >= 90) return "text-review";
-  return "text-fail";
-}
-
-/**
  * "just now", "4 min ago", "3 hr ago", "yesterday", then a date once relative stops helping.
  * Past tense only: the engine never timestamps the future, and a clock skew that produced
  * "in 2 min" would read as a bug rather than as information.

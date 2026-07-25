@@ -106,22 +106,6 @@ def facts_path(client_slug, clients_root=None):
     return runner.canonical_facts_path(client_slug, clients_root)
 
 
-def delete_facts(client_slug):
-    """Remove the fact base entirely: the scratch file, its report, and the record column.
-
-    After this has_canonical_facts is false, so the next blog run drafts a fresh one from the
-    site and the resources exactly as a brand that never had one, which is the empty state the
-    UI already renders. The record is nulled through the SAME sync.commit_client_facts a build
-    commits through, reading the now-absent file, so disk and record can never disagree about a
-    fact base that is gone. The settled job goes too: its report describes a file that no longer
-    exists, and a running one is refused at the endpoint before this is ever called.
-    """
-    facts_path(client_slug).unlink(missing_ok=True)
-    report_path(client_slug).unlink(missing_ok=True)
-    sync.commit_client_facts(client_slug)  # absent file -> NULL record
-    clear_job(client_slug)
-
-
 def has_facts(client_slug, clients_root=None):
     """Does the file exist at all. Deliberately not "is it any good".
 

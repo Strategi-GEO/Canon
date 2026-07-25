@@ -24,7 +24,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { NotFoundCard } from "@/components/shell/brand-route";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
-import { AnswerQuestions, PendingQuestionAtReview } from "@/components/blogs/answer-questions";
+import { AnswerQuestions } from "@/components/blogs/answer-questions";
 import { BlogEditor } from "@/components/blogs/blog-editor";
 import { MarkdownView } from "@/components/blogs/markdown-view";
 import { PublishAction } from "@/components/blogs/publish-action";
@@ -50,7 +50,7 @@ import {
   type GateForm,
   type GateInput,
 } from "@/lib/gate-contract";
-import { formatAbsolute, formatCount, formatRelative, scoreTone } from "@/lib/format";
+import { formatAbsolute, formatCount, formatRelative } from "@/lib/format";
 import { useBlogQuestions } from "@/lib/use-blog-questions";
 import { ApiError, api } from "@/lib/api";
 import { HOSTED_READONLY } from "@/lib/hosted";
@@ -504,19 +504,6 @@ function StageBody({
     adminCan(state, "answer") &&
     adminGateAllows("answer", gateInput);
   /**
-   * CASE C: a 95+ blog that passed to internal review carrying an evaluator question the admin can
-   * send to the client to answer. It composes the internal_review bench with the dispatch gate
-   * door exactly as canSend does, so it is true only for a done blog carrying a current unanswered
-   * form on the wire, and false for a Case D passed blog (no form), an absent, stale or answered
-   * one, and an unread one (the gate fails closed while the questions read is in flight, the same
-   * discipline canAnswer follows). No hosted dispatch route exists, so the !HOSTED_READONLY term
-   * is the deployment axis, kept separate from the record axis the contract answers.
-   */
-  const canGetItAnswered =
-    !HOSTED_READONLY &&
-    adminCan(state, "get_it_answered") &&
-    adminGateAllows("get_it_answered", gateInput);
-  /**
    * WHAT STILL NEEDS AN ENGINE, and it is a SEPARATE AXIS that stays separate.
    *
    * Every flag above asks what the state permits. This asks whether an engine exists to do the
@@ -926,21 +913,6 @@ function StageBody({
                 : null
             }
             onSettled={questionsSettled}
-          />
-        ) : null}
-        {/* CASE C: the passed blog carrying an evaluator question. canAnswer is false here (the
-            answer verb is not on internal_review's bench), so this read-only panel is the admin's
-            view of the question plus the one control that sends it to the client to answer. Sending
-            the blog as-is stays the ordinary Send to client button in the delivery bar above. */}
-        {canGetItAnswered ? (
-          <PendingQuestionAtReview
-            brandSlug={brandSlug}
-            topicSlug={topicSlug}
-            entry={byTopic.get(topicSlug)}
-            onDispatched={() => {
-              questionsSettled();
-              onChanged();
-            }}
           />
         ) : null}
 
@@ -1439,6 +1411,7 @@ function ScoreTrail({ score, trail }: { score: number | null; trail: RunTrail | 
     return <span className="text-xs text-muted-foreground">no score</span>;
   }
   const scores = trail?.scores ?? [];
+  const shipped = score >= 95;
   return (
     <span className="machine inline-flex items-center gap-1.5 text-xs">
       {scores.length > 1 ? (
@@ -1449,7 +1422,7 @@ function ScoreTrail({ score, trail }: { score: number | null; trail: RunTrail | 
             .join("")}
         </span>
       ) : null}
-      <span className={cn("font-medium", scoreTone(score))}>
+      <span className={cn("font-medium", shipped ? "text-ship" : "text-foreground")}>
         {score}
       </span>
       <span className="text-muted-foreground">/100</span>
@@ -1567,7 +1540,7 @@ function EvalScore({ text }: { text: string }) {
   return (
     <div className="mb-5 flex items-baseline gap-3 rounded-md border bg-muted/40 px-4 py-3">
       <span
-        className={cn("machine text-3xl font-semibold", scoreTone(score))}
+        className={cn("machine text-3xl font-semibold", shipped ? "text-ship" : "text-foreground")}
       >
         {score}
       </span>

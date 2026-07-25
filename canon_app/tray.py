@@ -133,30 +133,6 @@ def bundled_python() -> Path | None:
     return exe if exe.exists() else None
 
 
-def _looks_translocated(path: str) -> bool:
-    """Apple always mounts a Gatekeeper-translocated app under a path containing this component."""
-    return "/AppTranslocation/" in path
-
-
-def is_translocated() -> bool:
-    """True when macOS is running this .app from a read-only App Translocation mount.
-
-    Gatekeeper does this to an app opened straight from a disk image or the Downloads folder: it
-    runs from a random ephemeral read-only path, so the bundled interpreter that builds the engine
-    .venv lives on that mount and `python -m venv` fails there. The app then dies with a cryptic
-    "could not create the Python virtual environment", and the ONE fix is to move it into
-    Applications, which clears translocation. macOS + frozen only, so a folder release (never
-    translocated) and a source checkout are always False.
-    """
-    if not (IS_MAC and IS_FROZEN):
-        return False
-    try:
-        resolved = str(Path(sys.executable).resolve())
-    except OSError:
-        resolved = ""
-    return _looks_translocated(sys.executable) or _looks_translocated(resolved)
-
-
 def augment_path() -> None:
     """Put the bundled runtimes first, then the usual hand-install locations.
 
@@ -584,23 +560,10 @@ def _ensure_windows_job():
         ]
 
     kernel32 = ctypes.windll.kernel32
-    # EXPLICIT ctypes signatures, or the reaper silently fails. A HANDLE is pointer-sized on
-    # 64-bit Windows, but ctypes' default restype is c_int (signed 32-bit): a handle value with
-    # bit 31 set comes back negative and is sign-extended to garbage when passed to the next
-    # call, so the job assignment or close no-ops and children orphan on an unclean tray exit.
-    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
-    kernel32.SetInformationJobObject.restype = wintypes.BOOL
-    kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
-                                                 wintypes.LPVOID, wintypes.DWORD]
     job = kernel32.CreateJobObjectW(None, None)
-    if not job:
-        tlog("WARNING: CreateJobObjectW failed; children will not be reaped on an unclean tray exit")
-        return None
     info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
     info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):  # 9 = JobObjectExtendedLimitInformation
-        tlog("WARNING: SetInformationJobObject failed; the job will not kill children on close")
+    kernel32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info))  # 9 = JobObjectExtendedLimitInformation
     _win_job_handle = job
     return job
 
@@ -619,33 +582,16 @@ def tie_child_to_tray(proc: subprocess.Popen) -> None:
     try:
         if IS_WINDOWS:
             import ctypes
-            from ctypes import wintypes
             job = _ensure_windows_job()
-            if not job:
-                return
-            kernel32 = ctypes.windll.kernel32
-            # Same HANDLE-truncation trap as _ensure_windows_job: give OpenProcess a HANDLE
-            # restype so a high-bit handle is not mangled before AssignProcessToJobObject sees it.
-            kernel32.OpenProcess.restype = wintypes.HANDLE
-            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-            kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
-            kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
             PROCESS_SET_QUOTA, PROCESS_TERMINATE = 0x0100, 0x0001
-            handle = kernel32.OpenProcess(
+            handle = ctypes.windll.kernel32.OpenProcess(
                 PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, proc.pid)
             if handle:
-                if not kernel32.AssignProcessToJobObject(job, handle):
-                    tlog(f"WARNING: could not assign pid {proc.pid} to the kill-on-close job; "
-                         f"it may orphan on an unclean tray exit")
-                kernel32.CloseHandle(handle)
+                ctypes.windll.kernel32.AssignProcessToJobObject(job, handle)
+                ctypes.windll.kernel32.CloseHandle(handle)
         else:
-            # Exit when EITHER the tray dies (kill the child) OR the child is already gone (a
-            # menu Restart kills the old children while the tray lives on, and without the child
-            # check these babysitters would sleep forever, leaking two sh processes per restart).
             script = (
-                f"while kill -0 {os.getpid()} 2>/dev/null && kill -0 {proc.pid} 2>/dev/null; "
-                f"do sleep 2; done; "
+                f"while kill -0 {os.getpid()} 2>/dev/null; do sleep 2; done; "
                 f"kill -TERM -{proc.pid} 2>/dev/null; sleep 5; "
                 f"kill -KILL -{proc.pid} 2>/dev/null"
             )
@@ -787,7 +733,7 @@ class CanonTray:
         self.no_dashboard = os.environ.get("CANON_NO_DASHBOARD") == "1"
         self.no_browser = os.environ.get("CANON_NO_BROWSER") == "1"
 
-        self.state = "starting"          # starting | problems | running | degraded | dead
+        self.state = "starting"          # starting | problems | running | dead
         self.status_text = "Starting..."
         self.problems: list[dict] = []
         self.email = claude_account_email()
@@ -814,10 +760,7 @@ class CanonTray:
         self.status_text = status_text
         tlog(f"state -> {state}: {status_text}")
         if self.icon is not None:
-            # degraded reuses AMBER: engine up, database unreachable is an attention state, not a
-            # dead one, the same weight as a setup 'problems'. The two never occur in succession
-            # (problems is setup-time, degraded is runtime), so sharing the color is not confusing.
-            color = {"running": GREEN, "problems": AMBER, "degraded": AMBER, "dead": RED}.get(state, AMBER)
+            color = {"running": GREEN, "problems": AMBER, "dead": RED}.get(state, AMBER)
             try:
                 self.icon.icon = dot_image(color)
                 self.icon.update_menu()
@@ -997,11 +940,8 @@ class CanonTray:
                 self._set_state("starting", "Applying update, restarting...")
                 self.restart_app()
                 return
-            # 'degraded' must be here alongside 'running' and 'dead': leave it out and the watcher
-            # stops polling the moment the DB drops, so the icon can never climb back to green when
-            # the store returns.
-            if self.state not in ("running", "degraded", "dead"):
-                continue  # starting or setup-problems: nothing to watch yet
+            if self.state not in ("running", "dead"):
+                continue  # starting or amber: nothing to watch yet
             if self.engine_proc is None:
                 continue
 
@@ -1014,61 +954,25 @@ class CanonTray:
                     self._set_state("dead", "Dashboard died - choose Restart")
                 continue
 
-            engine_state = self._engine_healthy()   # "down" | "degraded" | "ok"
+            engine_ok = self._engine_healthy()
             dash_ok = self.no_dashboard or self.dash_proc is None or self._port_open(self.dash_port)
-            target = self._health_target(engine_state, dash_ok)
-            if target == "running":
+            if engine_ok and dash_ok:
                 self._health_strikes = 0
-                # From dead OR degraded: a recovered store climbs back to green, not just a
-                # revived process.
-                if self.state != "running":
+                if self.state == "dead":
                     self._set_state("running", f"Engine running - :{self.engine_port}")
             else:
-                # Debounced two polls, so a transient blip does not flap the icon. An engine that
-                # ANSWERS but reports its DB unreachable is degraded (amber), not dead: a Restart
-                # cannot fix an external store and the engine still serves what does not need it. A
-                # silent engine or a downed dashboard is dead (red), with Restart the way back.
                 self._health_strikes += 1
-                if self._health_strikes >= 2:
-                    if target == "degraded":
-                        if self.state != "degraded":
-                            self._set_state("degraded", "Engine up, database unreachable")
-                    elif self.state != "dead":
-                        what = "Engine" if engine_state == "down" else "Dashboard"
-                        self._set_state("dead", f"{what} not responding - choose Restart")
+                if self._health_strikes >= 2 and self.state != "dead":
+                    what = "Engine" if not engine_ok else "Dashboard"
+                    self._set_state("dead", f"{what} not responding - choose Restart")
 
-    @staticmethod
-    def _health_target(engine_state: str, dash_ok: bool) -> str:
-        """Map one poll to the state it implies, BEFORE debounce: 'running' (engine ok and dash
-        ok), 'degraded' (engine answers but its DB is down, dash still ok), or 'dead' (engine
-        unreachable, or the dashboard down). The 2-strike debounce and the transition stay in the
-        watcher; this is the pure classification so it can be tested without driving the loop."""
-        if engine_state == "ok" and dash_ok:
-            return "running"
-        if engine_state == "degraded" and dash_ok:
-            return "degraded"
-        return "dead"
-
-    def _engine_healthy(self) -> str:
-        """Poll the DB-depth health probe and classify: 'down' (engine unreachable), 'degraded'
-        (engine answers 200 but reports its DB unreachable), or 'ok'. The ?deep=1 body is what
-        lets the tray tell a live engine with a dead pool apart from a healthy one, instead of
-        showing both green. A body with no 'db' key (an older engine) reads as 'ok': the process
-        is up and nothing says the store is not."""
+    def _engine_healthy(self) -> bool:
         try:
-            url = self.launcher.engine_health_url(self.engine_port) + "?deep=1"
+            url = self.launcher.engine_health_url(self.engine_port)
             with urllib.request.urlopen(url, timeout=4) as resp:
-                if not (200 <= resp.status < 400):
-                    return "down"
-                body = json.loads(resp.read() or b"{}")
+                return 200 <= resp.status < 400
         except (urllib.error.URLError, OSError, ValueError):
-            return "down"
-        # isinstance guard, not just body.get: a parseable-but-non-dict body (null, a list, a
-        # number) would make .get raise AttributeError OUTSIDE the except, and this runs on the
-        # watcher thread, which has no outer try, so an unguarded raise would kill health polling
-        # for the rest of the session. Our own engine always answers a dict; this covers anything
-        # else that answers on the port.
-        return "degraded" if isinstance(body, dict) and body.get("db") is False else "ok"
+            return False
 
     @staticmethod
     def _port_open(port: int) -> bool:
@@ -1109,9 +1013,6 @@ class CanonTray:
         and the tray itself."""
         self._quitting.set()
         self.stop_children()
-        # Free the single-instance lock BEFORE the replacement launches, so the fresh instance
-        # (Windows spawns a new process; macOS execs in place) can bind it without racing this one.
-        release_single_instance_lock()
         exe = str(Path(sys.executable).resolve())
         tlog(f"restart_app: relaunching {exe} to apply a staged update")
         try:
@@ -1180,46 +1081,6 @@ class CanonTray:
         self.startup()
 
 
-# ---------------------------------------------------------------------------
-# Single instance: a second launch must not fight the first over the ports
-# ---------------------------------------------------------------------------
-
-# A private loopback port used purely as a lock. Not the engine's 8000 or the dashboard's 3000,
-# so reclaim_port never touches it. ponytail: rare false "already running" if unrelated software
-# already holds this exact port; move it if that ever bites.
-_SINGLE_INSTANCE_PORT = 8771
-_instance_lock_socket: "socket.socket | None" = None
-
-
-def acquire_single_instance_lock() -> bool:
-    """True if this is the only instance; False if another already holds the lock.
-
-    Holds a loopback socket bound to a fixed port for the whole process lifetime. A second
-    instance fails to bind (SO_REUSEADDR deliberately OFF) and learns one is already up. The OS
-    frees the port the instant this process dies, so a crash never leaves a stale lock behind,
-    which is why this beats a lock file: no cleanup, no staleness."""
-    global _instance_lock_socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.bind(("127.0.0.1", _SINGLE_INSTANCE_PORT))
-    except OSError:
-        sock.close()
-        return False
-    _instance_lock_socket = sock  # kept bound for the process lifetime
-    return True
-
-
-def release_single_instance_lock() -> None:
-    """Free the lock so a replacement (an in-app update restart) can take it immediately."""
-    global _instance_lock_socket
-    if _instance_lock_socket is not None:
-        try:
-            _instance_lock_socket.close()
-        except OSError:
-            pass
-        _instance_lock_socket = None
-
-
 # NOTE deliberately NO Python-level SIGTERM/SIGINT handlers. The main thread
 # spends its life inside the GUI run loop (AppKit on macOS, the win32 message
 # pump on Windows), where a Python handler never gets to run: installing one
@@ -1233,33 +1094,6 @@ def release_single_instance_lock() -> None:
 def main() -> int:
     _setup_tray_logging()
     tlog(f"=== {APP_NAME} tray starting (frozen={IS_FROZEN}, platform={sys.platform}) ===")
-
-    # BEFORE ANYTHING, and before the single-instance lock so we never abandon one: refuse to run
-    # from a macOS App Translocation mount. Gatekeeper runs an app opened from a disk image or the
-    # Downloads folder from a random read-only path, where the bundled interpreter cannot build the
-    # .venv, so the app dies three screens later with a cryptic "could not create the Python
-    # virtual environment". Say the one thing that fixes it instead.
-    if is_translocated():
-        tlog("running from a macOS App Translocation mount; refusing to start")
-        native_error(
-            "Strategi Canon is running from a temporary read-only location, which macOS does to "
-            "apps opened straight from a disk image or the Downloads folder. Move Strategi Canon "
-            "into your Applications folder, then open it again from there."
-        )
-        return 1
-
-    # FIRST, before discovering the repo or starting anything: refuse to be a second instance.
-    # Without this, a second launch reclaims (kills) the first instance's engine and dashboard,
-    # the two fight over ports 8000/3000, and the operator sees an orange dot with no reachable
-    # dashboard. One instance owns the ports; a second open just points back to it.
-    if not acquire_single_instance_lock():
-        tlog("another Strategi Canon instance already holds the lock; exiting this one")
-        native_error(
-            "Strategi Canon is already running. Look for its dot in the menu bar (macOS) or the "
-            "system tray (Windows). If you cannot find it, quit it from there, then open it again."
-        )
-        return 0
-
     augment_path()
 
     # CA CERTIFICATES, BEFORE ANY HTTPS. This frozen app's bundled Python has no CA bundle wired

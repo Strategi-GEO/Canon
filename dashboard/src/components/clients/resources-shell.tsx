@@ -4,7 +4,6 @@ import * as React from "react";
 import {
   CheckCircle2,
   Download,
-  FilePlus2,
   FileX2,
   Loader2,
   Paperclip,
@@ -23,10 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
   previewKind,
@@ -122,12 +118,6 @@ const ADMIN_COPY: ResourcesCopy = {
 /** The record's ceiling, checked before a byte moves so a 40 MB pick refuses instantly. */
 const MAX_RESOURCE_BYTES = 25 * 1024 * 1024;
 
-/** A composed note needs an extension so it previews as text and lands with a sane type; default .txt. */
-function withTextExtension(name: string): string {
-  const trimmed = name.trim();
-  return /\.[^./\\]+$/.test(trimmed) ? trimmed : `${trimmed}.txt`;
-}
-
 /** Bytes, rendered short. Both records store an exact count, so this is rounding for reading. */
 export function formatSize(bytes: number): string {
   if (!Number.isFinite(bytes)) {
@@ -197,9 +187,6 @@ export function ResourcesShell<R extends ShellResource>({
   const [dragging, setDragging] = React.useState(false);
   const [pendingDelete, setPendingDelete] = React.useState<R | null>(null);
   const [previewing, setPreviewing] = React.useState<R | null>(null);
-  const [composerOpen, setComposerOpen] = React.useState(false);
-  const [composerName, setComposerName] = React.useState("");
-  const [composerText, setComposerText] = React.useState("");
   const inputRef = React.useRef<HTMLInputElement>(null);
 
   /**
@@ -276,16 +263,6 @@ export function ResourcesShell<R extends ShellResource>({
     }
   }
 
-  // A typed note is just a File built in the browser, so it rides the same upload() path as a
-  // picked file: same row, same size check, same refusal rendering, same reload.
-  function saveComposed() {
-    const file = new File([composerText], withTextExtension(composerName), { type: "text/plain" });
-    setComposerOpen(false);
-    setComposerName("");
-    setComposerText("");
-    void upload([file]);
-  }
-
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -312,26 +289,16 @@ export function ResourcesShell<R extends ShellResource>({
           >
             <Upload className="mx-auto size-4 text-muted-foreground" aria-hidden />
             <p className="mt-2 text-xs text-muted-foreground">{copy.dropHint}</p>
-            <div className="mt-3 flex items-center justify-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={busy}
-                onClick={() => inputRef.current?.click()}
-              >
-                {busy ? <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden /> : null}
-                {busy ? "Uploading" : "Choose files"}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={busy}
-                onClick={() => setComposerOpen(true)}
-              >
-                <FilePlus2 data-icon="inline-start" aria-hidden />
-                New text file
-              </Button>
-            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="mt-3"
+              disabled={busy}
+              onClick={() => inputRef.current?.click()}
+            >
+              {busy ? <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden /> : null}
+              {busy ? "Uploading" : "Choose files"}
+            </Button>
             <input
               ref={inputRef}
               type="file"
@@ -452,57 +419,6 @@ export function ResourcesShell<R extends ShellResource>({
           )}
         </div>
       </CardContent>
-
-      <Dialog
-        open={composerOpen}
-        onOpenChange={(open) => {
-          if (!open) {
-            setComposerOpen(false);
-          }
-        }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>New text file</DialogTitle>
-            <DialogDescription>Type your text and save it as a resource.</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="resource-file-name">File name</Label>
-              <Input
-                id="resource-file-name"
-                value={composerName}
-                onChange={(event) => setComposerName(event.target.value)}
-                placeholder="notes.txt"
-                autoComplete="off"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="resource-file-text">Content</Label>
-              <Textarea
-                id="resource-file-text"
-                value={composerText}
-                onChange={(event) => setComposerText(event.target.value)}
-                placeholder="Write your text here."
-                rows={10}
-                className="machine text-xs"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button size="sm" variant="ghost" onClick={() => setComposerOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              disabled={busy || composerName.trim() === "" || composerText === ""}
-              onClick={saveComposed}
-            >
-              Save as resource
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <Dialog
         open={pendingDelete !== null}

@@ -149,14 +149,14 @@ budget left to reach 95 dies instead. The required `--iter` above is the whole o
 second direction, which is why it is required rather than advisory: an optional guard that every
 caller omitted is how this rule shipped broken the first time.
 
-**THE SCORE IS CHECKED FIRST AT TERMINAL RESOLUTION**, after the loop ends, which is where the
-four-case table applies: at or above 95 the blog passes to internal admin review regardless of the
-questions, and any question rides there for the admin (see Asking the operator). BELOW 95 the
-question state decides: a current question is `needs_review`, the client-facing hold, and nothing
-to answer is `failed`. The in-loop branch borrows exactly ONE bit of the form, the Sourcing bit,
-and borrows nothing else.
+**THE QUESTION STATE IS CHECKED FIRST AT TERMINAL RESOLUTION**, after the loop ends, which is
+where the three-case table applies and where a >= 95 ships only if no current questions are on
+disk. With current questions the blog is HELD for the operator's answer at any score (see Asking
+the operator). The score runs the loop and the full four-valued question state decides the
+terminal status; the in-loop branch borrows exactly ONE bit of the form, the Sourcing bit, and
+borrows nothing else.
 
-**THE FIRST SCORE >= 95 IS FINAL AND TERMINAL, AND IT PASSES REGARDLESS OF QUESTIONS.** Record
+**THE FIRST SCORE >= 95 IS FINAL AND TERMINAL WHEN NO CURRENT QUESTIONS ARE ON DISK.** Record
 it in `eval.md` and STOP. The single answer-driven revise is the ONE licensed re-eval, and it
 is licensed because the operator's answer changed the fact base the score was computed
 against. Every other confirmatory re-eval stays FORBIDDEN, including "the draft changed
@@ -452,10 +452,8 @@ python3 .claude/questions.py --out <output_dir> --slug <slug> --iter 2 --score 9
     --area Sourcing
 ```
 
-The score in that example is 96 deliberately, because a passing score is NEVER a reason to
-withhold a question. What a 95+ question does NOT do any more is hold the blog for the client: it
-rides into internal admin review, where the admin dispatches it to the client or sends the blog.
-Below 95 the same question holds the blog at `needs_review`.
+The score in that example is 96 deliberately, because a question is asked and held at ANY score
+and a passing score is NEVER a reason to withhold one.
 
 **An evaluator asking a Sourcing question is ENDING THE LOOP, not annotating it.** Below 95 the
 lead checks the form for a live Sourcing question before every revise and stops the loop where it
@@ -479,36 +477,26 @@ and the blog it holds never ships. Every question you ask spends a person's atte
 blog's only exit, so ask the fewest that clear the gap and make each one answerable without
 opening the draft.
 
-**`needs_review` MEANS "this blog scored BELOW 95 and has questions waiting for the operator that
-are current, on disk, and answerable", and it means nothing else.** It is the client-facing hold,
-and it is reserved for a sub-95 draft, which has not earned a pass to override its own question.
-The status is a summons, so it must name the act it summons someone for. A blog held with no
-`questions.json` is a dead end: the app renders "A human has to confirm something before this
-ships" and offers no door, and the operator can do nothing with it. Four of the five blogs that
-sat on `needs_review` in live data were exactly that.
+**`needs_review` MEANS "this blog has questions waiting for the operator that are current, on
+disk, and answerable", at ANY score, and it means nothing else.** The score does NOT enter this
+definition. The status is a summons, so it must name the act it summons someone for. A blog held
+with no `questions.json` is a dead end: the app renders "A human has to confirm something before
+this ships" and offers no door, and the operator can do nothing with it. Four of the five blogs
+that sat on `needs_review` in live data were exactly that.
 
-**AT OR ABOVE 95 THE BLOG PASSES REGARDLESS OF QUESTIONS, on the product owner's explicit call.**
-A 95+ draft goes to internal admin review as `done`, and any question the evaluator raised rides
-there with it for the admin, who is the backstop. The admin reads the question on the stage and
-either DISPATCHES it to the client to answer ("Get it answered", which flips the blog to
-needs_review and lands it in the client's Needs answers tab), or SENDS the blog as it is. This
-REVERSES the earlier rule, under which a current question held the blog at any score, 96 included:
-above the ship bar the score now decides, and the admin, not a client-facing hold, weighs whatever
-the evaluator could not settle. The old rule shipped two `canonical-facts` violations at 96, and
-the admin surface is what replaces the automatic hold that was meant to catch them.
+**Three cases, THREE terminal states, and no fourth verdict.** This table governs a loop that
+RAN TO A VERDICT and nothing else. `stopped` is not a fourth row of it: the loop never ran, so
+no score describes it and the table has nothing to say about it. Never add a row here for a run
+that did not finish.
 
-**Four cases, split on the score axis.** This table governs a loop that RAN TO A VERDICT and
-nothing else. `stopped` is not a row of it: the loop never ran, so no score describes it and the
-table has nothing to say about it. Never add a row here for a run that did not finish.
-
-The SCORE is checked FIRST at the ship bar: at or above 95 the blog passes regardless of the
-questions axis. Below the bar the questions axis decides, exactly as before, and a missing score
-falls through to the nothing-to-answer branch.
+The QUESTIONS axis is checked FIRST and is the four-valued engine state
+(`current` | `none` | `stale` | `unreadable`), never a binary, plus `answered`. The score is
+DEMOTED: it decides the nothing-to-answer branch, and its ABSENCE is the one thing that outranks
+the questions axis, for the reason stated under the table.
 
 | Questions | Score | Status | What it means |
 |---|---|---|---|
-| `current` | >= 95 | `done` | Passes to internal admin review; the question rides along for the admin to weigh (dispatch to the client, or send as-is). |
-| `current` | < 95, or none at all | `needs_review` | HELD for the client's answer. A human owes an answer, and there is no dismiss and no proceed. |
+| `current` | any score, 96 included, and none at all | `needs_review` | HELD. A human owes an answer, and there is no dismiss and no proceed. |
 | `none` / `stale` / `unreadable` / `answered` | >= 95 | `done` | It ships. |
 | `none` / `stale` / `unreadable` / `answered` | < 95, or none at all | `failed` | The loop exhausted itself and cannot say what it needs, so there is no human task. |
 
@@ -520,29 +508,30 @@ was already dispatched for them, so it summons nobody NEW. Grounding it on a ref
 not perform would be a rule defended by a claim about the system that the system does not make
 true, which is the exact defect this section removed elsewhere.
 
-**A missing score falls to `failed` on the nothing-to-answer rows, and to `needs_review` on the
-`current` row.** No score means the draft never cleared the 95 bar, so a current question on it is
-the sub-95 hold, exactly as an 88 with a current question is. An evaluator that asked and then died
-still asked, and the answer is not wasted: it drives the surgical revise, whose fresh evaluator
-writes the score the crashed one never did. That is a door, so the hold is not permanent. With no
-form there is nothing to answer, so a scoreless nothing-to-answer run is a machine's answer and not
-a human's task, which is `failed`. A gates FAIL is still `failed`.
+**A missing score falls to `failed` on the nothing-to-answer rows, and NEVER on the `current`
+row.** With no form there is nothing to answer, so a run that never reached a verdict is a
+machine's answer and not a human's task. On the `current` row THE QUESTIONS AXIS HOLDS WITHOUT
+EXCEPTION, including where no score was ever written. An evaluator that asked and then died still
+asked, and the answer is not wasted: it drives the surgical revise, whose fresh evaluator writes
+the score the crashed one never did. That is a door, so the hold is not permanent, and the
+questions axis stays absolute with no exception for a reader to reason around. An earlier draft of
+this rule failed a scoreless hold on the ground that it stranded a human whose answer bought
+nothing back; that ground was false, because answering is exactly what produces the missing score.
+A gates FAIL is still `failed`.
 
-**BELOW 95, OPEN QUESTIONS HOLD THE BLOG, AND ANSWERING IS A DEMAND, NEVER AN OFFER.** A sub-95
-draft with current questions is HELD for the client, with no dismiss and no proceed-anyway. The
-reason is what the old score-gated rule shipped: it put two `canonical-facts` violations into
-published blogs at 96, one publishing a claim `canonical-facts` records as NOT citable, the other
-citing a date from a source recorded as never fetched in full. A question is the evaluator saying it
-cannot tell whether the draft is true. ABOVE 95 that judgement moves to the admin rather than to an
-automatic hold: the blog passes to internal review carrying the question, and the admin dispatches
-it to the client ("Get it answered") or sends the blog knowingly. The safety the old hold provided
-is now the admin's to exercise, which is why the "Get it answered" surface exists and why a 95+ blog
-with a question is never sent to the client without the admin seeing the question first.
+**OPEN QUESTIONS HOLD THE BLOG AT ANY SCORE, AND ANSWERING IS A DEMAND, NEVER AN OFFER.** A 96
+with current questions is HELD, not shipped. There is no dismiss and no proceed-anyway at any
+score. The reason is what the old score-gated rule actually shipped: it put two
+`canonical-facts` violations into published blogs at 96, one publishing a claim
+`canonical-facts` records as NOT citable, the other citing a publication date from a source
+recorded as never fetched in full. A question is the evaluator saying it cannot tell whether the
+draft is true, and a draft that might be false does not ship because it scored well.
 
-**`needs_review` IS A WORKFLOW STATE, NOT THE LOOP'S VERDICT.** A sub-95 blog held for the client
-HAS a verdict, the one the score gives; the status only records that it is not out the door because
-a person owes an answer. A 95+ blog with a question is a DIFFERENT thing: it is `done` and sitting
-in internal admin review, not held, and the question rides along for the admin to weigh.
+**`needs_review` IS A WORKFLOW STATE, NOT THE LOOP'S VERDICT.** A blog held at 96 HAS a verdict
+and the verdict is SHIP: the loop finished, the score stands, and `eval.md` records it. What the
+status says is that the blog is not out the door yet because a person owes it an answer. Read
+this way, a hold and a passing score are not in tension and nothing needs reconciling: one
+describes what the loop concluded, the other describes where the blog sits.
 
 **OPERATOR SILENCE STRANDS THE BLOG, and this project CHOSE that cost with its eyes open.**
 There is no timeout, no expiry, and no escalation. An unanswered hold never ships and never
@@ -572,13 +561,13 @@ The question axis needs no score at all, so a stop that lands on a current form 
 WRITE SITE, in `_stop_line_if_unterminated`, and never through this resolver. See Stopping a run
 for the window and its boundaries. A `needs_review` with no question on disk, or with one the
 app already refuses as stale, unreadable, or already answered, is corrected to `done` or `failed`
-by its score, because such a form summons nobody. A `needs_review` claimed AT OR ABOVE 95 is also
-corrected, to `done`: the 95+ rule passes the blog regardless, and the question rides into internal
-review rather than holding it. A `needs_review` WITH A CURRENT QUESTION AND A SCORE BELOW 95 (or no
-score) is NOT corrected: below the bar the client-facing hold stands and no score overrules it. The
-correction now partitions on the score at the ship bar, and below it on the questions axis: a hold
-with no current form is the dead end with no door the `needs_review` definition forbids, and a
-sub-95 hold with one is a person owing an answer. Either way the
+by its score, because such a form summons nobody. A `needs_review` WITH A CURRENT QUESTION is NOT
+corrected, at ANY score including 96 and including no score at all: `needs_review` is no longer the
+loop's verdict, so a score cannot overrule it, and the absence of one cannot either. The score
+corrects ONLY the nothing-to-answer branch. The two sentences
+partition on the QUESTIONS axis and never on the score axis, because a hold with no current form
+is the dead end with no door the `needs_review` definition forbids, and a hold with one is a
+person owing an answer that no score discharges. Either way the
 override is appended to `status.jsonl` naming what the claim was missing, so the trail shows the
 engine disagreeing with the lead rather than the lead's claim quietly vanishing. The session lead
 may ASK for `needs_review`; whether it earned it is not the lead's call. A rule that lives only in
@@ -610,12 +599,6 @@ the draft is true, and truth does not become optional at 96.
   the engine restores the original WITH THE VIOLATION STILL IN IT, and the machine structurally
   prefers the non-compliant draft over the true one. A lower score on a clarified draft is the
   truth costing points, not the draft getting worse.
-- **STAY PASSED ONCE 95+.** A blog that ever cleared the ship bar returns to `done` on the rerun
-  regardless of the clarified draft's new score, and any question the evaluator raised on it rides
-  into internal admin review exactly as a first-run 95+ question does. It never drops back to
-  `needs_review` or `failed`. A blog that never reached 95, a sub-95 held question, resolves by its
-  NEW score instead, so it can pass, hold again, or fail. `revise_topic` reads the high-water mark
-  from the run's own eval history, so the guarantee survives several get-it-answered / rerun cycles.
 - **The byte-for-byte restore SURVIVES ONLY ON THE CANCELLATION PATH.** A stop mid-revise still
   restores the original, because a half-applied revise is not a clarified draft: it is a draft
   that never finished being corrected, and it carries neither the old truth nor the new one.
@@ -786,30 +769,31 @@ NO rule the loop runs under. No agent may write it or ask for it, the resolver's
 untouched, first-score-is-final is untouched (promotion re-rolls no evaluator), and every
 done-gate keeps demanding the literal `done`: a promoted blog satisfies them because the fold
 genuinely reads done afterward, never because a gate was widened. Scope is exact and the engine
-refuses the rest: terminal `failed` only, never `needs_review` (a sub-95 hold the client owes an
-answer on, and promotion is not a dismiss), never `stopped` (no verdict exists to promote), never mid-run, and
+refuses the rest: terminal `failed` only, never `needs_review` (a question holds at ANY score and
+promotion is not a dismiss), never `stopped` (no verdict exists to promote), never mid-run, and
 never without a scored committed draft, because gates and the link pass run before the eval, so
 the scored draft is gate-clean and link-clean and the 95 bar is the ONLY thing being waived. A
 promoted blog enters the ledger exactly as a 95+ ship does, so its roadmap row locks and a later
 "failed row in the ledger" is a promotion, not a defect.
 
-**Below 95, a score is not a licence to ship past an open question.** Where a sub-95 draft has a
-current question, the blog is HELD for the client until they answer, with no dismiss. If they
-never answer, THE BLOG NEVER SHIPS and never enters `generated.csv`. That is a chosen cost, not an
-accident. ABOVE 95 the blog passes to internal admin review carrying the question instead, and it
-is the admin, not an automatic hold, who then decides to dispatch it to the client or send the
-blog: the safety the old hold gave is now the admin's to exercise. The at-most-5 and
-answerable-in-ten-seconds standards still hold, so honor them.
+**A score is not a licence to ship past an open question.** Where the evaluator asked something
+current, the blog is HELD at ANY score, including 96, until the operator answers. Answering is a
+demand, never an offer, and there is no dismiss. If the operator never answers, THE BLOG NEVER
+SHIPS and never enters `generated.csv`. That is a chosen cost, not an accident: releasing an
+unverified draft on a timer would publish "we could not confirm this" as though it were
+confirmed, which is what the old score-gated rule did twice at 96. The at-most-5 and
+answerable-in-ten-seconds standards are what keep the cost payable, so honor them.
 
 Write `outputs/<slug>/<topic-slug>/NEEDS_REVIEW` and the `needs_review` terminal status
-ONLY where the evaluator has asked a question that is on disk, current, and answerable AND the
-score is below 95 (or no score reached a verdict). At or above 95 the blog is `done` and the
-question rides into internal admin review; a sub-95 current question is the client-facing hold.
-Nothing else earns `needs_review`, and the engine checks it. The four old causes resolve like this:
+ONLY where the evaluator has asked the operator a question that is on disk, current, and
+answerable. The score is not part of the test, with the single exception that a run carrying NO
+score never reached a verdict and is `failed`, because a form asking about a draft nobody scored
+summons a person whose answer unblocks nothing. Nothing else earns the status, and the engine
+checks it. The four old causes resolve like this:
 - **A Sourcing top-up** (a new source pulled mid-loop) is a QUESTION, asked through
   `.claude/questions.py`, naming the source and the claim so the operator can answer it without
-  opening the draft. Below 95 it is `needs_review` and it holds the blog; at 95+ it is carried
-  into internal review for the admin. Unasked, it is nothing: the score decides.
+  opening the draft. Asked at ANY score, it is `needs_review` and it holds the blog. Unasked, it
+  is nothing: the score decides.
 - **The link pass finding a claim its cited source does not support** is the same, and it is the
   same question: name the source, name the claim, ask whether the source carries it.
 - **`gates.py` still FAILing** is `failed`, never `needs_review`. It is a machine failure with no
@@ -828,10 +812,9 @@ Nothing else earns `needs_review`, and the engine checks it. The four old causes
   never anything creating one. It is set out in full under Stopping a run, it is the only stop
   that is not `stopped`, and its boundaries are stated there because they are the rule.
 
-Never mark a blog done to clear the queue. A passing blog (95+) WITH a current question is `done`
-and sits in internal admin review carrying the question, not shipped to the client: the admin sees
-the question and decides. A SUB-95 blog with a current question is `needs_review`, held for the
-client. The score at the ship bar is what tells the two apart.
+Never mark a blog done to clear the queue, and never mark a blog done to clear a question. A
+passing blog WITH a current question is `needs_review`, and that is not a contradiction: the
+verdict is ship, the workflow state is held.
 
 ## Reporting
 Per blog, one line: slug, SCORE, iterations, status, links corrected. A stopped blog reports

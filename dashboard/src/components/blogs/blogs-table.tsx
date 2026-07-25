@@ -13,7 +13,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
 import { DeleteBlogDialog } from "@/components/blogs/delete-blog-dialog";
-import { formatAbsolute, formatRelative, scoreTone } from "@/lib/format";
+import { formatAbsolute, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { SortDir, SortKey } from "@/components/blogs/blogs-filter";
 import type { WaitingSignal } from "@/components/blogs/questions-state";
@@ -412,10 +412,7 @@ function Score({
   }
   return (
     <span
-      // Colour comes from the NUMBER via scoreTone (95+ green, 90-94 amber, <90 red), never from
-      // `shipped`: a promoted sub-95 blog is in the ledger but must not read green. `shipped`
-      // keeps only the weight, so a shipped score still stands out at a glance.
-      className={cn("machine text-sm", shipped && "font-medium", scoreTone(score))}
+      className={cn("machine text-sm", shipped ? "font-medium text-ship" : "text-foreground")}
     >
       {score}
     </span>

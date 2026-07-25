@@ -195,7 +195,6 @@ export type GateSourceId =
   | "api_delete_blog_comment"
   | "api_send_blog_to_client"
   | "api_promote_blog"
-  | "api_dispatch_question"
   | "api_publish_blog"
   | "assert_publishable"
   | "cms_record_blog"
@@ -867,51 +866,6 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
       },
     ],
   },
-  // CASE C: the one act that flips a PASSED blog back to needs_review, to send the evaluator's
-  // question to the client. It mirrors api_promote_blog exactly (append a terminal line, verify
-  // it landed, map a record-behind failure to a 409), but it ships NOTHING and ledgers NOTHING:
-  // the blog was already ledgered at its 95+ ship, and it is going to the client to ANSWER, not
-  // to review. Its five own refusals are the five dispatch clauses on the door below; the
-  // approved lock and the out-with-client lock are _require_not_approved's and
-  // _require_not_with_client's own clauses, called rather than restated.
-  api_dispatch_question: {
-    file: "server/app.py",
-    symbol: "api_dispatch_question",
-    kind: "python",
-    // Recorded from the real normalized body after this entry and its clauses were written
-    // against the route's five raises and the record-behind 409 was exempted below, so the hash
-    // and the clause set were reconciled together rather than the hash bumped over an unread diff.
-    fingerprint: "1867a20c9045f802",
-    gates: ["get_it_answered"],
-    what:
-      "Dispatches a passed blog's evaluator question to the client's Needs answers tab by " +
-      "flipping the status done -> needs_review: refuses a topic mid-run, one that is not " +
-      "terminal done, and a form that is absent, stale or already answered. The approved lock " +
-      "and the out-with-client lock are their own clauses, called rather than restated.",
-    exemptions: [
-      {
-        id: "dispatch_route_record_behind",
-        raises: "status_code=409, detail=str(exc))",
-        why:
-          "The HTTP mapping of blog_edit.dispatch_question_to_client's own refusal: this " +
-          "machine's status feed sitting behind a record another engine wrote, so the " +
-          "needs_review flip is swallowed by the ordinal conflict and caught by the verify-after-" +
-          "commit re-read. A fact about the status feed's line-level shape at one instant, not a " +
-          "condition the record on this page's wire can express, so no clause could decide it; " +
-          "the 409 carries the fix in the engine's own words, exactly as promote's does.",
-      },
-    ],
-    dependsOn: [
-      {
-        file: "server/app.py",
-        symbol: "_topic_status",
-        why:
-          "The status this gate compares is folded by this helper, so a helper forced to answer " +
-          "\"done\" leaves this gate byte-identical while it stops gating. The same dependency " +
-          "require_done and require_reviewable record, for the same mutation.",
-      },
-    ],
-  },
   // THE ONLY DOOR THE PUBLISH ACT PASSES THROUGH ON THE LOCAL BUILD, and it was not listed while
   // the gate module it calls was. That is the wrong way round to leave a surface: assert_publishable
   // decides, but this route is what an operator's press actually reaches, and it adds five refusals
@@ -920,16 +874,12 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/cms/routes.py",
     symbol: "api_publish_blog",
     kind: "python",
-    // Re-recorded after the minimal-ingest refactor (another session) simplified this route: it
-    // no longer reads the client record or resolves a per-org key, so build_for_publish and
-    // resolve_key/missing_key_detail lost their arguments. The exemption fragment above was
-    // reconciled with the new body first, then this hash recorded from it.
-    fingerprint: "37ae4c7da68183ca",
+    fingerprint: "5103b7a3fae66786",
     gates: ["publish"],
     what:
       "Pushes one shipped blog to the CMS as a draft, synchronously, because the operator is " +
       "watching. It resolves the brand and the topic, delegates the real gate to " +
-      "server/cms/gate.py, resolves the CMS write key, and maps the CMS's own failure back to " +
+      "server/cms/gate.py, resolves the org's write key, and maps the CMS's own failure back to " +
       "a status that blames the right party.",
     exemptions: [
       {
@@ -967,12 +917,9 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
       },
       {
         id: "publish_route_no_cms_key",
-        // The minimal-ingest refactor dropped per-org key resolution: the client slug in the
-        // payload routes the tenant, so there is one general STRATEGI_CMS_WRITE_KEY and
-        // missing_key_detail() takes no argument. Fragment reconciled with that body.
-        raises: "detail=cms_client.missing_key_detail()",
+        raises: "detail=cms_client.missing_key_detail(org_slug)",
         why:
-          "THE ENGINE'S CONFIGURATION, not the article. Whether the engine holds a CMS write " +
+          "THE ENGINE'S CONFIGURATION, not the article. Whether an organisation has a CMS write " +
           "key is resolved from the process environment and server/.env at the moment of the " +
           "push, and no read this page makes reports it. A clause would answer `unknowable` for " +
           "every article on every brand and, failing closed, would remove the Publish control " +
@@ -1480,84 +1427,6 @@ const PROMOTE_NO_OPEN_SUGGESTIONS: GateClause = {
   witness: { passes: CLEAN, refuses: withRecord({ changes_requested: 1 }) },
 };
 
-// ---------------------------------------------------------------------------
-// The get-it-answered door (Case C): sending a passed blog's question to the client.
-// ---------------------------------------------------------------------------
-// api_dispatch_question flips a 95+ done blog to needs_review so the client can answer the
-// evaluator's carried question. These five clauses are the route's own refusals; the approved
-// lock and the out-with-client lock ride on _require_not_approved's and _require_not_with_client's
-// clauses, called rather than restated. It is the inverse of Case D's send: the same blog, routed
-// to the client to ANSWER rather than to review.
-
-const DISPATCH_NOT_IN_FLIGHT: GateClause = {
-  id: "dispatch_not_in_flight",
-  source: "api_dispatch_question",
-  line: 2600,
-  condition: "if topic in _live_run_slugs(slug):",
-  raises: "is generating right now in a live run; dispatch the question",
-  refusal: "409 this topic is generating right now, so wait before dispatching the question",
-  transient: false,
-  // The registry drops a topic whose session settled, so a passed blog reads live: false and is
-  // dispatchable. A live rerun on it derives `generating`, whose bench is empty.
-  decide: ({ record }) => (record.live ? "refuse" : "pass"),
-  witness: { passes: CLEAN, refuses: withRecord({ live: true }) },
-};
-
-const DISPATCH_TOPIC_IS_DONE: GateClause = {
-  id: "dispatch_topic_is_done",
-  source: "api_dispatch_question",
-  line: 2607,
-  condition: 'if status != "done":',
-  raises: "not done; a question is dispatched only from",
-  refusal: "409 this blog is not a passed blog in internal review",
-  transient: false,
-  // Exactly done: needs_review is already dispatched, failed uses promote, stopped has no verdict.
-  decide: ({ record }) => (record.status === "done" ? "pass" : "refuse"),
-  witness: { passes: CLEAN, refuses: withRecord({ status: "needs_review" }) },
-};
-
-const DISPATCH_FORM_EXISTS: GateClause = {
-  id: "dispatch_form_exists",
-  source: "api_dispatch_question",
-  line: 2620,
-  condition: "except questions_mod.NoQuestions as exc:",
-  raises: "status_code=404, detail=str(exc)) if state[",
-  refusal: "404 no question on this topic to dispatch",
-  transient: false,
-  decide: ({ form }) => formPresence(form),
-  witness: { passes: CLEAN, refuses: { ...CLEAN, form: "absent" } },
-};
-
-const DISPATCH_FORM_NOT_STALE: GateClause = {
-  id: "dispatch_form_not_stale",
-  source: "api_dispatch_question",
-  line: 2624,
-  condition: 'if state["stale"]:',
-  raises: "so it can no longer be dispatched",
-  refusal: "409 the question describes an earlier iteration and can no longer be dispatched",
-  transient: false,
-  decide: ({ form }) => formFlag(form, (f) => !f.stale),
-  witness: { passes: CLEAN, refuses: { ...CLEAN, form: { stale: true, answered: false } } },
-};
-
-const DISPATCH_FORM_NOT_ANSWERED: GateClause = {
-  id: "dispatch_form_not_answered",
-  source: "api_dispatch_question",
-  line: 2632,
-  condition: 'if state["answered"]:',
-  raises: "is already answered; rerun to apply the",
-  refusal: "409 the question is already answered, so rerun rather than dispatch it again",
-  transient: false,
-  decide: ({ form }) => formFlag(form, (f) => !f.answered),
-  // CLEAN.form carries answered: true (it is the PASSING witness for the requires-answered revise
-  // clause), so this clause, which passes on an UNanswered form, needs its own unanswered passing
-  // witness rather than CLEAN.
-  witness: {
-    passes: { ...CLEAN, form: { stale: false, answered: false } },
-    refuses: { ...CLEAN, form: { stale: false, answered: true } },
-  },
-};
-
 /**
  * A SAVE WAITS FOR AN APPLY, AND THIS CLAUSE IS WHY THE EDIT CONTROL GREYS RATHER THAN VANISHES.
  *
@@ -1796,11 +1665,6 @@ export const ALL_GATE_CLAUSES: readonly GateClause[] = [
   PROMOTE_TOPIC_IS_FAILED,
   PROMOTE_HAS_SCORED_DRAFT,
   PROMOTE_NO_OPEN_SUGGESTIONS,
-  DISPATCH_NOT_IN_FLIGHT,
-  DISPATCH_TOPIC_IS_DONE,
-  DISPATCH_FORM_EXISTS,
-  DISPATCH_FORM_NOT_STALE,
-  DISPATCH_FORM_NOT_ANSWERED,
   NO_APPLY_IN_FLIGHT,
   COMMENT_CAP,
   RESOLVE_COMMENT_CAP,
@@ -1930,26 +1794,6 @@ export const ADMIN_GATE_DOORS: Record<AdminAction, readonly GateDoor[]> = {
         NOT_APPROVED_ENGINE,
         PROMOTE_HAS_SCORED_DRAFT,
         PROMOTE_NO_OPEN_SUGGESTIONS,
-      ],
-    },
-  ],
-  get_it_answered: [
-    {
-      id: "dispatch_question",
-      what: "send the evaluator's question to the client's Needs answers tab to answer",
-      // Permanent status/approval/with-client clauses first, then the live check, then the form
-      // clauses, so verdictOver reports the most useful refusal first. Every one decides on a
-      // fact already on the wire (status, approval, send, live, the question form), so no new
-      // GateInput field is needed. NOT_APPROVED_ENGINE and NOT_WITH_CLIENT are the shared clauses
-      // the route CALLS rather than restates.
-      clauses: [
-        DISPATCH_TOPIC_IS_DONE,
-        NOT_APPROVED_ENGINE,
-        NOT_WITH_CLIENT,
-        DISPATCH_NOT_IN_FLIGHT,
-        DISPATCH_FORM_EXISTS,
-        DISPATCH_FORM_NOT_STALE,
-        DISPATCH_FORM_NOT_ANSWERED,
       ],
     },
   ],
