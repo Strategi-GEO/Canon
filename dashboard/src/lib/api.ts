@@ -701,6 +701,20 @@ export const api = {
     }),
 
   /**
+   * CASE C: dispatch a PASSED blog's evaluator question to the client's Needs answers tab.
+   * The engine flips the status done -> needs_review (blog_edit.dispatch_question_to_client) so
+   * the client sees the anchored draft and the answer form; answering starts the same rerun a
+   * held blog owes. Ships and ledgers nothing (the blog was already ledgered at its 95+ ship).
+   * 409 unless the topic is terminal `done` with a current unanswered form, not approved, not
+   * out with the client, and no live run holds it.
+   */
+  dispatchQuestion: (slug: string, topicSlug: string) =>
+    request<{ status: string; topic: string }>(
+      `/api/clients/${slug}/blogs/${topicSlug}/get-answered`,
+      { method: "POST" },
+    ),
+
+  /**
    * Pushes one shipped blog to the Strategi CMS as a draft for a human to review.
    *
    * The browser sends a brand and a topic and NOTHING ELSE: no title, no body, no key. The

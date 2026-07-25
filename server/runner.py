@@ -794,29 +794,40 @@ def _resolve_needs_review(client_slug, topic_slug, score, root=None):
     reasoning instead of silently substituting its own answer for the session's. Every reason
     reads as a whole sentence and starts capitalised, because both callers append it after one.
 
-    THE QUESTION STATE IS CHECKED FIRST, BEFORE THE SCORE, and that order IS the rule rather than
-    an implementation detail. A current question HOLDS THE BLOG AT ANY SCORE, including a 96 and
-    including no score at all: the score is not grounds to override a hold, because a question is
-    the evaluator saying the draft may be WRONG, and a wrong 96 is not better than a wrong 89.
-    The old order shipped exactly that, twice, both at 96 and both against canonical-facts.
+    THE SCORE IS CHECKED FIRST NOW, AND 95+ PASSES REGARDLESS OF QUESTIONS. At or above SHIP_SCORE
+    the draft passes to internal admin review, and any question the evaluator raised rides there
+    with it for the admin, who is the backstop. This REVERSES the earlier rule (a current question
+    held the blog at any score, 96 included), on the product owner's explicit call: above the ship
+    bar the score decides, and the admin, not a client-facing hold, weighs whatever the evaluator
+    could not settle.
 
-    THE SCORE THEN DECIDES THE NOTHING-TO-ANSWER BRANCH AND ONLY THAT BRANCH. With no form the
-    app will accept, no human is summoned, so at or above SHIP_SCORE the blog ships and below it
-    the loop exhausted itself without being able to say what it needed, which is failed rather
-    than a review nobody can perform. No score falls here too, and falls to failed: an evaluator
-    that died before writing its scored end line must never become a permanent hold. A gates FAIL
-    lands here as well, and lands on failed: it is a machine failure with no human question in it.
+    BELOW THE BAR THE QUESTION STATE STILL HOLDS. A current question under SHIP_SCORE is
+    needs_review, the client-facing hold, because a sub-95 draft has not earned a pass to override
+    it. With no current question the score decides the rest: below SHIP_SCORE the loop exhausted
+    itself without being able to say what it needed, which is failed rather than a review nobody
+    can perform. No score falls here too, and falls to failed: an evaluator that died before
+    writing its scored end line must never become a permanent hold. A gates FAIL lands here as
+    well, on failed: it is a machine failure with no human question in it.
     """
     state = _questions_state(client_slug, topic_slug, root=root)
 
+    # 95+ PASSES REGARDLESS OF QUESTIONS, checked BEFORE the question axis. A passing draft goes to
+    # internal admin review; any question the evaluator raised is carried there for the admin, who
+    # is the backstop. This deliberately REVERSES the old "a current question holds the blog at any
+    # score" rule, on the product owner's explicit call. Below the ship bar a current question
+    # still holds.
+    if score is not None and score >= SHIP_SCORE:
+        carried = (
+            " A question the evaluator raised is carried into internal review for the admin to weigh."
+            if state == "current" else f" {_NO_QUESTIONS_REASONS[state]}"
+        )
+        return "done", (
+            f"The score of {score} is at or above {SHIP_SCORE}, so it passes to internal admin "
+            f"review.{carried}"
+        )
+
     if state == "current":
         return "needs_review", None
-
-    if score is not None and score >= SHIP_SCORE:
-        return "done", (
-            f"The score of {score} is at or above {SHIP_SCORE} and nothing is holding the blog, "
-            f"so it ships: {_NO_QUESTIONS_REASONS[state]}"
-        )
 
     if score is None:
         standing = f"No score was recorded, so nothing reached the {SHIP_SCORE} ship band"
@@ -834,29 +845,22 @@ def _enforce_terminal_status(client_slug, topic_slug, out_dir, root=None):
 
     Returns the summary of the status the topic actually ends on.
 
-    THE CHECK IS SYMMETRIC ON THE QUESTION AXIS, AND ONLY ON THAT AXIS. Both corrections run off
-    _questions_state, in both directions:
+    THE CHECK IS ON THE QUESTION AXIS, BOUNDED BY THE SHIP BAR. Both corrections run off
+    _questions_state:
 
-      claimed needs_review, nothing current to answer -> corrected to done or failed BY ITS
-        SCORE. The lead summoned a human to a form nobody can answer, which is the dead end with
-        no door the needs_review definition forbids.
-      claimed done or failed, a CURRENT question on disk -> corrected to needs_review. A current
-        question holds the blog at ANY score, so a lead that wrote done at 96 over a live form
-        shipped a draft its own evaluator said it could not vouch for.
+      claimed needs_review, nothing current to answer (or a score at/above SHIP_SCORE) ->
+        corrected to done or failed. The lead either summoned a human to a form nobody can answer,
+        or held a passing draft the 95+ rule ships regardless.
+      claimed done or failed BELOW SHIP_SCORE, a CURRENT question on disk -> corrected to
+        needs_review. A current sub-95 question holds the blog, so a lead that shipped over one
+        shipped a draft its own evaluator could not vouch for. AT 95+ THIS CORRECTION DOES NOT
+        FIRE: the score passes and the question rides into internal review (see
+        _resolve_needs_review).
 
-    THE SECOND CORRECTION IS THE WHOLE OF WHAT MAKES THE HOLD REAL. Under the old score-gated
-    rule it was inert, because a passing score shipped the blog regardless and there was nothing
-    for a question to hold. Now that questions hold at any score, a done claim over a current
-    form is the entire exposure: the done line stands, _summarize reports done, and the blog is
-    ledgered. Without this arm the new rule would live only in an agent's instructions, and a
-    rule that lives only there is a rule that gets talked out of, which this project learned
-    twice in one day.
-
-    THE SCORE CORRECTS NOTHING BY ITSELF, in either direction. A needs_review claimed at 96 with
-    a current question STANDS, because a passing score is not grounds to override a hold. A done
-    claimed at 88 with nothing to answer also stands: the score decides only the branch a
-    needs_review claim falls into, and an engine that re-scored every claim would be a second
-    author of the status rather than a check on the first.
+    THE SHIP BAR NOW BOUNDS BOTH CORRECTIONS. A needs_review claimed at 95+ is corrected to done,
+    because the 95+ rule passes regardless of questions. A done claimed at 88 with nothing to
+    answer still stands: the engine does not re-score a nothing-to-answer done down to failed, so
+    it is a check on the question axis rather than a second author of the score.
 
     The correction is APPENDED, never a rewrite. _terminal_line reads the LAST terminal line, so
     the new line wins, while the lead's original claim stays visible above it with the engine's
@@ -872,15 +876,19 @@ def _enforce_terminal_status(client_slug, topic_slug, out_dir, root=None):
         if reason is None:
             return summary
     elif claimed in ("done", "failed"):
-        if _questions_state(client_slug, topic_slug, root=root) != "current":
+        # A current question corrects a done/failed claim to needs_review ONLY BELOW the ship bar.
+        # At or above it the score passes regardless of questions (see _resolve_needs_review), so a
+        # done at 95+ over a live form STANDS and the question rides into internal review with it.
+        score = summary["score"]
+        if (_questions_state(client_slug, topic_slug, root=root) != "current"
+                or (score is not None and score >= SHIP_SCORE)):
             return summary
         status = "needs_review"
         reason = (
             f"questions.json is on disk, asks about the draft that exists, and the operator has "
-            f"not answered it, so a human owes this blog an answer. A current question holds a "
-            f"blog at any score, including one at or above {SHIP_SCORE}: a question is the "
-            f"evaluator saying the draft may be wrong, and a wrong 96 is not better than a wrong "
-            f"89"
+            f"not answered it, so a human owes this blog an answer. Below {SHIP_SCORE} a current "
+            f"question holds the blog: a question is the evaluator saying the draft may be wrong, "
+            f"and a sub-95 draft has not earned a pass to override it"
         )
     else:
         # running, or the stopped line the backend writes. Neither is a claim about a loop that
@@ -1031,6 +1039,45 @@ def check_real_mode_ready():
     if servers:
         return True, "http MCP transport from FIRECRAWL_MCP_URL and DATAFORSEO_MCP_URL"
     return True, f"stdio MCP transport from {MCP_CONFIG_PATH.name}, loaded by the CLI as project config"
+
+
+# The creds .mcp.json interpolates as ${VAR} for the stdio transport. Empty means the CLI spawns
+# the MCP authenticating with nothing, so every fetch 401s: config-valid but NOT accessible.
+_STDIO_RESEARCH_CREDS = {
+    "firecrawl": ("FIRECRAWL_API_KEY",),
+    "dataforseo": ("DATAFORSEO_USERNAME", "DATAFORSEO_PASSWORD"),
+}
+
+
+def check_research_access():
+    """(ok, reason): can a real run actually REACH Firecrawl and DataForSEO?
+
+    check_real_mode_ready proves the config shape; this adds the piece it cannot see: for the
+    stdio transport the CLI interpolates ${FIRECRAWL_API_KEY} etc. from the engine environment,
+    and an empty one spawns an MCP that authenticates with nothing. Resolved WITHOUT spawning a
+    CLI or MCP, so the operator is told 'no' at submit time instead of twenty minutes into a run
+    that would fail every fetch and die at Sourcing. Missing creds is a person-facing gap (someone
+    must supply the keys), which is why the run is gated here rather than left to fail silently.
+
+    ponytail: presence check, not a live ping. Catches the dominant failure (keys absent/unresolved)
+    for free and never flakes on a transient outage. Add a real provider probe if present-but-wrong
+    keys become a problem worth the submit-time latency.
+    """
+    ok, reason = check_real_mode_ready()
+    if not ok:
+        return False, reason
+    # The http transport carries its own auth in the URL/header check_real_mode_ready validated.
+    if _http_mcp_servers() is not None:
+        return True, reason
+    missing = [v for creds in _STDIO_RESEARCH_CREDS.values() for v in creds if not os.environ.get(v)]
+    if missing:
+        return False, (
+            "the research tools are not accessible: " + ", ".join(missing) + " not set in the "
+            "engine environment, so Firecrawl and DataForSEO would fail every fetch. Supply the "
+            "keys (Claude Code MCP setup writes them to ~/.claude.json, or export them), then "
+            "restart Strategi Canon."
+        )
+    return True, reason
 
 
 def _agent_definitions():
@@ -1204,11 +1251,16 @@ label and never reorder it into a meaning of your own.
 Branch on the numeric SCORE from the evaluator (its eval end status line and
 eval.md), never on a verdict word. The in-loop branch reads the SCORE plus exactly
 ONE property of the form, whether it carries a Sourcing question, and nothing else.
-- SCORE >= 95 ENDS THE LOOP. Never re-evaluate a passing draft for any reason,
-  including "the draft changed since" or "let me confirm". The terminal STATE is then
-  decided by the question check below, not by the score alone: done only when no
-  current questions are on disk, needs_review when any are, at any score including 95
-  and 96.
+- SCORE >= 95 ENDS THE LOOP IMMEDIATELY. Check this FIRST after every evaluator, and
+  it OVERRIDES every other loop rule below (the 4 cap, best-of, no-gain). Ship THIS
+  draft exactly as it stands: do NOT dispatch another writer, do NOT dispatch another
+  evaluator, do NOT apply the evaluator's fix list (a fix list returned at a passing
+  score is DISCARDED, never a reason to revise), and do NOT run "one more to improve
+  it" or "one more to confirm". The FIRST draft to reach 95 is the shipped draft, full
+  stop. Never re-evaluate a passing draft for any reason, including "the draft changed
+  since" or "let me confirm". The terminal STATE is then done: at 95+ the blog PASSES
+  regardless of questions (see the terminal-states section below), and any question the
+  evaluator raised rides into internal admin review rather than holding the blog.
 - SCORE < 95, and BEFORE you dispatch anything: check the form on disk for a Sourcing
   QUESTION.
     python3 .claude/questions.py --out {out_dir} --slug {topic_slug} --iter <your current iteration> --check-area Sourcing
@@ -1243,28 +1295,32 @@ ONE property of the form, whether it carries a Sourcing question, and nothing el
   date-night's iteration 2 top-up sourced three Sourcing fix-list items successfully.
   A fix-list item says "a machine can find this source". A question says "only a
   person holds this fact". Same area word, opposite implications for the loop.
-- Cap at 4 iterations, keep the best-scoring draft, stop early after two
-  consecutive no-gain iterations, and stop immediately on a live Sourcing question per
-  the branch above.
+- Loop control, in STRICT priority order. (1) The FIRST score >= 95 stops the loop
+  immediately, per the >= 95 branch above, and it outranks everything that follows:
+  once a draft reaches 95 there is nothing left to improve and nothing to compare, so
+  no cap, best-of, or no-gain rule can pull one more iteration out of it. (2) A live
+  Sourcing question stops it, per that branch. (3) ONLY while the score is still below
+  95: cap at 4 iterations, keep the best-scoring draft, and stop early after two
+  consecutive no-gain iterations. Rules (2) and (3) never fire once a score has reached
+  95.
 
-needs_review MEANS "this blog has questions waiting for the operator that are current,
-on disk, and answerable". AT ANY SCORE, and it means nothing else. The score is not
-part of that definition. There are exactly three terminal states, and THE QUESTIONS
-ARE CHECKED FIRST:
-- At least one live question the evaluator asked through .claude/questions.py at the
-  CURRENT iteration: needs_review, at ANY score, INCLUDING 95 and 96. A question is
-  you saying the draft may be WRONG, and a wrong 96 is not better than a wrong 89, so
-  a passing score never overrides a hold. Answering is a DEMAND, never an offer, and
-  there is no dismiss and no proceed-anyway at any score.
-- Nothing current to answer, score >= 95: done. It SHIPS.
-- Nothing current to answer, score < 95 or no score at all: failed. The loop
-  exhausted itself and cannot say what it needs, so there is no human task in it. A
-  gates FAIL is failed for the same reason: there is no question in it.
+There are exactly three terminal states, and THE SCORE IS CHECKED FIRST:
+- SCORE >= 95: done. It PASSES to internal admin review, REGARDLESS of any questions.
+  A question the evaluator raised at 95+ does NOT hold the blog and does NOT go to the
+  client: it is carried into internal review for the admin to weigh, and the admin is
+  the backstop. At or above 95 the score passes, full stop.
+- SCORE < 95 with at least one live question the evaluator asked through
+  .claude/questions.py at the CURRENT iteration: needs_review. Below the bar a question
+  holds the blog for the operator to answer; there is no proceed-anyway below 95.
+- SCORE < 95, or no score, with nothing current to answer: failed. The loop exhausted
+  itself and cannot say what it needs, so there is no human task in it. A gates FAIL is
+  failed for the same reason: there is no question in it.
 
-Your SCORE >= 95 branch above is FINAL AND TERMINAL ONLY WHEN NO CURRENT QUESTIONS ARE
-ON DISK. That is the one narrowing of the rule, and everything else about it stands:
-you never re-evaluate a passing draft because "the draft changed", "eval.md and
-blog.md are inconsistent", "the run was stopped and restarted", or "let me confirm".
+needs_review MEANS "this blog scored BELOW 95 and has a current, on-disk, answerable
+question waiting for the operator", and nothing else. Your SCORE >= 95 branch is FINAL
+AND TERMINAL, questions or not: you never re-evaluate a passing draft because "the
+draft changed", "eval.md and blog.md are inconsistent", "the run was stopped and
+restarted", or "let me confirm".
 
 A Sourcing top-up, or a claim whose source may not support it, is a QUESTION, and the
 evaluator asks it naming the source and the claim; unasked, it is not a status.
@@ -1283,9 +1339,10 @@ instead. Pass --iter, every time. It is the whole of what closes that direction.
 
 The engine checks all of this after your session ends and corrects a needs_review that
 was not earned, recording the override against your terminal line. Claiming
-needs_review with nothing on disk to answer does not hold the blog: it just puts your
-claim and the engine's correction in the same trail. Claiming done over a current
-question does not ship it either.
+needs_review with nothing on disk to answer does not hold the blog, and claiming
+needs_review at 95+ does not either: both just put your claim and the engine's
+correction in the same trail, because at 95+ the engine passes the blog regardless of
+questions.
 
 Absolute rules:
 - Never write or edit the blog yourself.
@@ -1862,6 +1919,19 @@ def _last_eval_score(lines):
     return None
 
 
+def _ever_reached_ship(lines):
+    """Did any eval end line in this history score at or above the ship bar? STAY PASSED ONCE
+    95+: once a draft has cleared 95 the blog never drops below internal admin review on a
+    rerun. A later answer-driven revise routes it back to done regardless of the clarified
+    draft's new score (see revise_topic). Reads the MAX over the whole feed, not just the last
+    score, so the guarantee holds even across several get-it-answered / rerun cycles."""
+    return any(
+        line.get("stage") == "eval" and line.get("event") == "end"
+        and line.get("score") is not None and line["score"] >= SHIP_SCORE
+        for line in lines
+    )
+
+
 def _revise_lead_prompt(client_slug, row, topic_slug, out_dir, iteration):
     prompt_block = ""
     guidance_block = ""
@@ -2270,6 +2340,29 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=Non
             # reason is recorded as the engine's own reasoning rather than as an override.
             status, why = _resolve_needs_review(client_slug, topic_slug, shipped_score,
                                                 root=run_dir_root)
+            # STAY PASSED ONCE 95+. A blog that ever cleared the ship bar never drops below
+            # internal admin review on a rerun: it returns to done regardless of the clarified
+            # draft's new score, and any question the evaluator raised on the clarified draft
+            # rides into internal review for the admin exactly as a first-run 95+ question does.
+            # Only a blog that never reached 95, a sub-95 held question (Case A), resolves by its
+            # new score and can still land needs_review or failed. Checked against the history
+            # BEFORE this revise, so a Case C blog dispatched at its 96 stays passed.
+            if status != "done" and _ever_reached_ship(lines_before):
+                status = "done"
+                why = (f"the clarified draft scored {shipped_score}, but this blog already "
+                       f"cleared {SHIP_SCORE} once, so it stays passed and returns to internal "
+                       f"admin review rather than dropping below the bar")
+            # The NEEDS_REVIEW breadcrumb goes with the status it marks, in both directions (see
+            # _enforce_terminal_status). A Case C 'get it answered' wrote one when it sent the
+            # question to the client, so a rerun landing back on done MUST clear it, or a shipped
+            # blog carries a needs_review file that contradicts its own status on disk.
+            marker = Path(out_dir) / "NEEDS_REVIEW"
+            if status == "needs_review":
+                marker.write_text(
+                    f"This topic is held for the operator's answer. {why or ''} "
+                    f"See questions.json.\n", encoding="utf-8")
+            else:
+                marker.unlink(missing_ok=True)
             append_status(
                 str(out_dir), topic_slug, stage="eval", event="end", iter=iteration,
                 score=shipped_score, status=status,

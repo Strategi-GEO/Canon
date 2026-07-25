@@ -70,7 +70,9 @@ def append_status(out_dir, slug, stage, event, iter, score=None, status="running
         "note": str(note),
     }
     os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, "status.jsonl"), "a", encoding="utf-8") as handle:
+    # newline="\n" pins the terminator: a JSONL line is LF-terminated by contract, so the
+    # artifact stays byte-identical on Windows (text mode would translate "\n" to "\r\n").
+    with open(os.path.join(out_dir, "status.jsonl"), "a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(line, ensure_ascii=False) + "\n")
     return line
 

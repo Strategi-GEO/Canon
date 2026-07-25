@@ -560,10 +560,23 @@ def _ensure_windows_job():
         ]
 
     kernel32 = ctypes.windll.kernel32
+    # EXPLICIT ctypes signatures, or the reaper silently fails. A HANDLE is pointer-sized on
+    # 64-bit Windows, but ctypes' default restype is c_int (signed 32-bit): a handle value with
+    # bit 31 set comes back negative and is sign-extended to garbage when passed to the next
+    # call, so the job assignment or close no-ops and children orphan on an unclean tray exit.
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                 wintypes.LPVOID, wintypes.DWORD]
     job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        tlog("WARNING: CreateJobObjectW failed; children will not be reaped on an unclean tray exit")
+        return None
     info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
     info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    kernel32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info))  # 9 = JobObjectExtendedLimitInformation
+    if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):  # 9 = JobObjectExtendedLimitInformation
+        tlog("WARNING: SetInformationJobObject failed; the job will not kill children on close")
     _win_job_handle = job
     return job
 
@@ -582,16 +595,33 @@ def tie_child_to_tray(proc: subprocess.Popen) -> None:
     try:
         if IS_WINDOWS:
             import ctypes
+            from ctypes import wintypes
             job = _ensure_windows_job()
+            if not job:
+                return
+            kernel32 = ctypes.windll.kernel32
+            # Same HANDLE-truncation trap as _ensure_windows_job: give OpenProcess a HANDLE
+            # restype so a high-bit handle is not mangled before AssignProcessToJobObject sees it.
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+            kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
             PROCESS_SET_QUOTA, PROCESS_TERMINATE = 0x0100, 0x0001
-            handle = ctypes.windll.kernel32.OpenProcess(
+            handle = kernel32.OpenProcess(
                 PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, proc.pid)
             if handle:
-                ctypes.windll.kernel32.AssignProcessToJobObject(job, handle)
-                ctypes.windll.kernel32.CloseHandle(handle)
+                if not kernel32.AssignProcessToJobObject(job, handle):
+                    tlog(f"WARNING: could not assign pid {proc.pid} to the kill-on-close job; "
+                         f"it may orphan on an unclean tray exit")
+                kernel32.CloseHandle(handle)
         else:
+            # Exit when EITHER the tray dies (kill the child) OR the child is already gone (a
+            # menu Restart kills the old children while the tray lives on, and without the child
+            # check these babysitters would sleep forever, leaking two sh processes per restart).
             script = (
-                f"while kill -0 {os.getpid()} 2>/dev/null; do sleep 2; done; "
+                f"while kill -0 {os.getpid()} 2>/dev/null && kill -0 {proc.pid} 2>/dev/null; "
+                f"do sleep 2; done; "
                 f"kill -TERM -{proc.pid} 2>/dev/null; sleep 5; "
                 f"kill -KILL -{proc.pid} 2>/dev/null"
             )
@@ -1013,6 +1043,9 @@ class CanonTray:
         and the tray itself."""
         self._quitting.set()
         self.stop_children()
+        # Free the single-instance lock BEFORE the replacement launches, so the fresh instance
+        # (Windows spawns a new process; macOS execs in place) can bind it without racing this one.
+        release_single_instance_lock()
         exe = str(Path(sys.executable).resolve())
         tlog(f"restart_app: relaunching {exe} to apply a staged update")
         try:
@@ -1081,6 +1114,46 @@ class CanonTray:
         self.startup()
 
 
+# ---------------------------------------------------------------------------
+# Single instance: a second launch must not fight the first over the ports
+# ---------------------------------------------------------------------------
+
+# A private loopback port used purely as a lock. Not the engine's 8000 or the dashboard's 3000,
+# so reclaim_port never touches it. ponytail: rare false "already running" if unrelated software
+# already holds this exact port; move it if that ever bites.
+_SINGLE_INSTANCE_PORT = 8771
+_instance_lock_socket: "socket.socket | None" = None
+
+
+def acquire_single_instance_lock() -> bool:
+    """True if this is the only instance; False if another already holds the lock.
+
+    Holds a loopback socket bound to a fixed port for the whole process lifetime. A second
+    instance fails to bind (SO_REUSEADDR deliberately OFF) and learns one is already up. The OS
+    frees the port the instant this process dies, so a crash never leaves a stale lock behind,
+    which is why this beats a lock file: no cleanup, no staleness."""
+    global _instance_lock_socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", _SINGLE_INSTANCE_PORT))
+    except OSError:
+        sock.close()
+        return False
+    _instance_lock_socket = sock  # kept bound for the process lifetime
+    return True
+
+
+def release_single_instance_lock() -> None:
+    """Free the lock so a replacement (an in-app update restart) can take it immediately."""
+    global _instance_lock_socket
+    if _instance_lock_socket is not None:
+        try:
+            _instance_lock_socket.close()
+        except OSError:
+            pass
+        _instance_lock_socket = None
+
+
 # NOTE deliberately NO Python-level SIGTERM/SIGINT handlers. The main thread
 # spends its life inside the GUI run loop (AppKit on macOS, the win32 message
 # pump on Windows), where a Python handler never gets to run: installing one
@@ -1094,6 +1167,19 @@ class CanonTray:
 def main() -> int:
     _setup_tray_logging()
     tlog(f"=== {APP_NAME} tray starting (frozen={IS_FROZEN}, platform={sys.platform}) ===")
+
+    # FIRST, before discovering the repo or starting anything: refuse to be a second instance.
+    # Without this, a second launch reclaims (kills) the first instance's engine and dashboard,
+    # the two fight over ports 8000/3000, and the operator sees an orange dot with no reachable
+    # dashboard. One instance owns the ports; a second open just points back to it.
+    if not acquire_single_instance_lock():
+        tlog("another Strategi Canon instance already holds the lock; exiting this one")
+        native_error(
+            "Strategi Canon is already running. Look for its dot in the menu bar (macOS) or the "
+            "system tray (Windows). If you cannot find it, quit it from there, then open it again."
+        )
+        return 0
+
     augment_path()
 
     # CA CERTIFICATES, BEFORE ANY HTTPS. This frozen app's bundled Python has no CA bundle wired

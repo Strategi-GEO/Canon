@@ -422,6 +422,7 @@ def pids_on_port(port: int) -> list[int]:
             out = subprocess.run(
                 ["netstat", "-ano", "-p", "tcp"],
                 capture_output=True, text=True, timeout=30,
+                creationflags=_CREATE_NO_WINDOW,
             ).stdout
         except (OSError, subprocess.TimeoutExpired):
             return []
@@ -456,7 +457,7 @@ def kill_pid(pid: int, force: bool) -> None:
         cmd = ["taskkill", "/PID", str(pid), "/T"]
         if force:
             cmd.append("/F")
-        subprocess.run(cmd, capture_output=True)
+        subprocess.run(cmd, capture_output=True, creationflags=_CREATE_NO_WINDOW)
     else:
         try:
             os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
@@ -654,7 +655,8 @@ def stop_process_tree(proc: subprocess.Popen, what: str) -> None:
         return
     log(f"LIFECYCLE: stopping {what} (pid {proc.pid})")
     if IS_WINDOWS:
-        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True,
+                       creationflags=_CREATE_NO_WINDOW)
     else:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)

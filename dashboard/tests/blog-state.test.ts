@@ -239,7 +239,11 @@ test("adminActions: the full policy, state by state", () => {
     // three controls the database refuses. A ROW VALUE IS ALL THIS TEST CHECKS: it went green on
     // both of those, so the test that actually governs this row is the lower-layer one below.
     answers_submitted: ["answer", "edit", "comments", "send"],
-    internal_review: ["edit", "comments", "send"],
+    // internal_review's refining bench PLUS get_it_answered (Case C): a 95+ blog can carry an
+    // evaluator question the admin dispatches to the client. The grant is a permission; the
+    // button is surfaced only when a current unanswered form is on the wire, and the gate door
+    // refuses an absent, stale or answered one, which the lower-layer audit below exercises.
+    internal_review: ["edit", "comments", "send", "get_it_answered"],
     // Empty again: the reply verb is removed from the product, so while the client reads,
     // this side waits. Every act that touches the bytes is absent.
     client_review: [],
@@ -532,6 +536,12 @@ function lowerLayerAccepts(
     // does.
     case "promote":
       return !facts.client_approved && (facts.changes_requested ?? 0) === 0;
+    // EVERY refusal is already in the dispatch door (status done, not approved, not out with the
+    // client, not live, and the form present/current/unanswered), all of which adminGateAllows
+    // above has just decided. Unlike edit and send, there is no delivery-ladder fact blogState
+    // folds away for this act, so nothing remains for this ladder to add.
+    case "get_it_answered":
+      return true;
     // NOT GATED ON ANY FACT IN THIS RECORD: the CMS push turns on which VERSION the client
     // approved against which is latest, which BlogStateFacts does not carry. Modelling a rule
     // this record cannot express would be inventing a refusal.
@@ -638,6 +648,17 @@ const SITUATIONS: Situation[] = [
     form: "absent",
     state: "internal_review",
     moves: "send",
+  },
+  {
+    // CASE C: a 95+ blog that shipped to internal review carrying an evaluator question. The
+    // admin can send it anyway, OR dispatch the question to the client to answer. This situation
+    // fixes the current unanswered form and names the dispatch as the mover; `send` is also
+    // usable here, which is why the property asserted is "some accepted act", not one named act.
+    what: "passed at 95+ but carrying an evaluator question the admin can send to the client",
+    facts: { status: "done" },
+    form: { stale: false, answered: false },
+    state: "internal_review",
+    moves: "get_it_answered",
   },
   {
     // The send is refused here by the WHERE clause, correctly, and the act that moves the article

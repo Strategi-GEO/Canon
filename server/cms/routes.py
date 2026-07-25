@@ -26,53 +26,6 @@ log = logging.getLogger("geo-factory")
 router = APIRouter(tags=["cms"])
 
 
-def _org_slug(client_slug):
-    """The org a brand belongs to, which selects the write key.
-
-    read_client resolves this the same way every other reader sees it. A brand
-    with no explicit org is its own single-brand org, so this is never empty for
-    a client that exists.
-
-    IT REFUSES RATHER THAN GUESSES WHEN THE SYNTHESISED ORG IS AMBIGUOUS, and
-    that refusal is the whole point of this function having a body at all. A brand
-    with org_id null synthesises its own slug as its org name, and orgs.slug and
-    clients.slug are unique in separate tables, so that synthesised name can be a
-    real and unrelated org's name. Resolve a key on it and this engine hands the
-    push a credential belonging to a tenant this brand has nothing to do with.
-    client.py's no-shared-fallback comment explains why nothing downstream can
-    save us there: the CMS derives the destination org FROM THE KEY and the
-    payload may not carry org_id, so the wrong-tenant draft is created, reported
-    as a success, and discovered by whoever opens the other client's CMS.
-
-    503, and the same 503 the missing key produces, because the two are the same
-    kind of fact: the engine is not configured to do this right now and an
-    operator has to change something before it can be. A 503 that refuses to
-    resolve costs one blocked push. A resolution that guesses costs a client's
-    draft sitting in another client's CMS, which is not recoverable in the way
-    that matters, because it is already there before anyone knows to look.
-
-    server/clients.py now refuses to WRITE this collision, which is the actual
-    fix. This check stays because that guard cannot reach a collision that was
-    already in the record when it shipped, and this line is the last moment
-    anything in the system can still tell the two orgs apart.
-    """
-    if clients_mod.synthesised_org_collides(client_slug):
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"Cannot resolve a CMS write key for '{client_slug}': it has no "
-                f"organisation of its own, so its key would be looked up under the "
-                f"organisation slug '{client_slug}', and a different organisation "
-                f"already owns that slug. Publishing would push this brand's draft "
-                f"into that organisation's CMS. Give '{client_slug}' an explicit "
-                f"organisation, or rename the organisation holding the slug, then retry."
-            ),
-        )
-    record = clients_mod.read_client(client_slug) or {}
-    org = record.get("organisation") or {}
-    return org.get("slug") or client_slug
-
-
 def _status_for(upstream):
     """The status this endpoint answers with, given the CMS's own status.
 
@@ -118,9 +71,9 @@ async def api_publish_blog(slug: str, topic_slug: str, request: Request):
         raise HTTPException(status_code=404, detail=f"No blog '{topic_slug}'")
 
     try:
-        payload = gate.build_for_publish(
-            runner, ledger, slug, topic_slug, client=clients_mod.read_client(slug)
-        )
+        # No client record is read: the minimal ingest derives its five fields from the
+        # draft and the slug alone, so gate.build_for_publish ignores the extra arguments.
+        payload = gate.build_for_publish(runner, ledger, slug, topic_slug)
     except gate.PublishRefused as refused:
         # 409, not 403: the blog exists and the operator may push it, just not in
         # the state it is currently in. 403 would read as a permissions problem.
@@ -128,8 +81,7 @@ async def api_publish_blog(slug: str, topic_slug: str, request: Request):
     except PayloadError as bad:
         raise HTTPException(status_code=422, detail=str(bad))
 
-    org_slug = _org_slug(slug)
-    key = cms_client.resolve_key(org_slug)
+    key = cms_client.resolve_key()
     # The detail comes from cms_client because that module is the one that knows WHERE it
     # looked. It reads the process environment first and server/.env second, and an operator
     # who is told only "set it in the engine's environment" is told the one thing that does
@@ -138,7 +90,7 @@ async def api_publish_blog(slug: str, topic_slug: str, request: Request):
     # here meant it could not name the file without this route knowing the resolution order,
     # which is exactly the duplication that let the message go stale when the order changed.
     if not key:
-        raise HTTPException(status_code=503, detail=cms_client.missing_key_detail(org_slug))
+        raise HTTPException(status_code=503, detail=cms_client.missing_key_detail())
 
     try:
         result = await cms_client.push_draft(payload, key)

@@ -60,7 +60,11 @@ def _load_cfg() -> dict[str, str]:
             return _CFG
         envfile = SERVER_DIR / ".env"
         if envfile.is_file():
-            for line in envfile.read_text().splitlines():
+            # utf-8-sig decodes plain UTF-8 and also strips a leading BOM: a Windows editor
+            # (Notepad) saves UTF-8 with a BOM by default, which would otherwise prefix the
+            # first key (DATABASE_URL) and read the DB as unconfigured. No encoding arg would
+            # fall back to the platform locale codec (cp1252) and raise on any non-ASCII byte.
+            for line in envfile.read_text(encoding="utf-8-sig").splitlines():
                 line = line.strip()
                 if not line or line.startswith("#") or "=" not in line:
                     continue

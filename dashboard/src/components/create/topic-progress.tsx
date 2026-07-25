@@ -277,23 +277,23 @@ function TerminalActions({
 }
 
 /**
- * done always means the first eval hit 95 or above, so status alone decides the highlight.
+ * The final chip is coloured by the SCORE BAND, not by the status word: 95+ passes (accent),
+ * 90-94 is close (amber), below 90 is a miss (red). Keying on the number is what makes a failed
+ * 92 read amber instead of red, matching the house score bands everywhere else a score is shown.
  *
- * The stopped arm is explicit rather than left to the fail default below, and it is the one arm
- * here no compiler would have caught: this is an if-chain, so a stopped topic would have taken
- * the red tint in silence, and its last score would have been painted as the score of a blog
- * that went wrong. It scored what it scored, and then a person stopped the run. That is not a
- * verdict, so it wears no verdict colour.
+ * The stopped arm is explicit and comes FIRST, and it is the one arm no compiler would have
+ * caught: a stopped topic scored what it scored and then a person stopped the run, which is not
+ * a verdict, so its number wears no verdict colour whatever the band would say.
  */
-function terminalChipClass(status: RunStatus): string {
-  if (status === "done") {
-    return "border-primary/30 bg-primary/10 text-primary";
-  }
-  if (status === "needs_review") {
-    return "border-review/25 bg-review-bg text-review";
-  }
+function settledChipClass(status: RunStatus, score: number): string {
   if (status === "stopped") {
     return "border-muted-foreground/40 bg-muted text-muted-foreground";
+  }
+  if (score >= 95) {
+    return "border-primary/30 bg-primary/10 text-primary";
+  }
+  if (score >= 90) {
+    return "border-review/25 bg-review-bg text-review";
   }
   return "border-fail/25 bg-fail-bg text-fail";
 }
@@ -333,7 +333,7 @@ function ScoreTrail({ topic }: { topic: TopicRun }) {
               className={cn(
                 "machine rounded border px-1.5 py-0.5 text-xs leading-none font-medium",
                 last && settled
-                  ? terminalChipClass(topic.status)
+                  ? settledChipClass(topic.status, score)
                   : "border-border bg-muted text-muted-foreground",
               )}
               title={`Iteration ${iter} scored ${score}`}

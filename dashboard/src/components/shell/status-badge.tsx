@@ -84,20 +84,3 @@ export function StatusBadge({ status, className }: { status: BlogStatus; classNa
     </span>
   );
 }
-
-/** A score is a machine value, and 95 is the ship line, so only a shipped score gets the accent. */
-export function ScoreTag({ score, shipped }: { score: number | null; shipped: boolean }) {
-  if (score === null) {
-    return <span className="machine text-xs text-muted-foreground">no score</span>;
-  }
-  return (
-    <span
-      className={cn(
-        "machine text-xs font-medium",
-        shipped ? "text-primary" : "text-muted-foreground",
-      )}
-    >
-      {score}/100
-    </span>
-  );
-}

@@ -266,6 +266,18 @@ export type AdminAction =
   /** Release it, or release it again after resolving change requests. */
   | "send"
   /**
+   * CASE C: dispatch a PASSED blog's evaluator question to the client's Needs answers tab.
+   *
+   * A 95+ blog ships to internal review carrying whatever the evaluator could not settle. The
+   * admin can weigh it and send anyway (`send`), OR route the question to the client here. It
+   * flips the status done -> needs_review (api_dispatch_question / blog_edit.dispatch_question_
+   * to_client), so blogState derives has_questions, clientCanSee turns true, and the client
+   * answers it. Granted on internal_review, but the button is surfaced ONLY when a current
+   * unanswered form is on the wire, and the gate door refuses an absent, stale or answered one,
+   * so a Case D internal_review (no question) shows no dispatch control.
+   */
+  | "get_it_answered"
+  /**
    * Ship a FAILED blog anyway. The loop's verdict stands on the trail (the evaluator scored
    * the draft below the house 95 bar and had nothing left to ask); this verb is the operator
    * overruling that bar for a draft they have READ and are satisfied with. One press appends
@@ -369,8 +381,13 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   // of an edit racing the pass about to rewrite the same bytes describes a moment this table
   // cannot be asked about. What makes `edit` safe in (a) is the DONE_TOPIC clause withholding it.
   answers_submitted: ["answer", "edit", "comments", "send"],
-  // The refining bench. This is the one state where the admin shapes the article freely.
-  internal_review: ["edit", "comments", "send"],
+  // The refining bench. This is the one state where the admin shapes the article freely, plus
+  // get_it_answered for the Case C blog that passed at 95+ but carries an evaluator question:
+  // the admin reads the question and can dispatch it to the client. The grant is a permission,
+  // never a rendering: blog-stage surfaces the control only when a current unanswered form is on
+  // the wire, and the gate door refuses an absent, stale or answered one, so a Case D
+  // internal_review (no question) shows no dispatch control.
+  internal_review: ["edit", "comments", "send", "get_it_answered"],
   // WAITING, and the emptiness is the feature. The client is reading the exact bytes pinned by
   // sent_version_id, so an edit here changes the article underneath someone mid-review.
   client_review: [],

@@ -34,6 +34,8 @@ import mimetypes
 import os
 import re
 import shutil
+import stat
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -2583,6 +2585,76 @@ async def api_promote_blog(slug: str, topic: str,
     return state
 
 
+@app.post("/api/clients/{slug}/blogs/{topic}/get-answered")
+async def api_dispatch_question(slug: str, topic: str,
+                                user: auth.Identity = Depends(auth.require_admin)):
+    """Case C 'Get it answered': dispatch a PASSED blog's evaluator question to the client.
+
+    A 95+ blog ships to internal admin review carrying whatever question the evaluator could not
+    settle. This route sends that question to the client's 'Needs answers' tab so a person can
+    answer it, by flipping the terminal status done -> needs_review (blog_edit.dispatch_question_
+    to_client). blogState then derives has_questions, the client sees the anchored draft and the
+    answer form, and answering starts the same rerun every held blog owes. It re-runs no
+    evaluator and commits no new version: the form already sits in review_notes from the 95+
+    commit, current and unanswered.
+
+    Scope is exact and each boundary refuses below: status EXACTLY done (needs_review is already
+    dispatched, failed uses promote, stopped has no verdict), a current UNANSWERED form on disk
+    (nothing to ask otherwise), no live run, not approved, and not already out with the client.
+    The other Case C button, 'Send to client', skips the question and ships through the ordinary
+    send; only this one touches the status.
+    """
+    _client_or_404(slug, user)
+    _topic_or_404(slug, topic)
+    if topic in _live_run_slugs(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{topic!r} is generating right now in a live run; dispatch the question "
+                   f"once it settles",
+        )
+    status = _topic_status(slug, topic)
+    if status != "done":
+        raise HTTPException(
+            status_code=409,
+            detail=f"{topic!r} is {status}, not done; a question is dispatched only from a "
+                   f"passed blog in internal review",
+        )
+    # The permanent lock and the out-with-client lock, ahead of the form checks: dispatching
+    # over an approved article, or one the client is already reviewing, would put the same blog
+    # on two client paths at once. Both raise in their own bodies (shared clauses), so they are
+    # not restated here.
+    _require_not_approved(slug, topic, "dispatching the question")
+    _require_not_with_client(slug, topic, "dispatching the question")
+    try:
+        state = questions_mod.describe_questions(slug, topic)
+    except questions_mod.NoQuestions as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    if state["stale"]:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"the question for {topic!r} describes iteration {state['iter']}, but the blog "
+                f"has moved on, so it can no longer be dispatched. Generate the topic again to "
+                f"raise a current question."
+            ),
+        )
+    if state["answered"]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"the question for {topic!r} is already answered; rerun to apply the "
+                   f"answers instead of dispatching it again",
+        )
+    email = getattr(user, "email", "") or ""
+    try:
+        await asyncio.to_thread(blog_edit.dispatch_question_to_client, slug, topic, email)
+    except blog_edit.EditError as exc:
+        # The needs_review line did not land in the record (this machine's status feed is behind
+        # it, dispatch_question_to_client says how that happens and what clears it). Nothing was
+        # sent to the client, so the operator retries after the stated fix.
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"status": "needs_review", "topic": topic}
+
+
 @app.get("/api/clients/{slug}/blogs/{topic}/review")
 async def api_blog_review(slug: str, topic: str,
                           user: auth.Identity = Depends(auth.require_user)):
@@ -2697,17 +2769,21 @@ async def api_upload_blog_docx(slug: str, topic: str, replace: bool = False,
 @app.delete("/api/clients/{slug}/blogs/{topic}", status_code=204)
 async def api_delete_blog(slug: str, topic: str,
                           user: auth.Identity = Depends(auth.require_admin)):
-    """Remove one blog: soft-delete the topic and drop its scratch tree. `topics.deleted_at`
-    IS this app's delete (it clears the blog from every listing and re-frees the roadmap row
-    for regeneration, since ledger.live_slugs and every read filter on deleted_at is null).
-    The scratch dir must go with it, or the startup reconciler would find bytes ahead of the
-    record and re-commit them, un-deleting the topic via ensure_topic. Refused while a run is
-    live, because the engine is writing that scratch tree right now. Idempotent: deleting an
-    unknown or already-deleted topic is a 204 no-op.
+    """Remove one blog: HARD-delete the topic row and drop its scratch tree, so nothing of the
+    old blog survives a regenerate. The `on delete cascade` FKs purge every child row
+    (blog_versions, status_events, review_notes, blog_comments) in one statement, so a later
+    regenerate of the same slug INSERTs a brand-new topic (new id) whose status.jsonl starts at
+    line 0 with no ordinal collision. The scratch dir must go with it, or the startup reconciler
+    would find bytes ahead of the record and re-commit them into a fresh topic. Refused while a
+    run is live, because the engine is writing that scratch tree right now. Idempotent: deleting
+    an unknown topic is a 204 no-op.
 
-    ponytail: soft delete, so a later regenerate of the same slug reuses the topic row and its
-    old comments/versions resurface. That is the codebase's existing topics.deleted_at model,
-    not new debt; hard-delete-with-cascade only if resurfacing ever bites."""
+    Soft-delete (topics.deleted_at) was the old model and it BIT: the soft-deleted row kept its
+    id, a regenerate reused it via ensure_topic's on-conflict-set-deleted_at-null, and the new
+    run's status lines collided with the surviving old ones (on conflict (topic_id,line_no) do
+    nothing), so the dashboard kept painting the deleted run's score and verdict. ledger_entries
+    is deliberately left untouched: it has no topic FK and is the append-only ship record, and
+    ledger.live_slugs re-frees the roadmap row on the topic being gone, exactly as before."""
     _client_or_404(slug, user)
     if _client_has_live_run(slug):
         raise HTTPException(
@@ -2718,13 +2794,44 @@ async def api_delete_blog(slug: str, topic: str,
     return None
 
 
+def _rmtree_or_raise(tdir: Path) -> None:
+    """Remove a scratch tree cross-platform, or raise loudly. On Windows rmtree raises on a
+    read-only file and on any file another process still holds open (you cannot unlink an open
+    file), so clear the read-only bit in the error handler and retry a few times past a
+    transient AV/indexer scan or an orphaned MCP child. VERIFY the tree is actually gone and
+    raise if not, because a silently surviving blog.md is re-committed by the startup reconciler
+    and resurrects the deleted topic, which is the exact bug the hard delete exists to end."""
+    def _clear_readonly(func, path, _exc):
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    # onexc (3.12+) replaced the deprecated onerror; the callback signature is identical, so one
+    # handler covers both and the keyword is the only difference.
+    kw = "onexc" if sys.version_info >= (3, 12) else "onerror"
+    last = None
+    for _ in range(4):
+        try:
+            shutil.rmtree(tdir, **{kw: _clear_readonly})
+        except OSError as exc:
+            last = exc
+            time.sleep(0.25)
+        if not tdir.exists():
+            return
+    raise HTTPException(
+        status_code=409,
+        detail=(f"could not remove the scratch files for this blog (a file is still in use): "
+                f"{last}. Close anything using it, then delete again."))
+
+
 def _delete_blog(slug: str, topic_slug: str) -> None:
-    tid = db.topic_id(slug, topic_slug)
-    if tid is not None:
-        db.q("update topics set deleted_at = now() where id = %s", (tid,), fetch="none")
+    # Scratch tree FIRST, then the record, so a Windows locked-handle failure raises before the
+    # DB is touched and leaves the blog fully intact and retryable, never half-deleted with
+    # scratch the reconciler would re-commit into a new topic.
     tdir = runner.output_dir(slug, topic_slug)
     if tdir.is_dir():
-        shutil.rmtree(tdir, ignore_errors=True)
+        _rmtree_or_raise(tdir)
+    tid = db.topic_id(slug, topic_slug)
+    if tid is not None:
+        db.q("delete from topics where id = %s", (tid,), fetch="none")
 
 
 @app.get("/api/pending-reruns")
@@ -3010,6 +3117,13 @@ async def api_generate(slug: str, body: GenerateRequest,
     ok, reason = _preflight(slug)
     if not ok:
         raise HTTPException(status_code=409, detail=f"preflight failed for {slug}: {reason}")
+
+    # MCP ACCESSIBILITY, before a run is registered. A blog run is nothing but Firecrawl and
+    # DataForSEO calls; if those tools are unreachable the whole batch burns quota to die at
+    # Sourcing. Refuse here so the operator hears it up front instead of reading a failed run.
+    mcp_ok, mcp_reason = runner.check_research_access()
+    if not mcp_ok:
+        raise HTTPException(status_code=409, detail=f"cannot start generation for {slug}: {mcp_reason}")
 
     run_id = uuid.uuid4().hex
     topics = []

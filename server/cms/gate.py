@@ -231,24 +231,10 @@ def build_for_publish(runner, ledger, client_slug, topic_slug, client=None):
     then deciding not to send it puts one `if` between an unvetted draft and the
     client, and that `if` is one refactor from being the wrong way round.
 
-    `client` is the client record (industry and display name), read by the caller
-    so payload.py stays a pure function of text.
+    `ledger` and `client` are accepted but unused: the minimal ingest carries only
+    the five fields payload.build_payload derives from the draft and the slug, so no
+    ledger row or client record is read. The parameters stay on the signature so the
+    route and its tests need not change alongside this.
     """
     blog_md = assert_publishable(runner, client_slug, topic_slug)
-
-    # The ledger row carries the operator's own target prompts. Its absence is not
-    # fatal: target_queries is optional, and record_success only writes rows for
-    # done blogs anyway, so a gate-passing blog nearly always has one.
-    row = ledger.ledger_slugs(client_slug).get(topic_slug) or {}
-    client = client or {}
-    return payload_mod.build_payload(
-        client_slug,
-        topic_slug,
-        blog_md,
-        prompts=row.get("prompts"),
-        industry=client.get("industry"),
-        # The client's DISPLAY name ("BLR Brewing"), never entity_names[0]: that list is the
-        # gate's entity vocabulary and holds things like "ALPL 3 LLP", which is a legal
-        # entity and has no business becoming a public tag on a client's blog.
-        brand_name=client.get("name"),
-    )
+    return payload_mod.build_payload(client_slug, topic_slug, blog_md)

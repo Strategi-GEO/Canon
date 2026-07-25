@@ -28,23 +28,21 @@ log = logging.getLogger("geo-factory")
 # value would silently push a blog at a login page and never say so.
 CMS_URL = os.environ.get("STRATEGI_CMS_URL", "https://client.strategi.is/api/v1/ingest")
 
-# One key = one org, so there is ONE variable per org and NO shared fallback.
+# ONE GENERAL KEY FOR EVERY BRAND. STRATEGI_CMS_WRITE_KEY authenticates every push, and the
+# destination tenant is named by the payload's `client` field, NOT by the key.
 #
-# A shared STRATEGI_CMS_WRITE_KEY used to exist here for single-org convenience, and it was
-# a cross-client leak waiting to happen. This engine holds several orgs at once. The CMS
-# derives the destination org FROM THE KEY, and the payload is forbidden from carrying
-# org_id, so the key is the only thing routing a draft. One shared variable therefore
-# answers for every org: set it to BLR Brewing's key, press Post on a Vacation Village
-# blog, and Vacation Village's content lands in BLR Brewing's CMS. Nothing in the request
-# names the intended org, so neither side can catch the mismatch and the leak is silent.
-#
-# A missing per-org variable is a 503 that names the variable it wanted. That is a worse
-# error message and a much better failure: it stops, instead of guessing wrong quietly.
+# This reverses the old per-org key model deliberately. The ingest now carries `client`, so
+# one key can route every brand's draft: the key authenticates, the slug routes. Before, the
+# CMS derived the destination org FROM THE KEY and the payload carried nothing naming the org,
+# so a shared key was a silent cross-tenant leak (one brand's blog filed into another's CMS).
+# The `client` field is what closes that hole, which is why the shared key is safe now where it
+# was forbidden before.
 #
 # The key does NOT live in gates.json: that file is operator-visible and checked in, and a
 # write credential in it is a credential in the repo. It lives in the process environment or
-# in server/.env, and resolve_key below says which wins and why.
-KEY_VAR_PREFIX = "STRATEGI_CMS_WRITE_KEY_"
+# in server/.env (where the desktop app writes the secrets it fetches at login, migration 028),
+# and resolve_key below says which wins and why.
+KEY_VAR = "STRATEGI_CMS_WRITE_KEY"
 
 MAX_ATTEMPTS = 5
 REQUEST_TIMEOUT = 30.0
@@ -65,76 +63,49 @@ class CmsError(Exception):
         self.status = status
 
 
-def key_var_for_org(org_slug):
-    """The env var name for an org's write key: STRATEGI_CMS_WRITE_KEY_<ORG>.
+def resolve_key():
+    """The general CMS write key, or None.
 
-    Raises on an empty org rather than returning a bare prefix. An org slug is
-    the whole of a key's identity here, so an empty one is a caller bug, and
-    resolving it to some default variable is how one org's key becomes another
-    org's key.
-    """
-    normalised = (org_slug or "").strip().upper().replace("-", "_")
-    if not normalised:
-        raise ValueError("an org slug is required to resolve a CMS write key")
-    return f"{KEY_VAR_PREFIX}{normalised}"
+    TWO PLACES, AN EXPORTED VAR WINS. The process environment is read first, so a
+    deployment that exports STRATEGI_CMS_WRITE_KEY behaves exactly as its README
+    documents. server/.env is read second, because that file is the credential
+    store a teammate is actually given: install.sh prompts for it, the tray app
+    reads it, and it is where the desktop app writes the secrets it fetches at
+    login (migration 028), so on the packaged app it is the ONLY door a key comes
+    through. A Finder-launched .app reads no shell profile, so an export reaches it
+    never.
 
-
-def resolve_key(org_slug):
-    """The write key for THIS org, or None. Never another org's key.
-
-    TWO PLACES, ONE PER-ORG VARIABLE NAME, AND AN EXPORTED VAR WINS. The process
-    environment is read first, so every deployment that exports the variable
-    behaves exactly as it did and exactly as the README documents. server/.env is
-    read second, because that file is the only credential store a teammate is
-    actually given: install.sh prompts for it, the tray app reads it, and it is
-    the file an operator reaches for. Until this fallback existed, a key put
-    there was parsed into db's private config and consulted by nobody, so the
-    obvious place produced the same 503 as no key at all and said nothing about
-    having read the file.
-
-    The precedence matches db.py, which resolves its own three credentials the
-    same way, and it is the order that surprises nobody: a var exported into this
-    process is a deliberate act aimed at this process, while a file sitting on
-    disk is ambient. Reversing it would let a stale line in a file silently beat
-    the key an operator just exported to fix something, which is the harder
-    failure to diagnose of the two.
-
-    THE NO-SHARED-FALLBACK RULE IS UNTOUCHED. Both lookups ask for exactly
-    key_var_for_org(org_slug) and nothing else, so a second place to look is not
-    a second chance to answer with a neighbour's key. An org that misses in both
-    gets None and its 503, exactly as before.
+    The precedence matches db.py, which resolves its own credentials the same way:
+    a var exported into this process is a deliberate act aimed at this process,
+    while a file on disk is ambient, and reversing it would let a stale line
+    silently beat a key an operator just exported to fix something.
 
     Returns None rather than raising so a caller can render "no key configured"
     as a setup problem, which it is, instead of a CMS failure, which it is not.
     """
-    var = key_var_for_org(org_slug)
-    exported = os.environ.get(var, "").strip()
+    exported = os.environ.get(KEY_VAR, "").strip()
     if exported:
         return exported
     # db.config_value reads the parsed server/.env WITHOUT exporting anything, so
-    # a key kept in that file never enters os.environ and agent_env() cannot carry
-    # it into a Claude session. See the RULE 1 argument in server/db.py.
-    return db.config_value(var) or None
+    # the key never enters os.environ and agent_env() cannot carry it into a Claude
+    # session. See the RULE 1 argument in server/db.py.
+    return db.config_value(KEY_VAR) or None
 
 
-def missing_key_detail(org_slug):
-    """What to tell an operator whose org has no write key: the variable AND the
-    place to put it.
+def missing_key_detail():
+    """What to tell an operator with no write key: the variable AND where to put it.
 
-    Naming only the variable is accurate and useless on the packaged app, which
-    is the supported way Canon is distributed: a macOS GUI app opened from Finder
+    server/.env is named first because it is the one location that works on every
+    launch path, tray app and terminal alike: a macOS GUI app opened from Finder
     reads no shell profile, so an `export` line in .zshrc reaches it never, and an
-    operator following that advice watches the same 503 come back. server/.env is
-    named first because it is the one location that works on every launch path,
-    tray app and terminal alike. The export is still named, because it is what
-    existing deployments run on and it still wins.
+    operator following that advice watches the same 503 come back. The export is
+    still named, because existing deployments run on it and it still wins.
     """
-    var = key_var_for_org(org_slug)
     return (
-        f"No CMS write key configured for org '{org_slug}'. Add the line "
-        f"{var}=<key> to server/.env in the Canon folder, then restart the engine. "
-        f"Exporting {var} works too, and only for an engine started from that same "
-        f"shell: an app launched from Finder never reads a shell profile."
+        f"No CMS write key configured. Add the line {KEY_VAR}=<key> to server/.env "
+        f"in the Canon folder, then restart the engine. Exporting {KEY_VAR} works "
+        f"too, and only for an engine started from that same shell: an app launched "
+        f"from Finder never reads a shell profile."
     )
 
 
@@ -195,9 +166,9 @@ async def push_draft(payload, api_key, *, url=None, client=None):
     """
     if not api_key:
         raise CmsError(
-            "No CMS write key is configured for this org. Put "
-            "STRATEGI_CMS_WRITE_KEY_<ORG> in server/.env, or export it in the "
-            "shell that starts the engine. Never in gates.json."
+            "No CMS write key is configured. Put STRATEGI_CMS_WRITE_KEY in "
+            "server/.env, or export it in the shell that starts the engine. "
+            "Never in gates.json."
         )
 
     target = url or CMS_URL
