@@ -20,30 +20,52 @@ import argparse
 import getpass
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 
 from . import db
 
 
+_AUTH_ADMIN_ATTEMPTS = 6
+
+
 def _auth_admin(method, path, payload=None):
-    """Call the Supabase Auth Admin API with the service key. Returns parsed JSON."""
+    """Call the Supabase Auth Admin API with the service key. Returns parsed JSON.
+
+    RETRIES A TRANSIENT bad_jwt, and that specific 403 is not a bad key. GoTrue sits behind
+    several nodes, and after the project's move to ES256 (asymmetric) signing keys some of
+    them intermittently reject a perfectly valid secret with
+    403 {"error_code":"bad_jwt","msg":"...unrecognized JWT kid <nil> for algorithm ES256"}.
+    The same request lands on a good node on the next try: proven live, where one org's user
+    CREATE succeeded and the next failed on the identical key while every GET worked. A create
+    that dies on that 403 strands a half-provisioned batch, so it is retried like the 5xx it
+    behaves as, with the CMS client's backoff shape. A 403 that is NOT bad_jwt (a real
+    permission problem) is returned at once: retrying it just makes the same mistake slower.
+    """
     cfg = db._load_cfg()
     url = cfg.get("SUPABASE_URL", "").rstrip("/")
     key = cfg.get("SUPABASE_SECRET_KEY")
     if not (url and key):
         sys.exit("SUPABASE_URL / SUPABASE_SECRET_KEY are not set in server/.env")
     data = json.dumps(payload).encode() if payload is not None else None
-    req = urllib.request.Request(f"{url}{path}", method=method, data=data)
-    req.add_header("Authorization", f"Bearer {key}")
-    req.add_header("apikey", key)
-    if data is not None:
-        req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return resp.status, json.loads(resp.read() or b"{}")
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode("utf-8", "replace")
+
+    for attempt in range(_AUTH_ADMIN_ATTEMPTS):
+        req = urllib.request.Request(f"{url}{path}", method=method, data=data)
+        req.add_header("Authorization", f"Bearer {key}")
+        req.add_header("apikey", key)
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return resp.status, json.loads(resp.read() or b"{}")
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", "replace")
+            transient = exc.code >= 500 or (exc.code == 403 and "bad_jwt" in body)
+            if transient and attempt < _AUTH_ADMIN_ATTEMPTS - 1:
+                time.sleep(min(0.5 * (2 ** attempt), 8.0))
+                continue
+            return exc.code, body
 
 
 def _lookup_user_id(email):

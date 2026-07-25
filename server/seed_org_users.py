@@ -5,6 +5,7 @@ credentials file the team keeps.
     python -m server.seed_org_users --all                 # every org, default role
     python -m server.seed_org_users --org blr-brewing     # one org
     python -m server.seed_org_users --all --rotate        # also reset existing passwords
+    python -m server.seed_org_users --org blr-brewing --set-password   # set a CHOSEN password (prompted)
 
 One login per org, not per person, because that is what the operator asked for: the org
 slug becomes the username's local part (<org-slug>@<domain>), and the grant is an
@@ -25,7 +26,9 @@ else: this script never prints one.
 
 Passwords for users that already exist cannot be read back from GoTrue (nothing can), so a
 re-run keeps whatever the file already records for them; --rotate is the explicit way to
-mint new ones. The admin section records app_admins emails; their passwords are held by
+mint new (random) ones, and --set-password sets a CHOSEN password for one org, prompted and
+never on argv (so it stays out of shell history and ps). Only the password changes: the
+username is the org login's derived email and is left alone. The admin section records app_admins emails; their passwords are held by
 the operator and only recorded here if --record-admin-password is passed (prompted, never
 argv).
 
@@ -142,6 +145,8 @@ def main() -> None:
                     help=f"email domain for org logins (default: {DEFAULT_DOMAIN})")
     ap.add_argument("--rotate", action="store_true",
                     help="reset passwords for logins that already exist")
+    ap.add_argument("--set-password", action="store_true",
+                    help="set a CHOSEN password for ONE org (prompts; requires --org)")
     ap.add_argument("--record-admin-password", action="store_true",
                     help="prompt for the admin password and record it in the file")
     args = ap.parse_args()
@@ -154,6 +159,20 @@ def main() -> None:
         orgs = [o for o in orgs if o[0] == args.org]
         if not orgs:
             sys.exit(f"unknown org {args.org!r}: nothing in org_membership carries that slug")
+
+    # --set-password is scoped to ONE org on purpose: one chosen password applied across every
+    # org would give them all the same login, so it refuses --all. Prompt AFTER the org is
+    # validated, so an unknown slug fails before anyone types a password, and read it here
+    # (never from argv) so it stays out of shell history and ps, exactly like the admin one.
+    chosen_password = None
+    if args.set_password:
+        if not args.org:
+            sys.exit("--set-password requires --org: refusing to set one password for every org")
+        chosen_password = getpass.getpass(f"New password for org {args.org!r}: ")
+        if not chosen_password:
+            sys.exit("--set-password: an empty password is refused")
+        if getpass.getpass("Confirm new password: ") != chosen_password:
+            sys.exit("--set-password: the two entries did not match")
 
     existing = _read_existing(CREDENTIALS_FILE)
 
@@ -172,10 +191,15 @@ def main() -> None:
         #   exists + unrecorded -> set a fresh password (the only way the file can be true)
         #   exists + --rotate   -> set a fresh password
         uid = _lookup_user_id(email)
-        password = _gen_password()
+        # --set-password forces the chosen password for this org; every other run mints a fresh
+        # random one, except where an existing user's recorded password is kept (the four cases
+        # below). A user that does not exist yet is created with whichever password is in force.
+        password = chosen_password if args.set_password else _gen_password()
         password_changed = True
         if uid is None:
             uid = _create_auth_user(email, password)
+        elif args.set_password:
+            _set_password(uid, password)
         elif prior is not None and not args.rotate:
             password = prior
             password_changed = False
