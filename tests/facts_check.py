@@ -248,13 +248,59 @@ def test_facts_prompt_researches_a_brand_with_no_resources_and_no_domain():
           "—" not in prompt and "–" not in prompt)
 
 
+def test_delete_facts_removes_both_files_and_tolerates_absence():
+    """delete_facts clears the fact base AND its report, and never raises when they are absent.
+
+    Deleting canonical-facts.md is the worst thing this feature could do to the wrong brand or the
+    wrong file, so the two risks the new code actually carries are pinned here: that it unlinks the
+    RIGHT two files, and that a second call over already-absent files stays quiet rather than
+    raising. The record write and the job clear are existing primitives, monkeypatched to keep this
+    a pure file check with no DB, and asserted only to have been asked for.
+    """
+    print("\ntest_delete_facts_removes_both_files_and_tolerates_absence")
+    root = Path(tempfile.mkdtemp())
+    try:
+        facts_file = root / "canonical-facts.md"
+        report_file = root / "canonical-facts-report.md"
+        facts_file.write_text("# facts\n", encoding="utf-8")
+        report_file.write_text("# report\n", encoding="utf-8")
+
+        committed, cleared = [], []
+        orig = (facts_gen.facts_path, facts_gen.report_path,
+                facts_gen.sync.commit_client_facts, facts_gen.clear_job)
+        facts_gen.facts_path = lambda slug, clients_root=None: facts_file
+        facts_gen.report_path = lambda slug: report_file
+        facts_gen.sync.commit_client_facts = lambda slug: committed.append(slug)
+        facts_gen.clear_job = lambda slug: cleared.append(slug)
+        try:
+            facts_gen.delete_facts("acme")
+            check("the canonical-facts.md is gone", not facts_file.exists())
+            check("the canonical-facts-report.md is gone", not report_file.exists())
+            check("the record is nulled through commit_client_facts", committed == ["acme"])
+            check("the settled job is cleared", cleared == ["acme"])
+
+            raised = None
+            try:
+                facts_gen.delete_facts("acme")  # both files already absent now
+            except Exception as exc:  # noqa: BLE001
+                raised = exc
+            check("a second delete with the files already gone does not raise",
+                  raised is None, str(raised))
+        finally:
+            (facts_gen.facts_path, facts_gen.report_path,
+             facts_gen.sync.commit_client_facts, facts_gen.clear_job) = orig
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def main():
     print("facts_check: static checks only. No CLI spawned, no query() called, "
           "no blog generated.")
     for test in (test_facts_prompt_is_built_to_serve_the_roadmap,
                  test_facts_prompt_attributes_without_unlocking,
                  test_facts_prompt_survives_a_client_with_no_roadmap,
-                 test_facts_prompt_researches_a_brand_with_no_resources_and_no_domain):
+                 test_facts_prompt_researches_a_brand_with_no_resources_and_no_domain,
+                 test_delete_facts_removes_both_files_and_tolerates_absence):
         test()
     print(f"\n{CHECKS[0] - len(FAILURES)}/{CHECKS[0]} checks passed")
     if FAILURES:

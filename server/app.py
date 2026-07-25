@@ -1387,11 +1387,12 @@ async def api_analysis_pdf(slug: str, month: str,
 # ---------------------------------------------------------------------------
 # Canonical facts: the file, then the job that builds it.
 #
-# READ ONLY, all three. There is deliberately NO POST and NO PATCH here: a blog run starts the
-# generation itself, because the fact base is a precondition of writing a blog rather than a
-# thing an operator asks for. A button that also started one would be a second way to do the
-# same thing, and the two could disagree about which fact base a run is using while the run
-# was already reading it.
+# READ, plus ONE teardown. There is deliberately NO POST and NO PATCH here: a blog run starts
+# the generation itself, because the fact base is a precondition of writing a blog rather than a
+# thing an operator asks for, and a button that also started one would be a second way to do the
+# same thing the run could disagree with. DELETE is the exception, and it is not a second way to
+# build: it clears a wrong fact base so the next run drafts a fresh one, which is the empty state
+# the UI already renders.
 # ---------------------------------------------------------------------------
 
 @app.get("/api/clients/{slug}/facts")
@@ -1455,6 +1456,33 @@ async def api_clear_facts_generation(slug: str,
                    f"cleared once it finishes",
         )
     facts_gen.clear_job(slug)
+    return None
+
+
+@app.delete("/api/clients/{slug}/facts", status_code=204)
+async def api_delete_facts(slug: str, user: auth.Identity = Depends(auth.require_admin)):
+    """Delete the brand's canonical-facts.md entirely: the file, its report, and the record.
+
+    The one WRITE in this section, and it is a teardown rather than a second way to build. An
+    operator who got the fact base wrong clears it so the next blog run drafts a fresh one, which
+    is the empty state has_canonical_facts already reports. Two things in flight are refused: a
+    running build, because the blog run behind it is waiting on the file this would delete, and a
+    live blog run, because it reads the scratch file this unlinks and the record this nulls. Both
+    answer 409, so the operator stops the work first, exactly as clearing a running build does.
+    """
+    _client_or_404(slug, user)
+    if facts_gen.job_running(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"the canonical facts generation for {slug!r} is still running; it can be "
+                   f"deleted once it finishes",
+        )
+    if _live_run_slugs(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"a blog run is live for {slug!r}; stop it before deleting the fact base",
+        )
+    facts_gen.delete_facts(slug)
     return None
 
 

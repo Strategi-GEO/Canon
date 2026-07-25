@@ -422,6 +422,14 @@ export const api = {
   clearFactsGeneration: (slug: string) =>
     request<null>(`/api/clients/${slug}/facts/generate`, { method: "DELETE" }),
 
+  /**
+   * Deletes the brand's canonical-facts.md entirely: the file, its report, and the record.
+   * After it, has_canonical_facts is false and the next blog run drafts a fresh one. 409 when a
+   * fact-base build or a blog run is live for the brand. 204, so the caller re-reads its list.
+   */
+  deleteFacts: (slug: string) =>
+    request<null>(`/api/clients/${slug}/facts`, { method: "DELETE" }),
+
   generate: (slug: string, body: GenerateBody) =>
     request<GenerateAccepted>(`/api/clients/${slug}/generate`, { method: "POST", body }),
 
