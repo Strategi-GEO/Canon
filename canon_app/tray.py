@@ -133,6 +133,30 @@ def bundled_python() -> Path | None:
     return exe if exe.exists() else None
 
 
+def _looks_translocated(path: str) -> bool:
+    """Apple always mounts a Gatekeeper-translocated app under a path containing this component."""
+    return "/AppTranslocation/" in path
+
+
+def is_translocated() -> bool:
+    """True when macOS is running this .app from a read-only App Translocation mount.
+
+    Gatekeeper does this to an app opened straight from a disk image or the Downloads folder: it
+    runs from a random ephemeral read-only path, so the bundled interpreter that builds the engine
+    .venv lives on that mount and `python -m venv` fails there. The app then dies with a cryptic
+    "could not create the Python virtual environment", and the ONE fix is to move it into
+    Applications, which clears translocation. macOS + frozen only, so a folder release (never
+    translocated) and a source checkout are always False.
+    """
+    if not (IS_MAC and IS_FROZEN):
+        return False
+    try:
+        resolved = str(Path(sys.executable).resolve())
+    except OSError:
+        resolved = ""
+    return _looks_translocated(sys.executable) or _looks_translocated(resolved)
+
+
 def augment_path() -> None:
     """Put the bundled runtimes first, then the usual hand-install locations.
 
@@ -763,7 +787,7 @@ class CanonTray:
         self.no_dashboard = os.environ.get("CANON_NO_DASHBOARD") == "1"
         self.no_browser = os.environ.get("CANON_NO_BROWSER") == "1"
 
-        self.state = "starting"          # starting | problems | running | dead
+        self.state = "starting"          # starting | problems | running | degraded | dead
         self.status_text = "Starting..."
         self.problems: list[dict] = []
         self.email = claude_account_email()
@@ -790,7 +814,10 @@ class CanonTray:
         self.status_text = status_text
         tlog(f"state -> {state}: {status_text}")
         if self.icon is not None:
-            color = {"running": GREEN, "problems": AMBER, "dead": RED}.get(state, AMBER)
+            # degraded reuses AMBER: engine up, database unreachable is an attention state, not a
+            # dead one, the same weight as a setup 'problems'. The two never occur in succession
+            # (problems is setup-time, degraded is runtime), so sharing the color is not confusing.
+            color = {"running": GREEN, "problems": AMBER, "degraded": AMBER, "dead": RED}.get(state, AMBER)
             try:
                 self.icon.icon = dot_image(color)
                 self.icon.update_menu()
@@ -970,8 +997,11 @@ class CanonTray:
                 self._set_state("starting", "Applying update, restarting...")
                 self.restart_app()
                 return
-            if self.state not in ("running", "dead"):
-                continue  # starting or amber: nothing to watch yet
+            # 'degraded' must be here alongside 'running' and 'dead': leave it out and the watcher
+            # stops polling the moment the DB drops, so the icon can never climb back to green when
+            # the store returns.
+            if self.state not in ("running", "degraded", "dead"):
+                continue  # starting or setup-problems: nothing to watch yet
             if self.engine_proc is None:
                 continue
 
@@ -984,25 +1014,61 @@ class CanonTray:
                     self._set_state("dead", "Dashboard died - choose Restart")
                 continue
 
-            engine_ok = self._engine_healthy()
+            engine_state = self._engine_healthy()   # "down" | "degraded" | "ok"
             dash_ok = self.no_dashboard or self.dash_proc is None or self._port_open(self.dash_port)
-            if engine_ok and dash_ok:
+            target = self._health_target(engine_state, dash_ok)
+            if target == "running":
                 self._health_strikes = 0
-                if self.state == "dead":
+                # From dead OR degraded: a recovered store climbs back to green, not just a
+                # revived process.
+                if self.state != "running":
                     self._set_state("running", f"Engine running - :{self.engine_port}")
             else:
+                # Debounced two polls, so a transient blip does not flap the icon. An engine that
+                # ANSWERS but reports its DB unreachable is degraded (amber), not dead: a Restart
+                # cannot fix an external store and the engine still serves what does not need it. A
+                # silent engine or a downed dashboard is dead (red), with Restart the way back.
                 self._health_strikes += 1
-                if self._health_strikes >= 2 and self.state != "dead":
-                    what = "Engine" if not engine_ok else "Dashboard"
-                    self._set_state("dead", f"{what} not responding - choose Restart")
+                if self._health_strikes >= 2:
+                    if target == "degraded":
+                        if self.state != "degraded":
+                            self._set_state("degraded", "Engine up, database unreachable")
+                    elif self.state != "dead":
+                        what = "Engine" if engine_state == "down" else "Dashboard"
+                        self._set_state("dead", f"{what} not responding - choose Restart")
 
-    def _engine_healthy(self) -> bool:
+    @staticmethod
+    def _health_target(engine_state: str, dash_ok: bool) -> str:
+        """Map one poll to the state it implies, BEFORE debounce: 'running' (engine ok and dash
+        ok), 'degraded' (engine answers but its DB is down, dash still ok), or 'dead' (engine
+        unreachable, or the dashboard down). The 2-strike debounce and the transition stay in the
+        watcher; this is the pure classification so it can be tested without driving the loop."""
+        if engine_state == "ok" and dash_ok:
+            return "running"
+        if engine_state == "degraded" and dash_ok:
+            return "degraded"
+        return "dead"
+
+    def _engine_healthy(self) -> str:
+        """Poll the DB-depth health probe and classify: 'down' (engine unreachable), 'degraded'
+        (engine answers 200 but reports its DB unreachable), or 'ok'. The ?deep=1 body is what
+        lets the tray tell a live engine with a dead pool apart from a healthy one, instead of
+        showing both green. A body with no 'db' key (an older engine) reads as 'ok': the process
+        is up and nothing says the store is not."""
         try:
-            url = self.launcher.engine_health_url(self.engine_port)
+            url = self.launcher.engine_health_url(self.engine_port) + "?deep=1"
             with urllib.request.urlopen(url, timeout=4) as resp:
-                return 200 <= resp.status < 400
+                if not (200 <= resp.status < 400):
+                    return "down"
+                body = json.loads(resp.read() or b"{}")
         except (urllib.error.URLError, OSError, ValueError):
-            return False
+            return "down"
+        # isinstance guard, not just body.get: a parseable-but-non-dict body (null, a list, a
+        # number) would make .get raise AttributeError OUTSIDE the except, and this runs on the
+        # watcher thread, which has no outer try, so an unguarded raise would kill health polling
+        # for the rest of the session. Our own engine always answers a dict; this covers anything
+        # else that answers on the port.
+        return "degraded" if isinstance(body, dict) and body.get("db") is False else "ok"
 
     @staticmethod
     def _port_open(port: int) -> bool:
@@ -1167,6 +1233,20 @@ def release_single_instance_lock() -> None:
 def main() -> int:
     _setup_tray_logging()
     tlog(f"=== {APP_NAME} tray starting (frozen={IS_FROZEN}, platform={sys.platform}) ===")
+
+    # BEFORE ANYTHING, and before the single-instance lock so we never abandon one: refuse to run
+    # from a macOS App Translocation mount. Gatekeeper runs an app opened from a disk image or the
+    # Downloads folder from a random read-only path, where the bundled interpreter cannot build the
+    # .venv, so the app dies three screens later with a cryptic "could not create the Python
+    # virtual environment". Say the one thing that fixes it instead.
+    if is_translocated():
+        tlog("running from a macOS App Translocation mount; refusing to start")
+        native_error(
+            "Strategi Canon is running from a temporary read-only location, which macOS does to "
+            "apps opened straight from a disk image or the Downloads folder. Move Strategi Canon "
+            "into your Applications folder, then open it again from there."
+        )
+        return 1
 
     # FIRST, before discovering the repo or starting anything: refuse to be a second instance.
     # Without this, a second launch reclaims (kills) the first instance's engine and dashboard,

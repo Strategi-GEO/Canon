@@ -73,6 +73,37 @@ SSE_HEARTBEAT_SECONDS = 15
 
 log = logging.getLogger("geo-factory")
 
+
+class _HealthAccessFilter(logging.Filter):
+    """Drop the successful /api/health access lines. A 10s health poller writes six a minute,
+    and left alone they bury the sparse real output, this logger's WARNINGs and the
+    log.exception tracebacks, under thousands of GET /api/health 200 so a real failure is
+    ungreppable without grep -v. Matched on the uvicorn access record's args tuple
+    (client, method, full_path, http_version, status), NEVER a message substring, so a path that
+    merely contains the string is safe and a health check that ever answers non 2xx/3xx stays
+    visible. The path is split on '?' so the tray's ?deep=1 poll is dropped too. Scoped to
+    uvicorn.access alone, so geo-factory logs are untouched. Fails OPEN: an unexpected record
+    shape keeps the line rather than crashing the logger.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        a = record.args
+        if not (isinstance(a, tuple) and len(a) >= 5):
+            return True
+        path = a[2]
+        if not (isinstance(path, str) and path.split("?", 1)[0] == "/api/health"):
+            return True
+        try:
+            status = int(a[4])
+        except (TypeError, ValueError):
+            return True
+        return not (200 <= status < 400)
+
+
+# Installed at import time: uvicorn configures its access logger (dictConfig) before importing
+# this module, so the logger already exists and the filter sticks.
+logging.getLogger("uvicorn.access").addFilter(_HealthAccessFilter())
+
 app = FastAPI(title="geo-factory", docs_url=None, redoc_url=None)
 
 # The legacy UI in web/ is served from this same process and needs no CORS at all. The
@@ -248,11 +279,20 @@ class LogoutRequest(BaseModel):
 
 
 @app.get("/api/health")
-async def api_health():
+async def api_health(deep: bool = False):
     # What run.sh polls for engine-up. It replaced /api/clients as the probe
     # target because that route now 401s an anonymous poll, and a poll that can
     # never succeed burns its whole timeout on a healthy engine.
-    return {"ok": True}
+    #
+    # The no-parameter answer is byte-identical to what it has always been, so every
+    # pure-liveness reader (run.sh, launcher startup gating, the Next mirror) is unchanged.
+    # ?deep=1 adds a DB-depth probe for the tray: a live engine whose DB pool is dead answers
+    # the plain probe 200 and shows green, so the tray needs a way to see past the process being
+    # up. deep returns db:false at HTTP 200 (the engine IS up) so the tray can render 'degraded'
+    # rather than 'running'. db.ping is bounded short so a dead store answers fast.
+    if not deep:
+        return {"ok": True}
+    return {"ok": True, "db": await asyncio.to_thread(db.ping)}
 
 
 @app.post("/api/login")

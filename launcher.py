@@ -657,23 +657,50 @@ def stop_process_tree(proc: subprocess.Popen, what: str) -> None:
     if IS_WINDOWS:
         subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True,
                        creationflags=_CREATE_NO_WINDOW)
-    else:
+        # taskkill /F /T force-kills the tree synchronously, but still wait: it reaps the Popen
+        # handle and preserves the diagnostic if taskkill ever failed (capture_output hides its
+        # own error).
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except (OSError, ProcessLookupError):
-            pass
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            log(f"LIFECYCLE: {what} did not exit cleanly; it may need a manual kill")
+        return
+    # Captured BEFORE the wait: once the leader is reaped, os.getpgid(proc.pid) raises, and we
+    # need the group id for the final sweep below. start_new_session made this child its own
+    # group leader, so its pgid == its pid; getpgid is used for symmetry and falls back to the
+    # pid if the leader is already gone.
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (OSError, ProcessLookupError):
+        pgid = proc.pid
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        pass
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        if not IS_WINDOWS:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                pass
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             log(f"LIFECYCLE: {what} did not exit cleanly; it may need a manual kill")
+    # THE FINAL SWEEP, and the whole of the Bug 3 fix. The wait above waits on the LEADER only,
+    # and the SIGKILL above fires only when the leader times out, so a leader that exits fast
+    # (uvicorn shutting down promptly while a worker or a node child is still going) left the
+    # survivors with just the earlier SIGTERM. They then outlived every clean exit path, quit
+    # and restart alike, and held :8000/:3000 until the next boot's port reclaim swept them,
+    # which is exactly the "PORTS: port 8000 is held by pid(s) ..." line in the logs. An
+    # unconditional group SIGKILL here guarantees the whole tree is down on EVERY path through
+    # this one reaper, and reclaim goes back to being the fallback it was meant to be. It is a
+    # no-op (ESRCH, caught) when the group is already empty.
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        pass
 
 
 # ---------------------------------------------------------------------------

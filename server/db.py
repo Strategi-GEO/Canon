@@ -35,8 +35,12 @@ import json
 import os
 import pathlib
 import threading
+import time
 import urllib.error
 import urllib.request
+
+import psycopg
+import psycopg_pool
 
 SERVER_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SERVER_DIR.parent
@@ -215,8 +219,25 @@ def pool():
                     "DATABASE_URL is not set in server/.env; the engine cannot "
                     "reach its store. Nothing falls back to disk: a silent disk "
                     "fallback is how two sources of truth are born.")
+            # LIVENESS, because this runs on a laptop, not a server. The machine sleeps,
+            # switches wifi, and toggles VPN, and every one of those leaves a pooled socket
+            # bound to a source address that no longer exists: the next query on it dies with
+            # EADDRNOTAVAIL ("Can't assign requested address") and the pool, left to itself,
+            # hands out the same dead socket forever, so the app looks up while every real
+            # route 500s until a restart.
+            #   check      validates a connection on CHECKOUT, so a dead one is discarded and
+            #              replaced before any request sees it. This is the whole fix for the
+            #              stale-socket case: recovery is automatic on the next query.
+            #   max_idle   closes a connection left idle this long, so stale sockets do not sit
+            #              in the pool waiting to be handed out after a network change.
+            #   max_lifetime recycles the rest on a schedule so nothing lives across many hours.
+            # The check adds one lightweight round trip per checkout, which at six operators on
+            # one worker is invisible and is the correct trade for never wedging on a dead pool.
             _POOL = ConnectionPool(dsn, min_size=1, max_size=5, open=True,
-                                   kwargs={"autocommit": True})
+                                   kwargs={"autocommit": True},
+                                   check=ConnectionPool.check_connection,
+                                   max_idle=120.0, max_lifetime=1800.0,
+                                   name="canon")
             import atexit
             atexit.register(close_pool)
         return _POOL
@@ -233,18 +254,74 @@ def close_pool():
             _POOL = None
 
 
+# A connection can pass check on checkout and still die DURING the statement, the exact instant
+# a network change lands. That surfaces as psycopg.OperationalError, the connection error class,
+# and it is the only thing retried here.
+#
+# POOL-LEVEL FAILURES ARE OperationalError SUBCLASSES AND MUST NOT BE RETRIED. psycopg_pool's
+# PoolTimeout / PoolClosed / TooManyRequests all inherit from OperationalError, but they mean the
+# POOL could not hand us a connection at all (the store is unreachable, or we are shutting down),
+# not a connection that died mid-statement. Retrying them just stacks 30s pool-timeout waits and
+# wedges the app HARDER during the very outage this change exists to survive, so they re-raise at
+# once, ahead of the OperationalError arm. ProgrammingError, IntegrityError and DataError are not
+# OperationalError subclasses either, so a real query bug also raises immediately.
+#
+# Retrying is safe for reads and for idempotent / ON CONFLICT writes: a statement that failed
+# before commit never committed, and the broken connection is discarded on context exit so the
+# next attempt gets a freshly checked one. Record-of-truth writes (status_events, blog_versions)
+# go through tx()/_Tx, which is NOT retried. The one residual edge is a non-idempotent q() write
+# whose commit landed but whose ack was lost when the socket died: the retry re-applies it. That
+# window is rare and non-corrupting (a duplicate comment at worst); the fix if it ever bites is an
+# ON CONFLICT on that write, not a weaker retry here.
+_DB_MAX_ATTEMPTS = 3
+_DB_BACKOFF_BASE = 0.25
+_POOL_ERRORS = (psycopg_pool.PoolTimeout, psycopg_pool.PoolClosed, psycopg_pool.TooManyRequests)
+
+
 def q(sql: str, params=None, fetch: str = "all"):
-    """Run one statement. fetch: 'all' | 'one' | 'val' | 'none'."""
-    with pool().connection() as conn, conn.cursor() as cur:
-        cur.execute(sql, params)
-        if fetch == "none" or cur.description is None:
-            return cur.rowcount
-        if fetch == "one":
-            return cur.fetchone()
-        if fetch == "val":
-            row = cur.fetchone()
-            return row[0] if row else None
-        return cur.fetchall()
+    """Run one statement. fetch: 'all' | 'one' | 'val' | 'none'.
+
+    Retries a connection-level failure (a socket that died on a network change) up to
+    _DB_MAX_ATTEMPTS, because the pool hands out a live connection on the retry. Pool-level
+    failures (the store is unreachable) and real query errors raise at once; see the note above.
+    """
+    for attempt in range(_DB_MAX_ATTEMPTS):
+        try:
+            with pool().connection() as conn, conn.cursor() as cur:
+                cur.execute(sql, params)
+                if fetch == "none" or cur.description is None:
+                    return cur.rowcount
+                if fetch == "one":
+                    return cur.fetchone()
+                if fetch == "val":
+                    row = cur.fetchone()
+                    return row[0] if row else None
+                return cur.fetchall()
+        except _POOL_ERRORS:
+            raise
+        except psycopg.OperationalError:
+            if attempt + 1 >= _DB_MAX_ATTEMPTS:
+                raise
+            time.sleep(_DB_BACKOFF_BASE * (attempt + 1))
+
+
+def ping(timeout: float = 2.0) -> bool:
+    """Cheap DB liveness for the deep health check: True if a connection checks out and answers
+    SELECT 1 within `timeout`, False on ANY failure. NEVER raises.
+
+    The short checkout timeout is the whole point. The deep /api/health probe must answer FAST,
+    because the tray reads a slow answer as an engine that timed out (dead) rather than a DB that
+    is down (degraded). Bounding the wait at two seconds keeps a dead store reporting as degraded
+    instead of masquerading as a dead engine, and check= on the pool means a stale socket is
+    validated and replaced inside that window rather than handed back live-but-dead.
+    """
+    try:
+        with pool().connection(timeout=timeout) as conn, conn.cursor() as cur:
+            cur.execute("select 1")
+            cur.fetchone()
+        return True
+    except Exception:
+        return False
 
 
 def tx():
