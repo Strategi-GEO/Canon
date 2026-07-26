@@ -641,13 +641,19 @@ def load_upload(client_slug, upload_id):
     row means BadUpload, never a fallback to whatever rows the caller posted. A
     tampered browser payload must not be able to redirect a run.
     """
-    name = safe_filename(upload_id)
+    # Look up by the EXACT upload_id. It is the archive_name save_upload generated and returned,
+    # already sanitized when it was built, and it is used here ONLY as a parameterized query value,
+    # never as a path. Do NOT re-run safe_filename on it: that truncates to 80 chars, so an
+    # upload_id built from an already-stamped filename (a re-uploaded archive, e.g. a downloaded
+    # roadmap) runs longer, and re-sanitizing chopped ".csv" to ".c" and missed the row with a
+    # spurious "unknown upload_id". The query still FAILS CLOSED, matching only stored filenames, so
+    # a crafted upload_id finds no row and falls to BadUpload exactly as before.
     cid = db.client_id(client_slug)
     raw = None
     if cid:
         raw = db.q(
             "select raw from roadmap_uploads where client_id = %s and filename = %s",
-            (cid, name), fetch="val")
+            (cid, upload_id), fetch="val")
     if raw is None:
         raise BadUpload(f"unknown upload_id {upload_id!r} for client {client_slug!r}")
     return parse_csv(_decode(bytes(raw)))
