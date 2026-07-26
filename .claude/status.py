@@ -38,11 +38,13 @@ import argparse
 import datetime
 import json
 import os
+import shutil
 import sys
 
 STAGES = ("research", "write", "gates", "links", "eval", "revise")
 EVENTS = ("start", "end")
 STATUSES = ("running", "done", "needs_review", "failed", "stopped")
+_TERMINAL = ("done", "needs_review", "failed", "stopped")
 
 
 def append_status(out_dir, slug, stage, event, iter, score=None, status="running", note=""):
@@ -75,6 +77,48 @@ def append_status(out_dir, slug, stage, event, iter, score=None, status="running
     return line
 
 
+def _capture_best_draft(out_dir):
+    """Snapshot blog.md/eval.md as blog.best.md/eval.best.md when THIS eval end is a new high.
+
+    The revise loop edits blog.md IN PLACE, so a later, lower-scoring iteration overwrites a
+    higher one and the contract's "keep the best-scoring draft" had nothing on disk behind it
+    (a real run peaked at 92 and shipped 89). This runs at the one instant the scored bytes still
+    exist: right after the eval end line is recorded, before the next revise touches blog.md. The
+    runner (server.runner._install_best_draft) installs the snapshot once the loop is over.
+
+    Best = the highest eval score in the CURRENT run, scoped to the lines AFTER the last terminal
+    line so a re-generation cannot inherit a prior run's peak. Snapshot only on a STRICT new high,
+    so the first draft to reach a score keeps the slot on a tie. Best effort: a copy that fails
+    must never fail the status write the agent just made.
+    """
+    blog = os.path.join(out_dir, "blog.md")
+    if not os.path.isfile(blog):
+        return
+    try:
+        with open(os.path.join(out_dir, "status.jsonl"), encoding="utf-8") as handle:
+            lines = [json.loads(raw) for raw in handle if raw.strip()]
+    except (OSError, ValueError):
+        return
+    start = 0
+    for i, line in enumerate(lines):
+        if line.get("status") in _TERMINAL:
+            start = i + 1
+    scores = [l["score"] for l in lines[start:]
+              if l.get("stage") == "eval" and l.get("event") == "end" and l.get("score") is not None]
+    if not scores:
+        return
+    this, prior = scores[-1], scores[:-1]  # scores[-1] is the line just appended
+    if prior and this <= max(prior):
+        return  # not a strict new high: a higher (or equal, earlier) draft already holds the slot
+    try:
+        shutil.copy2(blog, os.path.join(out_dir, "blog.best.md"))
+        eval_md = os.path.join(out_dir, "eval.md")
+        if os.path.isfile(eval_md):
+            shutil.copy2(eval_md, os.path.join(out_dir, "eval.best.md"))
+    except OSError:
+        return
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Append one status line to <out>/status.jsonl")
     parser.add_argument("--out", required=True, help="output directory holding status.jsonl")
@@ -95,6 +139,12 @@ def main(argv=None):
     except ValueError as exc:
         print(f"status.py: {exc}", file=sys.stderr)
         sys.exit(2)
+
+    # Capture the scored draft ONLY on the CLI eval end path, never inside append_status: the
+    # runner reuses append_status for synthetic lines and for the best-draft install line itself,
+    # and capturing there would fire on lines no agent scored and recurse on the install.
+    if args.stage == "eval" and args.event == "end" and args.score is not None:
+        _capture_best_draft(args.out)
 
 
 if __name__ == "__main__":

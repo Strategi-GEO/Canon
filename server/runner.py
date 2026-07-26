@@ -1243,9 +1243,19 @@ ONE property of the form, whether it carries a Sourcing question, and nothing el
   date-night's iteration 2 top-up sourced three Sourcing fix-list items successfully.
   A fix-list item says "a machine can find this source". A question says "only a
   person holds this fact". Same area word, opposite implications for the loop.
-- Cap at 4 iterations, keep the best-scoring draft, stop early after two
-  consecutive no-gain iterations, and stop immediately on a live Sourcing question per
-  the branch above.
+- Cap at 4 iterations, stop early after two consecutive no-gain iterations, and stop
+  immediately on a live Sourcing question per the branch above.
+- ONCE ANY ITERATION SCORES ABOVE 90, THE LOOP ONLY CLIMBS. From then on continue only
+  while each new score is STRICTLY HIGHER than the best so far; the first iteration that
+  fails to beat the best ends the loop, and the best draft is the result. A draft above 90
+  is close, and another revise is as likely to break it as to lift it, so a non-gain there
+  is a reason to stop and keep what you have, not to spend another iteration. (Below 90 the
+  ordinary rules above run unchanged.) A score of 95 or higher still ends the loop at once.
+- KEEPING THE BEST-SCORING DRAFT IS NOW ENFORCED BY THE ENGINE, not by you. The backend
+  snapshots each new high and, once the loop ends, restores the highest-scoring draft as
+  blog.md and eval.md and reports its score. You do not hand-restore an earlier draft and
+  you never need to; write each iteration normally and let the loop rules above decide when
+  to stop. This is the one elective-loop rule the engine can enforce, and it does.
 
 needs_review MEANS "this blog has questions waiting for the operator that are current,
 on disk, and answerable". AT ANY SCORE, and it means nothing else. The score is not
@@ -1648,6 +1658,16 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
         # question below is about THIS session rather than about the file.
         baseline = _status_baseline(out_dir)
 
+        # Clear any best-draft snapshot a PRIOR run left, before this session scores anything.
+        # status.py scopes capture to the lines after the last terminal line, which agrees with
+        # `baseline` in every graceful flow; only a HARD KILL (SIGKILL, OOM, power loss) leaves a
+        # scored loop with no terminal line AND a stale blog.best.md. Without this, a later run
+        # whose own peak never beat that stale one would find blog.best.md unrefreshed and
+        # _install_best_draft would ship the killed run's foreign draft. Clearing here means the
+        # snapshot is always rebuilt from THIS session or absent, so the two scopings can never
+        # disagree in a way that installs another run's bytes.
+        _clear_best_snapshots(out_dir)
+
         # Lay this run's session instructions down for the agents to read by path (empty or
         # absent clears any file a prior run left). The brand's standing instructions arrived
         # separately via _materialize_topic_scratch -> materialize_client -> custom-instructions.md.
@@ -1781,6 +1801,11 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
         _schedule_commit(client_slug, topic_slug)
         raise
 
+    # Ship the highest-scoring draft, not whichever the loop edited last. This runs BEFORE the
+    # resolver, so the score it reports and the status it resolves both describe the draft that
+    # actually lands on disk. It is a no-op unless an earlier iteration outscored the final one and
+    # nothing is holding the blog for the operator. See _install_best_draft.
+    _install_best_draft(client_slug, topic_slug, out_dir, baseline, root=run_dir_root)
     # The lead's terminal claim is checked here, before the result is reported, because this is
     # where a topic's terminal line stops changing. A needs_review with no answerable question is
     # corrected to done or failed by its score and the override is recorded. See
@@ -1834,6 +1859,14 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
 # from app.OUTPUT_WHITELIST, so it is never served as if it were the article.
 PREV_BLOG_NAME = "blog.prev.md"
 
+# The elective loop's best-scoring draft, snapshotted by .claude/status.py as each new high is
+# scored, because the loop revises blog.md IN PLACE and a lower later iteration would otherwise
+# overwrite a higher one with nothing on disk to recover it. Local scratch: absent from
+# app.OUTPUT_WHITELIST (never served) and read by neither sync.commit_topic nor materialization
+# (never persisted), exactly like blog.prev.md. _install_best_draft consumes and clears them.
+BEST_BLOG_NAME = "blog.best.md"
+BEST_EVAL_NAME = "eval.best.md"
+
 
 def _restore_artifact_set(blog, eval_md, blog_bytes, eval_bytes):
     """Put back the ARTIFACT SET the snapshotted score described: blog.md AND eval.md.
@@ -1860,6 +1893,86 @@ def _last_eval_score(lines):
         if line.get("stage") == "eval" and line.get("event") == "end" and line.get("score") is not None:
             return line["score"]
     return None
+
+
+def _eval_scores(lines):
+    return [line["score"] for line in lines
+            if line.get("stage") == "eval" and line.get("event") == "end"
+            and line.get("score") is not None]
+
+
+def _max_eval_score(lines):
+    """The highest eval end score in these lines, or None if none carries one."""
+    scores = _eval_scores(lines)
+    return max(scores) if scores else None
+
+
+def _first_iter_for_score(lines, score):
+    """The iteration of the FIRST eval end that reached `score`, or the last iter seen."""
+    for line in lines:
+        if line.get("stage") == "eval" and line.get("event") == "end" and line.get("score") == score:
+            return line.get("iter", 0)
+    return max((line.get("iter", 0) for line in lines), default=0)
+
+
+def _clear_best_snapshots(out_dir):
+    (Path(out_dir) / BEST_BLOG_NAME).unlink(missing_ok=True)
+    (Path(out_dir) / BEST_EVAL_NAME).unlink(missing_ok=True)
+
+
+def _install_best_draft(client_slug, topic_slug, out_dir, baseline, root=None):
+    """GUARANTEE the elective loop ships its HIGHEST-scoring draft, not its last one.
+
+    The loop revises blog.md IN PLACE, so a later, lower-scoring iteration overwrites a higher
+    one: the contract's "keep the best-scoring draft" had no code behind it and a real run peaked
+    at 92 then shipped 89 ("unrecoverable, in-place edits"). status.py snapshots the top draft to
+    blog.best.md as each new high is scored; here, once the loop is over, if the draft on disk is
+    not the best this session produced, the best is restored, blog.md AND eval.md together, and a
+    superseding eval end line records the swap so the reported score is the one that ships.
+
+    Scoped to the CURRENT session by `baseline`, the same window the retry loop and the stop guard
+    use, so a re-generation never inherits a prior run's peak. Two exclusions, both load-bearing:
+      - A CURRENT question holds a SPECIFIC draft, the one the evaluator asked about. Swapping in a
+        different, higher-scoring earlier draft would leave the operator answering about a draft no
+        longer on disk, the staleness the questions guard exists to stop. So a current form vetoes
+        the swap and the held draft stays put.
+      - The ANSWER-DRIVEN revise ships the clarified draft EVEN WHEN LOWER (revise_topic), so it
+        must never be second-guessed here. This runs from run_topic only; revise_topic never calls
+        it.
+    The swap never invents a score or a verdict: the best draft was already scored, gate-clean and
+    link-clean, by a real evaluator this session (gates and links run before every eval), so this
+    selects among computed scores rather than re-running one. The status is re-resolved from the
+    best score through the same _resolve_needs_review the enforcer uses, so a discarded 96 that the
+    loop wrongly ran past still ships done rather than dying at the last draft's 89.
+    """
+    session = _read_status(out_dir)[baseline:]
+    best = _max_eval_score(session)
+    last = _last_eval_score(session)
+    best_blog = Path(out_dir) / BEST_BLOG_NAME
+    if (_questions_state(client_slug, topic_slug, root=root) == "current"
+            or best is None or last is None or best <= last or not best_blog.is_file()):
+        _clear_best_snapshots(out_dir)
+        return
+    blog = Path(out_dir) / "blog.md"
+    eval_md = Path(out_dir) / "eval.md"
+    best_eval = Path(out_dir) / BEST_EVAL_NAME
+    blog.write_bytes(best_blog.read_bytes())
+    if best_eval.is_file():
+        eval_md.write_bytes(best_eval.read_bytes())
+    status, reason = _resolve_needs_review(client_slug, topic_slug, best, root=root)
+    best_iter = _first_iter_for_score(session, best)
+    _status_module().append_status(
+        str(out_dir), topic_slug, stage="eval", event="end",
+        iter=best_iter, score=best, status=status,
+        note=(f"best-draft selection: restored the iteration {best_iter} draft scoring {best} and "
+              f"discarded the later draft scoring {last}. {reason}"),
+    )
+    # The swap ships done or failed (a current form was excluded above), so any NEEDS_REVIEW
+    # marker the lead left is stale. _enforce_terminal_status would normally clear it, but the
+    # install line pre-empts its correction into an early return, so clear it here to keep the
+    # on-disk marker honest with the terminal line just written.
+    (Path(out_dir) / "NEEDS_REVIEW").unlink(missing_ok=True)
+    _clear_best_snapshots(out_dir)
 
 
 def _revise_lead_prompt(client_slug, row, topic_slug, out_dir, iteration):
@@ -2194,6 +2307,12 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=Non
             # that died before scoring would silently compare a draft against itself.
             new_lines = _read_status(out_dir)[len(lines_before):]
             new_score = _last_eval_score(new_lines)
+
+            # The answer-driven revise NEVER installs a best snapshot: it ships the clarified draft
+            # even when lower. status.py still wrote one during this session's eval, so clear it
+            # here, before any terminal line, so the elective loop's guarantee (run_topic only)
+            # cannot mistake a revise's draft for a peak it must restore.
+            _clear_best_snapshots(out_dir)
 
             # THE CLARIFIED DRAFT SHIPS. NO COMPARISON, AT ALL.
             #

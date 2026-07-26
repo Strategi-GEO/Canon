@@ -88,21 +88,32 @@ number**, because a fresh Agent W on iteration 3 has no memory of iterations 1 a
 - **Revise (surgical, ELECTIVE and score-driven).** If SCORE < 95, spawn a FRESH Agent W with
   ONLY: the frozen dossier, the current `blog.md`, the fix list, and its iteration number. It
   applies **only the listed fixes** to the existing draft. It does not rewrite the article. Then
-  re-run gates, the link pass on changed links only, and a FRESH Agent E. Keep the best-scoring
-  draft. THREE conditions stop this loop, not two: the 4-iteration cap, two consecutive
-  iterations showing no gain, and **a Sourcing QUESTION on the form, which ends the loop at the
-  iteration it is filed.** The third one ends the loop BEFORE the revise is dispatched, because
+  re-run gates, the link pass on changed links only, and a FRESH Agent E. FOUR conditions stop
+  this loop: the 4-iteration cap, two consecutive iterations showing no gain, **the above-90
+  monotonic rule**, and **a Sourcing QUESTION on the form, which ends the loop at the iteration it
+  is filed.** **ABOVE 90 THE LOOP ONLY CLIMBS:** once any iteration scores above 90, an iteration
+  that does not STRICTLY beat the best so far ends the loop and the best draft is the result. A
+  draft above 90 is close, and another revise is as likely to break it as to lift it, so a
+  non-gain there is a reason to stop and keep it, not to spend another iteration; below 90 the
+  ordinary rules run unchanged, and 95 still ships at once. The Sourcing-question condition ends
+  the loop BEFORE the revise is dispatched, because
   Sourcing is the one area no rewrite can close: this contract already says the writer has no
   authority to invent a citation or URL, so iterating past a Sourcing question spends research
   and revise budget rediscovering what the evaluator already knew was terminal. The date-night
   blog filed Sourcing questions at iteration 1, ran a bounded research top-up and two full
   revises, and landed at iteration 3 on FOUR Sourcing questions about claims no rewrite could
   ever have fixed. Three iterations bought nothing.
-  **Best-scoring selection is scoped to THIS elective loop and to nothing else.** It is a guard
-  on an optional improvement rerun, answering what makes such a rerun safe to accept. The
-  answer-driven revise under Asking the operator is a MANDATORY correctness rerun and is EXEMPT:
-  there the clarified draft always ships even if it scores lower, because keeping the
-  higher-scoring draft there restores the original with its violation still in it.
+  **Best-scoring selection is scoped to THIS elective loop and to nothing else, AND THE ENGINE
+  NOW ENFORCES IT.** `.claude/status.py` snapshots each new high as it is scored, and
+  `server/runner.py` `_install_best_draft` restores the highest-scoring draft, blog.md and eval.md
+  together, and reports its score once the loop ends, so the peak can no longer be lost to the
+  in-place edits that once shipped an 89 over a 92. The lead no longer hand-restores a draft; it
+  writes each iteration and lets the stop rules decide. It is a guard on an optional improvement
+  rerun, answering what makes such a rerun safe to accept. The answer-driven revise under Asking
+  the operator is a MANDATORY correctness rerun and is EXEMPT, in the contract AND in the code
+  (`revise_topic` never calls `_install_best_draft`): there the clarified draft always ships even
+  if it scores lower, because keeping the higher-scoring draft there restores the original with
+  its violation still in it.
 
 The session lead branches on the numeric SCORE and never on the verdict word. **The lead's
 IN-LOOP branch reads the SCORE and exactly ONE property of the form: whether it carries a
