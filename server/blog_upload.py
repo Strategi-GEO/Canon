@@ -283,7 +283,16 @@ def upload_blog(client_slug: str, topic_slug: str, title: str, covers: str,
     # one, so a first upload committed through that path alone would leave topics.title
     # NULL and the library showing a blank row until an h1 rescued it.
     try:
-        db.ensure_topic(client_slug, topic_slug, title or topic_slug)
+        # Pass the title ONLY when this topic has none yet, so a REPLACE upload never clobbers an
+        # operator's manual rename: topics.title is now the editable label the library shows, and
+        # ensure_topic's coalesce only guards against NULL, not against a non-null incoming value.
+        # A first upload still gets its title, which is what stops a blank library row.
+        # tid resolved at the top of this function is still valid: nothing between there and
+        # here creates or deletes the topic, so reuse it instead of re-querying.
+        existing_title = db.q("select title from topics where id = %s", (tid,),
+                              fetch="val") if tid else None
+        db.ensure_topic(client_slug, topic_slug,
+                        None if existing_title else (title or topic_slug))
         sync.commit_topic(client_slug, topic_slug)
     except Exception:
         # Same rule the manual save follows: bytes the record refused must not sit in

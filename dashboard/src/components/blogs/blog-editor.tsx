@@ -4,7 +4,7 @@ import * as React from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { MarkdownSplitEditor } from "@/components/blogs/markdown-split-editor";
 import { FieldError } from "@/components/clients/engine-error";
 import { ApiError, api } from "@/lib/api";
 import { formatCount } from "@/lib/format";
@@ -72,13 +72,11 @@ export function BlogEditor({
 
   return (
     <div>
-      <Textarea
+      <MarkdownSplitEditor
         value={value}
-        onChange={(event) => onChange(event.target.value)}
-        aria-label="Edit the blog markdown"
-        spellCheck={false}
-        className="machine min-h-[65svh] text-[13px] leading-relaxed"
+        onChange={onChange}
         disabled={saving}
+        paneClassName="min-h-[65svh]"
       />
       {error ? <FieldError error={error} className="mt-2" /> : null}
       <div className="mt-3 flex items-center justify-end gap-2">

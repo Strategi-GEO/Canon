@@ -1003,7 +1003,10 @@ function foldTopics(data: BrandData): TopicFold[] {
       answered,
       state,
       visible,
-      title: entry?.topic || latestVersion.h1_title || topic.title || topic.slug,
+      // topics.title FIRST: an operator rename outranks the ledger topic and the H1 (matching the
+      // engine's _blog_history override), so the client portal shows the renamed title too. Null
+      // for an un-renamed blog, so this falls through to the prior derivation unchanged.
+      title: topic.title || entry?.topic || latestVersion.h1_title || topic.slug,
       askedAt,
       answeredAt,
       suggestedAt: openSuggestions.reduce<string | null>(

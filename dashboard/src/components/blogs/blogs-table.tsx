@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
+import { adminFailedTag, scoreClass } from "@/lib/blog-score";
 import { DeleteBlogDialog } from "@/components/blogs/delete-blog-dialog";
 import { formatAbsolute, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -45,6 +46,9 @@ export type BlogTableRow = {
   shipped?: boolean;
   uploaded?: boolean | null;
   iterations?: number | null;
+  /** The evaluator's verdict for a draft that did not ship, or null/absent. Drives the "More
+   *  info" control on a failed row; the client wire never carries it. */
+  reason?: string | null;
 };
 
 export function BlogsTable<T extends BlogTableRow>({
@@ -149,9 +153,9 @@ export function BlogsTable<T extends BlogTableRow>({
           {admin ? (
             <TableHead className="machine w-20 text-xs font-medium">Iterations</TableHead>
           ) : null}
-          {/* Actions column, header intentionally blank: an icon column needs no label, and a
-              screen reader gets the per-button sr-only text instead. */}
-          {canDelete ? <TableHead className="w-12" /> : null}
+          {/* Actions column, header intentionally blank: a control column needs no label, and a
+              screen reader gets each button's own text instead. Width is left to the content. */}
+          {canDelete ? <TableHead /> : null}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -257,11 +261,7 @@ function Row<T extends BlogTableRow>({
       </TableCell>
       {admin ? (
         <TableCell>
-          <Score
-            score={blog.score ?? null}
-            shipped={blog.shipped === true}
-            uploaded={blog.uploaded === true}
-          />
+          <Score score={blog.score ?? null} uploaded={blog.uploaded === true} />
         </TableCell>
       ) : null}
       {/* ONE TAG, where three elements used to sit: the run status, a delivery chip
@@ -291,6 +291,7 @@ function Row<T extends BlogTableRow>({
           state={state}
           audience={audience}
           commentsPending={blog.comments_pending}
+          failedTag={adminFailedTag(blog.score ?? null)}
         />
       </TableCell>
       {admin ? (
@@ -300,12 +301,14 @@ function Row<T extends BlogTableRow>({
       ) : null}
       {brandSlug !== undefined && onDeleted !== undefined ? (
         <TableCell className="py-2.5 text-right align-top">
-          <DeleteBlogDialog
-            brandSlug={brandSlug}
-            topicSlug={blog.topic_slug}
-            title={blog.topic}
-            onDeleted={onDeleted}
-          />
+          <div className="flex items-center justify-end gap-0.5">
+            <DeleteBlogDialog
+              brandSlug={brandSlug}
+              topicSlug={blog.topic_slug}
+              title={blog.topic}
+              onDeleted={onDeleted}
+            />
+          </div>
         </TableCell>
       ) : null}
     </TableRow>
@@ -396,11 +399,9 @@ function RoadmapNumber({ index }: { index: number | null }) {
 /** No eval, no number. Not a zero, and not a dash dressed up as one. */
 function Score({
   score,
-  shipped,
   uploaded,
 }: {
   score: number | null;
-  shipped: boolean;
   /** Uploaded blogs have no score BY DESIGN, so this column says why rather than "no score". */
   uploaded: boolean;
 }) {
@@ -410,13 +411,10 @@ function Score({
   if (typeof score !== "number") {
     return <span className="text-xs text-muted-foreground">no score</span>;
   }
-  return (
-    <span
-      className={cn("machine text-sm", shipped ? "font-medium text-ship" : "text-foreground")}
-    >
-      {score}
-    </span>
-  );
+  // Coloured by band, not by ledger membership: >=95 green, 90-94 amber, below 90 red. This used to
+  // paint green only when the ledger held the topic, which disagreed with the stage page's own
+  // score>=95 rule; scoreClass is now the one source both read.
+  return <span className={cn("machine text-sm font-medium", scoreClass(score))}>{score}</span>;
 }
 
 function SortableHead({

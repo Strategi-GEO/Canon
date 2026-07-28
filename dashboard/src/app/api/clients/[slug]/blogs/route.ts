@@ -307,7 +307,10 @@ export async function GET(
       };
 
       return {
-        topic: entry?.topic || version.h1_title || topic.title || topic.slug,
+        // topics.title FIRST: an operator rename (POST .../blogs/{topic}/title) is the
+        // top-precedence label and outranks the ledger topic and the H1, matching the engine's
+        // _blog_history override. Null for an un-renamed blog, so this falls through unchanged.
+        topic: topic.title || entry?.topic || version.h1_title || topic.slug,
         topic_slug: topic.slug,
         created: entry?.generated_at || version.committed_at,
         score: folded.score,

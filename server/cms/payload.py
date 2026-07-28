@@ -109,6 +109,9 @@ META_TITLE_MIN = 20
 # published_at, slug, body_html, body_json and org_id are the CMS's to own.
 ALLOWED_KEYS = frozenset({
     "ingest_schema_version",
+    # The brand slug the CMS routes this draft to. ONE shared write key posts to every org, so
+    # the key no longer identifies the brand; this field does. Required, not optional.
+    "client",
     "source_run_id",
     "title",
     "body_markdown",
@@ -487,6 +490,9 @@ def build_payload(client_slug, topic_slug, blog_md, prompts=None, industry=None,
 
     payload = {
         "ingest_schema_version": SCHEMA_VERSION,
+        # The routing slug: one shared key posts to any org, so the CMS reads which brand this
+        # draft is for from here, not from the key. source_run_id below re-validates the slug.
+        "client": client_slug,
         "source_run_id": source_run_id(client_slug, topic_slug),
         "title": title,
         "body_markdown": body,

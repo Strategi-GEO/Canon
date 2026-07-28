@@ -29,8 +29,16 @@ export type RowState =
    * never here, so this row cannot be selected to generate.
    */
   | "needs_review"
-  /** Its last terminal status was failed. Red, and still selectable so it can be retried. */
+  /** Its last terminal status was failed AND it scored below 90. Red, still selectable to retry. */
   | "failed"
+  /**
+   * Its last run ended failed but scored 90 to 94: below the 95 ship bar, not a failure. Yellow
+   * and SELECTABLE, exactly like failed, because a rerun for 95 is the obvious next move. It is
+   * the create-page face of the Blogs tab's "Below bar" tag, split off failed by the same score
+   * band (scoreTone in lib/blog-state.ts), so one blog cannot read "failed" here and "Below bar"
+   * there.
+   */
+  | "below_bar"
   /** Missing topic, covers or prompts, so the engine cannot write it at all. */
   | "incomplete"
   | "ready";
@@ -38,8 +46,17 @@ export type RowState =
 export type RowFacts = {
   /** Topic slugs in a live run right now, from GET /api/runs and the SSE stream. */
   live: ReadonlySet<string>;
-  /** Topic slugs whose last terminal status was failed, from GET /api/clients/{brand}/blogs. */
+  /**
+   * Topic slugs whose last terminal status was failed AND scored below 90, from GET
+   * /api/clients/{brand}/blogs. The 90-to-94 failures live in `belowBar` instead.
+   */
   failed: ReadonlySet<string>;
+  /**
+   * Topic slugs that ended failed but scored 90 to 94, split from `failed` by the shared score
+   * band (scoreTone) so they wear the yellow "below bar" chip, not the red one. The two sets are
+   * disjoint by construction.
+   */
+  belowBar: ReadonlySet<string>;
   /**
    * Topic slugs whose blog is held for the operator's answer (status needs_review), from the
    * same blogs call. A held blog is never in the ledger, so it is neither generated nor failed,
@@ -79,6 +96,11 @@ export function resolveRowState(row: RoadmapRow, facts: RowFacts): RowState {
   if (facts.needsReview.has(row.topic_slug)) {
     return "needs_review";
   }
+  // belowBar before failed: both are terminal-failed blogs, split by score, and the two sets are
+  // disjoint so order is for clarity, not correctness.
+  if (facts.belowBar.has(row.topic_slug)) {
+    return "below_bar";
+  }
   if (facts.failed.has(row.topic_slug)) {
     return "failed";
   }
@@ -98,7 +120,7 @@ export function resolveRowState(row: RoadmapRow, facts: RowFacts): RowState {
  * a 422, so it is not offered.
  */
 export function isSelectable(state: RowState): boolean {
-  return state === "ready" || state === "failed";
+  return state === "ready" || state === "failed" || state === "below_bar";
 }
 
 /**

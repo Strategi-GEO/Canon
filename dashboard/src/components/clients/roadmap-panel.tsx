@@ -10,7 +10,8 @@ import { brandHref } from "@/lib/orgs-context";
 import type { RoadmapState } from "@/lib/use-roadmap";
 import type { BlogSummary, RoadmapRow } from "@/types";
 import { FieldError } from "@/components/clients/engine-error";
-import { StatusBadge } from "@/components/shell/status-badge";
+import { BlogTag } from "@/components/shell/blog-tag";
+import { scoreClass } from "@/lib/blog-score";
 
 /**
  * The overview shows a PREVIEW. The full selectable table is the create page, one click away,
@@ -238,11 +239,14 @@ export function PreviewFooter({
 }
 
 /**
- * A row with a blog wears that blog's REAL status, through the same StatusBadge the library
- * uses, so "shipped", "waiting on you", "failed" and "stopped" mean here exactly what they
- * mean there. The flat "generated" chip this used to show came from the ledger, which records
- * ships only, so a blog held for an answer or failed mid-loop wore "ready" as though nothing
- * had happened, and the operator's next move was to run it again.
+ * A row with a blog wears that blog's REAL state, through the same BlogTag the blogs table and
+ * the stage page use, so "Internal review", "Has questions", "Below bar", "Failed" and
+ * "Stopped" mean here exactly what they mean there, and the score is coloured by the same band
+ * rule (scoreClass). This used the raw StatusBadge, which knew only the run status: a 92 read
+ * "failed" here while the blogs tab read "Below bar", the exact per-surface drift BlogTag ends.
+ * The flat "generated" chip this used to show came from the ledger, which records ships only, so
+ * a blog held for an answer or failed mid-loop wore "ready" as though nothing had happened, and
+ * the operator's next move was to run it again.
  *
  * The blog wins over incomplete: the engine refuses to run a topic that already has one. The
  * ledger chip below is the fallback for the moment the blog scan has not landed yet, and for
@@ -252,9 +256,9 @@ function RoadmapRowState({ row, blog }: { row: RoadmapRow; blog?: BlogSummary })
   if (blog) {
     return (
       <span className="flex shrink-0 items-center gap-1.5">
-        <StatusBadge status={blog.status} />
+        <BlogTag blog={blog} />
         {blog.score !== null ? (
-          <span className="machine text-xs text-muted-foreground">{blog.score}</span>
+          <span className={`machine text-xs ${scoreClass(blog.score)}`}>{blog.score}</span>
         ) : null}
       </span>
     );

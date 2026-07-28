@@ -64,6 +64,12 @@ const STYLES: Record<BlogStatus, Style> = {
 };
 
 /**
+ * THE LIVE RUN STREAM ONLY. This badge names how a run is going right now (running, done,
+ * failed, stopped) for a topic mid-generation, which has no committed blog to describe. For a
+ * whole blog's state, use BlogTag / BlogStateTag (lib/blog-state.ts): those know the score, so
+ * they read a 92 as "Below bar" where this badge can only say "failed". Reusing this for a
+ * settled blog is what let the roadmap overview disagree with the blogs tab.
+ *
  * Status colours carry meaning, so they stay off the accent hue in every state.
  *
  * The fallback is `unknown` rather than any real state: a value this app does not recognise
@@ -81,23 +87,6 @@ export function StatusBadge({ status, className }: { status: BlogStatus; classNa
       )}
     >
       {style.label}
-    </span>
-  );
-}
-
-/** A score is a machine value, and 95 is the ship line, so only a shipped score gets the accent. */
-export function ScoreTag({ score, shipped }: { score: number | null; shipped: boolean }) {
-  if (score === null) {
-    return <span className="machine text-xs text-muted-foreground">no score</span>;
-  }
-  return (
-    <span
-      className={cn(
-        "machine text-xs font-medium",
-        shipped ? "text-primary" : "text-muted-foreground",
-      )}
-    >
-      {score}/100
     </span>
   );
 }

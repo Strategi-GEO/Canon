@@ -1795,9 +1795,25 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
             iter=1, status="failed",
             note=f"{type(exc).__name__}: {exc}",
         )
+        # A CRASH THAT LANDS ON A CURRENT QUESTION HOLDS THE BLOG, exactly as a clean loop-end or a
+        # stop does. The evaluator writes questions.json and the lead appends the terminal line
+        # LAST, so a session dying in that gap leaves a live form and a bare "failed": the normal
+        # path runs _enforce_terminal_status at the end of the try, but this arm re-raises and
+        # never reaches it, so the failed line stood over a current form and the blog showed as
+        # Failed with Retry/Send instead of held for answers (liquid-journey: score 57, two live
+        # Sourcing questions). Nothing about the session dying un-asks the question, so run the same
+        # resolver here. Guarded: a recovery path must never mask the original crash or leave the
+        # topic with no committed line, so on any failure in the check the "failed" line above
+        # still stands and still commits below.
+        try:
+            _enforce_terminal_status(client_slug, topic_slug, out_dir, root=run_dir_root)
+        except Exception as resolve_exc:
+            print(f"[runner] terminal-status check failed for {client_slug}/{topic_slug} after a "
+                  f"crash, leaving it failed: {resolve_exc}", file=sys.stderr)
         # A crashed topic commits too, same reasoning as the refusal arm above:
-        # the failed line is a record, and partial artifacts (a dossier the crash
-        # left behind) are the expensive half the record should keep.
+        # the failed line (or the needs_review the check just wrote over it) is a record, and
+        # partial artifacts (a dossier the crash left behind) are the expensive half the record
+        # should keep.
         _schedule_commit(client_slug, topic_slug)
         raise
 

@@ -55,6 +55,61 @@ ANALYSIS_TOOLS = [
     "Read", "Write", "Glob", "Bash", "Skill",
 ]
 
+
+def _optional_mcp_servers():
+    """Analysis-only MCP servers for the optional analytics tools, one entry per key CONFIGURED in
+    server/.env. An absent key means no server, which means the tool simply is not there: that is the
+    graceful degradation the schema expects, and its scorecard renders "Not connected" for it.
+
+    These are handed to the ANALYSIS session alone (merged into its mcp_servers below), never written
+    into .mcp.json, so the blog research, write and eval sessions never spawn them. strict_mcp_config
+    stays False, so they MERGE with the project firecrawl+dataforseo floor rather than replacing it.
+
+    The key is read through db.config_value, the sanctioned cross-module accessor, NOT os.environ:
+    RULE 1 keeps server/.env out of os.environ and out of agent_env, and this routes the value into
+    this one session's mcp_servers config instead, which is the whole point of these being agent-
+    facing MCP credentials. Names match db.py AGENT_ENV_ALLOW.
+    """
+    servers = {}
+    # SEO Gets: official remote HTTP MCP. The sg_mcp_ key IS the bearer token (Settings -> API & MCP
+    # Keys), so it goes straight into the Authorization header. Needs a Core/Pro plan.
+    seogets = db.config_value("SEOGETS_API_KEY")
+    if seogets:
+        servers["seogets"] = {
+            "type": "http",
+            "url": "https://app.seogets.com/mcp",
+            "headers": {"Authorization": f"Bearer {seogets}"},
+        }
+    # Microsoft Clarity: official Microsoft stdio MCP (@microsoft/clarity-mcp-server). The Data.Export
+    # JWT is passed as a CLI arg, which is what this server expects; it then appears in the child's
+    # argv, a Microsoft design choice. API limits are tight (~10 req/day, <=3 days, <=3 dimensions).
+    clarity = db.config_value("CLARITY_API_KEY")
+    if clarity:
+        servers["clarity"] = {
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "@microsoft/clarity-mcp-server", f"--clarity_api_token={clarity}"],
+        }
+    return servers
+
+
+def _optional_env():
+    """Extra env for the analysis session ALONE, for an optional tool the agent reaches by raw HTTP
+    instead of an MCP server. Bing Webmaster Tools has no official MCP, so rather than run an unvetted
+    community npm package with the other keys in its environment, the agent calls the Bing REST API
+    (https://ssl.bing.com/webmaster/api.svc/json) directly via Bash using this key. Injecting it here,
+    not through agent_env, keeps it out of every OTHER session: RULE 1 keeps server/.env out of
+    agent_env, and this puts the key in THIS analysis session's env only. Absent key -> nothing
+    injected -> the skill probes, finds it unset, and marks Bing not connected. Names match
+    db.py AGENT_ENV_ALLOW.
+    """
+    env = {}
+    bing = db.config_value("BING_WEBMASTER_API_KEY")
+    if bing:
+        env["BING_WEBMASTER_API_KEY"] = bing
+    return env
+
+
 # ---------------------------------------------------------------------------
 # Analysis jobs: one per client slug, in memory (twin of report_gen.REPORT_JOBS).
 # ---------------------------------------------------------------------------
@@ -281,12 +336,15 @@ async def generate_analysis(client_slug, month):
 
     try:
         # The floor: Firecrawl and DataForSEO must resolve, or there is no way to run the prompt
-        # matrix or the rankings and the agent would invent them. The other four analytics MCPs are
-        # optional and load from project config when present; their absence degrades a section, it
-        # does not refuse the run.
+        # matrix or the rankings and the agent would invent them. The optional analytics MCPs are
+        # merged in below; their absence degrades a section, it does not refuse the run.
         servers = runner._resolve_mcp_servers()
     except runner.RunnerConfigError as exc:
         raise AnalysisGenerationError(str(exc))
+    # Analysis-only: add whichever optional analytics tools have a key in server/.env. This MERGES
+    # with the floor (strict_mcp_config stays False), so firecrawl+dataforseo still load from the
+    # project .mcp.json while these ride alongside for THIS session only. See _optional_mcp_servers.
+    servers = {**servers, **_optional_mcp_servers()}
 
     analysis_dir(client_slug, month).mkdir(parents=True, exist_ok=True)
     prompt = build_prompt(client_slug, month)
@@ -301,7 +359,7 @@ async def generate_analysis(client_slug, month):
         max_turns=MAX_TURNS,
         max_budget_usd=float(budget) if budget else None,
         model=os.environ.get("GEO_MODEL") or None,
-        env=db.agent_env(),
+        env={**db.agent_env(), **_optional_env()},
     )
 
     text = ""

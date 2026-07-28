@@ -7,6 +7,7 @@ import { SelectState } from "@/components/create/select-state";
 import { WatchState } from "@/components/create/watch-state";
 import { seedsFor, useRunStream, type Seed } from "@/components/create/use-run-stream";
 import { liveTopicSlugs } from "@/components/create/row-status";
+import { scoreTone } from "@/lib/blog-score";
 import { brandHref } from "@/lib/orgs-context";
 import { useRuns } from "@/lib/runs-context";
 import { factsBuildOf, useFactsGen } from "@/lib/use-facts-gen";
@@ -292,9 +293,22 @@ export function CreateForBrand({
     () => liveTopicSlugs(stream.topics, finished),
     [stream.topics, finished],
   );
-  const failed = React.useMemo(
-    () => new Set(blogs.filter((b) => b.status === "failed").map((b) => b.topic_slug)),
+  // A failed blog that scored 90 to 94 is BELOW BAR, not a failure: split by the same score band
+  // the Blogs tab uses (scoreTone), so its row wears the yellow "below bar" chip rather than red,
+  // and one blog cannot read "failed" here and "Below bar" there. The two sets are disjoint.
+  const failedBlogs = React.useMemo(
+    () => blogs.filter((b) => b.status === "failed"),
     [blogs],
+  );
+  const belowBar = React.useMemo(
+    () =>
+      new Set(failedBlogs.filter((b) => scoreTone(b.score) === "owed").map((b) => b.topic_slug)),
+    [failedBlogs],
+  );
+  const failed = React.useMemo(
+    () =>
+      new Set(failedBlogs.filter((b) => scoreTone(b.score) !== "owed").map((b) => b.topic_slug)),
+    [failedBlogs],
   );
   // Held blogs: they own a blog.md but sit off the ledger waiting for an operator answer, so
   // they are neither generated nor failed. Without this the row would show as a plain, tickable
@@ -363,6 +377,7 @@ export function CreateForBrand({
       loading={loading || runsChecking}
       live={live}
       failed={failed}
+      belowBar={belowBar}
       needsReview={needsReview}
       // Not knowing is different from knowing there is no run, and the difference matters: a
       // live run this view missed leaves rows selectable that the engine will refuse. Say so

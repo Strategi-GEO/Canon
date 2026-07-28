@@ -6,6 +6,7 @@ import {
   clientCommentsTag,
   clientTag,
   type BlogState,
+  type StateTag,
   type StateTone,
 } from "@/lib/blog-state";
 
@@ -49,6 +50,7 @@ export function BlogStateTag({
   state,
   audience,
   commentsPending,
+  failedTag,
   className,
 }: {
   state: BlogState;
@@ -63,15 +65,25 @@ export function BlogStateTag({
    * it falls back to the plain state tag.
    */
   commentsPending?: number | null;
+  /**
+   * failed + admin only: the "Below bar" vs "Failed" split, already RESOLVED FROM THE SCORE by the
+   * admin caller (BlogTag / lib/blog-score adminFailedTag). This renderer never sees the number:
+   * a score does not cross the client wire, so the shared tag must not touch it. Clients never see
+   * a failed article, so this is unused on that wire; omitting it falls back to the plain Failed
+   * tag.
+   */
+  failedTag?: StateTag | null;
   className?: string;
 }) {
   const pending =
     state === "changes_requested" && typeof commentsPending === "number" ? commentsPending : null;
   const tag =
     audience === "admin"
-      ? pending !== null
-        ? adminCommentsTag(pending)
-        : adminTag(state)
+      ? state === "failed"
+        ? failedTag ?? adminTag("failed")
+        : pending !== null
+          ? adminCommentsTag(pending)
+          : adminTag(state)
       : pending !== null
         ? clientCommentsTag(pending)
         : clientTag(state);
@@ -97,3 +109,5 @@ export function BlogStateTag({
     </Tooltip>
   );
 }
+// BlogTag (the admin wrapper that resolves state + score from a blog entity) moved to
+// components/shell/blog-tag.tsx: it reads a score, which must not live in this client-bundle file.

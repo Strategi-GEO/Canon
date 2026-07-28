@@ -47,7 +47,7 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
                                StreamingResponse)
 from pydantic import BaseModel
 
-from . import analysis_gen, auth, blog_edit, blog_upload, client_answers, db, describe, facts_gen, ledger, report_gen, repurpose, roadmap, roadmap_gen, runner, sync
+from . import analysis_gen, auth, blog_edit, blog_upload, client_answers, db, describe, docx_export, facts_gen, ledger, report_gen, repurpose, roadmap, roadmap_gen, runner, sync
 # Aliased for the same reason clients is: "questions" is the natural name for the list of
 # questions inside a handler, and the shadowing bug that causes is silent.
 from . import questions as questions_mod
@@ -1556,6 +1556,10 @@ def _scratch_entry(slug, topic_slug, led, row_index):
         "score": summary.get("score"),
         "status": summary.get("status") or "unknown",
         "iterations": summary.get("iterations"),
+        # Always None on this path: a live/mid-run topic has committed no version, so there is no
+        # terminal eval to explain a failure yet. The key is present for the one response shape,
+        # exactly like version_no and uploaded below.
+        "reason": None,
         "shipped": topic_slug in led,
         # No committed version yet on this path: a topic in a live run is being written now,
         # and the hosted editor is refused for it anyway (its fold is not `done`).
@@ -1595,11 +1599,11 @@ def _blog_history(slug):
     # with the latest version's title and commit time standing in for the old
     # H1 scan and mtime fallback.
     rows = db.q(
-        """select t.slug, t.title, v.h1_title, v.committed_at, v.score is null,
-                  v.version_no
+        """select t.slug, t.title, v.h1_title, v.committed_at, v.score,
+                  v.version_no, v.eval_body
            from topics t
            join lateral (
-             select h1_title, committed_at, score, version_no from blog_versions v
+             select h1_title, committed_at, score, version_no, eval_body from blog_versions v
              where v.topic_id = t.id
              order by v.version_no desc limit 1
            ) v on true
@@ -1607,7 +1611,12 @@ def _blog_history(slug):
         (client_id,))
 
     entries = {}
-    for topic_slug, topic_title, h1_title, committed_at, unscored, version_no in rows:
+    for topic_slug, topic_title, h1_title, committed_at, version_score, version_no, eval_body in rows:
+        # The score is the COMMITTED VERSION's, which sync.commit_topic binds to eval.md's SCORE
+        # line. The status feed's fold (summary) still drives status and iterations, but NOT the
+        # number: the feed can carry a phantom "best" score a run never shipped, and the Eval tab
+        # shows eval.md, so reading the version score is what keeps header and Eval tab identical.
+        unscored = version_score is None
         summary = summaries.get(topic_slug) or {}
         entry = led.get(topic_slug) or {}
         # The ledger holds the operator's own topic text, which beats a slug or a
@@ -1621,9 +1630,18 @@ def _blog_history(slug):
             "topic": title,
             "topic_slug": topic_slug,
             "created": created,
-            "score": summary.get("score"),
+            "score": version_score,
             "status": summary.get("status") or "unknown",
             "iterations": summary.get("iterations"),
+            # WHY THIS DRAFT DID NOT SHIP, surfaced verbatim so a failed row shows its reason
+            # without opening the blog. This is the evaluator's own eval.md (blog_versions.eval_body),
+            # which IS the response explaining the failure, not a second copy of it. NULL at the 95
+            # ship bar and above, exactly as asked, and null when there is no eval to show (an
+            # uploaded blog, or a run that never scored). The row's own status/score decide whether a
+            # "More info" control renders; this only carries the text.
+            "reason": eval_body if (
+                version_score is not None and version_score < 95 and eval_body
+            ) else None,
             "shipped": topic_slug in led,
             # WHERE THIS BLOG CAME FROM, INFERRED rather than stored, and the inference is
             # exactly this: a blog that reached `done` with no score on its latest version
@@ -1672,6 +1690,18 @@ def _blog_history(slug):
         live_entry = _scratch_entry(slug, topic_slug, led, row_index)
         if live_entry is not None:
             entries[topic_slug] = live_entry
+
+    # THE OPERATOR TITLE OVERRIDE, applied to settled and live entries alike in ONE place.
+    # topics.title is NULL for a generated blog, so both title derivations above fall through to
+    # the ledger topic or the H1; when an operator RENAMES a blog (POST .../blogs/{topic}/title
+    # writes topics.title) that edit is the top-precedence label and outranks every derived
+    # source. Applied here rather than threaded through the settled expression and the scratch
+    # entry separately, so the two paths cannot disagree about the operator's chosen title.
+    for topic_slug, edited in db.q(
+            "select slug, title from topics where client_id = %s and deleted_at is null "
+            "and title is not null", (client_id,)):
+        if topic_slug in entries and edited and edited.strip():
+            entries[topic_slug]["topic"] = edited
 
     # The send-to-client stamp is a RECORD fact (two engines share one record, and a blog
     # teammate A sent must read as sent on teammate B's machine), so it comes from topics
@@ -1826,6 +1856,56 @@ def _blog_history(slug):
 async def api_blogs(slug: str, user: auth.Identity = Depends(auth.require_user)):
     _client_or_404(slug, user)
     return {"blogs": _blog_history(slug)}
+
+
+@app.get("/api/clients/{slug}/blogs/download-all")
+async def api_blogs_download_all(slug: str, user: auth.Identity = Depends(auth.require_user)):
+    """Every blog this brand has, as ONE .docx: a cover page reading "Blog N" with the article's
+    title beneath, then the article, for each blog. Reads the latest committed version body per
+    live topic, the SAME body the library shows, ordered by roadmap position so "Blog 1" is the
+    first row of the content plan. Engine-only, like the report and analysis PDFs.
+
+    Declared before the /blogs/{topic}/... routes so "download-all" is never read as a topic."""
+    _client_or_404(slug, user)
+    cid = db.client_id(slug)
+    rows = db.q(
+        """select t.slug, t.title as topic_title,
+                  coalesce(v.h1_title, t.slug) as fallback, v.body
+             from topics t
+             join lateral (
+               select h1_title, body from blog_versions v
+               where v.topic_id = t.id order by v.version_no desc limit 1
+             ) v on true
+            where t.client_id = %s and t.deleted_at is null
+              and v.body is not null and length(btrim(v.body)) > 0""",
+        (cid,)) if cid else []
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"no blogs to download for {slug!r}")
+
+    # Title and order mirror the library's own precedence: an operator rename (topics.title) wins
+    # over the ledger's operator topic text, which beats a writer H1, and roadmap position orders
+    # the plan, sheet-less blogs falling after it by title.
+    led = ledger.ledger_slugs(slug)
+    order = roadmap.index_by_slug(slug)
+
+    def title_of(topic_slug, topic_title, fallback):
+        # ONE precedence, used for both the tiebreak and the shown label, so a sheet-less blog
+        # is never ordered by a title different from the one on its cover page.
+        return topic_title or (led.get(topic_slug) or {}).get("topic") or fallback
+
+    def sort_key(row):
+        topic_slug, topic_title, fallback, _body = row
+        index = order.get(topic_slug)
+        return (index if index is not None else 10 ** 9, title_of(topic_slug, topic_title, fallback).lower())
+
+    blogs = [
+        (title_of(topic_slug, topic_title, fallback), body)
+        for topic_slug, topic_title, fallback, body in sorted(rows, key=sort_key)
+    ]
+    data = await asyncio.to_thread(docx_export.build_docx, blogs)
+    return Response(
+        content=data, media_type=docx_export.CONTENT_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{slug}-blogs.docx"'})
 
 
 # ---------------------------------------------------------------------------
@@ -2452,6 +2532,45 @@ async def api_delete_blog_comment(slug: str, topic: str, comment_id: str,
     return Response(status_code=204)
 
 
+class TitleRequest(BaseModel):
+    title: str
+
+
+@app.post("/api/clients/{slug}/blogs/{topic}/title")
+async def api_set_blog_title(slug: str, topic: str, body: TitleRequest,
+                             user: auth.Identity = Depends(auth.require_admin)):
+    """Rename one blog: set topics.title, the operator-facing label the library and stage show.
+    Synchronous, a single-column UPDATE.
+
+    NO status gate and NO live-run 409, unlike api_save_blog_content below. Those guard the
+    blog.md BYTES the writer and revise produce, plus the client-review pin; a title is a
+    topics-column label the loop never rewrites mid-run (sync.commit_topic calls db.ensure_topic
+    WITHOUT a title, so its coalesce keeps the operator's value). So a rename races nothing the
+    engine writes and stays editable at any status. The override wins at read time in
+    _blog_history, where a non-null topics.title outranks the ledger topic and the H1."""
+    _client_or_404(slug, user)
+    _topic_or_404(slug, topic)
+    # A title is a single-line label. Collapse every run of whitespace (including the newlines a
+    # paste can carry) to one space so it renders cleanly in the h2 and the docx cover, and cap
+    # length like every other write endpoint (api_save_blog_content, uploads) rather than storing
+    # an unbounded string that becomes top-precedence in every label.
+    title = " ".join(body.title.split())
+    if not title:
+        raise HTTPException(
+            status_code=422,
+            detail="a blank title cannot be saved; the blog keeps its current title instead",
+        )
+    if len(title) > 300:
+        raise HTTPException(
+            status_code=422,
+            detail="this title is too long; keep it under 300 characters",
+        )
+    tid = db.topic_id(slug, topic)  # _topic_or_404 already resolved this, so never None here
+    await asyncio.to_thread(
+        db.q, "update topics set title = %s where id = %s", (title, tid), fetch="none")
+    return {"title": title}
+
+
 @app.post("/api/clients/{slug}/blogs/{topic}/content")
 async def api_save_blog_content(slug: str, topic: str, body: ContentRequest,
                                 user: auth.Identity = Depends(auth.require_admin)):
@@ -2722,20 +2841,81 @@ async def api_upload_blog_docx(slug: str, topic: str, replace: bool = False,
             raise HTTPException(status_code=exc.status, detail=exc.detail)
 
 
+class NewBlogRequest(BaseModel):
+    body: str
+
+
+@app.post("/api/clients/{slug}/blogs/new")
+async def api_create_blog(slug: str, payload: NewBlogRequest,
+                          user: auth.Identity = Depends(auth.require_admin)):
+    """Create a blog the roadmap never planned, from pasted markdown. THE OFF-ROADMAP TWIN of
+    api_upload_blog, for the operator who changed their mind and wants a blog no roadmap row
+    covers, without editing the roadmap to add one.
+
+    The difference from api_upload_blog is the whole reason this exists: that door requires a
+    roadmap row and reads the title, scope and prompts from it, so _upload_row_or_refuse 404s a
+    slug the roadmap does not name. Here there is no row, so the title comes from the article's
+    own H1 (the same line sync commits as h1_title, so topics.title and h1_title agree) and
+    scope and prompts are empty. Everything downstream is IDENTICAL: blog_upload.upload_blog
+    writes the same done, null-score record naming the uploader and the same ledger interlock,
+    so the blog lands in admin review and is treated exactly like every other uploaded blog.
+
+    The roadmap is deliberately not consulted or edited: the app never writes the operator's
+    CSV, so an off-roadmap blog lives only in the record, through its topic row and ledger row.
+    The path is POST /blogs/new; nothing shadows it, since there is no bare POST /blogs/{topic}
+    (every topic write carries a suffix: /upload, /content, /title, /send). A blog whose title
+    slugifies to "new" is reached by GET/DELETE /blogs/{topic}, a different method, so it never
+    collides with this create route either."""
+    _client_or_404(slug, user)
+    if _client_has_live_run(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"a run for {slug!r} is live; create this blog once it finishes so the "
+                   f"engine's own writes are not raced")
+    # The first '# ' line is the title, matched exactly as sync derives h1_title on commit so the
+    # label this stores and the one sync stores cannot disagree. No H1 means no title and no slug.
+    title = next((ln[2:].strip() for ln in payload.body.splitlines() if ln.startswith("# ")), "")
+    if not title:
+        raise HTTPException(
+            status_code=422,
+            detail="give the article a title as a top-level '# Heading' on its first line")
+    topic_slug = runner.slugify(title)
+    if not topic_slug:
+        raise HTTPException(
+            status_code=422,
+            detail="that title has no letters or numbers to build a web address from; add some")
+    if db.topic_id(slug, topic_slug) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"a blog titled {title!r} already exists; edit that one or change this title")
+    async with blog_edit.APPLY_LOCK:
+        try:
+            return await asyncio.to_thread(
+                blog_upload.upload_blog, slug, topic_slug,
+                title, "", [], payload.body,
+                getattr(user, "email", "") or "", False,
+            )
+        except blog_upload.UploadError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+
 @app.delete("/api/clients/{slug}/blogs/{topic}", status_code=204)
 async def api_delete_blog(slug: str, topic: str,
                           user: auth.Identity = Depends(auth.require_admin)):
-    """Remove one blog: soft-delete the topic and drop its scratch tree. `topics.deleted_at`
-    IS this app's delete (it clears the blog from every listing and re-frees the roadmap row
-    for regeneration, since ledger.live_slugs and every read filter on deleted_at is null).
-    The scratch dir must go with it, or the startup reconciler would find bytes ahead of the
-    record and re-commit them, un-deleting the topic via ensure_topic. Refused while a run is
-    live, because the engine is writing that scratch tree right now. Idempotent: deleting an
-    unknown or already-deleted topic is a 204 no-op.
+    """Remove one blog: HARD-delete the topic row and drop its scratch tree. Deleting the
+    topics row cascades to every child (blog_versions, status_events, review_notes,
+    blog_comments all carry `on delete cascade` on the topic FK), so nothing about this blog
+    survives in the record and a later regenerate of the same slug starts genuinely fresh: no
+    stale status feed for a new run's line ordinals to collide with, no old versions or
+    comments resurfacing. The scratch dir goes too, or the startup reconciler would find bytes
+    ahead of the (now absent) record and re-commit them, recreating the topic via ensure_topic.
+    Refused while a run is live, because the engine is writing that scratch tree right now.
+    Idempotent: deleting an unknown or already-gone topic is a 204 no-op.
 
-    ponytail: soft delete, so a later regenerate of the same slug reuses the topic row and its
-    old comments/versions resurface. That is the codebase's existing topics.deleted_at model,
-    not new debt; hard-delete-with-cascade only if resurfacing ever bites."""
+    A hard delete replaces the old topics.deleted_at soft delete deliberately: the operator
+    asked that a delete leave nothing behind so a rerun is clean, and the soft model left the
+    row and its children in place, which is exactly what resurfaced stale versions and froze
+    the status feed for reruns."""
     _client_or_404(slug, user)
     if _client_has_live_run(slug):
         raise HTTPException(
@@ -2749,7 +2929,8 @@ async def api_delete_blog(slug: str, topic: str,
 def _delete_blog(slug: str, topic_slug: str) -> None:
     tid = db.topic_id(slug, topic_slug)
     if tid is not None:
-        db.q("update topics set deleted_at = now() where id = %s", (tid,), fetch="none")
+        # Children cascade off this one delete; see api_delete_blog for the list.
+        db.q("delete from topics where id = %s", (tid,), fetch="none")
     tdir = runner.output_dir(slug, topic_slug)
     if tdir.is_dir():
         shutil.rmtree(tdir, ignore_errors=True)

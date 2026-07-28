@@ -63,6 +63,15 @@ export const ROW_STYLES: Record<
     chip: "border-fail/25 bg-fail-bg text-fail",
     chipLabel: "failed",
   },
+  // Yellow, the review/owed token, split off failed by score: 90 to 94 is one rerun from the 95
+  // bar, not a failure, so it carries the same "below bar" meaning the Blogs tab tag does. The hue
+  // is shared with the amber states above and the chip label carries the difference colour cannot.
+  // Selectable like failed, because retrying for 95 is exactly what an operator wants here.
+  below_bar: {
+    row: "bg-review-bg hover:bg-review-bg",
+    chip: "border-review/25 bg-review-bg text-review",
+    chipLabel: "below bar",
+  },
   // Incomplete is not one of the three coloured states. It stays neutral on purpose: red now
   // means "the last run failed, tick it to retry", and painting an unwritable row the same
   // colour would tell the operator to retry something the engine refuses with a 422.
@@ -152,6 +161,14 @@ export function RowNote({
 
   if (state === "failed") {
     return <p className="mt-1.5 text-xs text-fail">Last run failed. Tick it to try again.</p>;
+  }
+
+  if (state === "below_bar") {
+    return (
+      <p className="mt-1.5 text-xs text-review">
+        Scored 90 to 94, just below the 95 ship bar. Tick it to rerun for 95.
+      </p>
+    );
   }
 
   if (state === "incomplete") {

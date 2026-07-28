@@ -6,6 +6,7 @@ import { ArrowRight, ExternalLink, Paperclip, PenLine } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
 import { brandHref } from "@/lib/orgs-context";
 import { useRoadmap } from "@/lib/use-roadmap";
@@ -55,6 +56,9 @@ export function BrandOverview({ orgSlug, brand }: { orgSlug: string; brand: Clie
   // and re-read.
 
   return (
+    // ONE TooltipProvider for this whole surface, like blogs-library and blog-stage: the state
+    // tags on the cards below (BlogTag in RoadmapPanel) are Radix tooltips and crash without it.
+    <TooltipProvider>
     <div className="mx-auto w-full max-w-5xl">
       <BrandHeader
         name={client.name}
@@ -144,6 +148,7 @@ export function BrandOverview({ orgSlug, brand }: { orgSlug: string; brand: Clie
         </div>
       </div>
     </div>
+    </TooltipProvider>
   );
 }
 

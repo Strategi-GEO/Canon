@@ -1,4 +1,5 @@
 import { MissingEnv } from "@/lib/server/env";
+import { isTokenRejection } from "@/lib/server/postgrest";
 
 /**
  * Response helpers for the hosted-mode Route Handlers, shaped like the FastAPI engine's
@@ -80,6 +81,18 @@ export function failure(cause: unknown): Response {
   if (cause instanceof MissingEnv) {
     return detail(500, cause.message);
   }
+  // A downstream token rejection reaches the client as a 401, never a 502: src/portal/api.ts
+  // and src/lib/api.ts both clear the session and land on /login for a 401, so a stale session
+  // self-heals into a fresh login instead of stranding the caller on "could not open your
+  // workspace". A genuine server error (a grants fault, PostgREST down) stays a 502, because a
+  // fresh login cannot fix it and logging the caller out would only hide the real failure.
+  if (isTokenRejection(cause)) {
+    return detail(401, "session expired, please sign in again");
+  }
   const message = cause instanceof Error ? cause.message : String(cause);
+  // Route catch blocks swallow the upstream cause into the 502 body, which is invisible
+  // server-side; a PostgrestError's message already carries "postgrest <status> on <path>:
+  // <body>", so one line here surfaces exactly what failed instead of a bare 502 in the log.
+  console.error("[upstream-fail]", message);
   return detail(502, `upstream request failed: ${message}`);
 }

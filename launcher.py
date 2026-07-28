@@ -199,6 +199,22 @@ def _requirements_hash() -> str:
     return hashlib.sha256((REPO_ROOT / "requirements.txt").read_bytes()).hexdigest()
 
 
+def _venv_base_ok(py: Path) -> bool:
+    """True only if the venv interpreter resolves to a real file off any App Translocation mount.
+
+    A quarantined macOS .app run from Downloads is executed from an ephemeral
+    /private/var/folders/.../AppTranslocation/<uuid>/ path that changes every launch and is
+    torn down on quit. A .venv built against the app's bundled python therefore dangles the
+    instant that launch ends, which is the "could not create the Python virtual environment"
+    failure the user hits on the second launch. Catch both the dangling symlink and the
+    still-live-but-ephemeral base, so the caller rebuilds against a stable interpreter rather
+    than running `venv` over the wreck (which fails)."""
+    if not py.exists():                      # dangling: the base python is already gone
+        return False
+    real = py.resolve()
+    return real.exists() and "AppTranslocation" not in real.parts
+
+
 def ensure_venv_raise(base_python: str | None = None) -> Path:
     """Create .venv and install requirements if missing; return its python.
 
@@ -215,6 +231,11 @@ def ensure_venv_raise(base_python: str | None = None) -> Path:
     py = venv_python()
     stamp = REPO_ROOT / ".venv" / "requirements.sha256"
     want = _requirements_hash()
+    venv_dir = REPO_ROOT / ".venv"
+    if venv_dir.exists() and not _venv_base_ok(py):
+        log("VENV: existing .venv points at a base python that is gone or ephemeral "
+            "(macOS App Translocation); deleting it and rebuilding against a stable interpreter")
+        shutil.rmtree(venv_dir, ignore_errors=True)
     if py.exists():
         have = stamp.read_text(encoding="utf-8").strip() if stamp.is_file() else ""
         if have == want:

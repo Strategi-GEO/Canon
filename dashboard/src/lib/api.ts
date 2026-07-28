@@ -636,6 +636,17 @@ export const api = {
     }),
 
   /**
+   * Renames one blog: sets topics.title, the operator-facing label the library and stage show.
+   * Engine-only (the hosted build refuses writes), and a non-null title wins over the ledger
+   * topic and the H1 at read time. The caller sends only when the trimmed value actually changed.
+   */
+  setBlogTitle: (slug: string, topicSlug: string, title: string) =>
+    request<{ title: string }>(`/api/clients/${slug}/blogs/${topicSlug}/title`, {
+      method: "POST",
+      body: { title },
+    }),
+
+  /**
    * Puts an article the operator already has into admin review, in place of generating one.
    *
    * The article travels as TEXT IN JSON, not as multipart, even though the operator picked
@@ -657,6 +668,21 @@ export const api = {
     request<UploadBlogResult>(`/api/clients/${slug}/blogs/${topicSlug}/upload`, {
       method: "POST",
       body: { body: blogBody, replace },
+    }),
+
+  /**
+   * Creates a blog the roadmap never planned, from pasted markdown. The off-roadmap twin of
+   * uploadBlog: the title comes from the article's own '# ' H1 (no roadmap row to read it from),
+   * scope and prompts are empty, and the slug is derived server-side. Same result shape and same
+   * downstream path as uploadBlog, so the blog lands in admin review like any uploaded one.
+   *
+   * 422 when the article has no '# ' H1 to title it, 409 when a run is live or a blog with that
+   * title already exists. Local engine only, like uploadBlog. The gate report is ADVISORY.
+   */
+  createBlog: (slug: string, blogBody: string) =>
+    request<UploadBlogResult>(`/api/clients/${slug}/blogs/new`, {
+      method: "POST",
+      body: { body: blogBody },
     }),
 
   /**
@@ -803,6 +829,13 @@ export const api = {
   /** One month's analysis PDF, as a download blob. Needs the live engine. */
   analysisPdf: (slug: string, month: string, signal?: AbortSignal) =>
     requestBlob(`/api/clients/${slug}/analysis/${month}/pdf`, signal),
+
+  /**
+   * Every blog for this brand bundled into ONE .docx, a "Blog N" cover page before each article,
+   * as a download blob. Needs the live engine (Python builds the document).
+   */
+  blogsDownloadAll: (slug: string, signal?: AbortSignal) =>
+    requestBlob(`/api/clients/${slug}/blogs/download-all`, signal),
 
   /**
    * The running desktop app's version. Engine-only, so the Settings panel that reads it is hidden

@@ -369,10 +369,16 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   // of an edit racing the pass about to rewrite the same bytes describes a moment this table
   // cannot be asked about. What makes `edit` safe in (a) is the DONE_TOPIC clause withholding it.
   answers_submitted: ["answer", "edit", "comments", "send"],
-  // The refining bench. This is the one state where the admin shapes the article freely.
-  internal_review: ["edit", "comments", "send"],
+  // The refining bench. This is the one state where the admin shapes the article freely, and
+  // the operator may POST TO THE CMS directly from here without waiting for client approval. The
+  // backend still refuses anything but status `done` (assert_publishable), and internal_review IS
+  // status `done`, so the push carries the latest committed bytes, which is exactly right here.
+  internal_review: ["edit", "comments", "send", "publish"],
   // WAITING, and the emptiness is the feature. The client is reading the exact bytes pinned by
-  // sent_version_id, so an edit here changes the article underneath someone mid-review.
+  // sent_version_id, so an edit here changes the article underneath someone mid-review. Publish
+  // is deliberately withheld too: pushing to the CMS while the client is still reviewing would
+  // put the article live before they have approved it, which is the guardrail "the admin cannot
+  // touch an article the client is reading" enforces.
   client_review: [],
   // The client asked for something, so the admin answers it and sends again. `send` is listed
   // and is still refused by the record while any suggestion is open: the button appears once
@@ -730,6 +736,26 @@ const ADMIN_COMMENTS_RESOLVED_TAG: StateTag = {
 export function adminCommentsTag(pendingComments: number): StateTag {
   return pendingComments > 0 ? ADMIN_TAGS.changes_requested : ADMIN_COMMENTS_RESOLVED_TAG;
 }
+
+/**
+ * The other face of the failed tag, split on the one fact the state cannot carry: the score. A
+ * draft that scored 90 to 94 is BELOW BAR, one rerun from the 95 ship bar, not a plain failure;
+ * below 90 is the failure the red tag is for. Both are the `failed` STATE and both keep its bench
+ * (edit, comments, promote) and its retry-by-roadmap exit, so this is a label split exactly like
+ * adminCommentsTag, never a new state. Tone `owed` (amber): the operator owes a decision, rerun
+ * for the bar or promote it, and amber is not the fail red. A missing score reads as the plain
+ * failure, the honest floor when the loop never scored a draft.
+ */
+// Exported for the admin-only score helpers in lib/blog-score.ts, which own the score-to-band
+// arithmetic. The LABEL stays here with every other label; the arithmetic that reads a number
+// cannot, because a score never crosses the client wire and this module ships to the portal.
+export const ADMIN_BELOW_BAR_TAG: StateTag = {
+  label: "Below bar",
+  tone: "owed",
+  detail:
+    "Scored 90 to 94, just below the 95 ship bar, with nothing left to ask. Rerun it to try for " +
+    "95, or promote it if you have read it and are happy with it.",
+};
 
 /**
  * The admin's scanning order: HOW MUCH THIS ROW WANTS A HUMAN.

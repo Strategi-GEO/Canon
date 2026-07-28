@@ -30,6 +30,12 @@ const BASE = [
   // where it means "this is the one you are about to open".
   "[&_a]:font-medium [&_a]:text-foreground [&_a]:underline [&_a]:decoration-primary/40 [&_a]:underline-offset-[3px] [&_a]:wrap-anywhere",
   "[&_a:hover]:text-primary [&_a:hover]:decoration-primary",
+  // Prose blocks break long unbroken tokens too, not just anchors. A pasted draft carries bare
+  // tokens that are not anchors (a `www.` URL with no scheme, a long path, one long word), and
+  // before this only anchors, .machine and tables wrapped them, so such a token ran straight out
+  // of the column. Code blocks (.md-pre) and tables keep their own horizontal scroll and are
+  // deliberately excluded.
+  "[&_.md-h]:wrap-anywhere [&_.md-p]:wrap-anywhere [&_.md-list_li]:wrap-anywhere [&_.md-quote]:wrap-anywhere",
   "[&_a:focus-visible]:rounded-xs [&_a:focus-visible]:text-primary [&_a:focus-visible]:outline-2 [&_a:focus-visible]:outline-offset-2 [&_a:focus-visible]:outline-ring",
   "[&_.md-code]:machine [&_.md-code]:rounded [&_.md-code]:bg-muted [&_.md-code]:px-1 [&_.md-code]:py-0.5",
   "[&_.md-pre]:machine [&_.md-pre]:overflow-x-auto [&_.md-pre]:rounded-md [&_.md-pre]:border [&_.md-pre]:bg-muted [&_.md-pre]:p-3 [&_.md-pre]:text-xs",

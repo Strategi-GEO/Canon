@@ -30,6 +30,7 @@ import json
 import logging
 import pathlib
 import re
+from datetime import datetime
 
 from . import db
 
@@ -38,6 +39,23 @@ log = logging.getLogger("geo.sync")
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 CLIENTS_DIR = REPO_ROOT / "clients"
 OUTPUTS_ROOT = REPO_ROOT / "outputs"
+
+# The evaluator's own SCORE line, the exact number the dashboard's Eval tab shows.
+_EVAL_SCORE_RE = re.compile(r"(?m)^\s*SCORE:\s*(\d{1,3})\s*$")
+
+
+def _score_from_eval(eval_body):
+    """The SCORE from eval.md, or None when it carries none (e.g. an uploaded blog).
+
+    The committed version's score is bound to THIS, not the status feed. The two can differ:
+    the feed can carry a phantom "best" score a run reported on its terminal line but never
+    installed as the shipped draft, while eval.md always describes the draft actually shipped.
+    Binding the record's score to eval.md is what stops the header and the Eval tab drifting.
+    """
+    if not eval_body:
+        return None
+    m = _EVAL_SCORE_RE.search(eval_body)
+    return int(m.group(1)) if m else None
 
 
 def _client_dir(slug):
@@ -439,6 +457,13 @@ def commit_topic(client_slug, topic_slug, allow_new_version=True):
     body = _read(tdir / "blog.md")
     eval_body = _read(tdir / "eval.md")
     status, score, iters = _summarize_lines([e for _, e in lines])
+    # The version's stored score is the eval.md verdict, not the status-feed number, so the
+    # record matches the Eval tab byte for byte. Fall back to the feed only when eval.md has
+    # no SCORE line. `score` here feeds ONLY the blog_versions row below; the status feed's own
+    # score is mirrored per line above and folded separately, so this reassignment cannot move it.
+    eval_md_score = _score_from_eval(eval_body)
+    if eval_md_score is not None:
+        score = eval_md_score
     mtime = sj.stat().st_mtime if sj.is_file() else None
 
     # The refs the question upsert in step 4 refused, and the version it refused them
@@ -451,11 +476,39 @@ def commit_topic(client_slug, topic_slug, allow_new_version=True):
     dropped_refs = []
     dropped_version = None
 
+    # The newest timestamp on the disk feed, used below to decide whether it is a
+    # rerun that supersedes the record. None when the file has no parseable ts.
+    disk_last_ts = None
+    if lines:
+        raw_ts = lines[-1][1].get("ts")
+        if isinstance(raw_ts, str):
+            try:
+                disk_last_ts = datetime.fromisoformat(raw_ts)
+            except ValueError:
+                disk_last_ts = None
+
     with db.tx() as cur:
-        # 1. Status lines, keyed by ordinal. Append-only on disk, and
-        # materialize_topic re-lays the file from the record on reclaimed
-        # scratch, so disk ordinals always continue the record's and the
-        # conflict clause only ever suppresses genuine re-pushes.
+        # 1. Status lines, keyed by ordinal. Append-only WITHIN a run:
+        # materialize_topic re-lays the file from the record on reclaimed scratch,
+        # so a resumed run's disk ordinals continue the record's and the conflict
+        # clause only suppresses genuine re-pushes.
+        #
+        # A RERUN is the case that broke here. It re-lays status.jsonl FROM LINE 0,
+        # so every ordinal collides with the prior run's committed rows and
+        # `on conflict do nothing` silently drops the WHOLE rerun. The fold then
+        # freezes at run 1 (displayed score, iteration trail, terminal status, and
+        # therefore needs_review + client routing) while blog_versions advances to
+        # the rerun, splitting the two stores. So when the disk feed is STRICTLY
+        # NEWER than what the record holds, the topic's feed is REPLACED. A resume's
+        # disk feed is a superset of the record, so replacing it loses nothing; a
+        # stale-disk reconcile on a second machine is never newer, so it never
+        # replaces, which keeps the multi-device sweep from reverting a teammate.
+        cur.execute(
+            "select max(ts) from status_events where topic_id = %s", (tid,))
+        (rec_last_ts,) = cur.fetchone()
+        if (rec_last_ts is not None and disk_last_ts is not None
+                and disk_last_ts > rec_last_ts):
+            cur.execute("delete from status_events where topic_id = %s", (tid,))
         for line_no, e in lines:
             cur.execute(
                 """insert into status_events

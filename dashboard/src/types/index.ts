@@ -582,6 +582,14 @@ export type BlogSummary = {
   created: string;
   /** Null when no status line recorded one. Never coerce this to 0: 0 is a score. */
   score: number | null;
+  /**
+   * WHY THIS DRAFT DID NOT SHIP: the evaluator's own eval.md verdict and fix list, verbatim, so a
+   * failed row can show its reason without opening the blog. NULL AT THE 95 SHIP BAR AND ABOVE and
+   * null for an uploaded/unscored blog: a clean ship has no failure to explain. Admin-only, like
+   * score and iterations, and the client wire never carries it (failed blogs are not client
+   * visible anyway). Optional on the wire for the same engine-age reason as sent_to_client.
+   */
+  reason?: string | null;
   status: BlogStatus;
   /** Null on the same path that produces status "unknown": no status line, no count. */
   iterations: number | null;

@@ -15,15 +15,18 @@ import {
   Redo2,
   TriangleAlert,
   Undo2,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { NotFoundCard } from "@/components/shell/brand-route";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
+import { adminFailedTag, scoreClass } from "@/lib/blog-score";
 import { AnswerQuestions } from "@/components/blogs/answer-questions";
 import { BlogEditor } from "@/components/blogs/blog-editor";
 import { MarkdownView } from "@/components/blogs/markdown-view";
@@ -727,7 +730,10 @@ function StageBody({
         </Link>
       </Button>
 
-      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+      {/* Title on top, then ONE action row beneath it. The buttons used to sit to the RIGHT of
+          the title (justify-between); they now stack below it so every act — Post to CMS, Send,
+          Retry, Promote — lives in a single row the operator scans left to right. */}
+      <div>
         <div className="min-w-0">
           <h2 className="text-xl leading-snug font-semibold tracking-tight text-pretty text-foreground">
             {blog.roadmap_index !== null ? (
@@ -735,7 +741,22 @@ function StageBody({
                 {blog.roadmap_index + 1}.
               </span>
             ) : null}
-            {blog.topic}
+            {/* The title is editable in every SETTLED state (a label is not the article bytes),
+                so this is gated on the deployment axis AND on generating: the hosted read-only
+                build has no title route, and a still-generating blog has no topics row yet
+                (it is committed at run terminal), so a rename would 404. Both show plain text.
+                onChanged re-reads the summary so the new title lands in this h2 the moment it
+                saves. */}
+            {HOSTED_READONLY || state === "generating" ? (
+              blog.topic
+            ) : (
+              <TitleEditor
+                brandSlug={brandSlug}
+                topicSlug={topicSlug}
+                topic={blog.topic}
+                onChanged={onChanged}
+              />
+            )}
           </h2>
           <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
             {/* WHERE THE ARTICLE IS, which is not the same fact as how the run ended.
@@ -745,7 +766,12 @@ function StageBody({
                 page, so the badge was contradicting the buttons under it. The tag names the
                 one state this blog is in, and its tooltip names who owes the next act, which
                 is the sentence that explains every control this page then declines to show. */}
-            <BlogStateTag state={state} audience="admin" commentsPending={commentsPending} />
+            <BlogStateTag
+              state={state}
+              audience="admin"
+              commentsPending={commentsPending}
+              failedTag={adminFailedTag(blog.score ?? null)}
+            />
             {/* An uploaded blog gets the provenance chip INSTEAD of a score trail. A bare
                 "no score" beside a shipped article reads as a missing number, which invites
                 the operator to go looking for the evaluation that failed to run. There was
@@ -766,7 +792,7 @@ function StageBody({
             </Tooltip>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="mt-3 flex flex-wrap items-center gap-2">
           {/* Left of the button that produces it, matching how SendToClient puts its own
               state chip beside its own control. It renders on the hosted build too, where
               PublishAction is absent: the record of a push is worth reading even where the
@@ -1067,6 +1093,119 @@ function StageBody({
         </Tabs>
       </Card>
     </div>
+  );
+}
+
+/**
+ * The blog's title, inline-editable. A pencil beside it opens a field with a tick (save) and an X
+ * (cancel). The tick is enabled ONLY when the trimmed value is non-empty AND differs from the
+ * current title, so a no-op save is impossible from both the button and Enter. Save writes
+ * topics.title via api.setBlogTitle, then onChanged() re-reads the summary exactly like every
+ * other write on this page, so the new title lands in the h2; a failure keeps the field open with
+ * the typed value and toasts why. Enter saves, Escape cancels. No effect syncs `value` to the
+ * prop: the field is seeded fresh on each open and StageBody is keyed by topic, so there is
+ * nothing to reconcile.
+ */
+function TitleEditor({
+  brandSlug,
+  topicSlug,
+  topic,
+  onChanged,
+}: {
+  brandSlug: string;
+  topicSlug: string;
+  topic: string;
+  onChanged: () => void;
+}) {
+  const [editing, setEditing] = React.useState(false);
+  const [value, setValue] = React.useState(topic);
+  const [saving, setSaving] = React.useState(false);
+
+  const trimmed = value.trim();
+  const dirty = trimmed !== "" && trimmed !== topic;
+
+  async function save() {
+    if (!dirty || saving) return; // never POST an unchanged or blank title
+    setSaving(true);
+    try {
+      await api.setBlogTitle(brandSlug, topicSlug, trimmed);
+      setEditing(false);
+      onChanged();
+    } catch (cause) {
+      toast.error("Could not rename this blog", {
+        description: cause instanceof ApiError ? cause.message : String(cause),
+      });
+      // Stay in edit mode so the typed value is not lost on failure.
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1.5 align-middle">
+        <Input
+          autoFocus
+          value={value}
+          // NOT disabled during save: disabling blurs the focused field, and on a failed save
+          // the operator would lose their cursor. save() already guards on `saving`, so Enter
+          // cannot double-submit; only the buttons grey out.
+          aria-label="Blog title"
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void save();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              setEditing(false);
+            }
+          }}
+          className="h-8 w-[32ch] max-w-full text-base font-semibold"
+        />
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          disabled={!dirty || saving}
+          onClick={() => void save()}
+          aria-label="Save title"
+        >
+          <Check aria-hidden />
+        </Button>
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          disabled={saving}
+          onClick={() => setEditing(false)}
+          aria-label="Cancel rename"
+        >
+          <X aria-hidden />
+        </Button>
+      </span>
+    );
+  }
+
+  return (
+    <>
+      {topic}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            className="ml-1.5 align-middle text-muted-foreground"
+            onClick={() => {
+              setValue(topic);
+              setEditing(true);
+            }}
+            aria-label="Rename this blog"
+          >
+            <Pencil aria-hidden />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Rename</TooltipContent>
+      </Tooltip>
+    </>
   );
 }
 
@@ -1411,7 +1550,6 @@ function ScoreTrail({ score, trail }: { score: number | null; trail: RunTrail | 
     return <span className="text-xs text-muted-foreground">no score</span>;
   }
   const scores = trail?.scores ?? [];
-  const shipped = score >= 95;
   return (
     <span className="machine inline-flex items-center gap-1.5 text-xs">
       {scores.length > 1 ? (
@@ -1422,9 +1560,9 @@ function ScoreTrail({ score, trail }: { score: number | null; trail: RunTrail | 
             .join("")}
         </span>
       ) : null}
-      <span className={cn("font-medium", shipped ? "text-ship" : "text-foreground")}>
-        {score}
-      </span>
+      {/* Coloured by band, the same scoreClass the list uses: >=95 green, 90-94 amber, below 90
+          red, so the final score reads the same here as in the Blogs tab. */}
+      <span className={cn("font-medium", scoreClass(score))}>{score}</span>
       <span className="text-muted-foreground">/100</span>
     </span>
   );
@@ -1537,17 +1675,17 @@ function EvalScore({ text }: { text: string }) {
     return null;
   }
   const shipped = score >= 95;
+  const belowBar = score >= 90 && score < 95;
   return (
     <div className="mb-5 flex items-baseline gap-3 rounded-md border bg-muted/40 px-4 py-3">
-      <span
-        className={cn("machine text-3xl font-semibold", shipped ? "text-ship" : "text-foreground")}
-      >
-        {score}
-      </span>
+      {/* Same band colours as the Blogs tab: >=95 green, 90-94 amber, below 90 red. */}
+      <span className={cn("machine text-3xl font-semibold", scoreClass(score))}>{score}</span>
       <span className="text-xs text-muted-foreground">
         {shipped
           ? "At or above 95, so the evaluator passed this draft. A blog holding open questions waits for your answers whatever it scored."
-          : "Below 95, so this draft went back for a surgical revise."}
+          : belowBar
+            ? "90 to 94, just below the 95 ship bar. Rerun it to try for 95, or promote it if you have read it and are happy."
+            : "Below 90, so this draft went back for a surgical revise."}
       </span>
     </div>
   );

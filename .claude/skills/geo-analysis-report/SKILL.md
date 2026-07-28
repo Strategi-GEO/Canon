@@ -52,6 +52,23 @@ Plus **own LLM prompt-test runs** (via the connected AI/search tools and Firecra
 visibility matrix (2a), which is the moat and is REQUIRED. DataForSEO and Firecrawl are the floor:
 they are always connected, and the matrix + rankings are always producible from them.
 
+**Bing Webmaster has NO MCP tool: reach it by its REST API via Bash.** SEO Gets and Clarity are MCP
+servers (`mcp__seogets__*`, `mcp__clarity__*`); Bing is not. Probe it by checking the env var, then
+`curl` the JSON REST API, always using the env var so the key never lands in your output:
+
+- Availability: if `$BING_WEBMASTER_API_KEY` is empty, Bing is `connected: false`; omit 2e/3c and its
+  scorecard/3f inputs. Do not attempt an `mcp__bing` tool: none exists.
+- Base: `https://ssl.bing.com/webmaster/api.svc/json/<Method>?apikey=$BING_WEBMASTER_API_KEY` (append
+  `&siteUrl=<verified-site>` where a method needs it). Responses are JSON.
+- First call `GetUserSites` to list the sites verified under this key, and match the client's domain to
+  one of them. If none matches, the site is not verified in Bing: mark `connected: false` with that
+  note, do not invent figures.
+- Then pull what the sections need: `GetRankAndTrafficStats`, `GetQueryStats`, `GetPageStats`,
+  `GetCrawlStats`, `GetUrlTrafficInfo` (each with `&siteUrl=`). Read the whole JSON, cite Bing as the
+  source, and carry the figure with its date exactly like any other sourced stat.
+- Reference `$BING_WEBMASTER_API_KEY` by name in every command. Never paste the literal key into a
+  command, a note, or the analysis JSON.
+
 ## The prompt visibility matrix (2a), the required centrepiece
 
 Rows are the client's buyer prompts (from the roadmap Target Prompts and the brand's known queries),

@@ -33,6 +33,7 @@ import {
   type BlogStateFacts,
   type ClientAction,
 } from "../src/lib/blog-state.ts";
+import { adminFailedTag, scoreTone } from "../src/lib/blog-score.ts";
 import { adminGateAllows, type GateForm, type GateRecord } from "../src/lib/gate-contract.ts";
 
 const ALL_STATES: BlogState[] = [
@@ -239,7 +240,10 @@ test("adminActions: the full policy, state by state", () => {
     // three controls the database refuses. A ROW VALUE IS ALL THIS TEST CHECKS: it went green on
     // both of those, so the test that actually governs this row is the lower-layer one below.
     answers_submitted: ["answer", "edit", "comments", "send"],
-    internal_review: ["edit", "comments", "send"],
+    // Includes publish: the operator may post to the CMS directly from internal review, before
+    // the client is ever involved. The backend still refuses anything but status `done`, which
+    // internal_review is, so the push carries the latest committed bytes.
+    internal_review: ["edit", "comments", "send", "publish"],
     // Empty again: the reply verb is removed from the product, so while the client reads,
     // this side waits. Every act that touches the bytes is absent.
     client_review: [],
@@ -1203,6 +1207,34 @@ test("adminCommentsTag: the admin face of the same split, on the same count", ()
   assert.equal(clientCommentsTag(0).label, "Comments resolved");
   assert.equal(adminCommentsTag(1), adminTag("changes_requested"));
   assert.equal(clientCommentsTag(1), clientTag("changes_requested"));
+});
+
+test("scoreTone: the three bands, and no score", () => {
+  assert.equal(scoreTone(95), "ship", "95 is the ship bar");
+  assert.equal(scoreTone(100), "ship");
+  assert.equal(scoreTone(94), "owed", "just below the bar is amber, not red");
+  assert.equal(scoreTone(90), "owed");
+  assert.equal(scoreTone(89), "trouble");
+  assert.equal(scoreTone(0), "trouble");
+  assert.equal(scoreTone(null), null, "no score has no tone");
+});
+
+test("adminFailedTag: 90 to 94 is Below bar, below 90 is Failed", () => {
+  // The failed tag splits on the score, the fact the state cannot carry, exactly as
+  // changes_requested splits on the comment count. Both bands are the `failed` STATE, so the
+  // bench and the retry-by-roadmap exit are unchanged; only the label and its tone move.
+  for (const score of [90, 92, 94]) {
+    assert.equal(adminFailedTag(score).label, "Below bar", `${score} is below bar`);
+    assert.equal(adminFailedTag(score).tone, "owed", `${score} reads amber, not the fail red`);
+  }
+  for (const score of [0, 50, 89]) {
+    assert.equal(adminFailedTag(score), adminTag("failed"), `${score} is the plain failure`);
+    assert.equal(adminFailedTag(score).label, "Failed");
+  }
+  assert.equal(adminFailedTag(null), adminTag("failed"), "no score reads as the plain failure");
+  // The split is a LABEL change, not a new state: the failed bench is untouched, so both bands
+  // keep edit, comments and promote, and the retry-by-roadmap exit.
+  assert.deepEqual([...adminActions("failed")], ["edit", "comments", "promote"]);
 });
 
 test("both tag maps are total, and no client label leaks internal vocabulary", () => {

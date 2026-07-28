@@ -874,13 +874,13 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/cms/routes.py",
     symbol: "api_publish_blog",
     kind: "python",
-    fingerprint: "5103b7a3fae66786",
+    fingerprint: "3b4b836f1b38bbba",
     gates: ["publish"],
     what:
       "Pushes one shipped blog to the CMS as a draft, synchronously, because the operator is " +
       "watching. It resolves the brand and the topic, delegates the real gate to " +
-      "server/cms/gate.py, resolves the org's write key, and maps the CMS's own failure back to " +
-      "a status that blames the right party.",
+      "server/cms/gate.py, resolves the one shared write key, and maps the CMS's own failure back " +
+      "to a status that blames the right party.",
     exemptions: [
       {
         id: "publish_route_client_unknown",
@@ -917,10 +917,10 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
       },
       {
         id: "publish_route_no_cms_key",
-        raises: "detail=cms_client.missing_key_detail(org_slug)",
+        raises: "detail=cms_client.missing_key_detail()",
         why:
-          "THE ENGINE'S CONFIGURATION, not the article. Whether an organisation has a CMS write " +
-          "key is resolved from the process environment and server/.env at the moment of the " +
+          "THE ENGINE'S CONFIGURATION, not the article. Whether the one shared CMS write key is " +
+          "set is resolved from the process environment and server/.env at the moment of the " +
           "push, and no read this page makes reports it. A clause would answer `unknowable` for " +
           "every article on every brand and, failing closed, would remove the Publish control " +
           "from a correctly configured machine because the page cannot see a file it has no " +

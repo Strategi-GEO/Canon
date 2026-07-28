@@ -4,12 +4,14 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  Download,
   FileText,
   MessageCircleQuestion,
   RotateCw,
   Search,
   TriangleAlert,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -251,6 +253,27 @@ function Library({
     setRefreshing(false);
   }
 
+  // Every blog for this brand as one .docx, a "Blog N" cover page before each article. Engine
+  // work (Python builds the document), so the button is desktop-only, exactly like Settings.
+  const [downloading, setDownloading] = React.useState(false);
+  async function downloadAll() {
+    setDownloading(true);
+    try {
+      const blob = await api.blogsDownloadAll(brandSlug);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${brandSlug}-blogs.docx`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (cause) {
+      const message = cause instanceof ApiError ? cause.message : String(cause);
+      toast.error("Could not download the blogs", { description: message });
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   const shown = React.useMemo(
     () => selectBlogs(blogs ?? [], url.query, url.status, url.sortKey, url.sortDir),
     [blogs, url.query, url.status, url.sortKey, url.sortDir],
@@ -345,6 +368,23 @@ function Library({
             />
             Refresh
           </Button>
+          {/* Desktop-only (the engine builds the .docx) and only when there is something to
+              bundle. Downloads ALL blogs, ignoring the search and status filters above. */}
+          {!HOSTED_READONLY && total > 0 ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void downloadAll()}
+              disabled={downloading}
+            >
+              <Download
+                className={cn(downloading && "animate-pulse motion-reduce:animate-none")}
+                data-icon="inline-start"
+                aria-hidden
+              />
+              Download all
+            </Button>
+          ) : null}
         </div>
       </div>
 

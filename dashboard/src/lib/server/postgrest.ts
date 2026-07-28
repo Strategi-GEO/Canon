@@ -31,6 +31,35 @@ export class PostgrestError extends Error {
   }
 }
 
+/**
+ * True when a PostgREST failure is the caller's JWT being REJECTED, as opposed to a server-side
+ * error. This is the difference between "your session is stale, log in again" and "the backend
+ * is broken", and getting it wrong in either direction is costly: masking a token rejection as a
+ * 502 strands the caller on a dead-end "could not open your workspace" instead of re-logging them
+ * in (the bug this exists to fix), while treating a server error as a token rejection logs
+ * everyone out over a grants or config fault a fresh login cannot touch.
+ *
+ * THE DISCRIMINATOR IS WHERE THE 401 CAME FROM, read off the error `code`. A Postgres SQLSTATE
+ * (five chars, e.g. `42501` permission denied) means the JWT was ACCEPTED and the DATABASE
+ * refused the row, so re-login cannot help and this returns false. A PostgREST-level code
+ * (`PGRST301`, its JWT error), a 401 whose message names the JWT, or a bare 401 with no code is
+ * PostgREST refusing the token itself, which a fresh session fixes.
+ */
+export function isTokenRejection(cause: unknown): boolean {
+  if (!(cause instanceof PostgrestError) || cause.status !== 401) {
+    return false;
+  }
+  const code = cause.body?.code ?? "";
+  if (/^[0-9A-Z]{5}$/.test(code)) {
+    return false; // a Postgres SQLSTATE: the token was accepted, the database said no
+  }
+  return (
+    code.startsWith("PGRST3") ||
+    code === "" ||
+    /jwt|jws/i.test(cause.body?.message ?? cause.message ?? "")
+  );
+}
+
 /** One GET against /rest/v1. `path` starts with the table or view name, query string included. */
 export async function pg<T>(token: string, path: string): Promise<T> {
   const res = await fetch(`${supabaseUrl()}/rest/v1/${path}`, {

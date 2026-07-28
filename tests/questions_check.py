@@ -324,6 +324,27 @@ def test_no_form_at_all_reports_nothing():
               questions.has_area_question("brand", "topic-0", "Sourcing") is False)
 
 
+def test_a_crash_over_a_current_question_is_corrected_to_needs_review():
+    """run_topic's crash arm writes a bare "failed" and re-raises, so a session dying in the gap
+    between the evaluator filing a form and the lead writing its terminal line used to bury a live
+    question under "failed". _enforce_terminal_status must flip that failed to needs_review, the
+    same correction the clean loop-end makes, so the blog is held for its answer. This is the
+    liquid-journey bug: score 57, two live Sourcing questions, shown as Failed with Retry/Send."""
+    with _Roots():
+        out = _seed_blog(score=57)
+        _write_questions(out, "topic-0", iteration=1, score=57)
+        # The crash line: exactly what run_topic's except arm appends before it re-raises.
+        runner._status_module().append_status(
+            str(out), "topic-0", stage="research", event="end",
+            iter=1, status="failed", note="RuntimeError: boom")
+
+        summary = runner._enforce_terminal_status("brand", "topic-0", out)
+        check("a crash over a current question folds to needs_review",
+              summary["status"] == "needs_review", f"got {summary['status']}")
+        check("the NEEDS_REVIEW marker is written beside it",
+              (out / "NEEDS_REVIEW").exists())
+
+
 def main():
     print("questions_check: the needs_review resolver and the Sourcing-question predicate. No "
           "model called, no real brand touched.")
@@ -338,7 +359,8 @@ def main():
                  test_a_mixed_form_is_reported_on_its_sourcing_question,
                  test_a_stale_form_reports_nothing_however_it_is_worded,
                  test_an_unreadable_form_reports_nothing_rather_than_raising,
-                 test_no_form_at_all_reports_nothing):
+                 test_no_form_at_all_reports_nothing,
+                 test_a_crash_over_a_current_question_is_corrected_to_needs_review):
         print(f"\n{test.__name__}")
         test()
     print(f"\n{CHECKS[0] - len(FAILURES)}/{CHECKS[0]} checks passed")

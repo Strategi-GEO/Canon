@@ -50,6 +50,7 @@ export function SelectState({
   loading,
   live,
   failed,
+  belowBar,
   needsReview,
   runsUnavailable,
   liveRunId,
@@ -80,8 +81,10 @@ export function SelectState({
   loading: boolean;
   /** Topic slugs in a live run right now, from GET /api/runs and the SSE stream. */
   live: ReadonlySet<string>;
-  /** Topic slugs whose last terminal status was failed. */
+  /** Topic slugs whose last terminal status was failed AND scored below 90. */
   failed: ReadonlySet<string>;
+  /** Topic slugs that ended failed but scored 90 to 94: yellow "below bar", not red. */
+  belowBar: ReadonlySet<string>;
   /** Topic slugs whose blog is held for the operator's answer (status needs_review). */
   needsReview: ReadonlySet<string>;
   /** True when /api/runs could not be reached, so whether a run is live is unknown. */
@@ -133,8 +136,8 @@ export function SelectState({
   const anchor = React.useRef<number | null>(null);
 
   const facts = React.useMemo(
-    () => ({ live, failed, needsReview, duplicates }),
-    [live, failed, needsReview, duplicates],
+    () => ({ live, failed, belowBar, needsReview, duplicates }),
+    [live, failed, belowBar, needsReview, duplicates],
   );
 
   const toggle = React.useCallback(

@@ -483,15 +483,77 @@ def claude_account_email() -> str | None:
 # System python (frozen apps cannot use sys.executable to create the venv)
 # ---------------------------------------------------------------------------
 
+def _runtime_python_stamp() -> str:
+    """Keys the persistent python copy's freshness. The app's tree sha changes every release,
+    so a new .app re-lays a fresh interpreter and an unchanged one is reused after a stat."""
+    bundle = bundled_tree_dir()
+    if bundle is not None:
+        try:
+            return (bundle / ".canon-tree-stamp").read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    return "unstamped"
+
+
+def stable_runtime_python() -> Path | None:
+    """The bundled interpreter at a PERSISTENT path, safe to bake into the engine's .venv.
+
+    bundled_python() lives inside the .app. macOS App Translocation runs a quarantined app
+    from an ephemeral /AppTranslocation/<uuid>/ mount whose path changes every launch and is
+    deleted on quit, so a .venv built against it dangles the instant the session ends (the
+    "could not create the Python virtual environment" failure on the second launch). python-
+    build-standalone is relocatable, so copy the runtime out to the data folder ONCE (stamped
+    like the tree) and hand THAT to venv; the base then never moves. Only macOS single-app
+    builds need it: Windows has no translocation and its onedir python path is already fixed,
+    and a source checkout has no bundle. Returns None only when nothing is bundled, so
+    find_system_python falls back to a PATH interpreter exactly as before."""
+    src = bundled_python()
+    if src is None:
+        return None
+    if not (IS_MAC and IS_FROZEN) or bundled_tree_dir() is None:
+        return src                          # path already stable (Windows onedir, dev bundle)
+
+    runtime_src = src.parent.parent         # .../runtimes/python
+    dest_root = data_tree_dir().parent / "runtime-python"
+    dest_py = dest_root / "bin" / "python3"
+    stamp_file = dest_root / ".python-stamp"
+    want = _runtime_python_stamp()
+    try:
+        have = stamp_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        have = None
+    if dest_py.exists() and have == want:
+        return dest_py
+
+    import shutil
+    tlog(f"materializing bundled python {have!r} -> {want!r} at {dest_root} "
+         f"(App Translocation makes the in-app path unstable)")
+    if dest_root.exists():
+        shutil.rmtree(dest_root, ignore_errors=True)
+    dest_root.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _copy_tree(runtime_src, dest_root)
+    except Exception as exc:
+        tlog(f"WARNING: bundled python copy failed ({exc}); falling back to the in-app interpreter")
+        return src
+    if not dest_py.exists():
+        tlog(f"WARNING: bundled python copy produced no interpreter at {dest_py}; using in-app one")
+        return src
+    stamp_file.write_text(want + "\n", encoding="utf-8")
+    return dest_py
+
+
 def find_system_python() -> str | None:
     """Return an interpreter able to create the engine's .venv, or None.
 
     Inside a PyInstaller app sys.executable is the app binary, which cannot
     create a venv, so a real interpreter is needed. The bundled one ships with
-    the app and is tried first: that is what lets a recipient who has never
-    installed Python run the engine. Falling back to PATH keeps source
-    checkouts and pre-bundling installs working."""
-    bundled = bundled_python()
+    the app and is tried first (via stable_runtime_python, which parks it at a
+    persistent path so App Translocation cannot pull the base out from under the
+    .venv): that is what lets a recipient who has never installed Python run the
+    engine. Falling back to PATH keeps source checkouts and pre-bundling installs
+    working."""
+    bundled = stable_runtime_python()
     if bundled is not None:
         tlog(f"using bundled python at {bundled}")
         return str(bundled)
