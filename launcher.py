@@ -392,14 +392,43 @@ def collect_research_creds() -> dict[str, str]:
     return found
 
 
+def env_file_research_creds() -> dict[str, str]:
+    """The RESEARCH_KEYS present in server/.env, or an empty dict.
+
+    THIS IS THE CENTRAL PATH, and it is what makes research work for a plain downloader rather
+    than only a developer. secrets_bootstrap fetches engine_secrets (migration 028) on operator
+    login and writes them here, so once the three research keys are seeded in engine_secrets,
+    every signed-in operator gets them exactly as they already get DATABASE_URL and the Supabase
+    keys. Without this, Firecrawl and DataForSEO came ONLY from a dev's ~/.claude.json, so a
+    downloader who just signed in had no research creds and every blog and report failed. Values
+    are never printed; they go into the engine subprocess env dict only, same as the rest."""
+    env_path = REPO_ROOT / "server" / ".env"
+    found: dict[str, str] = {}
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip()
+            if key in RESEARCH_KEYS and value:
+                found[key] = value
+    except OSError:
+        pass
+    return found
+
+
 def build_engine_env() -> dict[str, str]:
-    log("RESEARCH CREDS: looking for Firecrawl and DataForSEO credentials in ~/.claude.json")
+    log("RESEARCH CREDS: resolving Firecrawl and DataForSEO creds (server/.env, then ~/.claude.json)")
     env = dict(os.environ)  # subprocess env dict only; launcher's os.environ is never mutated
 
-    lifted = collect_research_creds()
-    for key, value in lifted.items():
-        # A var already exported in the shell wins, matching server/db.py's rule
-        # for deployments that inject config through the environment.
+    # CENTRAL first: server/.env is what secrets_bootstrap provisions from engine_secrets, so a
+    # signed-in downloader gets these. A var already exported in the shell still wins (setdefault),
+    # matching server/db.py's rule for deployments that inject config through the environment.
+    for key, value in env_file_research_creds().items():
+        env.setdefault(key, value)
+    # DEV-LOCAL fallback only: a developer's own Claude Code MCP setup in ~/.claude.json.
+    for key, value in collect_research_creds().items():
         env.setdefault(key, value)
 
     for key in RESEARCH_KEYS:
@@ -410,9 +439,9 @@ def build_engine_env() -> dict[str, str]:
         log("RESEARCH CREDS: WARNING, one or more research credentials resolved nowhere.")
         log("RESEARCH CREDS: WARNING, research fetches WILL FAIL and blogs CANNOT be generated on this machine.")
         log("RESEARCH CREDS: WARNING, the dashboard still works for viewing existing runs and outputs.")
-        log("RESEARCH CREDS: fix: get the Firecrawl and DataForSEO keys from the team admin, either")
-        log("RESEARCH CREDS: fix: via Claude Code MCP setup (they land in ~/.claude.json) or exported")
-        log("RESEARCH CREDS: fix: as FIRECRAWL_API_KEY, DATAFORSEO_USERNAME, DATAFORSEO_PASSWORD.")
+        log("RESEARCH CREDS: fix: seed FIRECRAWL_API_KEY, DATAFORSEO_USERNAME, DATAFORSEO_PASSWORD into")
+        log("RESEARCH CREDS: fix: engine_secrets (migration 028) so signing in provisions them to every")
+        log("RESEARCH CREDS: fix: operator; or for a local dev machine set them in ~/.claude.json / the shell.")
     else:
         log("RESEARCH CREDS: ok (all research credentials resolved; values not shown)")
     return env
