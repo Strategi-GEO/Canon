@@ -68,9 +68,6 @@ function UploadBlogEditor({
 
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [body, setBody] = React.useState("");
-  // A .docx cannot be shown in the markdown editor (it is binary, converted server-side), so a
-  // chosen one is staged and posted on its own path, which is what carries its Word comments in.
-  const [docxFile, setDocxFile] = React.useState<File | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
   // Set true when a first upload is refused because the topic already has a blog, so a hand-typed
@@ -82,32 +79,22 @@ function UploadBlogEditor({
       return;
     }
     setError(null);
-    if (!/\.(md|markdown|txt|docx)$/i.test(picked.name)) {
-      setError(
-        new ApiError(0, `${picked.name} is not a markdown or Word file. Load a .md or .docx.`, null),
-      );
+    if (!/\.(md|markdown|txt)$/i.test(picked.name)) {
+      setError(new ApiError(0, `${picked.name} is not a markdown file. Load a .md file.`, null));
       return;
     }
-    // A .docx is zipped, so it runs larger than the 1 MB the extracted markdown is held to; the
-    // engine enforces the real ceiling after unzipping. Markdown keeps the tight 1 MB bar.
-    const isDocx = /\.docx$/i.test(picked.name);
-    if (picked.size > (isDocx ? MAX_BYTES * 8 : MAX_BYTES)) {
+    if (picked.size > MAX_BYTES) {
       setError(new ApiError(0, `${picked.name} is too large to be an article.`, null));
       return;
     }
-    if (isDocx) {
-      setDocxFile(picked);
-    } else {
-      // A markdown file just fills the editor, so the operator reads and tweaks it before upload.
-      setDocxFile(null);
-      setBody(await picked.text());
-    }
+    // The file fills the editor, so the operator reads and tweaks it before upload.
+    setBody(await picked.text());
     if (inputRef.current) {
       inputRef.current.value = "";
     }
   }
 
-  const ready = docxFile !== null || body.trim() !== "";
+  const ready = body.trim() !== "";
 
   async function submit() {
     if (!ready) {
@@ -117,19 +104,13 @@ function UploadBlogEditor({
     setBusy(true);
     setError(null);
     try {
-      const uploaded: UploadBlogResult = docxFile
-        ? await api.uploadBlogDocx(brandSlug, topicSlug, docxFile, replace)
-        : await api.uploadBlog(brandSlug, topicSlug, body, replace);
-      const comments =
-        typeof uploaded.comments_added === "number" && uploaded.comments_added > 0
-          ? `, ${uploaded.comments_added} comment${uploaded.comments_added === 1 ? "" : "s"} imported`
-          : "";
+      const uploaded: UploadBlogResult = await api.uploadBlog(brandSlug, topicSlug, body, replace);
       const gateNote =
         uploaded.gates.ran && !uploaded.gates.passed
           ? ` ${uploaded.gates.failures.length} mechanical gate${uploaded.gates.failures.length === 1 ? "" : "s"} fail; edit on its page to clear them.`
           : "";
       toast.success(uploaded.replaced ? "Article replaced" : "Article uploaded", {
-        description: `"${title}" is in admin review with ${uploaded.word_count} words${comments}.${gateNote}`,
+        description: `"${title}" is in admin review with ${uploaded.word_count} words.${gateNote}`,
       });
       // Straight to the blog it created, on the Blogs tab, in internal review.
       router.push(brandHref(orgSlug, brandSlug, `/blogs/${uploaded.topic_slug}`));
@@ -169,41 +150,19 @@ function UploadBlogEditor({
         </Button>
       </div>
 
-      {docxFile ? (
-        // A staged Word file cannot render in the editor, so it stands in for it until sent.
-        <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2.5">
-          <span className="flex min-w-0 items-center gap-2 text-sm">
-            <FileUp className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-            <span className="truncate font-medium text-foreground">{docxFile.name}</span>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              Word comments import as review notes
-            </span>
-          </span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            disabled={busy}
-            onClick={() => setDocxFile(null)}
-          >
-            Use the editor
-          </Button>
-        </div>
-      ) : (
-        <MarkdownSplitEditor
-          value={body}
-          onChange={setBody}
-          disabled={busy}
-          placeholder={`Paste the finished article for "${title}" here, in markdown.`}
-          paneClassName="min-h-[64vh]"
-        />
-      )}
+      <MarkdownSplitEditor
+        value={body}
+        onChange={setBody}
+        disabled={busy}
+        placeholder={`Paste the finished article for "${title}" here, in markdown.`}
+        paneClassName="min-h-[64vh]"
+      />
 
       <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1">
         <input
           ref={inputRef}
           type="file"
-          accept=".md,.markdown,text/markdown,text/plain,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          accept=".md,.markdown,text/markdown,text/plain"
           className="sr-only"
           onChange={(event) => void loadFile(event.target.files?.[0])}
         />
@@ -215,11 +174,9 @@ function UploadBlogEditor({
           onClick={() => inputRef.current?.click()}
         >
           <FileUp data-icon="inline-start" aria-hidden />
-          Load a .md or .docx file
+          Load a .md file
         </Button>
-        <span className="text-xs text-muted-foreground">
-          A markdown file fills the editor; a Word .docx imports its comments too.
-        </span>
+        <span className="text-xs text-muted-foreground">A markdown file fills the editor.</span>
       </div>
 
       {error ? <FieldError error={error} className="mt-3" /> : null}

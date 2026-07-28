@@ -1,6 +1,13 @@
 import { blogState, clientCanSee, type BlogState, type BlogStateFacts } from "@/lib/blog-state";
 import { inList, pg, rpc } from "@/lib/server/postgrest";
-import type { PortalMonthReport, PortalReports } from "@/portal/types";
+import type {
+  PortalChannelDetail,
+  PortalChannelList,
+  PortalChannelPost,
+  PortalChannelState,
+  PortalMonthReport,
+  PortalReports,
+} from "@/portal/types";
 
 /**
  * THE FACT SET EVERY PRODUCER OWES blogState, written as a type rather than as a promise.
@@ -1424,5 +1431,168 @@ export async function buildDetail(
       fold.state === "approved" || fold.state === "published"
         ? fold.topic.client_approved_at
         : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Channel posts (LinkedIn / Medium) for the client portal. Deliberately OUTSIDE the topic fold:
+// a channel post has three stamps and no versions/questions/blogState ladder, so the state is
+// derived inline. Client-visible == sent_to_client_at not null, exactly the sent-and-beyond set.
+// The client-safe boundary holds by construction: only the client's own suggestions are read
+// (author=eq.client), and error/edits/context/author_email are never selected.
+// ---------------------------------------------------------------------------
+
+const CHANNELS = new Set(["linkedin", "medium"]);
+
+type ChannelPostRow = {
+  id: string;
+  channel: string;
+  source_topic_id: string | null;
+  created_at: string;
+  sent_to_client_at: string | null;
+  client_approved_at: string | null;
+  posted_at: string | null;
+};
+
+function channelState(
+  r: { posted_at: string | null; client_approved_at: string | null },
+  pending: number,
+): PortalChannelState {
+  if (r.posted_at) return "posted";
+  if (r.client_approved_at) return "approved";
+  return pending > 0 ? "changes_requested" : "sent";
+}
+
+/** A brand's channel posts, grouped ready-to-post vs posted. Null when the brand is unknown or
+ *  out of scope, or the channel is not one we know. */
+export async function buildChannelPosts(
+  token: string,
+  brandSlug: string,
+  channel: string,
+): Promise<PortalChannelList | null> {
+  if (!CHANNELS.has(channel)) return null;
+  const brand = await brandRow(token, brandSlug);
+  if (brand === null) return null;
+  const cid = brand.client_id;
+
+  const [posts, topics, openComments] = await Promise.all([
+    pg<ChannelPostRow[]>(
+      token,
+      `channel_posts?select=id,channel,source_topic_id,created_at,sent_to_client_at,` +
+        `client_approved_at,posted_at&client_id=eq.${cid}&channel=eq.${channel}` +
+        `&sent_to_client_at=not.is.null&order=created_at.desc`,
+    ),
+    pg<{ id: string; slug: string; title: string | null }[]>(
+      token,
+      `topics?select=id,slug,title&client_id=eq.${cid}&deleted_at=is.null`,
+    ),
+    pg<{ channel_post_id: string }[]>(
+      token,
+      `channel_post_comments?select=channel_post_id&client_id=eq.${cid}` +
+        `&author=eq.client&state=in.(open,applying)`,
+    ),
+  ]);
+
+  const topicById = new Map(topics.map((t) => [t.id, t]));
+  const pendingByPost = new Map<string, number>();
+  for (const c of openComments) {
+    pendingByPost.set(c.channel_post_id, (pendingByPost.get(c.channel_post_id) ?? 0) + 1);
+  }
+
+  const cards: PortalChannelPost[] = [];
+  for (const p of posts) {
+    const t = p.source_topic_id ? topicById.get(p.source_topic_id) : undefined;
+    if (t === undefined) continue; // source blog not visible: skip rather than show a slugless card
+    const pending = pendingByPost.get(p.id) ?? 0;
+    cards.push({
+      org: brand.org_slug,
+      brand: brand.client_slug,
+      brand_name: brand.client_name,
+      channel: p.channel,
+      topic_slug: t.slug,
+      title: t.title ?? t.slug,
+      state: channelState(p, pending),
+      created: p.created_at,
+      sent: p.sent_to_client_at,
+      approved: p.client_approved_at,
+      posted: p.posted_at,
+      comments_pending: pending > 0 ? pending : null,
+    });
+  }
+
+  return {
+    brand: brand.client_slug,
+    brand_name: brand.client_name,
+    channel,
+    ready: cards.filter((c) => c.posted === null),
+    posted: cards.filter((c) => c.posted !== null),
+  };
+}
+
+/** One channel post with its body and the client's own suggestions, keyed by the source blog's
+ *  slug (the URL key). Null when unknown/out of scope or never sent to this client. */
+export async function buildChannelPost(
+  token: string,
+  brandSlug: string,
+  channel: string,
+  topicSlug: string,
+): Promise<PortalChannelDetail | null> {
+  if (!CHANNELS.has(channel) || !validTopicSlug(topicSlug)) return null;
+  const brand = await brandRow(token, brandSlug);
+  if (brand === null) return null;
+  const cid = brand.client_id;
+
+  const topics = await pg<{ id: string; slug: string; title: string | null }[]>(
+    token,
+    `topics?select=id,slug,title&client_id=eq.${cid}` +
+      `&slug=eq.${encodeURIComponent(topicSlug)}&deleted_at=is.null`,
+  );
+  const topic = topics[0];
+  if (topic === undefined) return null;
+
+  const posts = await pg<(ChannelPostRow & { body: string })[]>(
+    token,
+    `channel_posts?select=id,channel,body,created_at,sent_to_client_at,client_approved_at,` +
+      `posted_at&client_id=eq.${cid}&channel=eq.${channel}` +
+      `&source_topic_id=eq.${topic.id}&sent_to_client_at=not.is.null`,
+  );
+  const p = posts[0];
+  if (p === undefined) return null;
+
+  const rows = await pg<
+    {
+      id: string;
+      selected_text: string;
+      instruction: string;
+      state: "open" | "applying" | "resolved" | "failed" | "dismissed";
+      created_at: string;
+    }[]
+  >(
+    token,
+    `channel_post_comments?select=id,selected_text,instruction,state,created_at` +
+      `&channel_post_id=eq.${p.id}&client_id=eq.${cid}&author=eq.client&order=created_at.asc`,
+  );
+  const pending = rows.filter((r) => r.state === "open" || r.state === "applying").length;
+
+  return {
+    brand: brand.client_slug,
+    brand_name: brand.client_name,
+    channel: p.channel,
+    topic_slug: topic.slug,
+    title: topic.title ?? topic.slug,
+    state: channelState(p, pending),
+    body: p.body,
+    created: p.created_at,
+    sent: p.sent_to_client_at,
+    approved: p.client_approved_at,
+    posted: p.posted_at,
+    comments: rows.map((r) => ({
+      id: r.id,
+      selected_text: r.selected_text,
+      instruction: r.instruction,
+      state: r.state,
+      created: r.created_at,
+      replies: [],
+    })),
   };
 }

@@ -24,10 +24,14 @@ DB-free by design: the endpoint resolves the source blog markdown (disk or recor
 body in, so this module depends only on runner.
 """
 import asyncio
+import logging
 import sys
+import uuid
 from contextlib import aclosing
 
 from . import runner
+
+log = logging.getLogger("geo-factory")
 
 CHANNELS = ("linkedin", "medium")
 
@@ -154,6 +158,77 @@ async def run_repurpose(client_slug, source_topic_slug, channel, source_body,
         if runner._terminal_line(runner._read_status(out_dir)[baseline:]) is None:
             append(str(out_dir), synthetic, stage="write", event="end", iter=1,
                    status="failed", note=f"repurpose error: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Spawning a run: register + launch + commit the post to the channel record on success. Shared
+# by the manual Generate route and the CMS auto-repurpose hook, so the two start a run the same
+# way and both land the body in channel_posts.
+# ---------------------------------------------------------------------------
+
+def _run_topics(client_slug, source_topic_slug, channel):
+    """The one-topic run descriptor: the synthetic slug is the SSE key; source_topic_slug and
+    channel let a channel tab match a live run to its source blog. tail_offset starts this run's
+    tail after any existing status lines, the offset discipline api_generate uses."""
+    synthetic = synthetic_slug(source_topic_slug, channel)
+    status_path = repurpose_dir(client_slug, source_topic_slug, channel) / "status.jsonl"
+    try:
+        tail_offset = status_path.stat().st_size
+    except OSError:
+        tail_offset = 0
+    return [{
+        "index": 0,
+        "topic_slug": synthetic,
+        "tail_offset": tail_offset,
+        "source_topic_slug": source_topic_slug,
+        "channel": channel,
+    }]
+
+
+def live_run_exists(client_slug, source_topic_slug, channel):
+    """Whether a repurpose run for this exact (blog, channel) is already live: the duplicate
+    guard, keyed on the synthetic slug, so two Generate clicks never race two sessions onto one
+    post.md, and the CMS hook never doubles a manual generate already in flight."""
+    synthetic = synthetic_slug(source_topic_slug, channel)
+    for run in runner.list_runs():
+        if (run.get("client") == client_slug and run.get("live")
+                and run.get("kind") == "repurpose"
+                and any(t.get("topic_slug") == synthetic for t in run.get("topics", []))):
+            return True
+    return False
+
+
+async def spawn(client_slug, source_topic_slug, channel, source_body):
+    """Register one repurpose run and launch it, returning (run_id, topics). The task commits the
+    generated post into channel_posts on success, so a finished generation is immediately a
+    reviewable record. Callers own the duplicate refusal (live_run_exists) and source resolution."""
+    run_id = uuid.uuid4().hex
+    topics = _run_topics(client_slug, source_topic_slug, channel)
+    runner.register_run(run_id, client_slug, topics, kind="repurpose", channel=channel)
+    task = asyncio.create_task(
+        _run_and_commit(run_id, client_slug, source_topic_slug, channel, source_body))
+    runner.register_run_task(run_id, task)
+    task.add_done_callback(lambda _t: runner._discard_run_task(run_id))
+    return run_id, topics
+
+
+async def _run_and_commit(run_id, client_slug, source_topic_slug, channel, source_body):
+    try:
+        await run_repurpose(client_slug, source_topic_slug, channel, source_body, run_id=run_id)
+        art = artifact(client_slug, source_topic_slug, channel)
+        if art and (art.get("content") or "").strip():
+            # Lazy import: channel.py imports this module, so a top-level import would cycle.
+            from . import channel as channel_mod
+            await asyncio.to_thread(
+                channel_mod.commit_post, client_slug, source_topic_slug, channel,
+                art["content"])
+    except Exception:
+        # CancelledError is not an Exception, so a stop unwinds past this into the finally. A real
+        # crash already left a failed line in status.jsonl.
+        log.exception("repurpose run %s for %s/%s/%s crashed",
+                      run_id, client_slug, source_topic_slug, channel)
+    finally:
+        runner.finish_run(run_id)
 
 
 # ---------------------------------------------------------------------------

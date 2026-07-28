@@ -446,23 +446,16 @@ export function SelectState({
       ) : null}
 
       <Card className="mb-4 p-0">
-        {/* items-center, not items-start: the left side is one line of 12px text and the right
-            is a 32px control, so top aligning them lined the text up with the toggle's top
-            border and nothing else. Centring is what makes a toolbar read as one bar. */}
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border px-4 py-2.5">
-          <div className="min-w-56 flex-1">
-            <p className="machine text-xs text-muted-foreground">
-              Columns 1, 2 and 5 are the brief: topic, what it covers, target prompts. Every
-              other column reaches the writer as guidance, under its own header. The prompts
-              themselves are on the Content Roadmap tab.
+        {/* The brief-explainer paragraph was removed on request so the table starts at its
+            headings. The archived note stays, but only draws its bar when there is one, so the
+            common case has no empty strip above the table. */}
+        {roadmap.archived ? (
+          <div className="border-b border-border px-4 py-2.5">
+            <p className="machine text-xs wrap-break-word text-muted-foreground/70">
+              archived: {roadmap.archived}
             </p>
-            {roadmap.archived ? (
-              <p className="machine mt-1 text-xs wrap-break-word text-muted-foreground/70">
-                archived: {roadmap.archived}
-              </p>
-            ) : null}
           </div>
-        </div>
+        ) : null}
 
         {roadmap.warnings.length > 0 ? (
           <ul className="border-b border-border bg-review-bg px-4 py-2.5">

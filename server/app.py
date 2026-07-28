@@ -48,6 +48,8 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
 from pydantic import BaseModel
 
 from . import analysis_gen, auth, blog_edit, blog_upload, client_answers, db, describe, docx_export, facts_gen, ledger, report_gen, repurpose, roadmap, roadmap_gen, runner, sync
+# Aliased: many channel routes take a `channel` path param that would shadow the bare module.
+from . import channel as channel_mod
 # Aliased for the same reason clients is: "questions" is the natural name for the list of
 # questions inside a handler, and the shadowing bug that causes is silent.
 from . import questions as questions_mod
@@ -58,6 +60,7 @@ from . import clients as clients_mod
 # here as a router and nowhere else: no pipeline module imports it, and deleting
 # server/cms/ plus these two lines removes the feature whole.
 from .cms import router as cms_router
+from .cms import routes as cms_routes  # for the after-publish hook (channel auto-repurpose)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INDEX_HTML = REPO_ROOT / "web" / "index.html"
@@ -183,6 +186,7 @@ async def _fail_stranded_comment_applies():
     async def sweep():
         try:
             await asyncio.to_thread(blog_edit.reconcile_stranded)
+            await asyncio.to_thread(channel_mod.reconcile_stranded)
         except Exception:
             log.exception("stranded-comment sweep failed; serving anyway")
 
@@ -2787,7 +2791,7 @@ async def api_upload_blog(slug: str, topic: str, payload: UploadBlogRequest,
 
 
 def _upload_row_or_refuse(slug: str, topic: str, user: auth.Identity) -> dict:
-    """The shared preamble for every upload door (markdown and .docx): the roadmap row the
+    """The shared preamble for the upload door: the roadmap row the
     slug names, or a refusal. THE ROADMAP IS THE AUTHORITY on what may be uploaded and the
     title/scope/prompts come from it, never from the browser, exactly as api_generate re-reads
     its rows. NO _topic_or_404 and NO _require_done: a first upload's topic does not exist yet
@@ -2810,35 +2814,6 @@ def _upload_row_or_refuse(slug: str, topic: str, user: auth.Identity) -> dict:
                    f"own writes are not raced",
         )
     return row
-
-
-@app.post("/api/clients/{slug}/blogs/{topic}/upload-docx")
-async def api_upload_blog_docx(slug: str, topic: str, replace: bool = False,
-                              file: UploadFile = File(...),
-                              user: auth.Identity = Depends(auth.require_admin)):
-    """Ingest a Word .docx in place of markdown, carrying its tracked comments into the review
-    rail. The body becomes the article and each Word comment becomes an OPEN change request on
-    the passage it bracketed, so the operator resolves them one by one with Claude exactly as
-    they would a client's suggestion. Same warrant and same downstream path as api_upload_blog;
-    the only difference is a converter in front and the comments behind. `replace` is a query
-    param because the payload is the multipart file, not JSON."""
-    row = _upload_row_or_refuse(slug, topic, user)
-    data = await file.read()
-    if len(data) > blog_upload.MAX_BLOG_BYTES * 8:
-        # A .docx is zipped XML plus any embedded media, so it runs larger than the 1 MB the
-        # extracted markdown is held to. Eight times is generous headroom for a text article
-        # while still refusing a whole media deck uploaded by mistake before it is unzipped.
-        raise HTTPException(status_code=413, detail="that .docx is too large to be an article")
-    async with blog_edit.APPLY_LOCK:
-        try:
-            return await asyncio.to_thread(
-                blog_upload.upload_docx, slug, topic,
-                row.get("topic") or topic, row.get("covers") or "",
-                row.get("prompts") or [], data,
-                getattr(user, "email", "") or "", bool(replace),
-            )
-        except blog_upload.UploadError as exc:
-            raise HTTPException(status_code=exc.status, detail=exc.detail)
 
 
 class NewBlogRequest(BaseModel):
@@ -3296,26 +3271,15 @@ def _resolve_blog_markdown(slug, topic_slug):
     return _record_artifact(slug, topic_slug, "blog.md")
 
 
-async def _repurpose_task(run_id, slug, topic_slug, channel, source_body):
-    try:
-        await repurpose.run_repurpose(slug, topic_slug, channel, source_body, run_id=run_id)
-    except Exception:
-        # CancelledError is not an Exception, so a stop unwinds past this into the finally, exactly
-        # as _batch_task relies on. A real crash already left a failed line in status.jsonl.
-        log.exception("repurpose run %s for %s/%s/%s crashed", run_id, slug, topic_slug, channel)
-    finally:
-        runner.finish_run(run_id)
-
-
 @app.post("/api/clients/{slug}/repurpose", status_code=202)
 async def api_repurpose(slug: str, body: RepurposeRequest,
                         user: auth.Identity = Depends(auth.require_admin)):
-    """Start one repurpose run. Mirrors api_generate: resolve, refuse duplicates, register the
-    run (so it is visible and stoppable before the task is scheduled), launch the task."""
+    """Start one repurpose run. Mirrors api_generate: resolve, refuse duplicates, spawn the run
+    (register + launch + commit-on-success live in repurpose.spawn, shared with the CMS hook)."""
     _client_or_404(slug, user)
 
-    channel = (body.channel or "").strip().lower()
-    if channel not in repurpose.CHANNELS:
+    the_channel = (body.channel or "").strip().lower()
+    if the_channel not in repurpose.CHANNELS:
         raise HTTPException(status_code=400,
                             detail=f"unknown channel {body.channel!r}; expected one of "
                                    f"{', '.join(repurpose.CHANNELS)}")
@@ -3331,38 +3295,22 @@ async def api_repurpose(slug: str, body: RepurposeRequest,
         raise HTTPException(status_code=404,
                             detail=f"no shipped blog for {topic_slug!r} to repurpose")
 
-    # Duplicate protection, keyed on the SYNTHETIC slug: one live repurpose per (blog, channel).
-    # A second is refused rather than run, so two clicks do not race two sessions onto one post.md.
-    synthetic = repurpose.synthetic_slug(topic_slug, channel)
-    for run in runner.list_runs():
-        if (run.get("client") == slug and run.get("live")
-                and run.get("kind") == "repurpose"):
-            if any(t.get("topic_slug") == synthetic for t in run.get("topics", [])):
-                raise HTTPException(status_code=409,
-                                    detail=f"a {channel} repurpose for this blog is already "
-                                           f"running")
+    # A regenerate must never replace bytes the client already accepted: mark_posted gates only on
+    # client_approved_at, so overwriting an approved or posted post would ship un-approved text.
+    # Refuse it before spending a run; commit_post's WHERE is the DB-level backstop for the race.
+    existing = channel_mod.get_post(slug, topic_slug, the_channel)
+    if existing and existing["state"] in ("approved", "posted"):
+        raise HTTPException(status_code=409,
+                            detail=f"this {the_channel} post is {existing['state']} and locked; "
+                                   f"it cannot be regenerated")
 
-    run_id = uuid.uuid4().hex
-    # status.jsonl survives across regenerates, so start this run's tail after the existing lines
-    # (0 on the first run), the same offset discipline api_generate uses.
-    status_path = repurpose.repurpose_dir(slug, topic_slug, channel) / "status.jsonl"
-    try:
-        tail_offset = status_path.stat().st_size
-    except OSError:
-        tail_offset = 0
-    topics = [{
-        "index": 0,
-        "topic_slug": synthetic,
-        "tail_offset": tail_offset,
-        # Carried for the UI: the synthetic slug is the SSE key, but the tab matches a run to a
-        # published blog by its source slug and channel.
-        "source_topic_slug": topic_slug,
-        "channel": channel,
-    }]
-    runner.register_run(run_id, slug, topics, kind="repurpose", channel=channel)
-    task = asyncio.create_task(_repurpose_task(run_id, slug, topic_slug, channel, source_body))
-    runner.register_run_task(run_id, task)
-    task.add_done_callback(lambda _task: runner._discard_run_task(run_id))
+    # One live repurpose per (blog, channel): a second is refused, not run, so two clicks never
+    # race two sessions onto one post.md.
+    if repurpose.live_run_exists(slug, topic_slug, the_channel):
+        raise HTTPException(status_code=409,
+                            detail=f"a {the_channel} repurpose for this blog is already running")
+
+    run_id, topics = await repurpose.spawn(slug, topic_slug, the_channel, source_body)
     return {"run_id": run_id, "topics": topics}
 
 
@@ -3393,6 +3341,222 @@ async def api_repurpose_artifact(slug: str, topic_slug: str, channel: str,
     if art is None:
         raise HTTPException(status_code=404, detail="not generated")
     return art
+
+
+# ---------------------------------------------------------------------------
+# Channel posts: the review lifecycle for a generated LinkedIn/Medium piece, on its OWN track
+# (server/channel.py, channel_posts + channel_post_comments). A separate cousin of the blog
+# review loop: no score, no eval, no questions, no ledger. generate -> created -> sent ->
+# client requests changes / approves -> posted. The comment machinery reuses blog_edit's
+# tool-less Claude editor against the post body.
+# ---------------------------------------------------------------------------
+
+def _channel_or_400(channel):
+    ch = (channel or "").strip().lower()
+    if ch not in channel_mod.CHANNELS:
+        raise HTTPException(status_code=400, detail=f"unknown channel {channel!r}")
+    return ch
+
+
+def _channel_topic_guard(slug, topic, channel_value, user):
+    """Shared preamble for every channel review route: client, slug-format, channel. Returns the
+    normalised channel."""
+    _client_or_404(slug, user)
+    if runner.slugify(topic) != topic:
+        raise HTTPException(status_code=404, detail="not found")
+    return _channel_or_400(channel_value)
+
+
+@app.get("/api/clients/{slug}/channel/{channel}")
+async def api_channel_posts(slug: str, channel: str,
+                            user: auth.Identity = Depends(auth.require_user)):
+    """Every generated post for a brand on one channel, newest first: the Created-tab table."""
+    _client_or_404(slug, user)
+    ch = _channel_or_400(channel)
+    return {"posts": await asyncio.to_thread(channel_mod.list_posts, slug, ch)}
+
+
+@app.get("/api/clients/{slug}/channel/{channel}/{topic}")
+async def api_channel_post(slug: str, channel: str, topic: str,
+                           user: auth.Identity = Depends(auth.require_user)):
+    """One generated post with its body and delivery state. 404 when it was never generated."""
+    ch = _channel_topic_guard(slug, topic, channel, user)
+    post = await asyncio.to_thread(channel_mod.get_post, slug, topic, ch)
+    if post is None:
+        raise HTTPException(status_code=404, detail="not generated")
+    return post
+
+
+@app.get("/api/clients/{slug}/channel/{channel}/{topic}/comments")
+async def api_channel_comments(slug: str, channel: str, topic: str,
+                               user: auth.Identity = Depends(auth.require_user)):
+    ch = _channel_topic_guard(slug, topic, channel, user)
+    return {"comments": await asyncio.to_thread(channel_mod.read_comments, slug, topic, ch)}
+
+
+@app.post("/api/clients/{slug}/channel/{channel}/{topic}/comments", status_code=202)
+async def api_add_channel_comment(slug: str, channel: str, topic: str, body: CommentRequest,
+                                  user: auth.Identity = Depends(auth.require_admin)):
+    """File one selection comment on a post and start the Claude session that applies it. 202
+    with the record: the browser watches the comment list, exactly as the blog flow does."""
+    ch = _channel_topic_guard(slug, topic, channel, user)
+    if await asyncio.to_thread(channel_mod.get_post, slug, topic, ch) is None:
+        raise HTTPException(status_code=404, detail="not generated")
+    if repurpose.live_run_exists(slug, topic, ch):
+        raise HTTPException(status_code=409,
+                            detail=f"a {ch} generation for this blog is live; edit once it "
+                                   f"finishes so the engine's own write is not raced")
+    if await asyncio.to_thread(channel_mod.in_flight_count, slug, topic, ch) >= channel_mod.MAX_IN_FLIGHT:
+        raise HTTPException(status_code=409,
+                            detail=f"{channel_mod.MAX_IN_FLIGHT} changes are already in flight; wait "
+                                   f"for one to land before filing another")
+    selected = body.selected_text.strip()
+    instruction = body.instruction.strip()
+    if not selected or not instruction:
+        raise HTTPException(status_code=422,
+                            detail="a comment needs both the selected text and an instruction")
+    try:
+        comment = await asyncio.to_thread(
+            channel_mod.add_comment, slug, topic, ch,
+            selected_text=selected, instruction=instruction,
+            context_before=body.context_before, context_after=body.context_after,
+            author="operator", author_email=getattr(user, "email", "") or "")
+    except channel_mod.EditError as exc:
+        # The one refusal add_comment raises is the approved lock.
+        raise HTTPException(status_code=409, detail=str(exc))
+    channel_mod.start_apply(slug, topic, ch, comment["id"])
+    return comment
+
+
+@app.post("/api/clients/{slug}/channel/{channel}/{topic}/comments/{comment_id}/resolve",
+          status_code=202)
+async def api_resolve_channel_comment(slug: str, channel: str, topic: str, comment_id: str,
+                                      user: auth.Identity = Depends(auth.require_admin)):
+    """Send one waiting comment to Claude (a client suggestion, or a failed retry). 202 with the
+    flipped record; the in-flight cap rides inside the flip (channel_mod.resolve_comment)."""
+    ch = _channel_topic_guard(slug, topic, channel, user)
+    if repurpose.live_run_exists(slug, topic, ch):
+        raise HTTPException(status_code=409,
+                            detail=f"a {ch} generation for this blog is live; resolve once it "
+                                   f"finishes")
+    found = await asyncio.to_thread(channel_mod.get_comment, slug, topic, ch, comment_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail=f"no comment {comment_id!r}")
+    flipped = await asyncio.to_thread(channel_mod.resolve_comment, slug, topic, ch, comment_id)
+    if flipped is None:
+        fresh = await asyncio.to_thread(channel_mod.get_comment, slug, topic, ch, comment_id)
+        state = (fresh or found)["state"]
+        if state in ("open", "failed"):
+            raise HTTPException(status_code=409,
+                                detail=f"{channel_mod.MAX_IN_FLIGHT} changes are already in flight; "
+                                       f"wait for one to land")
+        raise HTTPException(status_code=409,
+                            detail=f"this change is {state}; only an open or failed one can be "
+                                   f"resolved with Claude")
+    channel_mod.start_apply(slug, topic, ch, comment_id)
+    return flipped
+
+
+@app.delete("/api/clients/{slug}/channel/{channel}/{topic}/comments/{comment_id}",
+            status_code=204)
+async def api_delete_channel_comment(slug: str, channel: str, topic: str, comment_id: str,
+                                     user: auth.Identity = Depends(auth.require_admin)):
+    """Dismiss one comment: closed without an edit, never deleted (the client can see their own
+    suggestion). An applying one is refused; it dismisses once it lands."""
+    ch = _channel_topic_guard(slug, topic, channel, user)
+    found = await asyncio.to_thread(channel_mod.get_comment, slug, topic, ch, comment_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail=f"no comment {comment_id!r}")
+    if found.get("state") == "applying":
+        raise HTTPException(status_code=409,
+                            detail="this change is still being applied; dismiss once it lands")
+    if await asyncio.to_thread(channel_mod.dismiss_comment, slug, topic, ch, comment_id) is None:
+        raise HTTPException(status_code=409,
+                            detail="this change is still being applied; dismiss once it lands")
+    return Response(status_code=204)
+
+
+@app.post("/api/clients/{slug}/channel/{channel}/{topic}/content")
+async def api_save_channel_content(slug: str, channel: str, topic: str, body: ContentRequest,
+                                   user: auth.Identity = Depends(auth.require_admin)):
+    """Save the operator's own edit of the post body. Synchronous, like the blog content save."""
+    ch = _channel_topic_guard(slug, topic, channel, user)
+    if await asyncio.to_thread(channel_mod.get_post, slug, topic, ch) is None:
+        raise HTTPException(status_code=404, detail="not generated")
+    if repurpose.live_run_exists(slug, topic, ch):
+        raise HTTPException(status_code=409,
+                            detail=f"a {ch} generation for this blog is live; edit once it "
+                                   f"finishes")
+    text = body.body
+    if not text.strip():
+        raise HTTPException(status_code=422, detail="an empty post cannot be saved")
+    if len(text.encode("utf-8")) > 1_000_000:
+        raise HTTPException(status_code=413, detail="the post is over 1 MB")
+    async with channel_mod.APPLY_LOCK:
+        try:
+            word_count = await asyncio.to_thread(channel_mod.save_content, slug, topic, ch, text)
+        except channel_mod.EditError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+    return {"word_count": word_count}
+
+
+@app.post("/api/clients/{slug}/channel/{channel}/{topic}/send")
+async def api_send_channel_post(slug: str, channel: str, topic: str,
+                                user: auth.Identity = Depends(auth.require_admin)):
+    """Release one post to the client as Ready to post, first send and Send again both. Refused
+    (409) over an open client suggestion, exactly as the blog send is."""
+    ch = _channel_topic_guard(slug, topic, channel, user)
+    if await asyncio.to_thread(channel_mod.get_post, slug, topic, ch) is None:
+        raise HTTPException(status_code=404, detail="not generated")
+    email = getattr(user, "email", "") or ""
+    state = await asyncio.to_thread(channel_mod.mark_sent, slug, topic, ch, email)
+    if state is None:
+        raise HTTPException(status_code=409,
+                            detail="the client's suggestions are still open, or the post is "
+                                   "already approved; resolve each one before sending again")
+    return state
+
+
+@app.post("/api/clients/{slug}/channel/{channel}/{topic}/posted")
+async def api_mark_channel_posted(slug: str, channel: str, topic: str,
+                                  user: auth.Identity = Depends(auth.require_admin)):
+    """Mark the piece live on the channel. The one act left after the client approves: gated on
+    the approval, because the client accepts the exact bytes before they go out."""
+    ch = _channel_topic_guard(slug, topic, channel, user)
+    if await asyncio.to_thread(channel_mod.get_post, slug, topic, ch) is None:
+        raise HTTPException(status_code=404, detail="not generated")
+    email = getattr(user, "email", "") or ""
+    state = await asyncio.to_thread(channel_mod.mark_posted, slug, topic, ch, email)
+    if state is None:
+        raise HTTPException(status_code=409,
+                            detail="this post is not ready to mark posted: the client must "
+                                   "approve it first, and it must not already be posted")
+    return state
+
+
+# The CMS auto-repurpose: a successful CMS publish fires a LinkedIn and a Medium variation from
+# the just-posted blog. Registered as an after-publish hook so server/cms/ stays decoupled and
+# deletable (it knows nothing about channels; app.py owns the coupling).
+async def _auto_repurpose_on_publish(slug, topic_slug):
+    """Spawn a LinkedIn and a Medium post from the freshly published blog, skipping any channel
+    that already has a post (never clobber a hand-made one) or one already generating. The blog's
+    just-posted bytes ARE its current committed body, which is what a repurpose reads. Best-effort:
+    every failure is logged, never raised, so it can never turn a good publish into a failed one."""
+    body = await asyncio.to_thread(_resolve_blog_markdown, slug, topic_slug)
+    if not body:
+        return
+    for ch in repurpose.CHANNELS:
+        if await asyncio.to_thread(channel_mod.post_id, slug, topic_slug, ch) is not None:
+            continue
+        if repurpose.live_run_exists(slug, topic_slug, ch):
+            continue
+        try:
+            await repurpose.spawn(slug, topic_slug, ch, body)
+        except Exception:
+            log.exception("auto-repurpose spawn failed for %s/%s/%s", slug, topic_slug, ch)
+
+
+cms_routes.after_publish(_auto_repurpose_on_publish)
 
 
 # ---------------------------------------------------------------------------

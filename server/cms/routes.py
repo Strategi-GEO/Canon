@@ -25,6 +25,17 @@ log = logging.getLogger("geo-factory")
 
 router = APIRouter(tags=["cms"])
 
+# Coroutines to run after a SUCCESSFUL push, each fn(slug, topic_slug). Empty unless something
+# registers, which keeps this router deletable whole: the channel auto-repurpose (app.py) hooks
+# in here at import, and with server/cms/ deleted the registration simply never happens. A hook
+# that raises is logged and swallowed, never allowed to turn a good publish into a failed one.
+_after_publish = []
+
+
+def after_publish(fn):
+    """Register a coroutine fn(slug, topic_slug) to run after every successful CMS push."""
+    _after_publish.append(fn)
+
 
 def _status_for(upstream):
     """The status this endpoint answers with, given the CMS's own status.
@@ -121,6 +132,16 @@ async def api_publish_blog(slug: str, topic_slug: str, request: Request):
         slug, topic_slug, result,
         email=getattr(request.state, "admin_email", None),
     )
+
+    # After the record, fire any post-publish hooks (the channel auto-repurpose). Best-effort:
+    # the article is already in the CMS, so a hook failure is logged and never surfaced as a
+    # failed publish. Hooks only SPAWN work (they return once a run is scheduled), so this does
+    # not hold the operator's request open on a generation.
+    for hook in list(_after_publish):
+        try:
+            await hook(slug, topic_slug)
+        except Exception:
+            log.exception("after-publish hook failed for %s/%s", slug, topic_slug)
 
     # The CMS's shape, flattened to what the drawer actually renders. `skipped`
     # means a human already advanced the post past draft, which the UI must show

@@ -10,7 +10,14 @@
 // (RLS-scoped, so it only ever holds their orgs). resolveClientRoute() is that one resolver,
 // used by the client catch-all page to render and by the shell to light the active nav, so
 // the two can never disagree about where the caller is.
-import { ChartColumnIncreasing, FileText, LayoutDashboard, Map as MapIcon } from "lucide-react";
+import {
+  BriefcaseBusiness,
+  ChartColumnIncreasing,
+  Feather,
+  FileText,
+  LayoutDashboard,
+  Map as MapIcon,
+} from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 export type NavItem = {
@@ -32,6 +39,11 @@ export const BRAND_NAV: NavItem[] = [
   { section: "", label: "Overview", icon: LayoutDashboard },
   { section: "/roadmap", label: "Content Roadmap", icon: MapIcon },
   { section: "/blogs", label: "Blogs", icon: FileText },
+  // The distribution channels. Same section words and icons as the admin dashboard, so a client
+  // reading over an operator's shoulder sees the same tabs. Each shows two sub-tabs, Ready to post
+  // and Posted, as query-param tabs within the view (not URL sections).
+  { section: "/linkedin", label: "LinkedIn", icon: BriefcaseBusiness },
+  { section: "/medium", label: "Medium", icon: Feather },
   // The monthly performance report, but only the versions the team has shared. Same section
   // word and icon as the admin dashboard's Reports row, so a client reading over an operator's
   // shoulder sees the same tab.
@@ -48,7 +60,12 @@ const RESERVED = new Set(["admin", "login", "api", "_next", "favicon.ico"]);
  */
 // "resources" is deliberately absent: it is not a client section (migration 024), so
 // /{brand}/resources resolves to not-found rather than a page.
-const SECTIONS = new Set(["blogs", "roadmap", "reports"]);
+const SECTIONS = new Set(["blogs", "roadmap", "reports", "linkedin", "medium"]);
+
+// Sections that carry a per-item detail URL, /{brand}/<section>/<topic>. Blogs open a single
+// article; linkedin and medium open a single post. Every other section is a flat page, so a third
+// segment under it is not-found. This is the ONE guard the length-3 and length-4 arms consult.
+const TOPIC_SECTIONS = new Set(["blogs", "linkedin", "medium"]);
 
 export type OrgLite = {
   slug: string;
@@ -189,11 +206,11 @@ export function resolveClientRoute(pathname: string, orgs: OrgLite[]): ClientRou
   if (parts.length === 3) {
     const [a, b, c] = parts;
     if (SECTIONS.has(b)) {
-      if (b !== "blogs") return { kind: "not-found" };
+      if (!TOPIC_SECTIONS.has(b)) return { kind: "not-found" };
       const owner = brandToOrg.get(a);
       if (!owner) return { kind: "not-found" };
-      if (!isSingle(owner)) return { kind: "redirect", to: `/${enc(owner.slug)}/${enc(a)}/blogs/${enc(c)}` };
-      return { kind: "brand", org: owner.slug, brand: a, section: "/blogs", topic: c };
+      if (!isSingle(owner)) return { kind: "redirect", to: `/${enc(owner.slug)}/${enc(a)}/${b}/${enc(c)}` };
+      return { kind: "brand", org: owner.slug, brand: a, section: `/${b}`, topic: c };
     }
     if (!SECTIONS.has(c)) return { kind: "not-found" };
     const org = orgBySlug.get(a);
@@ -204,11 +221,11 @@ export function resolveClientRoute(pathname: string, orgs: OrgLite[]): ClientRou
 
   if (parts.length === 4) {
     const [a, b, c, d] = parts;
-    if (c !== "blogs") return { kind: "not-found" };
+    if (!TOPIC_SECTIONS.has(c)) return { kind: "not-found" };
     const org = orgBySlug.get(a);
     if (!org || !hasBrand(org, b)) return { kind: "not-found" };
-    if (isSingle(org)) return { kind: "redirect", to: `/${enc(b)}/blogs/${enc(d)}` };
-    return { kind: "brand", org: a, brand: b, section: "/blogs", topic: d };
+    if (isSingle(org)) return { kind: "redirect", to: `/${enc(b)}/${c}/${enc(d)}` };
+    return { kind: "brand", org: a, brand: b, section: `/${c}`, topic: d };
   }
 
   return { kind: "not-found" };

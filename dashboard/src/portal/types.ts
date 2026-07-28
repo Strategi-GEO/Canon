@@ -189,6 +189,58 @@ export type ApproveBody = {
   version: string | null;
 };
 
+// ---------------------------------------------------------------------------
+// Channel posts (LinkedIn / Medium) as a client reads them. A subset of the admin machine: no
+// score, no versions, no questions. The client sees only posts sent to them, in two buckets
+// (Ready to post / Posted), and may request a change or approve, exactly like a blog.
+// ---------------------------------------------------------------------------
+
+/** The client-visible states of a channel post. A subset of the admin ChannelPostState: the
+ *  client never sees `generating` or `created` (the post is internal then). */
+export type PortalChannelState = "sent" | "changes_requested" | "approved" | "posted";
+
+export type PortalChannelPost = {
+  org: string;
+  brand: string;
+  brand_name: string;
+  channel: string;
+  /** The source blog's slug: the URL key for the detail page, mirroring the admin surface. */
+  topic_slug: string;
+  title: string;
+  state: PortalChannelState;
+  created: string;
+  sent: string | null;
+  approved: string | null;
+  posted: string | null;
+  /** Open suggestions the client has filed, still with the team. Null when none. */
+  comments_pending: number | null;
+};
+
+export type PortalChannelList = {
+  brand: string;
+  brand_name: string;
+  channel: string;
+  /** Not yet posted: sent, in a change round, or approved. */
+  ready: PortalChannelPost[];
+  posted: PortalChannelPost[];
+};
+
+export type PortalChannelDetail = {
+  brand: string;
+  brand_name: string;
+  channel: string;
+  topic_slug: string;
+  title: string;
+  state: PortalChannelState;
+  body: string;
+  created: string;
+  sent: string | null;
+  approved: string | null;
+  posted: string | null;
+  /** The client's own suggestions, oldest first. Channel posts carry no replies. */
+  comments: PortalComment[] | null;
+};
+
 /**
  * One file in the brand's own fact base, exactly as GET /api/clients/{slug}/resources
  * answers it. Same four fields the admin surface reads, and deliberately the same four: this

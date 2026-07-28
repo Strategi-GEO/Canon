@@ -4,6 +4,8 @@ import type {
   ApproveBody,
   Overview,
   PortalBlogDetail,
+  PortalChannelDetail,
+  PortalChannelList,
   PortalReports,
   PortalRoadmap,
   SuggestBody,
@@ -126,6 +128,30 @@ export const api = {
     request<unknown>(
       `/api/blog/${encodeURIComponent(brand)}/${encodeURIComponent(topic)}/suggest`,
       { method: "POST", body },
+    ),
+
+  // Channel posts (LinkedIn / Medium): the same review-loop wires as blogs, keyed additionally by
+  // channel. suggest and approve go through the portal's own Route Handlers, which call the
+  // database's definer functions with the caller's JWT.
+  channelList: (brand: string, channel: string, signal?: AbortSignal) =>
+    request<PortalChannelList>(
+      `/api/channel/${encodeURIComponent(brand)}/${encodeURIComponent(channel)}`,
+      { signal },
+    ),
+  channelPost: (brand: string, channel: string, topic: string, signal?: AbortSignal) =>
+    request<PortalChannelDetail>(
+      `/api/channel/${encodeURIComponent(brand)}/${encodeURIComponent(channel)}/${encodeURIComponent(topic)}`,
+      { signal },
+    ),
+  suggestChannelChange: (brand: string, channel: string, topic: string, body: SuggestBody) =>
+    request<unknown>(
+      `/api/channel/${encodeURIComponent(brand)}/${encodeURIComponent(channel)}/${encodeURIComponent(topic)}/suggest`,
+      { method: "POST", body },
+    ),
+  approveChannelPost: (brand: string, channel: string, topic: string) =>
+    request<unknown>(
+      `/api/channel/${encodeURIComponent(brand)}/${encodeURIComponent(channel)}/${encodeURIComponent(topic)}/approve`,
+      { method: "POST" },
     ),
   roadmap: (brand: string, signal?: AbortSignal, month?: number) =>
     request<PortalRoadmap>(

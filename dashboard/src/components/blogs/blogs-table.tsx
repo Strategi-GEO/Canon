@@ -13,6 +13,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
 import { adminFailedTag, scoreClass } from "@/lib/blog-score";
+import { blogLabels } from "@/lib/blog-label";
 import { DeleteBlogDialog } from "@/components/blogs/delete-blog-dialog";
 import { formatAbsolute, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -103,6 +104,10 @@ export function BlogsTable<T extends BlogTableRow>({
 }) {
   const admin = audience === "admin";
   const canDelete = admin && brandSlug !== undefined && onDeleted !== undefined;
+  // The source-grouped identifier for every row, computed over the WHOLE list so the running
+  // counts are right: AI blogs number, uploaded blogs letter. Cheap enough to recompute per render
+  // (a sort over the current page's blogs), so no memo.
+  const labels = blogLabels(blogs);
   return (
     <Table>
       <TableHeader>
@@ -163,6 +168,7 @@ export function BlogsTable<T extends BlogTableRow>({
           <Row
             key={blog.topic_slug}
             blog={blog}
+            label={labels.get(blog.topic_slug) ?? null}
             state={stateOf(blog)}
             audience={audience}
             waiting={waiting.get(blog.topic_slug) ?? null}
@@ -180,6 +186,7 @@ export function BlogsTable<T extends BlogTableRow>({
 
 function Row<T extends BlogTableRow>({
   blog,
+  label,
   state,
   audience,
   waiting,
@@ -190,6 +197,9 @@ function Row<T extends BlogTableRow>({
   onDeleted,
 }: {
   blog: T;
+  /** This blog's source-grouped identifier (number for AI, letter for uploaded), from the parent's
+   *  one blogLabels pass over the full list. Null only if the blog somehow is not in that list. */
+  label: string | null;
   /**
    * ONE read of where this blog is, for the whole row, resolved by the parent's stateOf. The
    * admin derives it from the summary's wire fields (blogState) so this row and the stage page
@@ -221,7 +231,7 @@ function Row<T extends BlogTableRow>({
       )}
     >
       <TableCell className="py-2.5 align-top">
-        <RoadmapNumber index={blog.roadmap_index} />
+        <BlogLabel label={label} uploaded={!!blog.uploaded} />
       </TableCell>
       {/* TableCell is nowrap by default, which suits machine values but truncates a real H1.
           The title column wraps instead. */}
@@ -370,30 +380,34 @@ function WaitingChip({
 }
 
 /**
- * The blog's row on the roadmap, which is the name the work actually goes by: "we are done with
- * six, send seven". Titles here run to a dozen words and half of them open with the same three,
- * so the number is what a person holds in their head and what a client quotes back.
+ * The blog's identifier, which is the name the work actually goes by: "we are done with six, send
+ * seven". Titles run to a dozen words and half open with the same three, so the label is what a
+ * person holds in their head and quotes back.
  *
- * DISPLAYED index + 1, matching the preview's own "#" column, so a number read here finds the
- * same row there.
- *
- * A blog on no row gets a dash, never a number: the sheet was deleted or re-uploaded without
- * this topic, and inventing a position for it would be worse than admitting it has none. A wrong
- * number is not a missing number, it is blog six pointing at row nine, and the operator would act
- * on it.
+ * GROUPED BY SOURCE: an AI-generated blog is a NUMBER, a hand-uploaded one is a LETTER, each a
+ * running count in creation order (see blogLabels). So the letter alone says "a person wrote this",
+ * which is the whole point. The label comes pre-computed from the parent's one pass over the full
+ * list; a null (a blog somehow absent from that list) shows a dash rather than inventing a count.
  */
-function RoadmapNumber({ index }: { index: number | null }) {
-  if (index === null) {
+function BlogLabel({ label, uploaded }: { label: string | null; uploaded: boolean }) {
+  if (label === null) {
     return (
       <span
-        title="This blog is not on the current roadmap. Its row was deleted, or the sheet was replaced since it was written."
+        title="This blog is not in the current listing, so it has no position yet."
         className="machine cursor-default text-xs text-muted-foreground/50"
       >
         -
       </span>
     );
   }
-  return <span className="machine text-sm text-muted-foreground">{index + 1}</span>;
+  return (
+    <span
+      title={uploaded ? "Uploaded by hand — letters mark manual blogs" : "Written by the engine"}
+      className="machine cursor-default text-sm text-muted-foreground"
+    >
+      {label}
+    </span>
+  );
 }
 
 /** No eval, no number. Not a zero, and not a dash dressed up as one. */

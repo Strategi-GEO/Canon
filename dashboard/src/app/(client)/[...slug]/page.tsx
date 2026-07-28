@@ -6,6 +6,7 @@ import { Loader2 } from "lucide-react";
 import { resolveClientRoute } from "@/portal/nav";
 import { usePortal } from "@/portal/portal-context";
 import { BlogDetail, BlogsLibrary, BrandOverview, OrgChooser } from "@/portal/views";
+import { ChannelLibraryView, ChannelPostDetailView } from "@/portal/channel-views";
 import { RoadmapView } from "@/portal/roadmap-view";
 import { ReportsView } from "@/portal/reports-view";
 import { detailText } from "@/portal/api";
@@ -80,6 +81,25 @@ export default function ClientCatchAll() {
       <BlogDetail org={route.org} brand={route.brand} topic={route.topic} />
     ) : (
       <BlogsLibrary org={route.org} brand={route.brand} />
+    );
+  }
+  if (route.section === "/linkedin" || route.section === "/medium") {
+    const channel = route.section.slice(1) as "linkedin" | "medium";
+    return route.topic !== null ? (
+      <ChannelPostDetailView
+        key={`${route.brand}:${channel}:${route.topic}`}
+        org={route.org}
+        brand={route.brand}
+        channel={channel}
+        topic={route.topic}
+      />
+    ) : (
+      <ChannelLibraryView
+        key={`${route.brand}:${channel}`}
+        org={route.org}
+        brand={route.brand}
+        channel={channel}
+      />
     );
   }
   if (route.section === "/roadmap") {

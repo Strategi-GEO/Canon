@@ -13,6 +13,8 @@ import type {
   BlogQuestions,
   BlogReviewState,
   BlogsResponse,
+  ChannelPost,
+  ChannelPostsResponse,
   ClientsResponse,
   CreateClientBody,
   DescribeJob,
@@ -460,6 +462,94 @@ export const api = {
       { signal },
     ),
 
+  // Channel posts: the review lifecycle for a generated LinkedIn/Medium piece (its own track,
+  // server/channel.py). The comment endpoints mirror the blog comment endpoints and return the
+  // same BlogComment shape, so the review page reuses CommentableArticle unchanged.
+  channelPath: (slug: string, channel: RepurposeChannel, topicSlug?: string) =>
+    `/api/clients/${slug}/channel/${channel}${
+      topicSlug ? `/${encodeURIComponent(topicSlug)}` : ""
+    }`,
+
+  /** Every generated post for one channel, newest first: the Created-tab table. */
+  channelPosts: (slug: string, channel: RepurposeChannel, signal?: AbortSignal) =>
+    request<ChannelPostsResponse>(`/api/clients/${slug}/channel/${channel}`, { signal }),
+
+  /** One post with its body and delivery state. 404 when it was never generated. */
+  channelPost: (slug: string, channel: RepurposeChannel, topicSlug: string, signal?: AbortSignal) =>
+    request<ChannelPost>(
+      `/api/clients/${slug}/channel/${channel}/${encodeURIComponent(topicSlug)}`,
+      { signal },
+    ),
+
+  channelComments: (
+    slug: string,
+    channel: RepurposeChannel,
+    topicSlug: string,
+    signal?: AbortSignal,
+  ) =>
+    request<BlogCommentsResponse>(
+      `/api/clients/${slug}/channel/${channel}/${encodeURIComponent(topicSlug)}/comments`,
+      { signal },
+    ),
+
+  addChannelComment: (
+    slug: string,
+    channel: RepurposeChannel,
+    topicSlug: string,
+    body: AddCommentBody,
+  ) =>
+    request<BlogComment>(
+      `/api/clients/${slug}/channel/${channel}/${encodeURIComponent(topicSlug)}/comments`,
+      { method: "POST", body },
+    ),
+
+  resolveChannelComment: (
+    slug: string,
+    channel: RepurposeChannel,
+    topicSlug: string,
+    commentId: string,
+  ) =>
+    request<BlogComment>(
+      `/api/clients/${slug}/channel/${channel}/${encodeURIComponent(topicSlug)}/comments/${commentId}/resolve`,
+      { method: "POST" },
+    ),
+
+  dismissChannelComment: (
+    slug: string,
+    channel: RepurposeChannel,
+    topicSlug: string,
+    commentId: string,
+  ) =>
+    request<void>(
+      `/api/clients/${slug}/channel/${channel}/${encodeURIComponent(topicSlug)}/comments/${commentId}`,
+      { method: "DELETE" },
+    ),
+
+  saveChannelContent: (
+    slug: string,
+    channel: RepurposeChannel,
+    topicSlug: string,
+    bodyMarkdown: string,
+  ) =>
+    request<SaveContentResult>(
+      `/api/clients/${slug}/channel/${channel}/${encodeURIComponent(topicSlug)}/content`,
+      { method: "POST", body: { body: bodyMarkdown } },
+    ),
+
+  /** Release one post to the client as Ready to post. Returns the post's new state. */
+  sendChannelPost: (slug: string, channel: RepurposeChannel, topicSlug: string) =>
+    request<ChannelPost>(
+      `/api/clients/${slug}/channel/${channel}/${encodeURIComponent(topicSlug)}/send`,
+      { method: "POST" },
+    ),
+
+  /** Mark the piece live on the channel. Gated on the client's approval, engine-side. */
+  markChannelPosted: (slug: string, channel: RepurposeChannel, topicSlug: string) =>
+    request<ChannelPost>(
+      `/api/clients/${slug}/channel/${channel}/${encodeURIComponent(topicSlug)}/posted`,
+      { method: "POST" },
+    ),
+
   runs: (signal?: AbortSignal) => request<RunsResponse>("/api/runs", { signal }),
 
   /**
@@ -684,22 +774,6 @@ export const api = {
       method: "POST",
       body: { body: blogBody },
     }),
-
-  /**
-   * Uploads a Word .docx instead of markdown. The engine converts the body and turns each
-   * tracked Word comment into an OPEN change request on its passage, so the review rail shows
-   * them with a Resolve with Claude button. Multipart because the payload is a binary file;
-   * `replace` rides as a query param for the same reason. Same result shape as uploadBlog plus
-   * `comments_added`. Local engine only (Vercel has no converter), like uploadBlog.
-   */
-  uploadBlogDocx: (slug: string, topicSlug: string, file: File, replace: boolean) => {
-    const form = new FormData();
-    form.append("file", file);
-    return request<UploadBlogResult>(
-      `/api/clients/${slug}/blogs/${topicSlug}/upload-docx?replace=${replace ? "true" : "false"}`,
-      { method: "POST", form },
-    );
-  },
 
   /**
    * Deletes one blog: soft-deletes the topic and drops its scratch, which clears it from the

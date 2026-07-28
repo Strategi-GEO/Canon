@@ -464,6 +464,53 @@ export type RepurposeListing = {
   artifacts: Record<string, { generated_at: string; chars: number }>;
 };
 
+/**
+ * One channel post's delivery state: the separate-track cousin of BlogState (server/channel.py).
+ * Fewer states, because a repurpose has no score, no evaluator questions and no failure verdict,
+ * so there is no has_questions / answers_submitted / failed here. `generating` is overlaid by the
+ * UI from the live run feed and never stored; a technical generation failure surfaces the same way
+ * a blog run's does, through the run status, so it is not a post state either.
+ */
+export type ChannelPostState =
+  /** A repurpose run is live on this blog+channel (overlaid from the run feed, never on the wire). */
+  | "generating"
+  /** Generated, in internal admin review. The yellow "Created" tag. */
+  | "created"
+  /** Sent to the client: Ready to post on their side. */
+  | "sent"
+  /** The client asked for changes since the last send. */
+  | "changes_requested"
+  /** The client approved these exact bytes. */
+  | "approved"
+  /** The admin marked the piece live on the channel. The green "Posted" tag. */
+  | "posted";
+
+/**
+ * One channel post, as GET /api/clients/{slug}/channel/{channel}[/{topic}] returns it. `content`
+ * is present only on the single-post read; the list omits the body. Its comments reuse BlogComment
+ * verbatim (same wire shape), so there is no ChannelComment type.
+ */
+export type ChannelPost = {
+  id: string;
+  /** The blog this piece was cut from, and its title. */
+  source_topic_slug: string;
+  source_topic: string;
+  channel: RepurposeChannel;
+  /** Never "generating" on the wire; the UI overlays that from the live run feed. */
+  state: ChannelPostState;
+  content?: string;
+  created_at: string;
+  updated_at: string;
+  sent_to_client: string | null;
+  client_approved: string | null;
+  posted_at: string | null;
+  /** Open + applying client suggestions, for the changes-requested count. */
+  comments_pending: number;
+  change_round_open: boolean;
+};
+
+export type ChannelPostsResponse = { posts: ChannelPost[] };
+
 export type RunSummary = {
   run_id: string;
   /** The BRAND slug. It is a key, never a label: resolve it through useOrgs before rendering. */

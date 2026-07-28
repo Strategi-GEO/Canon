@@ -44,18 +44,21 @@ export type BlogCommentsState = {
  * `enabled` false keeps the hook entirely idle: the hosted build and a demo brand have no
  * comment flow, and an idle hook is how the page says so without a second code path.
  */
-export function useBlogComments(
-  brandSlug: string,
-  topicSlug: string,
+export function useApplyingComments(
+  /** Identity of the thing being commented on (a blog topic, a channel post). A change resets to
+   *  the empty checking state rather than showing another key's comments under this title. */
+  key: string,
+  /** Reads the current comments. Memoize it in the caller (the effect re-subscribes when it
+   *  changes), exactly as api.blogComments / api.channelComments are wrapped below. */
+  fetcher: (signal: AbortSignal) => Promise<BlogComment[]>,
   enabled: boolean,
 ): BlogCommentsState {
   const [state, setState] = React.useState<{
     key: string;
     comments: BlogComment[] | null;
     error: ApiError | null;
-  }>({ key: `${brandSlug}/${topicSlug}`, comments: null, error: null });
+  }>({ key, comments: null, error: null });
   const [attempt, setAttempt] = React.useState(0);
-  const key = `${brandSlug}/${topicSlug}`;
 
   React.useEffect(() => {
     if (!enabled) {
@@ -92,15 +95,15 @@ export function useBlogComments(
         return;
       }
       inFlight = true;
-      api.blogComments(brandSlug, topicSlug, controller.signal).then(
-        (data) => {
+      fetcher(controller.signal).then(
+        (comments) => {
           inFlight = false;
           if (controller.signal.aborted) {
             return;
           }
-          last = data.comments;
-          setState({ key, comments: data.comments, error: null });
-          schedule(data.comments);
+          last = comments;
+          setState({ key, comments, error: null });
+          schedule(comments);
         },
         (cause: unknown) => {
           inFlight = false;
@@ -130,11 +133,11 @@ export function useBlogComments(
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [brandSlug, topicSlug, enabled, key, attempt]);
+  }, [key, fetcher, enabled, attempt]);
 
   const refresh = React.useCallback(() => setAttempt((n) => n + 1), []);
 
-  // Derived, never reset from an effect: a topic switch reports the empty checking state
+  // Derived, never reset from an effect: a key switch reports the empty checking state
   // rather than another topic's comments under this topic's title.
   const current = state.key === key ? state : { key, comments: null, error: null };
   return {
@@ -143,4 +146,17 @@ export function useBlogComments(
     error: current.error,
     refresh,
   };
+}
+
+/** One blog's comment threads: useApplyingComments wired to the blog comment endpoint. */
+export function useBlogComments(
+  brandSlug: string,
+  topicSlug: string,
+  enabled: boolean,
+): BlogCommentsState {
+  const fetcher = React.useCallback(
+    (signal: AbortSignal) => api.blogComments(brandSlug, topicSlug, signal).then((d) => d.comments),
+    [brandSlug, topicSlug],
+  );
+  return useApplyingComments(`${brandSlug}/${topicSlug}`, fetcher, enabled);
 }

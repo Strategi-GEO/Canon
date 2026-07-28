@@ -1,5 +1,4 @@
-import { cn } from "@/lib/utils";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { StateTagChip } from "@/components/shell/state-tag-chip";
 import {
   adminCommentsTag,
   adminTag,
@@ -7,7 +6,6 @@ import {
   clientTag,
   type BlogState,
   type StateTag,
-  type StateTone,
 } from "@/lib/blog-state";
 
 /**
@@ -30,21 +28,6 @@ import {
  * the hues. The tooltip then names WHO OWES WHAT, which is the question a person scanning a list
  * is actually asking.
  */
-
-const TONES: Record<StateTone, string> = {
-  // Work in flight. The muted fill this app already uses for `running`, so an in-flight article
-  // reads the same wherever it appears.
-  busy: "bg-muted text-muted-foreground border-border",
-  // A person owes an act. The review tone, deliberately NOT the fail tone: an article waiting on
-  // someone is not an article that went wrong, and painting it red sends whoever sees it looking
-  // for damage that is not there.
-  owed: "bg-review-bg text-review border-review/25",
-  // Waiting on someone else. Hollow rather than filled, because a filled tag reads as a claim on
-  // the reader's attention and this state is precisely the one that wants none of it.
-  waiting: "border-muted-foreground/40 text-muted-foreground",
-  ship: "bg-ship-bg text-ship border-ship/25",
-  trouble: "bg-fail-bg text-fail border-fail/25",
-};
 
 export function BlogStateTag({
   state,
@@ -87,27 +70,7 @@ export function BlogStateTag({
       : pending !== null
         ? clientCommentsTag(pending)
         : clientTag(state);
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        {/* cursor-default because this is a label rather than a control: a pointer cursor would
-            promise a click that does nothing. */}
-        <span
-          className={cn(
-            "inline-flex cursor-default items-center rounded-full border px-2 py-0.5",
-            "text-[0.6875rem] font-medium whitespace-nowrap",
-            TONES[tag.tone],
-            className,
-          )}
-        >
-          {tag.label}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent className="max-w-xs">
-        <span className="machine">{tag.detail}</span>
-      </TooltipContent>
-    </Tooltip>
-  );
+  return <StateTagChip tag={tag} className={className} />;
 }
 // BlogTag (the admin wrapper that resolves state + score from a blog entity) moved to
 // components/shell/blog-tag.tsx: it reads a score, which must not live in this client-bundle file.

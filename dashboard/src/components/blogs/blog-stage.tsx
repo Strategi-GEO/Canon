@@ -27,6 +27,7 @@ import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/comp
 import { NotFoundCard } from "@/components/shell/brand-route";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
 import { adminFailedTag, scoreClass } from "@/lib/blog-score";
+import { blogLabels } from "@/lib/blog-label";
 import { AnswerQuestions } from "@/components/blogs/answer-questions";
 import { BlogEditor } from "@/components/blogs/blog-editor";
 import { MarkdownView } from "@/components/blogs/markdown-view";
@@ -163,6 +164,9 @@ export function BlogStage({
   }, [loadBlogs]);
 
   const blog = blogs?.find((entry) => entry.topic_slug === topicSlug) ?? null;
+  // Same source-grouped label the blogs table shows (number for AI, letter for uploaded), computed
+  // over the whole list so this page and the table always agree on what to call this blog.
+  const blogLabel = blogs ? blogLabels(blogs).get(topicSlug) ?? null : null;
 
   if (listError) {
     return <StageError error={listError} onRetry={() => void loadBlogs()} />;
@@ -190,6 +194,7 @@ export function BlogStage({
         brandSlug={brandSlug}
         brandName={brandName}
         blog={blog}
+        label={blogLabel}
         onChanged={() => void loadBlogs()}
       />
     </TooltipProvider>
@@ -201,12 +206,16 @@ function StageBody({
   brandSlug,
   brandName,
   blog,
+  label,
   onChanged,
 }: {
   orgSlug: string;
   brandSlug: string;
   brandName: string;
   blog: BlogSummary;
+  /** This blog's source-grouped identifier (number for AI, letter for uploaded), computed by the
+   *  parent over the full list so the header and the blogs table always agree. */
+  label: string | null;
   /** Re-reads the summary list: a save, a send, or an applied change moved it. */
   onChanged: () => void;
 }) {
@@ -736,9 +745,12 @@ function StageBody({
       <div>
         <div className="min-w-0">
           <h2 className="text-xl leading-snug font-semibold tracking-tight text-pretty text-foreground">
-            {blog.roadmap_index !== null ? (
-              <span className="machine mr-1.5 font-normal text-muted-foreground">
-                {blog.roadmap_index + 1}.
+            {label !== null ? (
+              <span
+                className="machine mr-1.5 font-normal text-muted-foreground"
+                title={blog.uploaded ? "Uploaded by hand — letters mark manual blogs" : "Written by the engine"}
+              >
+                {label}.
               </span>
             ) : null}
             {/* The title is editable in every SETTLED state (a label is not the article bytes),

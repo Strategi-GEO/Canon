@@ -820,6 +820,56 @@ create index blog_comments_topic on blog_comments (topic_id, created_at);
 create index blog_comments_parent on blog_comments (parent_id);
 
 -- ---------------------------------------------------------------------------
+-- Channel posts (031): a shipped blog repurposed into ONE channel-native piece (a LinkedIn
+-- post, a Medium article), on their OWN track. Deliberately NOT topics/blog_versions/
+-- blog_comments rows, so a channel post can never leak into a blog surface (the Blogs list,
+-- blog_count, the ledger, the roadmap red-flags). One post per (source blog, channel). The
+-- lifecycle mirrors a blog's delivery ladder minus everything a repurpose lacks: no score, no
+-- eval, no evaluator questions, no ledger. See migration 031 for the full reasoning.
+-- ---------------------------------------------------------------------------
+create table channel_posts (
+  id              uuid primary key default gen_random_uuid(),
+  client_id       uuid not null references clients(id) on delete cascade,
+  source_topic_id uuid not null references topics(id) on delete cascade,
+  channel         text not null check (channel in ('linkedin','medium')),
+  body            text not null default '',
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  sent_to_client_at  timestamptz,
+  sent_to_client_by  text,
+  client_approved_at timestamptz,
+  client_approved_by text,
+  posted_at       timestamptz,
+  posted_by       text,
+  unique (source_topic_id, channel),
+  unique (id, client_id)
+);
+create index channel_posts_client on channel_posts (client_id);
+create index channel_posts_source on channel_posts (source_topic_id);
+
+create table channel_post_comments (
+  id              uuid primary key default gen_random_uuid(),
+  channel_post_id uuid not null,
+  client_id       uuid not null,
+  author          text not null check (author in ('operator','client')),
+  author_email    text not null default '',
+  selected_text   text not null,
+  context_before  text not null default '',
+  context_after   text not null default '',
+  instruction     text not null,
+  state           text not null default 'open'
+                    check (state in ('open','applying','resolved','failed','dismissed')),
+  error           text,
+  edits           jsonb,
+  created_at      timestamptz not null default now(),
+  applying_since  timestamptz,
+  finished_at     timestamptz,
+  foreign key (channel_post_id, client_id)
+    references channel_posts(id, client_id) on delete cascade
+);
+create index channel_post_comments_post on channel_post_comments (channel_post_id, created_at);
+
+-- ---------------------------------------------------------------------------
 -- Views: the derived reads
 -- ---------------------------------------------------------------------------
 
@@ -1147,6 +1197,25 @@ grant select (id, topic_id, client_id, blog_version_id, parent_id, author, selec
               context_before, context_after, instruction, state, error, edits,
               created_at, finished_at)
   on blog_comments to authenticated;
+
+-- channel_posts / channel_post_comments (031): same boundary as the blog tables. The client
+-- portal reads sent / approved / posted pieces and their comments; the _by person emails and
+-- applying_since engine timing stay off the grant. RLS + column grants; the local engine and
+-- local admin bypass both over the owner connection.
+alter table channel_posts enable row level security;
+alter table channel_post_comments enable row level security;
+create policy read_scoped on channel_posts for select to authenticated
+  using (auth_can_read_client(client_id));
+create policy read_scoped on channel_post_comments for select to authenticated
+  using (auth_can_read_client(client_id));
+revoke select on channel_posts from authenticated;
+grant select (id, client_id, source_topic_id, channel, body, created_at, updated_at,
+              sent_to_client_at, client_approved_at, posted_at)
+  on channel_posts to authenticated;
+revoke select on channel_post_comments from authenticated;
+grant select (id, channel_post_id, client_id, author, selected_text, context_before,
+              context_after, instruction, state, error, edits, created_at, finished_at)
+  on channel_post_comments to authenticated;
 
 -- Views that re-expose sensitive base columns. The portal reads none of them (it reads base
 -- tables with safe selects) and the hosted admin reads 003's admin-only views instead.
@@ -1672,6 +1741,178 @@ $$;
 
 revoke all on function portal_approve_blog(text, text, uuid) from public, anon;
 grant execute on function portal_approve_blog(text, text, uuid) to authenticated;
+
+-- Channel-post portal writes (032): the client requesting a change on, and approving, a
+-- LinkedIn/Medium post. Mirror portal_suggest_change / portal_approve_blog exactly, minus the
+-- version anchor and PORTAL:STALE (channel posts have no versions; the body is edited in place).
+-- Keyed by (client slug, channel, source-blog slug), resolved to the post row inside the function.
+create or replace function portal_suggest_channel_change(
+  p_client_slug text,
+  p_channel     text,
+  p_topic       text,
+  p_selected    text,
+  p_before      text,
+  p_after       text,
+  p_instruction text
+) returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid       uuid := auth.uid();
+  v_email     text := coalesce(auth.jwt() ->> 'email', '');
+  v_is_admin  boolean;
+  v_is_member boolean;
+  v_cid       uuid;
+  v_pid       uuid;
+  v_sent_at   timestamptz;
+  v_open      int;
+  v_id        uuid;
+begin
+  if v_uid is null then
+    raise exception 'PORTAL:AUTH:not authenticated';
+  end if;
+  if btrim(coalesce(p_selected, '')) = '' or btrim(coalesce(p_instruction, '')) = '' then
+    raise exception 'PORTAL:BADBODY:a suggestion needs both the selected text and an instruction';
+  end if;
+
+  select c.id into v_cid
+  from clients c
+  where c.slug = p_client_slug and c.deleted_at is null;
+
+  v_is_admin := exists (select 1 from app_admins a where a.user_id = v_uid);
+  v_is_member := v_cid is not null and (
+      v_is_admin
+      or exists (
+          select 1 from org_membership m
+          join org_members om on om.org_slug = m.org_slug
+          where m.client_id = v_cid and om.user_id = v_uid));
+
+  if not v_is_member then
+    raise exception 'PORTAL:NOTFOUND:no post to review for this account';
+  end if;
+
+  if not (v_is_admin or exists (
+      select 1 from org_membership m
+      join org_members om on om.org_slug = m.org_slug
+      where m.client_id = v_cid and om.user_id = v_uid
+        and om.role in ('admin', 'commenter'))) then
+    raise exception 'PORTAL:ROLE:this account is not allowed to suggest changes for this brand';
+  end if;
+
+  select p.id, p.sent_to_client_at into v_pid, v_sent_at
+  from channel_posts p
+  join topics t on t.id = p.source_topic_id
+  where p.client_id = v_cid and p.channel = p_channel
+    and t.slug = p_topic and t.deleted_at is null;
+  if v_pid is null then
+    raise exception 'PORTAL:NOTFOUND:no post to review for this account';
+  end if;
+
+  if v_sent_at is null then
+    raise exception 'PORTAL:NOTSENT:this post is not with you for review yet';
+  end if;
+
+  perform 1 from channel_posts p where p.id = v_pid for update;
+
+  select count(*) into v_open
+  from channel_post_comments c
+  where c.channel_post_id = v_pid and c.author = 'client'
+    and c.state in ('open', 'applying');
+  if v_open >= 10 then
+    raise exception 'PORTAL:LIMIT:ten suggestions are already with the team; they will follow up once those are addressed';
+  end if;
+
+  insert into channel_post_comments
+    (channel_post_id, client_id, author, author_email,
+     selected_text, context_before, context_after, instruction, state)
+  values
+    (v_pid, v_cid, 'client', v_email,
+     p_selected, coalesce(p_before, ''), coalesce(p_after, ''), p_instruction, 'open')
+  returning id into v_id;
+
+  return v_id;
+end
+$$;
+
+create or replace function portal_approve_channel_post(
+  p_client_slug text,
+  p_channel     text,
+  p_topic       text
+) returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid       uuid := auth.uid();
+  v_email     text := coalesce(auth.jwt() ->> 'email', '');
+  v_is_admin  boolean;
+  v_is_member boolean;
+  v_cid       uuid;
+  v_pid       uuid;
+  v_sent_at   timestamptz;
+  v_approved  timestamptz;
+begin
+  if v_uid is null then
+    raise exception 'PORTAL:AUTH:not authenticated';
+  end if;
+
+  select c.id into v_cid
+  from clients c
+  where c.slug = p_client_slug and c.deleted_at is null;
+
+  v_is_admin := exists (select 1 from app_admins a where a.user_id = v_uid);
+  v_is_member := v_cid is not null and (
+      v_is_admin
+      or exists (
+          select 1 from org_membership m
+          join org_members om on om.org_slug = m.org_slug
+          where m.client_id = v_cid and om.user_id = v_uid));
+
+  if not v_is_member then
+    raise exception 'PORTAL:NOTFOUND:no post to review for this account';
+  end if;
+
+  if not (v_is_admin or exists (
+      select 1 from org_membership m
+      join org_members om on om.org_slug = m.org_slug
+      where m.client_id = v_cid and om.user_id = v_uid
+        and om.role in ('admin', 'commenter'))) then
+    raise exception 'PORTAL:ROLE:this account is not allowed to approve for this brand';
+  end if;
+
+  select p.id, p.sent_to_client_at, p.client_approved_at
+    into v_pid, v_sent_at, v_approved
+  from channel_posts p
+  join topics t on t.id = p.source_topic_id
+  where p.client_id = v_cid and p.channel = p_channel
+    and t.slug = p_topic and t.deleted_at is null;
+  if v_pid is null then
+    raise exception 'PORTAL:NOTFOUND:no post to review for this account';
+  end if;
+
+  if v_sent_at is null then
+    raise exception 'PORTAL:NOTSENT:this post is not with you for review yet';
+  end if;
+  if v_approved is not null then
+    raise exception 'PORTAL:APPROVED:this post is already approved';
+  end if;
+
+  update channel_posts
+     set client_approved_at = now(),
+         client_approved_by = v_email
+   where id = v_pid;
+end
+$$;
+
+revoke all on function portal_suggest_channel_change(text, text, text, text, text, text, text)
+  from public, anon;
+grant execute on function portal_suggest_channel_change(text, text, text, text, text, text, text)
+  to authenticated;
+revoke all on function portal_approve_channel_post(text, text, text) from public, anon;
+grant execute on function portal_approve_channel_post(text, text, text) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- The client resource write door (016, folded in here)

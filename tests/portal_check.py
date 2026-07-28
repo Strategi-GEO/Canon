@@ -32,6 +32,7 @@ CLIENT_ROOTS = [
     DASH / "app" / "api" / "overview",        # client API: overview
     DASH / "app" / "api" / "blog",            # client API: blog detail + answers
     DASH / "app" / "api" / "roadmap",         # client API: read-only roadmap
+    DASH / "app" / "api" / "channel",         # client API: channel post review + suggest/approve
     DASH / "lib" / "server" / "portal-data.ts",  # client-safe builders
     # The shared comment rail. It lives outside portal/ because BOTH surfaces import it:
     # the client portal renders its own comments in it, and the admin dashboard renders
@@ -51,6 +52,15 @@ CLIENT_ROOTS = [
     # a rule that never scanned the file could not have told anyone either way.
     DASH / "lib" / "blog-state.ts",
     DASH / "components" / "shell" / "blog-state-tag.tsx",
+    # The channel-post state machine + the shared tag chip, client surface for the same reason
+    # blog-state.ts is: the client LinkedIn/Medium views import them as values, so they ship in
+    # the client bundle. channel-state.ts carries CLIENT_TAGS as well as ADMIN_TAGS, exactly like
+    # blog-state.ts; state-tag-chip.tsx is the one chip both surfaces render.
+    DASH / "lib" / "channel-state.ts",
+    DASH / "components" / "shell" / "state-tag-chip.tsx",
+    # The "post it to the channel" button, imported by the client channel detail view, so it
+    # ships in the client bundle. Clean by construction (copies the body, opens the composer).
+    DASH / "components" / "blogs" / "post-to-channel.tsx",
 ]
 
 failures: list[str] = []
@@ -229,6 +239,10 @@ CLIENT_WRITES = {
     "portal_submit_answers",
     "portal_suggest_change",
     "portal_approve_blog",
+    # The channel-post review loop (032): the client requests a change on, and approves, a
+    # LinkedIn/Medium post. Called from app/api/channel/<brand>/<channel>/<topic>/{suggest,approve}.
+    "portal_suggest_channel_change",
+    "portal_approve_channel_post",
     # The client's own fact base, and the reason rule 6 no longer forbids a resources route:
     # the client is the only person who uploads and removes these documents, so these two are
     # client writes in a way no admin_ function is. Both arrive in migration 016, and their
@@ -243,7 +257,8 @@ CLIENT_WRITES = {
     # nothing, so it is not a CLIENT_WRITE_DOOR below, only a vetted call the scan must not reject.
     "report_months",
 }
-CLIENT_WRITE_DOORS = {"portal_submit_answers", "portal_suggest_change", "portal_approve_blog"}
+CLIENT_WRITE_DOORS = {"portal_submit_answers", "portal_suggest_change", "portal_approve_blog",
+                      "portal_suggest_channel_change", "portal_approve_channel_post"}
 rpc_calls = []
 for path in FILES:
     body = code_only(path.read_text(encoding="utf-8"))

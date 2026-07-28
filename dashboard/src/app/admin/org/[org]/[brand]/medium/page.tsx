@@ -3,8 +3,8 @@
 import { BrandRoute } from "@/components/shell/brand-route";
 import { ChannelLibrary } from "@/components/blogs/channel-library";
 
-/** Posted blogs for one brand, each generating into a native Medium article. Same published set
- *  the Blogs and LinkedIn tabs read, with a per-blog Generate -> Review pipeline. */
+/** The Medium tab for one brand: a New sub-tab of every blog (finished ones selectable) and a
+ *  Created sub-tab of the generated articles, each with its own review page. Mirrors LinkedIn. */
 export default function MediumPage() {
   return (
     <BrandRoute>
@@ -16,7 +16,7 @@ export default function MediumPage() {
           brandName={brand.name}
           channel="medium"
           title="Medium"
-          blurb={`Turn posted blogs into native Medium articles for ${brand.name}.`}
+          blurb={`Turn finished blogs into native Medium articles for ${brand.name}.`}
         />
       )}
     </BrandRoute>

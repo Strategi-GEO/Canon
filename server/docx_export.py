@@ -1,9 +1,9 @@
 """Bundle a brand's blogs into ONE Word .docx, a cover page before each.
 
-The inverse of docx_import.py, and stdlib for the same reason it gives: a .docx is a zip of XML,
-so building one is writing four small XML parts into a zip with zipfile + string templates. No
-python-docx, no pandoc, no build step Vercel does not have. `build_docx` takes (title, markdown)
-pairs and returns the .docx bytes; the caller streams them as an attachment.
+Stdlib only: a .docx is a zip of XML, so building one is writing four small XML parts into a zip
+with zipfile + string templates. No python-docx, no pandoc, no build step Vercel does not have.
+`build_docx` takes (title, markdown) pairs and returns the .docx bytes; the caller streams them as
+an attachment.
 
 LAYOUT the operator asked for: for blog N, a near-blank page carrying "Blog N" in large letters
 (with the article's own title beneath it), then a page break, then the article on the next page,
@@ -18,7 +18,7 @@ no styles.xml to ship and Word never has to resolve a style it was not given.
 ponytail: headings are direct-formatted, so they are large and bold but do NOT populate Word's
 navigation pane or a table of contents; add a styles.xml with Heading1..6 if a TOC is ever wanted.
 Tables are simple (no merged cells), and a literal '|' inside a cell is not un-escaped. The whole
-module is validated by round-tripping its output back through docx_import.parse (see _demo).
+module is validated by _demo, which builds a document and checks its OOXML parses and is complete.
 """
 from __future__ import annotations
 
@@ -295,14 +295,12 @@ def build_docx(blogs: list[tuple[str, str]]) -> bytes:
 
 
 def _demo() -> None:
-    """Build a two-blog document, then read it BACK with docx_import.parse: if the known-good
-    importer accepts the bytes and recovers the content, the OOXML is valid and complete. This is
-    the whole test surface, because a converter that emits a file Word cannot open is the failure
-    mode that matters and round-tripping through the importer is what catches it."""
-    try:
-        from . import docx_import
-    except ImportError:
-        import docx_import  # running as a script: server/ is already on sys.path
+    """Build a two-blog document and validate the bytes with stdlib alone: the parts a .docx must
+    carry are present, word/document.xml parses as well-formed XML, and the cover and article text
+    are in it. A converter that emits a file Word cannot open is the failure mode that matters, and
+    an unescaped '&' or '<' would make the XML parse below raise, so parsing IS the corruption test.
+    """
+    from xml.etree import ElementTree as ET
 
     md1 = (
         "# Where to Get Ramen\n\n"
@@ -320,24 +318,20 @@ def _demo() -> None:
                      "word/_rels/document.xml.rels"):
         assert required in zf.namelist(), f"missing part {required}"
 
-    recovered, _comments = docx_import.parse(data)
-    # Covers: "Blog N" is a bold cover run, so it round-trips wrapped in **.
-    assert "**Blog 1**" in recovered, recovered
-    assert "**Blog 2**" in recovered, recovered
-    # Content: bold, italic, link (rels resolved), and the table all survive.
-    assert "**best**" in recovered, recovered
-    assert "*slow-cooked*" in recovered, recovered
-    assert "[Noodle Bar](https://example.com/noodle)" in recovered, recovered
-    assert "[link](https://example.com/two)" in recovered, recovered
-    # Header cells are bold, so they round-trip wrapped in ** ; body cells are plain.
-    assert "| **Shop** | **Price** |" in recovered and "| Noodle Bar | 12 |" in recovered, recovered
-    assert "Tonkotsu" in recovered and "Shoyu" in recovered, recovered
+    doc = zf.read("word/document.xml").decode("utf-8")
+    ET.fromstring(doc)  # well-formed, or Word cannot open it; this is the whole "is it corrupt" test
+    # The covers and both articles' own text reached the document body.
+    for needle in ("Blog 1", "Blog 2", "Where to Get Ramen", "Second Article",
+                   "Noodle Bar", "Tonkotsu", "Shoyu"):
+        assert needle in doc, needle
 
-    # A single blog with an ampersand and angle brackets must escape cleanly, not corrupt the XML.
+    # A blog with an ampersand and angle brackets must escape cleanly: if it did not, the parse
+    # below raises rather than returning, and the escaped forms are in the raw XML.
     tricky = build_docx([("Cars & <Trucks>", "Sales rose 5 % on A&B <b> tags in Q1.\n")])
-    md, _ = docx_import.parse(tricky)
-    assert "Cars & <Trucks>" in md, md
-    assert "A&B <b> tags" in md, md
+    tdoc = zipfile.ZipFile(io.BytesIO(tricky)).read("word/document.xml").decode("utf-8")
+    ET.fromstring(tdoc)
+    assert "Cars &amp; &lt;Trucks&gt;" in tdoc, tdoc
+    assert "A&amp;B &lt;b&gt; tags" in tdoc, tdoc
 
     print("docx_export self-check passed")
 

@@ -874,7 +874,7 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/cms/routes.py",
     symbol: "api_publish_blog",
     kind: "python",
-    fingerprint: "3b4b836f1b38bbba",
+    fingerprint: "3293efdea92e8231",
     gates: ["publish"],
     what:
       "Pushes one shipped blog to the CMS as a draft, synchronously, because the operator is " +
