@@ -15,6 +15,7 @@ import { GenerateRoadmapDialog } from "@/components/roadmap/generate-roadmap-dia
 import { RoadmapDownloadButton } from "@/components/roadmap/roadmap-download-button";
 import { RoadmapGeneration } from "@/components/roadmap/roadmap-generation";
 import { RoadmapPreviewDialog } from "@/components/roadmap/roadmap-preview-dialog";
+import { useRewriteJobs } from "@/lib/use-rewrite-jobs";
 import { roadmapStats } from "@/components/roadmap/roadmap-stats";
 import { deriveTheme } from "@/components/roadmap/roadmap-theme";
 import { StatTile, ThemeCard } from "@/components/roadmap/shared";
@@ -51,6 +52,10 @@ export function RoadmapOverview({
 }) {
   const roadmap = useRoadmap(brandSlug);
   const gen = useRoadmapGen(brandSlug);
+  // A batch landing means the latest sheet changed on disk, so the tab re-reads it the same
+  // way it re-reads when a generation lands. The dialog watches the same list through props,
+  // so there is ONE poll for the whole tab.
+  const rewrites = useRewriteJobs(brandSlug, roadmap.reload);
   const [blogs, setBlogs] = React.useState<BlogSummary[]>([]);
 
   React.useEffect(() => {
@@ -116,13 +121,40 @@ export function RoadmapOverview({
 
   // The same sheet, and the same reason: a generation REPLACES roadmap.csv, so the engine
   // refuses to start one under a live run exactly as it refuses a delete. A second generation
-  // is refused too, and the running one is already on this page.
+  // is refused too, and the running one is already on this page. Rewrite batches also hold
+  // the sheet: the engine 409s a generation while any batch runs, so the reason is said here
+  // rather than discovered from the refusal.
   const generating = gen.job !== null && gen.job.state === "running";
+  const rewriting = rewrites.rowsInFlight.size > 0;
   const generateLockedReason = generating
     ? `A generation is already running for ${brandName}, and the engine refuses a second one. It is the card above this.`
-    : locked
-      ? `A blog run is live for ${brandName}. Its topics came from this sheet, so the engine refuses to write a new one underneath it.`
-      : undefined;
+    : rewriting
+      ? `Topic rewrites are still running for ${brandName}. The engine adds a new month only once they land; watch them in Preview roadmap.`
+      : locked
+        ? `A blog run is live for ${brandName}. Its topics came from this sheet, so the engine refuses to write a new one underneath it.`
+        : undefined;
+
+  /**
+   * Everything the preview dialog's rewrite flow needs, from state this tab already holds.
+   * Undefined on the hosted build, where the preview stays read-only: the flow is an engine
+   * write and the hosted dashboard offers none.
+   */
+  const review = HOSTED_READONLY
+    ? undefined
+    : {
+        rows,
+        blogs,
+        jobs: rewrites.jobs,
+        rowsInFlight: rewrites.rowsInFlight,
+        adopt: rewrites.adopt,
+        clear: rewrites.clear,
+        locked: generating || locked,
+        lockedReason: generating
+          ? `A roadmap generation is running for ${brandName}; the engine runs rewrites only once it lands.`
+          : locked
+            ? `A blog run is live for ${brandName}. Its topics came from this sheet, so the engine refuses to change it underneath the run.`
+            : undefined,
+      };
 
   if (!roadmap.data) {
     return (
@@ -167,6 +199,7 @@ export function RoadmapOverview({
             brandName={brandName}
             locked={locked}
             onChanged={roadmap.reload}
+            review={review}
           />
           <RoadmapDownloadButton brandSlug={brandSlug} brandName={brandName} label="the latest roadmap" />
           {/* Adding a month is an engine write, so the hosted build previews and downloads but

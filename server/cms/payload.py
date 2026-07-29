@@ -469,7 +469,7 @@ def _clean_queries(prompts):
 
 
 def build_payload(client_slug, topic_slug, blog_md, prompts=None, industry=None,
-                  brand_name=None):
+                  brand_name=None, cms_client=None):
     """The full ingest body for one finished blog.
 
     Optional fields are omitted when empty rather than sent as null: the schema is
@@ -491,8 +491,13 @@ def build_payload(client_slug, topic_slug, blog_md, prompts=None, industry=None,
     payload = {
         "ingest_schema_version": SCHEMA_VERSION,
         # The routing slug: one shared key posts to any org, so the CMS reads which brand this
-        # draft is for from here, not from the key. source_run_id below re-validates the slug.
-        "client": client_slug,
+        # draft is for from here, not from the key. It is the CMS's OWN client slug when Settings
+        # recorded one (the CMS can register a brand under a slug that differs from the engine's,
+        # e.g. "bangalore-brewing-co" for a brand the engine keys as "blr-brewing"), else the
+        # brand slug itself, which is how every brand posted before the override existed.
+        # source_run_id below stays on the engine slug on purpose: routing is WHERE the draft
+        # goes, idempotency is the brand's stable internal identity, and the two are separate.
+        "client": (cms_client or "").strip() or client_slug,
         "source_run_id": source_run_id(client_slug, topic_slug),
         "title": title,
         "body_markdown": body,

@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -16,6 +17,7 @@ import { ReadOnlyText } from "@/components/clients/editable-text";
 import { FieldError } from "@/components/clients/engine-error";
 import { updateClient } from "@/components/clients/wire";
 import { OrgCombobox } from "@/components/shell/org-combobox";
+import { DeleteOrganisationDialog } from "@/components/clients/delete-organisation-dialog";
 import type { Client } from "@/types";
 
 export default function SettingsPage() {
@@ -143,6 +145,7 @@ function IdentityCard({
 }) {
   const [domain, setDomain] = React.useState(client.domain);
   const [market, setMarket] = React.useState(client.market ?? "");
+  const [cmsClient, setCmsClient] = React.useState(client.cms_client ?? "");
   const [organisation, setOrganisation] = React.useState(orgName);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
@@ -150,6 +153,7 @@ function IdentityCard({
   const dirty =
     domain !== client.domain ||
     market !== (client.market ?? "") ||
+    cmsClient !== (client.cms_client ?? "") ||
     organisation !== orgName;
 
   async function save(event: React.FormEvent) {
@@ -162,6 +166,7 @@ function IdentityCard({
       await updateClient(client.slug, {
         ...(domain !== client.domain ? { domain: domain.trim() } : {}),
         ...(market !== (client.market ?? "") ? { market: market.trim() } : {}),
+        ...(cmsClient !== (client.cms_client ?? "") ? { cms_client: cmsClient.trim() } : {}),
         ...(organisation !== orgName ? { organisation_name: organisation.trim() } : {}),
       });
       toast.success("Saved");
@@ -227,6 +232,28 @@ function IdentityCard({
               Where this brand sells and in what language. Keyword volumes are validated
               against this market and the researcher prefers sources local to it; without one,
               keyword validation is skipped on every blog.
+            </p>
+          </div>
+
+          {/* The CMS's own routing slug. Separate from the brand slug on purpose: the CMS may
+              register a brand under a slug that differs from the engine's ("bangalore-brewing-co"
+              for a brand the engine keys as "blr-brewing"), and Post to CMS routes by this value.
+              Blank routes by the brand slug, which is how every brand posted before this field. */}
+          <div>
+            <Label htmlFor="settings-cms-client">CMS client slug</Label>
+            <Input
+              id="settings-cms-client"
+              value={cmsClient}
+              onChange={(e) => setCmsClient(e.target.value)}
+              placeholder={client.slug}
+              autoComplete="off"
+              className="mt-1.5 font-mono"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              The slug the CMS knows this brand by, used only to route Post to CMS. Leave it blank
+              to route by this brand&apos;s own slug (<span className="machine">{client.slug}</span>
+              ). Set it when the CMS registered the brand under a different slug. What you type is
+              lower-cased and hyphenated before it is sent, so a name or a slug both work.
             </p>
           </div>
 
@@ -349,23 +376,36 @@ function CustomInstructionsCard({
 }
 
 /**
- * Deletion is not exposed, because the engine has no delete endpoint and inventing a button
- * that cannot work would be worse than saying plainly where the files are.
+ * Hard-delete the brand. The engine now exposes DELETE /api/clients/{slug}, which cascades the
+ * record and purges the disk tree, so this is a real button gated behind two locks (a consent
+ * checkbox, then a slug retype) in DeleteOrganisationDialog. On success the brand and its pages
+ * are gone, so we leave for the root signpost, which routes to a remaining brand or to /new.
  */
 function DangerZone({ client }: { client: Client }) {
+  const router = useRouter();
+  const { refresh } = useOrgs();
+
+  function onDeleted() {
+    void refresh();
+    router.replace("/admin");
+  }
+
   return (
     <Card className="border-fail/25">
       <CardContent>
         <p className="text-sm font-semibold text-fail">Danger zone</p>
         <p className="mt-1 text-xs text-muted-foreground">
-          Removing a brand means deleting its directory on the machine running the engine.
-          There is no button for it here: the engine exposes no delete, and the directory
-          holds the only copy of this brand&apos;s canonical facts and every blog written for
-          it.
+          Permanently delete {client.name}: its record and every blog, post, roadmap, report,
+          analysis and uploaded resource, plus its files on the machine running the engine. This
+          cannot be undone.
         </p>
-        <pre className="machine mt-3 overflow-x-auto rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-foreground">
-          clients/{client.slug}/
-        </pre>
+        <div className="mt-3">
+          <DeleteOrganisationDialog
+            slug={client.slug}
+            name={client.name}
+            onDeleted={onDeleted}
+          />
+        </div>
       </CardContent>
     </Card>
   );

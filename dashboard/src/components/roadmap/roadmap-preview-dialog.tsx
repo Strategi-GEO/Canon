@@ -19,8 +19,36 @@ import { HOSTED_READONLY } from "@/lib/hosted";
 import { cn } from "@/lib/utils";
 import { DeleteRoadmapDialog } from "@/components/roadmap/delete-roadmap-dialog";
 import { RoadmapDownloadButton } from "@/components/roadmap/roadmap-download-button";
-import { SheetGrid } from "@/components/roadmap/shared";
-import type { RoadmapMonth, RoadmapSheet } from "@/types";
+import { RewriteControls, lockedReasonFor } from "@/components/roadmap/rewrite-controls";
+import { SheetGrid, type SheetReview } from "@/components/roadmap/shared";
+import { useRowSelection } from "@/components/create/use-row-selection";
+import type {
+  BlogSummary,
+  RewriteJob,
+  RoadmapMonth,
+  RoadmapRow,
+  RoadmapSheet,
+} from "@/types";
+
+/**
+ * Everything the rewrite flow needs, handed down from the roadmap tab that owns the state:
+ * the parsed rows and blogs it already fetched, and the batch list its poll already watches.
+ * The dialog derives per-row facts from these and owns only the tick set and the feedback
+ * box. Absent on the hosted build, where the preview stays read-only.
+ */
+export type PreviewReview = {
+  /** The LATEST month's parsed rows; rewrites only ever target the latest sheet. */
+  rows: RoadmapRow[];
+  /** Every blog on disk, at any status: each one locks its row against rewriting. */
+  blogs: BlogSummary[];
+  jobs: RewriteJob[];
+  rowsInFlight: ReadonlySet<number>;
+  adopt: (job: RewriteJob) => void;
+  clear: (jobId: string) => void;
+  /** True while a run is live or a generation is running: the engine would 409 the POST. */
+  locked: boolean;
+  lockedReason?: string;
+};
 
 /**
  * Every one of the brand's monthly roadmaps, on demand, one per sidebar entry.
@@ -30,6 +58,11 @@ import type { RoadmapMonth, RoadmapSheet } from "@/types";
  * sheet. The newest month is selected on open, because the preview must always land on the
  * latest roadmap. It fetches when it OPENS rather than on page mount: most visits to the tab
  * never open this, and paying for the list plus a sheet on every one of them would buy nothing.
+ *
+ * THE PREVIEW IS ALSO WHERE TOPICS ARE REVIEWED AND REWRITTEN, on the latest month only. The
+ * roadmap tab once carried its own second table for this, which was the same roadmap displayed
+ * twice; the raw sheet here shows every column the operator wrote, which is what judging a row
+ * actually needs, so the tick column and the feedback bar live here and nowhere else.
  */
 export function RoadmapPreviewDialog({
   brandSlug,
@@ -38,20 +71,27 @@ export function RoadmapPreviewDialog({
   locked,
   /** Called after a month is deleted, so the roadmap tab re-reads its stats and month list. */
   onChanged,
+  review,
 }: {
   brandSlug: string;
   brandName: string;
   locked: boolean;
   onChanged?: () => void;
+  review?: PreviewReview;
 }) {
   const [open, setOpen] = React.useState(false);
+  const rewriting = review !== undefined && review.rowsInFlight.size > 0;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button size="sm" variant="outline">
           <Table2 data-icon="inline-start" aria-hidden />
-          Preview roadmap
+          {/* The button is also the tab's one hint that batches are running with the dialog
+              closed: the count is where the operator left work in flight. */}
+          {rewriting
+            ? `Preview roadmap (rewriting ${formatCount(review.rowsInFlight.size)})`
+            : "Preview roadmap"}
         </Button>
       </DialogTrigger>
 
@@ -67,6 +107,9 @@ export function RoadmapPreviewDialog({
             Every month {brandName} has planned, newest first. Pick a month to see its sheet as it
             sits on disk. Columns 1, 2 and 5 are the brief the factory reads by position; every
             other column reaches the writer as guidance, under the header you gave it.
+            {review !== undefined
+              ? " On the latest month, tick the topics that miss, say what is wrong, and a research session replaces exactly those rows; you can start another batch while one runs."
+              : ""}
           </DialogDescription>
         </DialogHeader>
 
@@ -79,6 +122,7 @@ export function RoadmapPreviewDialog({
             locked={locked}
             onChanged={onChanged}
             onClose={() => setOpen(false)}
+            review={review}
           />
         ) : null}
       </DialogContent>
@@ -96,12 +140,14 @@ function PreviewBody({
   locked,
   onChanged,
   onClose,
+  review,
 }: {
   brandSlug: string;
   brandName: string;
   locked: boolean;
   onChanged?: () => void;
   onClose: () => void;
+  review?: PreviewReview;
 }) {
   const [months, setMonths] = React.useState<RoadmapMonth[] | null>(null);
   const [monthsError, setMonthsError] = React.useState<ApiError | null>(null);
@@ -134,6 +180,11 @@ function PreviewBody({
     error: ApiError | null;
   }>({ month: -1, sheet: null, error: null });
 
+  // rowsInFlight.size rides in the deps ON PURPOSE: a batch landing shrinks it, and the rows
+  // it replaced are already on disk, so the sheet on screen is stale the moment it does. A
+  // batch STARTING grows it and refetches a sheet that has not changed, which costs one cheap
+  // read and keeps the trigger simple.
+  const inFlightCount = review?.rowsInFlight.size ?? 0;
   React.useEffect(() => {
     if (selected === null) return;
     const controller = new AbortController();
@@ -149,11 +200,81 @@ function PreviewBody({
       },
     );
     return () => controller.abort();
-  }, [brandSlug, selected]);
+  }, [brandSlug, selected, inFlightCount]);
 
   const settled = result.month === selected;
   const sheet = settled ? result.sheet : null;
   const sheetError = settled ? result.error : null;
+
+  // ------------------------------------------------------------------
+  // The rewrite flow, active on the LATEST month only: older months are history, and the
+  // engine splices only the latest sheet. All per-row facts derive from what the tab handed
+  // down; the dialog owns nothing but the tick set.
+  // ------------------------------------------------------------------
+  const rowByIndex = React.useMemo(
+    () => new Map((review?.rows ?? []).map((row) => [row.index, row])),
+    [review?.rows],
+  );
+  const blogBySlug = React.useMemo(
+    () => new Map((review?.blogs ?? []).map((blog) => [blog.topic_slug, blog.status])),
+    [review?.blogs],
+  );
+
+  const rowsInFlight = review?.rowsInFlight;
+  const blockedFor = React.useCallback(
+    (rowIndex: number): string | null => {
+      const row = rowByIndex.get(rowIndex);
+      if (row === undefined) {
+        // The grid renders raw rows, and a blank line in the CSV has no parsed row behind
+        // it: there is no topic to replace, so there is nothing to tick.
+        return "This row is blank in the sheet, so there is nothing to rewrite.";
+      }
+      const status = blogBySlug.get(row.topic_slug);
+      if (status !== undefined) {
+        return lockedReasonFor(status);
+      }
+      return null;
+    },
+    [rowByIndex, blogBySlug],
+  );
+
+  const eligible = React.useCallback(
+    (row: RoadmapRow) =>
+      blockedFor(row.index) === null && !(rowsInFlight?.has(row.index) ?? false),
+    [blockedFor, rowsInFlight],
+  );
+  const { selected: ticked, setSelected: setTicked, toggle } = useRowSelection(
+    review?.rows ?? [],
+    eligible,
+  );
+
+  // Ticks are re-filtered through `eligible` every render rather than trusted: a batch
+  // started from another tab can take a ticked row mid-compose, and a ghost tick submitted
+  // for it would only buy a 409. What the grid and the bar see is always currently-tickable.
+  const visibleTicked = React.useMemo(
+    () =>
+      new Set(
+        [...ticked].filter((index) => {
+          const row = rowByIndex.get(index);
+          return row !== undefined && eligible(row);
+        }),
+      ),
+    [ticked, rowByIndex, eligible],
+  );
+
+  const latestMonth = months?.at(-1)?.month ?? null;
+  const reviewActive =
+    review !== undefined && selected !== null && selected === latestMonth;
+
+  const gridReview: SheetReview | undefined =
+    reviewActive && sheet !== null
+      ? {
+          blocked: blockedFor,
+          rewriting: (rowIndex) => rowsInFlight?.has(rowIndex) ?? false,
+          selected: visibleTicked,
+          onToggle: toggle,
+        }
+      : undefined;
 
   // After a delete: notify the tab, re-read the list, and reselect. If the deleted month was the
   // one on screen (or is otherwise gone), fall to the newest that remains; if none remain, close.
@@ -243,12 +364,28 @@ function PreviewBody({
         ))}
       </aside>
 
-      {/* The selected month's sheet fills the 1fr row and scrolls; the filename footer sits under
-          it. Same grid trick as the dialog shell, one level down. */}
-      <div className="grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-2">
+      {/* The selected month's sheet fills the 1fr row and scrolls; the rewrite bar and the
+          filename footer sit under it. Same grid trick as the dialog shell, one level down. */}
+      <div className="grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_auto_auto] gap-2">
         {sheetError ? <EngineDown error={sheetError} /> : null}
         {!sheetError && !sheet ? <Skeleton className="h-full w-full" /> : null}
-        {sheet ? <SheetGrid sheet={sheet} /> : null}
+        {sheet ? <SheetGrid sheet={sheet} review={gridReview} /> : null}
+
+        {/* The batches in flight and the next batch's feedback, on the latest month only.
+            Renders nothing until something is ticked or running, so the ordinary preview
+            stays exactly the reading surface it always was. */}
+        {reviewActive && review !== undefined ? (
+          <RewriteControls
+            brandSlug={brandSlug}
+            jobs={review.jobs}
+            selected={visibleTicked}
+            onStarted={review.adopt}
+            onCleared={review.clear}
+            onDeselect={() => setTicked(new Set())}
+            locked={review.locked}
+            lockedReason={review.lockedReason}
+          />
+        ) : null}
 
         {sheet ? (
           <p className="machine text-xs wrap-break-word text-muted-foreground">

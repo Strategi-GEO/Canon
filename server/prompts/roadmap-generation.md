@@ -22,6 +22,8 @@ NOTES:          {{NOTES}}
 must-include topics, exclusions, named competitors, intent mix changes, format preferences, or
 campaign context.
 
+{{REWRITE_BLOCK}}
+
 ---
 
 ## ROLE

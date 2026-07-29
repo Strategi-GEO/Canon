@@ -1,8 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { Trash2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
@@ -16,33 +14,29 @@ import { cn } from "@/lib/utils";
 import {
   isSelectable,
   resolveRowState,
-  selectableRows,
   type RowFacts,
   type RowState,
 } from "@/components/create/row-status";
-// The colours and the state labels are shared with the roadmap tab's read mode rather than
-// owned here, so the two modes cannot come to describe the same row differently.
+// The colours and the state labels are shared between the two modes rather than owned here,
+// so no two renderings of one row can come to describe it differently.
 import { ROW_STYLES, RowNote, StateChip } from "@/components/create/row-presentation";
 import { UploadBlog } from "@/components/blogs/upload-blog";
 import type { RoadmapRow } from "@/types";
 
 /**
- * ONE table, two modes, because there is one roadmap and it has one shape.
+ * The Create Blogs table: tick topics, generate blogs. One table because there is one roadmap
+ * and it has one shape; the column widths below were measured against real content.
  *
- * Create Blogs PICKS rows and the Content Roadmap tab READS them. Pick mode adds a checkbox
- * column; read mode adds the target prompts and a per-row delete, because the operator asked
- * the create page not to carry the prompts and the roadmap tab is where the sheet is judged.
- * The column widths below were measured against real content. A second component would drift
- * from this one the first time either changed, and this codebase has already paid that bill
- * twice, with two roadmap cards fetching the same CSV and two "Create blogs" buttons.
- *
- * The modes are a union rather than optional props: a read mode carrying a `selected` set, or
- * a pick mode carrying an `onDelete`, are both states that cannot happen, so they are made
- * unrepresentable rather than merely unused.
+ * Reviewing and REWRITING roadmap rows is deliberately not a second mode here: it lives in
+ * the roadmap preview dialog, over the raw sheet, because judging a row means reading every
+ * column the operator wrote and this table carries only the brief. Two earlier attempts at a
+ * second mode (a per-row-delete "read" mode, then a rewrite "review" mode) both ended as the
+ * roadmap displayed twice on two tabs, which is the exact drift this comment exists to stop.
  */
-type PickMode = {
-  /** Create Blogs: a checkbox column, select all, shift-click ranges. */
-  mode: "pick";
+export function RoadmapTable(props: {
+  rows: RoadmapRow[];
+  /** What is live, what failed, and what the engine just refused. See row-status.ts. */
+  facts: RowFacts;
   selected: Set<number>;
   /** Rows the engine called incomplete on the last submit, keyed by row index. */
   incomplete: Map<number, string[]>;
@@ -52,48 +46,30 @@ type PickMode = {
   /**
    * Per-row upload, the other way a topic gets a blog.
    *
-   * It belongs in PICK mode specifically, because this is the page where an operator stands
-   * looking at topics deciding what to do with each one, and "upload the article I already
-   * have" is an answer to that same question. Generate is one button over the whole checked
-   * set; upload is inherently per row, since it carries one file for one topic.
+   * It belongs on THIS page specifically, because this is where an operator stands looking
+   * at topics deciding what to do with each one, and "upload the article I already have" is
+   * an answer to that same question. Generate is one button over the whole checked set;
+   * upload is inherently per row, since it carries one file for one topic.
    */
   upload: {
     brandSlug: string;
     /** Fires after an article lands, so the caller refetches rows and blogs. */
     onUploaded: () => void;
   };
-};
+  // HTMLElement, not HTMLTableRowElement: only scrollIntoView reads this map, which every
+  // element has. A 409 or 422 scrolls to the refused row.
+  rowRefs: React.RefObject<Map<number, HTMLElement>>;
+}) {
+  const { rows, facts, rowRefs, selected, upload } = props;
 
-type ReadMode = {
-  /** The Content Roadmap tab: no checkbox and no select all, one Delete record per row. */
-  mode: "read";
-  onDelete: (row: RoadmapRow) => void;
-  /**
-   * True while a run is live for this brand. The engine 409s every roadmap edit for the
-   * duration, so the button says so rather than offering a click that can only be refused.
-   */
-  editingLocked: boolean;
-};
-
-export function RoadmapTable(
-  props: {
-    rows: RoadmapRow[];
-    /** What is live, what failed, and what the engine just refused. See row-status.ts. */
-    facts: RowFacts;
-    // HTMLElement, not HTMLTableRowElement: only scrollIntoView reads this map, which every
-    // element has. Pick mode scrolls to a refused row, read mode to a row just added.
-    rowRefs: React.RefObject<Map<number, HTMLElement>>;
-  } & (PickMode | ReadMode),
-) {
-  const { rows, facts, rowRefs } = props;
-
-  // Green and yellow rows are excluded from select all, and their checkbox is genuinely
-  // disabled rather than merely unchecked.
-  const selectable = selectableRows(rows, facts);
-  const selected = props.mode === "pick" ? props.selected : null;
-  const selectedCount = selected
-    ? selectable.filter((r) => selected.has(r.index)).length
-    : 0;
+  // Ineligible rows are excluded from select all, and their checkbox is genuinely disabled
+  // rather than merely unchecked.
+  const eligible = React.useCallback(
+    (row: RoadmapRow) => isSelectable(resolveRowState(row, facts)),
+    [facts],
+  );
+  const selectable = rows.filter(eligible);
+  const selectedCount = selectable.filter((r) => selected.has(r.index)).length;
   const allSelected = selectable.length > 0 && selectedCount === selectable.length;
   const someSelected = selectedCount > 0;
 
@@ -109,17 +85,11 @@ export function RoadmapTable(
   const noteShift = React.useCallback((event: React.MouseEvent) => {
     extending.current = event.shiftKey;
   }, []);
-  // Narrowed out of the union before the hook, never inside it: hooks run on every render in
-  // the same order regardless of which mode this is.
-  const onToggle = props.mode === "pick" ? props.onToggle : null;
+  const onToggle = props.onToggle;
   const toggleRow = React.useCallback(
-    (index: number) => onToggle?.(index, extending.current),
+    (index: number) => onToggle(index, extending.current),
     [onToggle],
   );
-
-  // Narrowed once here, like onToggle above, so the row actions cell and its header agree on
-  // whether there is a column at all without re-narrowing the union in two places.
-  const upload = props.mode === "pick" ? props.upload : null;
 
   return (
     // ONE provider around the whole table, not one per row, and it lives here because this is
@@ -165,52 +135,35 @@ export function RoadmapTable(
         <table className="w-full table-fixed caption-bottom text-sm">
           <TableHeader className="sticky top-0 z-10 bg-card [&_tr]:border-b">
             <TableRow className="hover:bg-transparent">
-              {props.mode === "pick" ? (
-                <TableHead className="w-9 align-middle">
-                  <Checkbox
-                    checked={allSelected ? true : someSelected ? "indeterminate" : false}
-                    disabled={selectable.length === 0}
-                    onCheckedChange={(checked) => props.onToggleAll(checked === true)}
-                    aria-label={
-                      selectable.length === 0
-                        ? "No topics can be generated"
-                        : `Select all ${selectable.length} topics that can be generated`
-                    }
-                  />
-                </TableHead>
-              ) : null}
+              <TableHead className="w-9 align-middle">
+                <Checkbox
+                  checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                  disabled={selectable.length === 0}
+                  onCheckedChange={(checked) => props.onToggleAll(checked === true)}
+                  aria-label={
+                    selectable.length === 0
+                      ? "No topics can be generated"
+                      : `Select all ${selectable.length} topics that can be generated`
+                  }
+                />
+              </TableHead>
               {/* The row's own number, the same one the preview's "#" column shows and the same one
                   every blog written from this sheet carries. This table IS the sheet, so reading a
                   row here and finding it in the CSV should not require counting. */}
               <TableHead className="machine w-10 align-middle text-xs font-medium">#</TableHead>
-              <TableHead
-                className={cn(
-                  "machine align-middle text-xs font-medium",
-                  props.mode === "pick" ? "w-[38%]" : "w-[26%]",
-                )}
-              >
+              <TableHead className="machine w-[38%] align-middle text-xs font-medium">
                 topic
               </TableHead>
-              {/* In pick mode covers carries no width class, so table-fixed hands it the whole
-                  remainder: it is the last prose column there. */}
-              <TableHead
-                className={cn(
-                  "machine align-middle text-xs font-medium",
-                  props.mode === "read" && "w-[30%]",
-                )}
-              >
+              {/* covers carries no width class, so table-fixed hands it the whole remainder:
+                  it is the last prose column. */}
+              <TableHead className="machine align-middle text-xs font-medium">
                 what it covers
               </TableHead>
-              {props.mode === "read" ? (
-                <TableHead className="machine align-middle text-xs font-medium">target prompts</TableHead>
-              ) : null}
-              {props.mode === "read" || upload ? (
-                // Unlabelled on screen and named for a screen reader. A column of one icon button
-                // needs no title, and "actions" over a 25 row sheet is a word that earns nothing.
-                <TableHead className="w-12 align-middle">
-                  <span className="sr-only">row actions</span>
-                </TableHead>
-              ) : null}
+              {/* Unlabelled on screen and named for a screen reader. A column of one icon button
+                  needs no title, and "actions" over a 25 row sheet is a word that earns nothing. */}
+              <TableHead className="w-12 align-middle">
+                <span className="sr-only">row actions</span>
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -219,21 +172,13 @@ export function RoadmapTable(
                 key={row.index}
                 row={row}
                 state={resolveRowState(row, facts)}
-                missing={props.mode === "pick" ? (props.incomplete.get(row.index) ?? null) : null}
-                selection={
-                  props.mode === "pick"
-                    ? {
-                        checked: props.selected.has(row.index),
-                        onCheckboxClick: noteShift,
-                        onCheckboxChange: toggleRow,
-                      }
-                    : null
-                }
-                remove={
-                  props.mode === "read"
-                    ? { onDelete: props.onDelete, locked: props.editingLocked }
-                    : null
-                }
+                missing={props.incomplete.get(row.index) ?? null}
+                selection={{
+                  checked: selected.has(row.index),
+                  eligible: eligible(row),
+                  onCheckboxClick: noteShift,
+                  onCheckboxChange: toggleRow,
+                }}
                 upload={upload}
                 rowRefs={rowRefs}
               />
@@ -247,14 +192,11 @@ export function RoadmapTable(
 
 type Selection = {
   checked: boolean;
+  /** Whether this row's checkbox is enabled at all, decided by the MODE's own predicate. */
+  eligible: boolean;
   /** Records whether the click held shift, before the change handler reads it. */
   onCheckboxClick: (event: React.MouseEvent) => void;
   onCheckboxChange: (index: number) => void;
-};
-
-type Remove = {
-  onDelete: (row: RoadmapRow) => void;
-  locked: boolean;
 };
 
 type Upload = {
@@ -267,25 +209,19 @@ function Row({
   state,
   missing,
   selection,
-  remove,
   upload,
   rowRefs,
 }: {
   row: RoadmapRow;
   state: RowState;
   missing: string[] | null;
-  /** Pick mode's checkbox, or null in read mode where there is nothing to pick. */
-  selection: Selection | null;
-  /** Read mode's Delete record, or null in pick mode where the roadmap is not edited. */
-  remove: Remove | null;
-  /** Pick mode's per-row upload, or null in read mode. */
-  upload: Upload | null;
+  selection: Selection;
+  upload: Upload;
   // HTMLElement, not HTMLTableRowElement: only scrollIntoView reads this map, which every
   // element has.
   rowRefs: React.RefObject<Map<number, HTMLElement>>;
 }) {
   const style = ROW_STYLES[state];
-  const selectable = isSelectable(state);
 
   return (
     <TableRow
@@ -299,24 +235,20 @@ function Row({
       className={cn("align-top", style?.row)}
       data-row-state={state}
       // The row's own state, named for a screen reader on the row rather than only in the
-      // chip, so tabbing to the checkbox says why it is disabled. Read mode never sets this:
-      // nothing there is disabled BY the row's state, and a row whose topic already shipped is
-      // still perfectly deletable.
-      aria-disabled={selection && !selectable ? true : undefined}
+      // chip, so tabbing to the checkbox says why it is disabled.
+      aria-disabled={!selection.eligible ? true : undefined}
     >
-      {selection ? (
-        <TableCell className="pt-4 align-top">
-          <Checkbox
-            checked={selection.checked}
-            disabled={!selectable}
-            onClick={selection.onCheckboxClick}
-            onCheckedChange={() => selection.onCheckboxChange(row.index)}
-            // The number, so the checkbox a screen reader lands on names the row the same way
-            // the screen does rather than reading a dozen words of title to say which one.
-            aria-label={`Select row ${row.index + 1}, ${row.topic}`}
-          />
-        </TableCell>
-      ) : null}
+      <TableCell className="pt-4 align-top">
+        <Checkbox
+          checked={selection.checked}
+          disabled={!selection.eligible}
+          onClick={selection.onCheckboxClick}
+          onCheckedChange={() => selection.onCheckboxChange(row.index)}
+          // The number, so the checkbox a screen reader lands on names the row the same way
+          // the screen does rather than reading a dozen words of title to say which one.
+          aria-label={`Select row ${row.index + 1}, ${row.topic}`}
+        />
+      </TableCell>
 
       {/* Displayed index + 1, agreeing with the preview's "#" column, engine-error's "row N",
           and the number every blog written from this row carries in the library. */}
@@ -356,82 +288,14 @@ function Row({
         {row.covers || <span className="text-xs">Not given</span>}
       </TableCell>
 
-      {/* Read mode only, keyed off `remove` exactly like the delete cell below: the operator
-          asked the create page not to carry the prompts, and the Content Roadmap tab is where
-          the sheet is judged. */}
-      {remove ? (
-        <TableCell className="py-3 align-top whitespace-normal">
-          <Prompts prompts={row.prompts} />
-        </TableCell>
-      ) : null}
-
-      {remove || upload ? (
-        <TableCell className="pt-3 align-top">
-          {remove ? (
-            /* Ghost, never destructive. This button opens a confirm; it does not delete, and a
-               red button on all 25 rows would paint the sheet as a hazard. The colour belongs on
-               the confirm's action, where something is actually about to be destroyed. */
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-8 text-muted-foreground hover:text-fail"
-              disabled={remove.locked}
-              onClick={() => remove.onDelete(row)}
-            >
-              <Trash2 aria-hidden />
-              {/* Named, not "delete": 25 buttons all called "Delete record" are 25 identical
-                  announcements, and the topic is the only thing that tells them apart. */}
-              <span className="sr-only">Delete the record {row.topic}</span>
-            </Button>
-          ) : null}
-          {upload ? (
-            <UploadBlog
-              brandSlug={upload.brandSlug}
-              row={row}
-              state={state}
-              onUploaded={upload.onUploaded}
-            />
-          ) : null}
-        </TableCell>
-      ) : null}
+      <TableCell className="pt-3 align-top">
+        <UploadBlog
+          brandSlug={upload.brandSlug}
+          row={row}
+          state={state}
+          onUploaded={upload.onUploaded}
+        />
+      </TableCell>
     </TableRow>
-  );
-}
-
-/**
- * Every prompt, bulleted, one per line, and none of them hidden.
- *
- * These were chips, which was wrong twice. A chip is a short label, and these are whole
- * questions a person typed at an AI, so a chip wrapped mid sentence and drew a border through
- * the middle of it. And chips cost so much width that only three fitted, which forced a "+2
- * more" button: the prompts are the binding part of a row, the FAQ has to answer every one,
- * so hiding some of them hid the thing the operator is judging.
- *
- * The bullet is what a chip's border was doing honestly: it marks where one prompt ends and
- * the next starts, which plain wrapped lines could not, and it costs one character instead of
- * a box.
- */
-function Prompts({ prompts }: { prompts: string[] }) {
-  if (prompts.length === 0) {
-    return <span className="text-xs text-muted-foreground">None given</span>;
-  }
-
-  return (
-    <ul className="flex flex-col gap-1">
-      {prompts.map((prompt, i) => (
-        <li
-          key={`${i}-${prompt}`}
-          className="flex gap-1.5 text-sm leading-relaxed text-pretty text-muted-foreground"
-        >
-          {/* aria-hidden and a real list underneath: a screen reader announces "list, 3 items"
-              and would otherwise read the glyph aloud before every one of them. */}
-          <span className="select-none text-muted-foreground/50" aria-hidden>
-            &bull;
-          </span>
-          <span className="min-w-0">{prompt}</span>
-        </li>
-      ))}
-    </ul>
   );
 }

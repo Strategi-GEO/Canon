@@ -17,6 +17,7 @@ import type {
   ChannelPostsResponse,
   ClientsResponse,
   CreateClientBody,
+  CreateClientResult,
   DescribeJob,
   DescribeJobsResponse,
   FactsGenJob,
@@ -33,6 +34,8 @@ import type {
   ReportsResponse,
   ShareReportResult,
   ResourcesResponse,
+  RewriteJob,
+  RewriteRoadmapBody,
   RoadmapGenJob,
   RoadmapMonthsResponse,
   RepurposeArtifact,
@@ -259,13 +262,18 @@ export const api = {
     request<IndustriesResponse>("/api/industries", { signal }),
 
   createClient: (body: CreateClientBody) =>
-    request<Client>("/api/clients", { method: "POST", body }),
+    request<CreateClientResult>("/api/clients", { method: "POST", body }),
 
   client: (slug: string, signal?: AbortSignal) =>
     request<Client>(`/api/clients/${slug}`, { signal }),
 
   updateClient: (slug: string, body: UpdateClientBody) =>
     request<Client>(`/api/clients/${slug}`, { method: "PATCH", body }),
+
+  // HARD delete a brand and everything under it. Admin-only, irreversible; the settings page
+  // gates it behind a consent checkbox and a slug retype. 409 while a run is live for the brand.
+  deleteClient: (slug: string) =>
+    request<null>(`/api/clients/${slug}`, { method: "DELETE" }),
 
   /**
    * Starts a draft and returns the JOB, never the description: 202, and the field is null at
@@ -377,6 +385,35 @@ export const api = {
       method: "POST",
       body,
     }),
+
+  /**
+   * Rewrites the ticked rows of the LATEST roadmap: one agent session plans replacements
+   * under the operator's feedback, and the engine splices them in by position, refusing the
+   * whole splice unless it gets exactly one complete new row per ticked row. The total never
+   * changes.
+   *
+   * SEVERAL batches may run at once, each owning disjoint rows, which is the operator's loop:
+   * reject some rows, and while that runs, reject others with different feedback. 409 names
+   * a row a running batch already owns, or a generation in flight. 422 names a row off the
+   * sheet or one that already has a blog on disk (rewriting it would orphan the article).
+   */
+  rewriteRoadmap: (slug: string, body: RewriteRoadmapBody) =>
+    request<RewriteJob>(`/api/clients/${slug}/roadmap/rewrite`, {
+      method: "POST",
+      body,
+    }),
+
+  /**
+   * Every rewrite batch for this brand, running and settled, oldest first. THE authority:
+   * a browser that never issued a POST reads the same batches as the one that did, which is
+   * what makes a batch survive a refresh. An empty list is the normal state, not a 404.
+   */
+  rewriteJobs: (slug: string, signal?: AbortSignal) =>
+    request<{ jobs: RewriteJob[] }>(`/api/clients/${slug}/roadmap/rewrites`, { signal }),
+
+  /** Drops ONE settled batch once its report is read. 409 while it still runs. */
+  clearRewriteJob: (slug: string, jobId: string) =>
+    request<null>(`/api/clients/${slug}/roadmap/rewrites/${jobId}`, { method: "DELETE" }),
 
   /**
    * The brand's generation job, running or settled. THE authority on it: a browser that was

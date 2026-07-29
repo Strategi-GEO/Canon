@@ -23,7 +23,8 @@ import { NoFactBaseDialog } from "@/components/create/no-fact-base-dialog";
 import { SessionInstructionsDialog } from "@/components/create/session-instructions-dialog";
 import { EngineErrorNote, detailText } from "@/components/create/engine-error";
 import { seedsFor, type Seed } from "@/components/create/use-run-stream";
-import { isSelectable, resolveRowState, selectableRows } from "@/components/create/row-status";
+import { useRowSelection } from "@/components/create/use-row-selection";
+import { isSelectable, resolveRowState } from "@/components/create/row-status";
 import type {
   Duplicate,
   GenerateBody,
@@ -119,83 +120,32 @@ export function SelectState({
   // Filled by the table's rows. A 409 or a 422 scrolls to the offending row by index.
   const rowRefs = React.useRef<Map<number, HTMLElement>>(new Map());
 
-  // A retry arrives already ticked. The parent remounts this on retry, so the initialiser is
-  // the whole mechanism: no effect that would fight the operator's own clicks afterwards.
-  const [selected, setSelected] = React.useState<Set<number>>(() => {
-    if (!preselectSlugs || preselectSlugs.length === 0) {
-      return new Set();
-    }
-    const wanted = new Set(preselectSlugs);
-    return new Set(
-      (roadmap?.rows ?? []).filter((r) => wanted.has(r.topic_slug)).map((r) => r.index),
-    );
-  });
-
-  // The anchor for shift-click. A ref rather than state: it steers the next click and must
-  // never itself cause a render.
-  const anchor = React.useRef<number | null>(null);
-
   const facts = React.useMemo(
     () => ({ live, failed, belowBar, needsReview, duplicates }),
     [live, failed, belowBar, needsReview, duplicates],
   );
 
-  const toggle = React.useCallback(
-    (index: number, extend: boolean) => {
-      setSelected((current) => {
-        const next = new Set(current);
-        // The clicked row's NEW value is what the whole range takes, which is what every
-        // list an operator has ever shift-clicked does.
-        const selecting = !current.has(index);
-        const from = anchor.current;
-
-        if (extend && from !== null && from !== index) {
-          // Ranges walk ARRAY POSITIONS, not row.index: the parser skips blank lines while
-          // its counter keeps going, so index has gaps and arithmetic on it would silently
-          // include or drop rows.
-          const a = rows.findIndex((r) => r.index === from);
-          const b = rows.findIndex((r) => r.index === index);
-          if (a !== -1 && b !== -1) {
-            const [lo, hi] = a < b ? [a, b] : [b, a];
-            for (let i = lo; i <= hi; i++) {
-              const row = rows[i];
-              // A range never picks up a green, yellow or incomplete row. Dragging across the
-              // table must not select what a direct click is forbidden to select.
-              if (!isSelectable(resolveRowState(row, facts))) {
-                continue;
-              }
-              if (selecting) {
-                next.add(row.index);
-              } else {
-                next.delete(row.index);
-              }
-            }
-            return next;
-          }
-        }
-
-        if (selecting) {
-          next.add(index);
-        } else {
-          next.delete(index);
-        }
-        return next;
-      });
-      anchor.current = index;
-    },
-    [rows, facts],
+  // What a tick may reach HERE: rows that can be written. The rewrite panel answers this
+  // question differently, which is why the predicate is the hook's input rather than baked in.
+  const eligible = React.useCallback(
+    (row: (typeof rows)[number]) => isSelectable(resolveRowState(row, facts)),
+    [facts],
   );
 
-  const selectable = React.useMemo(() => selectableRows(rows, facts), [rows, facts]);
-
-  const toggleAll = React.useCallback(
-    (checked: boolean) => {
-      // Select all means every row that can actually be written. Green (generated) and yellow
-      // (in a live run) are excluded, and their checkbox is disabled, so this cannot tick them.
-      setSelected(checked ? new Set(selectable.map((r) => r.index)) : new Set());
-      anchor.current = null;
+  // A retry arrives already ticked. The parent remounts this on retry, so the initialiser is
+  // the whole mechanism: no effect that would fight the operator's own clicks afterwards.
+  const { selected, setSelected, toggle, toggleAll, eligibleRows: selectable } = useRowSelection(
+    rows,
+    eligible,
+    () => {
+      if (!preselectSlugs || preselectSlugs.length === 0) {
+        return new Set();
+      }
+      const wanted = new Set(preselectSlugs);
+      return new Set(
+        (roadmap?.rows ?? []).filter((r) => wanted.has(r.topic_slug)).map((r) => r.index),
+      );
     },
-    [selectable],
   );
 
   const scrollTo = React.useCallback((index: number) => {
@@ -473,7 +423,6 @@ export function SelectState({
           </p>
         ) : (
           <RoadmapTable
-            mode="pick"
             rows={rows}
             facts={facts}
             selected={selected}

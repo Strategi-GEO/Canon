@@ -251,4 +251,8 @@ def build_for_publish(runner, ledger, client_slug, topic_slug, client=None):
         # gate's entity vocabulary and holds things like "ALPL 3 LLP", which is a legal
         # entity and has no business becoming a public tag on a client's blog.
         brand_name=client.get("name"),
+        # The CMS's own routing slug when Settings recorded one, else empty so the payload falls
+        # back to client_slug. This is what lets a brand the CMS knows under a different slug post
+        # without renaming the brand (which never changed the routing slug anyway).
+        cms_client=client.get("cms_client"),
     )

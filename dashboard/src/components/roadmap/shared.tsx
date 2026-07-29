@@ -1,7 +1,10 @@
 "use client";
 
+import * as React from "react";
 import Link from "next/link";
+import { Loader2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { formatCount } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { ThemeTerm } from "@/components/roadmap/roadmap-theme";
@@ -134,6 +137,23 @@ function roleOf(index: number): string {
 }
 
 /**
+ * The review affordance the ADMIN preview threads into the grid: a checkbox per data row, a
+ * per-row lock reason, and a per-row "rewriting" state. Pure presentation contract, callbacks
+ * in and nothing else, so this file stays portal-safe: the portal passes no `review` and
+ * renders the exact grid it always has. Row indices here are 0-based DATA row positions, the
+ * same numbering RoadmapRow.index and the "#" column carry.
+ */
+export type SheetReview = {
+  /** Why row i cannot be ticked, or null when it can. Renders as the checkbox's tooltip. */
+  blocked: (rowIndex: number) => string | null;
+  /** True while a running rewrite batch owns row i. Locks the row and marks it working. */
+  rewriting: (rowIndex: number) => boolean;
+  selected: ReadonlySet<number>;
+  /** `extend` is a shift-click: range-select between the anchor and this row. */
+  onToggle: (rowIndex: number, extend: boolean) => void;
+};
+
+/**
  * Sticky header, sticky row numbers, and the scroll living HERE rather than on the page. The
  * page must never scroll sideways to accommodate a wide CSV: the sheet is arbitrary width, so
  * letting it size the document would let one operator's spreadsheet break the whole layout.
@@ -148,8 +168,22 @@ function roleOf(index: number): string {
  * The prop is the shape it reads, not the admin RoadmapSheet: the portal cannot fetch the raw
  * CSV (admin_roadmap_sheets is admin-gated) and rebuilds these cells from its own wire, so the
  * grid asks only for what it renders and both callers satisfy it.
+ *
+ * `review` adds the tick column the rewrite flow needs, on the LEFT of the row numbers where
+ * the operator asked for it. It is optional and the portal never passes it.
  */
-export function SheetGrid({ sheet }: { sheet: { columns: string[]; rows: string[][] } }) {
+export function SheetGrid({
+  sheet,
+  review,
+}: {
+  sheet: { columns: string[]; rows: string[][] };
+  review?: SheetReview;
+}) {
+  // Shift state is read off the click that caused the change, before the change handler
+  // fires: the same private-ref pattern roadmap-table uses, for the same Radix ordering
+  // reason. Held here so the grid stays a drop-in for callers that pass no review.
+  const extending = React.useRef(false);
+
   if (sheet.rows.length === 0) {
     return (
       <p className="py-10 text-center text-sm text-muted-foreground">
@@ -163,9 +197,21 @@ export function SheetGrid({ sheet }: { sheet: { columns: string[]; rows: string[
       <table className="w-max border-separate border-spacing-0 text-left">
         <thead>
           <tr>
+            {review ? (
+              // No select-all: rejecting EVERY topic is not a rewrite, it is a sheet worth
+              // deleting and regenerating, so the header cell only names the column.
+              <th className="sticky top-0 left-0 z-30 w-9 border-b border-border bg-muted px-2.5 py-2.5">
+                <span className="sr-only">tick topics to rewrite</span>
+              </th>
+            ) : null}
             {/* Sticky in both axes, so it outranks both the header row and the number column
                 it sits at the corner of. */}
-            <th className="sticky top-0 left-0 z-30 border-b border-border bg-muted px-3 py-2.5 text-xs font-medium text-muted-foreground">
+            <th
+              className={cn(
+                "sticky top-0 z-30 border-b border-border bg-muted px-3 py-2.5 text-xs font-medium text-muted-foreground",
+                review ? "left-9" : "left-0",
+              )}
+            >
               #
             </th>
             {/* Every column is rendered at full weight. Nothing here is greyed out, because
@@ -187,25 +233,76 @@ export function SheetGrid({ sheet }: { sheet: { columns: string[]; rows: string[
           </tr>
         </thead>
         <tbody>
-          {sheet.rows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
-              <td className="machine sticky left-0 z-10 border-b border-border bg-card px-3 py-2 align-top text-xs text-muted-foreground">
-                {rowIndex + 1}
-              </td>
-              {row.map((cell, cellIndex) => (
+          {sheet.rows.map((row, rowIndex) => {
+            const rewriting = review?.rewriting(rowIndex) ?? false;
+            const blocked = review?.blocked(rowIndex) ?? null;
+            // The amber wash says "in flight" the way the create table's rows do; it must
+            // also sit under the sticky number cell or the tint would break at the frozen
+            // column and read as two different rows.
+            const tint = rewriting ? "bg-review-bg" : "bg-card";
+            return (
+              <tr key={rowIndex} className={rewriting ? "bg-review-bg" : undefined}>
+                {review ? (
+                  <td className={cn("sticky left-0 z-10 border-b border-border px-2.5 py-2 align-top", tint)}>
+                    {rewriting ? (
+                      // The checkbox is REPLACED, not disabled: a row a running batch owns is
+                      // not a choice the operator is being offered, and the spinner says what
+                      // is actually happening to it.
+                      <Loader2
+                        className="size-4 animate-spin text-review motion-reduce:animate-none"
+                        aria-label={`Row ${rowIndex + 1} is being rewritten`}
+                      />
+                    ) : (
+                      <Checkbox
+                        checked={review.selected.has(rowIndex)}
+                        disabled={blocked !== null}
+                        title={blocked ?? undefined}
+                        onClick={(event) => {
+                          extending.current = event.shiftKey;
+                        }}
+                        onCheckedChange={() => review.onToggle(rowIndex, extending.current)}
+                        aria-label={
+                          blocked !== null
+                            ? `Row ${rowIndex + 1} cannot be rewritten: ${blocked}`
+                            : `Tick row ${rowIndex + 1} to rewrite it`
+                        }
+                      />
+                    )}
+                  </td>
+                ) : null}
                 <td
-                  key={cellIndex}
-                  // Target prompts arrive newline separated inside one quoted cell, so the
-                  // newlines are content and collapsing them would misrepresent the file.
-                  // Every cell reads at full contrast: half of them used to be dimmed to say
-                  // the engine threw them away, and the engine no longer does.
-                  className="machine max-w-80 border-b border-l border-border px-3 py-2 align-top text-xs whitespace-pre-line wrap-break-word text-foreground"
+                  className={cn(
+                    "machine sticky z-10 border-b border-border px-3 py-2 align-top text-xs text-muted-foreground",
+                    review ? "left-9" : "left-0",
+                    tint,
+                  )}
                 >
-                  {cell}
+                  {rowIndex + 1}
                 </td>
-              ))}
-            </tr>
-          ))}
+                {row.map((cell, cellIndex) => (
+                  <td
+                    key={cellIndex}
+                    // Target prompts arrive newline separated inside one quoted cell, so the
+                    // newlines are content and collapsing them would misrepresent the file.
+                    // Every cell reads at full contrast: half of them used to be dimmed to say
+                    // the engine threw them away, and the engine no longer does.
+                    className="machine max-w-80 border-b border-l border-border px-3 py-2 align-top text-xs whitespace-pre-line wrap-break-word text-foreground"
+                  >
+                    {cellIndex === 0 && rewriting ? (
+                      <span className="mb-1 flex items-center gap-1.5 text-[0.6875rem] text-review">
+                        <Loader2
+                          className="size-3 animate-spin motion-reduce:animate-none"
+                          aria-hidden
+                        />
+                        rewriting
+                      </span>
+                    ) : null}
+                    {cell}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

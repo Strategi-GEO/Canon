@@ -20,7 +20,8 @@ import { HOSTED_READONLY } from "@/lib/hosted";
 import { useDescribe } from "@/lib/describe-context";
 import { FieldError } from "@/components/clients/engine-error";
 import { createClient } from "@/components/clients/wire";
-import type { Client } from "@/types";
+import { PortalCredentialsDialog } from "@/components/clients/portal-credentials";
+import type { Client, PortalCredential } from "@/types";
 
 /**
  * Adds a BRAND, optionally inside an ORG.
@@ -55,6 +56,12 @@ export function AddBrandDialog({
   const [market, setMarket] = React.useState("India, English");
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
+  // The one-time portal login to reveal, held until the admin acknowledges it. A brand that is
+  // its own new single-brand org mints a login and reveals it here; a brand joining an existing
+  // org mints none (portal_login null) and skips it. See PortalCredentialsDialog.
+  const [reveal, setReveal] = React.useState<{ credential: PortalCredential; brand: Client } | null>(
+    null,
+  );
 
   const { start: startDescribe } = useDescribe();
   const listId = React.useId();
@@ -100,7 +107,13 @@ export function AddBrandDialog({
       void startDescribe(brand.slug);
       setOpen(false);
       reset();
-      onCreated?.(brand);
+      // A brand that is its own new org gets its client login here, shown once. Hold the redirect
+      // until the admin saves it; a brand joining an org that already has a login skips this.
+      if (brand.portal_login) {
+        setReveal({ credential: brand.portal_login, brand });
+      } else {
+        onCreated?.(brand);
+      }
     } catch (cause) {
       // 409 names the slug that already exists and 422 names the field, so the engine's
       // sentence goes next to the field it is about rather than into a generic banner.
@@ -117,6 +130,7 @@ export function AddBrandDialog({
   const generalError = error && !nameError ? error : null;
 
   return (
+    <>
     <Dialog
       open={open}
       onOpenChange={(next) => {
@@ -253,5 +267,20 @@ export function AddBrandDialog({
         </form>
       </DialogContent>
     </Dialog>
+
+    {/* Outside the form Dialog so it survives that dialog closing. onDone runs the deferred
+        redirect, so the operator lands on the new brand only after saving the login. */}
+    <PortalCredentialsDialog
+      credential={reveal?.credential ?? null}
+      brandName={reveal?.brand.name ?? ""}
+      onDone={() => {
+        const brand = reveal?.brand ?? null;
+        setReveal(null);
+        if (brand) {
+          onCreated?.(brand);
+        }
+      }}
+    />
+    </>
   );
 }

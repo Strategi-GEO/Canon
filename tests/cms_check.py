@@ -159,6 +159,24 @@ built = payload.build_payload("acme", "second-home", BLOG, prompts="is it worth 
 check("schema version is the literal 1", built["ingest_schema_version"] == 1)
 # The routing slug: one shared key posts to every org, so the payload names the brand.
 check("client is the brand slug that routes the draft", built["client"] == "acme")
+# The CMS's own slug can differ from the engine's; when Settings records one, it routes instead.
+check(
+    "cms_client overrides the routing slug when set",
+    payload.build_payload("acme", "s", BLOG, cms_client="acme-on-the-cms")["client"]
+    == "acme-on-the-cms",
+)
+check(
+    "a blank cms_client falls back to the brand slug",
+    payload.build_payload("acme", "s", BLOG, cms_client="")["client"] == "acme"
+    and payload.build_payload("acme", "s", BLOG, cms_client="   ")["client"] == "acme",
+)
+# The override routes; it must NEVER move the idempotency key, which is the brand's stable
+# internal identity. Two posts of one blog dedupe whether or not a CMS slug is set.
+check(
+    "cms_client does not change source_run_id",
+    payload.build_payload("acme", "s", BLOG, cms_client="acme-on-the-cms")["source_run_id"]
+    == payload.build_payload("acme", "s", BLOG)["source_run_id"],
+)
 check("title is the H1", built["title"] == "Buying a Second Home in Your 40s")
 check("H1 is not repeated in the body", not built["body_markdown"].startswith("# Buying"))
 check(

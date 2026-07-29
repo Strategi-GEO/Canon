@@ -22,7 +22,8 @@ import { useOrgs } from "@/lib/orgs-context";
 import { useDescribe } from "@/lib/describe-context";
 import { FieldError } from "@/components/clients/engine-error";
 import { createClient } from "@/components/clients/wire";
-import type { Client } from "@/types";
+import { PortalCredentialsDialog } from "@/components/clients/portal-credentials";
+import type { Client, PortalCredential } from "@/types";
 
 /**
  * Adds an ORGANISATION, together with its first brand, in one step.
@@ -69,6 +70,12 @@ export function AddOrganisationDialog({
   const [domain, setDomain] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
+  // The one-time portal login to reveal, held until the admin acknowledges it. When set, the
+  // redirect that onCreated runs is deferred to the reveal's Done, so a one-time password is
+  // never skipped past by a navigation firing underneath it.
+  const [reveal, setReveal] = React.useState<{ credential: PortalCredential; brand: Client } | null>(
+    null,
+  );
 
   const { orgs } = useOrgs();
   const { start: startDescribe } = useDescribe();
@@ -130,7 +137,14 @@ export function AddOrganisationDialog({
       // route, so it survives closing this dialog and any redirect the caller runs.
       void startDescribe(brand.slug);
       setOpen(false);
-      onCreated?.(brand);
+      // A fresh org gets its client login here, and the password is shown once. Hold the
+      // redirect until the admin acknowledges it; a brand joining an existing org mints no login
+      // (portal_login is null), so it proceeds straight through as before.
+      if (brand.portal_login) {
+        setReveal({ credential: brand.portal_login, brand });
+      } else {
+        onCreated?.(brand);
+      }
     } catch (cause) {
       // 409 names the slug that already exists and 422 names the field, so the engine's own
       // sentence reaches the operator verbatim.
@@ -146,6 +160,7 @@ export function AddOrganisationDialog({
   const identityError = error && (error.status === 409 || error.status === 422) ? error : null;
 
   return (
+    <>
     <Dialog open={actualOpen} onOpenChange={setOpen}>
       {controlled ? null : (
         <DialogTrigger asChild>
@@ -289,5 +304,20 @@ export function AddOrganisationDialog({
         </form>
       </DialogContent>
     </Dialog>
+
+    {/* Rendered outside the form Dialog so it survives that dialog closing. onDone runs the
+        deferred redirect, so the operator lands on the new brand only after saving the login. */}
+    <PortalCredentialsDialog
+      credential={reveal?.credential ?? null}
+      brandName={reveal?.brand.name ?? ""}
+      onDone={() => {
+        const brand = reveal?.brand ?? null;
+        setReveal(null);
+        if (brand) {
+          onCreated?.(brand);
+        }
+      }}
+    />
+    </>
   );
 }

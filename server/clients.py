@@ -158,7 +158,7 @@ def exists(slug):
 # blog version, which is the record's answer to what _blog_count used to glob off disk.
 _CLIENT_SELECT = """
     select c.slug, c.name, c.domain, c.industry, c.market, c.description,
-           c.custom_instructions,
+           c.custom_instructions, c.cms_client,
            c.created_at,
            exists (select 1 from roadmap_sheets r where r.client_id = c.id)
              as has_roadmap,
@@ -178,7 +178,7 @@ _CLIENT_SELECT = """
 
 def _client_from_row(row):
     (slug, name, domain, industry, market, description, custom_instructions,
-     created_at, has_roadmap, has_facts, resource_count, blog_count,
+     cms_client, created_at, has_roadmap, has_facts, resource_count, blog_count,
      org_slug, org_name) = row
     return {
         "slug": slug,
@@ -200,6 +200,10 @@ def _client_from_row(row):
         # Operator material: present on the engine's own record (owner connection), never on the
         # hosted authenticated read, which does not select this column.
         "custom_instructions": custom_instructions or "",
+        # The CMS's own routing slug for this brand, edited in Settings. Empty means the publish
+        # payload falls back to this brand's slug, which is how every brand posted before the
+        # column existed. Operator material: on the engine's own record, never the hosted read.
+        "cms_client": cms_client or "",
         "has_roadmap": bool(has_roadmap),
         "has_canonical_facts": bool(has_facts),
         "resource_count": resource_count,
@@ -566,7 +570,7 @@ def create_client(name, domain, industry, description="",
 
 def update_client(slug, description=None, name=None, organisation_name=None,
                   domain=None, industry=None, custom_instructions=None,
-                  market=None):
+                  market=None, cms_client=None):
     """Update only what was passed. A None field is untouched, so a PATCH carrying one key
     cannot blank the others, and gates keys this function was not given survive."""
     cid = db.client_id(slug)
@@ -612,6 +616,15 @@ def update_client(slug, description=None, name=None, organisation_name=None,
     if market is not None:
         sets.append("market = %s")
         params.append(str(market).strip())
+    # The CMS's own routing slug, used as the publish payload's `client` when set. Slugified
+    # exactly like a brand slug so a typed name ("Bangalore Brewing Co") or a pasted slug
+    # ("bangalore-brewing-co") both land as the CMS expects, and a stray space or capital can
+    # never ship a slug the CMS then rejects. Empty clears it, and the payload falls back to the
+    # brand's own slug. Column only, like market: the publish path reads it from the record, and
+    # nothing on disk needs it.
+    if cms_client is not None:
+        sets.append("cms_client = %s")
+        params.append(slugify_client(cms_client))
     if organisation_name is not None:
         # Moving a brand between orgs rewrites ONE column and renames NO slug. Blank
         # clears back to its own single-brand org, which is what a null org_id means.
@@ -746,3 +759,41 @@ def delete_resource(slug, name):
     if path is not None and path.is_file():
         path.unlink()
     return bool(deleted)
+
+
+def hard_delete_client(slug):
+    """HARD delete a brand and everything under it. IRREVERSIBLE.
+
+    Deleting the clients row cascades topics (and their blog_versions, blog_comments,
+    review_notes, status_events), channel_posts (and channel_post_comments), roadmap_sheets,
+    roadmap_rows, roadmap_uploads, client_resources, client_members and ledger_entries. THREE
+    tables carry a client_id but NO ON DELETE CASCADE back to clients (verified against the FK
+    graph), so a bare clients delete would ORPHAN them: client_reports, client_analyses and
+    org_membership are removed explicitly, in the SAME transaction, before the row goes. The
+    scratch tree on disk (clients/<slug>/ and outputs/<slug>/) is removed best-effort afterwards,
+    because it is re-derivable from the record for a live brand and inert for a deleted one.
+
+    Returns the deleted brand's name, or None if the slug was already absent (idempotent)."""
+    cid = db.client_id(slug)
+    if cid is None:
+        return None
+    name = db.q("select name from clients where id = %s", (cid,), fetch="val")
+    with db.tx() as cur:
+        cur.execute("delete from client_reports where client_id = %s", (cid,))
+        cur.execute("delete from client_analyses where client_id = %s", (cid,))
+        cur.execute("delete from org_membership where client_id = %s", (cid,))
+        cur.execute("delete from clients where id = %s", (cid,))
+    _purge_client_scratch(slug)
+    return name
+
+
+def _purge_client_scratch(slug):
+    """Remove the deleted brand's materialized scratch: clients/<slug>/ and outputs/<slug>/. Both
+    re-derive from the record for a live brand, so removing them for a deleted one loses nothing.
+    Best-effort: the record is already gone and a leftover dir is inert. slug is a validated brand
+    slug (runner.slugify round-trips it), so neither join can escape its parent."""
+    import shutil
+    if runner.slugify(slug) != slug:
+        return
+    for path in (CLIENTS_DIR / slug, runner.OUTPUTS_ROOT / slug):
+        shutil.rmtree(path, ignore_errors=True)

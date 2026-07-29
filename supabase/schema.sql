@@ -146,6 +146,12 @@ create table clients (
   -- NOT list it. sync.materialize_client lays it down at clients/<slug>/custom-instructions.md.
   custom_instructions text not null default '',
 
+  -- The CMS's own routing slug for this brand, when it differs from `slug` (migration 033). The
+  -- publish payload's `client` field routes each draft to the CMS; it uses this when set and
+  -- falls back to `slug` when blank. Operator material like custom_instructions: not in the
+  -- authenticated re-grant below, so the hosted mirror cannot read it.
+  cms_client text not null default '',
+
   created_at  timestamptz not null default now(),
   deleted_at  timestamptz,
 

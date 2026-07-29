@@ -21,8 +21,11 @@ Month N no reader can parse. Validation below runs BEFORE the push, and it delet
 unparseable scratch file too, so a later session cannot pick it up as its own output.
 """
 import asyncio
+import csv
+import io
 import os
 import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -57,6 +60,21 @@ _PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
 # ---------------------------------------------------------------------------
 GEN_JOBS = {}
 
+# ---------------------------------------------------------------------------
+# Rewrite jobs: keyed by JOB ID, many per brand, in the same process memory.
+#
+# The slug key above is the generation's concurrency rule; rewrites deliberately do not share
+# it, because the operator's loop is "reject rows 3 and 7, and while that runs, reject row 5
+# with different feedback". Two rewrites for one brand are safe where two generations are not:
+# each owns a DISJOINT set of rows (the route refuses an overlap), each session writes its own
+# scratch file, and each splice lands one whole transaction against the sheet as it stands
+# then, so disjoint splices commute. The one sheet-level race that remains is topical, not
+# structural: two concurrent sessions cannot see each other's NEW topics, so they can in
+# principle plan near-duplicates. The review loop itself is the mitigation, since a duplicate
+# that lands is exactly what the operator rejects next round.
+# ---------------------------------------------------------------------------
+REWRITE_JOBS = {}
+
 
 class GenerationError(Exception):
     """The session could not run or could not be trusted. Carries the operator-facing text."""
@@ -87,14 +105,50 @@ def clear_job(client_slug):
         del GEN_JOBS[client_slug]
 
 
-def start_job(client_slug, brand_url, piece_count, notes):
-    """Start a generation in the background and return its job record immediately.
+def list_rewrite_jobs(client_slug):
+    """This brand's rewrite jobs, running and settled, oldest started first."""
+    jobs = [job for job in REWRITE_JOBS.values() if job["client"] == client_slug]
+    return sorted(jobs, key=lambda job: job["started"])
 
-    The caller has already refused the duplicate, live-run and existing-roadmap cases, so this
-    always starts.
-    """
-    job = {
+
+def rewrite_running(client_slug):
+    return any(job["state"] == "running" for job in list_rewrite_jobs(client_slug))
+
+
+def rewrite_rows_in_flight(client_slug):
+    """Row indices some running rewrite already owns. The route refuses an overlap, which is
+    the whole reason concurrent rewrites are safe to allow at all."""
+    taken = set()
+    for job in list_rewrite_jobs(client_slug):
+        if job["state"] == "running":
+            taken.update(job["row_indices"])
+    return taken
+
+
+def clear_rewrite_job(client_slug, job_id):
+    """Drop ONE settled rewrite job. True when one went; a running job is never cleared, for
+    the same reason clear_job refuses one."""
+    job = REWRITE_JOBS.get(job_id)
+    if job is None or job["client"] != client_slug or job["state"] == "running":
+        return False
+    del REWRITE_JOBS[job_id]
+    return True
+
+
+def rewrite_scratch_path(client_slug, job_id):
+    """Each rewrite session writes its OWN scratch file. The shared roadmap.csv scratch is the
+    generation's, and two concurrent rewrites pointed at one path would clobber each other's
+    output with nobody told which batch survived."""
+    return runner.REPO_ROOT / "clients" / client_slug / f"roadmap-rewrite-{job_id}.csv"
+
+
+def _new_job(client_slug, kind, brand_url, piece_count, notes):
+    """The job record both kinds share. Registration is the CALLER's: a generation lives in
+    GEN_JOBS under its slug, a rewrite in REWRITE_JOBS under its id, and this function knowing
+    which would re-entangle the two concurrency rules the split exists to keep apart."""
+    return {
         "client": client_slug,
+        "kind": kind,
         "state": "running",
         "started": _now(),
         "finished": None,
@@ -105,41 +159,24 @@ def start_job(client_slug, brand_url, piece_count, notes):
         "rows": None,
         "error": None,
     }
-    GEN_JOBS[client_slug] = job
 
+
+def _spawn(job, work):
+    """Run `work(job)` as a background task that can never leave the job stuck on "running".
+
+    Shared by generation and rewrite because the guarantee is the point, not the plumbing: a
+    job stranded on "running" is an operator's clock that never resolves and a brand that can
+    never start another session. `work` sets job["rows"] / job["report"] and returns the error
+    string or None; everything about settling lives here, once.
+    """
     async def run():
         try:
-            result = await generate_roadmap(client_slug, brand_url, piece_count, notes)
-            # The report survives every outcome below. When the agent legitimately declines to
-            # write a roadmap, because it could not read the site, the report IS the operator's
-            # answer, and a job that reported only "no roadmap written" would throw away the
-            # one thing they paid for.
-            job["report"] = result["report"]
-            rows, error = _validate_written(client_slug)
-            job["rows"] = rows
-            job["error"] = error
-            # Saved to disk BEFORE the job settles, and saved on failure too. The job dict lives
-            # in this process's memory, so until this line ran, the report existed nowhere else:
-            # a restart, and the operator lost the analysis they had paid a long real session
-            # for while the CSV it explains sat on disk with no account of itself. The report is
-            # frequently worth more than the sheet, because it carries what the agent CUT and
-            # what it disputes, and none of that is recoverable by reading the rows.
-            _save_report(client_slug, job)
-            if not error:
-                # The push happens while the job still reads as "running", because
-                # job_running and has_roadmap are the two halves of one mutual-exclusion
-                # gate: settling the job first would open a window where neither half
-                # holds and a concurrent upload could land, only to be clobbered by
-                # this push. A push failure falls to the handlers below and fails the
-                # job loudly: a roadmap that never reached the record was not produced.
-                _push_sheet(client_slug)
-            job["state"] = "failed" if error else "done"
+            job["error"] = await work(job)
+            job["state"] = "failed" if job["error"] else "done"
         except GenerationError as exc:
             job["error"] = str(exc)
             job["state"] = "failed"
         except Exception as exc:
-            # A bug here must never leave the job stuck on "running", which would strand the
-            # operator's clock forever with no way to start another generation.
             job["error"] = f"{type(exc).__name__}: {exc}"
             job["state"] = "failed"
         finally:
@@ -150,6 +187,93 @@ def start_job(client_slug, brand_url, piece_count, notes):
     job["_task"] = task
     task.add_done_callback(lambda _: job.pop("_task", None))
     return job
+
+
+def start_job(client_slug, brand_url, piece_count, notes):
+    """Start a generation in the background and return its job record immediately.
+
+    The caller has already refused the duplicate, live-run and existing-roadmap cases, so this
+    always starts.
+    """
+    job = _new_job(client_slug, "generate", brand_url, piece_count, notes)
+    GEN_JOBS[client_slug] = job
+
+    async def work(job):
+        result = await generate_roadmap(client_slug, brand_url, piece_count, notes)
+        # The report survives every outcome below. When the agent legitimately declines to
+        # write a roadmap, because it could not read the site, the report IS the operator's
+        # answer, and a job that reported only "no roadmap written" would throw away the
+        # one thing they paid for.
+        job["report"] = result["report"]
+        rows, error = _validate_written(client_slug)
+        job["rows"] = rows
+        # Saved to disk BEFORE the job settles, and saved on failure too. The job dict lives
+        # in this process's memory, so until this line ran, the report existed nowhere else:
+        # a restart, and the operator lost the analysis they had paid a long real session
+        # for while the CSV it explains sat on disk with no account of itself. The report is
+        # frequently worth more than the sheet, because it carries what the agent CUT and
+        # what it disputes, and none of that is recoverable by reading the rows.
+        _save_report(client_slug, job)
+        if not error:
+            # The push happens while the job still reads as "running", because
+            # job_running and has_roadmap are the two halves of one mutual-exclusion
+            # gate: settling the job first would open a window where neither half
+            # holds and a concurrent upload could land, only to be clobbered by
+            # this push. A push failure falls to _spawn's handlers and fails the
+            # job loudly: a roadmap that never reached the record was not produced.
+            _push_sheet(client_slug)
+        return error
+
+    return _spawn(job, work)
+
+
+def start_rewrite_job(client_slug, brand_url, month, payload, row_indices, feedback):
+    """Rewrite the ticked rows of one month's sheet, as its OWN job among many.
+
+    Keyed by job id in REWRITE_JOBS, not by slug: the operator's loop is several batches in
+    flight at once, each with its own rows and its own feedback. The route has already refused
+    an overlap with every running batch, so this job owns its rows outright. `payload` is the
+    parsed sheet the route already loaded, so the prompt block is built from the exact rows
+    the operator ticked against.
+
+    Each session writes its own scratch file and each splice re-reads the sheet as it stands
+    at landing time, so a batch that lands second splices into the sheet the first already
+    changed, and the first batch's new rows survive.
+    """
+    row_indices = sorted(row_indices)
+    job = _new_job(client_slug, "rewrite", brand_url, len(row_indices), feedback)
+    job_id = uuid.uuid4().hex[:8]
+    job["id"] = job_id
+    job["row_indices"] = row_indices
+    REWRITE_JOBS[job_id] = job
+
+    block = rewrite_block(month, payload, row_indices, feedback)
+    scratch = rewrite_scratch_path(client_slug, job_id)
+
+    async def work(job):
+        result = await generate_roadmap(client_slug, brand_url, len(row_indices), feedback,
+                                        rewrite_block=block, roadmap_path=scratch)
+        job["report"] = result["report"]
+
+        if not scratch.is_file():
+            return (f"the session wrote no replacement rows at {scratch}. Read the report: "
+                    f"the agent writes nothing and explains when it cannot plan honestly, "
+                    f"and the roadmap is untouched.")
+        try:
+            replacement_text = roadmap._decode(scratch.read_bytes())
+            _push_rewrite(client_slug, month, row_indices, replacement_text,
+                          report=job["report"])
+        except (roadmap.BadUpload, GenerationError) as exc:
+            return f"the replacement rows were refused and the roadmap is untouched: {exc}"
+        finally:
+            # The per-job scratch has no life after the splice decides: landed rows live in
+            # the record, refused ones live in the report, and a leftover file would only
+            # litter clients/<slug>/ with one orphan per batch.
+            scratch.unlink(missing_ok=True)
+        job["rows"] = len(row_indices)
+        return None
+
+    return _spawn(job, work)
 
 
 # ---------------------------------------------------------------------------
@@ -207,13 +331,99 @@ def existing_topics_block(client_slug):
             f"{lines}")
 
 
-def build_prompt(client_slug, brand_url, piece_count, notes):
+def _format_of(row):
+    """The row's Format extra, if the sheet planned one. Labels are the sheet's own headers."""
+    for extra in row.get("extras", []):
+        if extra.get("label", "").strip().lower() == "format":
+            return extra.get("value", "").strip()
+    return ""
+
+
+def rewrite_block(month, payload, row_indices, feedback):
+    """The ENGINE block that turns the generation prompt into a rewrite of the ticked rows.
+
+    One placeholder in the one prompt file, empty on a fresh generation, because a second
+    prompt file would fork the whole strategy and drift within a month. The block overrides
+    only what a rewrite changes: the output is N replacement rows instead of a full sheet,
+    the operator's feedback is binding, and the kept rows join the hard exclusions.
+    """
+    wanted = set(row_indices)
+    rejected = [row for row in payload["rows"] if row["index"] in wanted]
+    kept = [row for row in payload["rows"] if row["index"] not in wanted]
+    n = len(rejected)
+
+    rejected_lines = "\n".join(
+        f'- Row {row["index"] + 1}: "{row["topic"]}" — {row["covers"] or "(no scope given)"}'
+        for row in rejected)
+    kept_lines = "\n".join(
+        f'- {f"[{_format_of(row)}] " if _format_of(row) else ""}"{row["topic"]}"'
+        for row in kept) or "(none: every row of this sheet was rejected)"
+
+    header_line = _csv_line(payload["columns"])
+
+    return f"""
+---
+
+## THIS SESSION IS A REWRITE, NOT A FRESH ROADMAP (ENGINE)
+
+The brand's Month {month} roadmap already exists and is KEPT. The operator reviewed it and
+rejected {n} of its rows. Your job is to replace ONLY those rows: research and plan {n} new
+topics, then write a CSV containing the header row plus EXACTLY {n} data rows to the output
+path. The engine splices your rows into the existing sheet; a file with more or fewer data rows
+than {n} is refused whole and the roadmap is left untouched. If you genuinely cannot find {n}
+topics that clear the gates, write NO file and explain why in your report, exactly as the
+failure handling below says; a partial file is refused, not spliced short.
+
+**The operator's feedback on the rejected rows is BINDING.** It overrides this prompt's
+defaults exactly as NOTES does, and it is the reason this session exists. Feedback:
+
+> {feedback.strip() or "(none given: the operator rejected these rows without a note, so plan stronger replacements by this prompt's own standards)"}
+
+**Rejected rows, in order. Your first output row replaces the first row listed here, your
+second the second, and so on:**
+{rejected_lines}
+
+**Kept rows. These are a HARD exclusion exactly like the earlier-months block, and your new
+topics must not duplicate or substantially overlap them OR the rejected topics above:**
+{kept_lines}
+
+**Stage 5's structural quotas count across the WHOLE sheet, kept rows included.** The kept
+rows' formats are listed above: never plan a second hub listicle, comparison anchor or FAQ
+(entity) where a kept row already holds one. The intent mix likewise describes the whole
+sheet, so weigh what the kept rows already cover rather than reproducing the full ratio
+inside {n} rows.
+
+**Header contract: row 1 of your file must be EXACTLY the current sheet's header, and your
+columns must match it:**
+
+```
+{header_line}
+```
+
+Everything else in this prompt applies unchanged: read the client's own files first, verify
+against the live site, pull real demand data, and apply every gate to every replacement row.
+"""
+
+
+def _csv_line(cells):
+    """One row as a CSV line, for quoting the sheet's header verbatim in the prompt."""
+    out = io.StringIO()
+    csv.writer(out, lineterminator="").writerow(cells)
+    return out.getvalue()
+
+
+def build_prompt(client_slug, brand_url, piece_count, notes, rewrite_block="",
+                 roadmap_path=None):
     """Read server/prompts/roadmap-generation.md and fill its {{...}} inputs.
 
     Kept a pure function of its inputs so the substitution can be proved without spawning a
     session. The unknown-placeholder check below is the point: an operator who adds a new
     {{TOKEN}} to the prompt and no substitution for it here would otherwise ship the literal
     braces to the agent, which reads as an instruction about a value nobody supplied.
+
+    `roadmap_path` overrides where the session is told to write. A generation writes the
+    shared scratch; each rewrite writes its own per-job file, because two concurrent rewrite
+    sessions pointed at one path would clobber each other's output.
     """
     template = PROMPT_PATH.read_text(encoding="utf-8")
     client_dir = runner.REPO_ROOT / "clients" / client_slug
@@ -226,9 +436,12 @@ def build_prompt(client_slug, brand_url, piece_count, notes):
         # operator chose not to give.
         "NOTES": str(notes).strip() or "(none given)",
         "CLIENT_DIR": str(client_dir),
-        "ROADMAP_PATH": str(roadmap.roadmap_path(client_slug)),
+        "ROADMAP_PATH": str(roadmap_path or roadmap.roadmap_path(client_slug)),
         "RESOURCE_NOTE": resource_note(client_slug),
         "EXISTING_TOPICS": existing_topics_block(client_slug),
+        # "" on a fresh generation, so the substituted prompt is byte-for-byte what it was
+        # before rewrites existed. Non-empty only when start_rewrite_job built the block.
+        "REWRITE_BLOCK": rewrite_block,
     }
 
     unknown = sorted(set(_PLACEHOLDER.findall(template)) - set(values))
@@ -411,11 +624,118 @@ def _push_sheet(client_slug):
         roadmap._write_sheet(cur, cid, raw_text, payload, report=report, month=month)
 
 
+def splice_sheet(sheet_text, row_indices, replacement_text):
+    """Replace the sheet's rows at `row_indices` with the replacement CSV's rows. Pure.
+
+    Returns the new sheet text, or raises GenerationError refusing the WHOLE splice: a
+    partial splice would land a sheet nobody wrote. The refusals are the contract the
+    rewrite prompt states, checked here where nothing can argue with them:
+
+    - The replacement header must equal the sheet's header, verbatim after trimming. This is
+      what keeps the extras honest: extras are labelled by the SHEET's header, so a
+      replacement laid out differently would have its Format read as the operator's volume
+      column, which is the exact bug the by-header rule exists to prevent.
+    - Exactly one replacement row per rejected index. The total is fixed by design: the
+      operator chose the count once, at generation, and a rewrite may only swap rows.
+    - Every replacement row complete. An incomplete replacement is the agent failing the
+      brief, not a sheet state to store.
+
+    Replacement rows map to sorted indices in file order: the first row replaces the lowest
+    rejected index. Kept rows pass through cell-for-cell; the whole sheet is re-serialised by
+    the csv module, which may requote cells but never changes what any of them parse to.
+    """
+    sheet_rows = roadmap._csv_rows(sheet_text)
+    repl_raw = roadmap._csv_rows(replacement_text)
+    repl = roadmap.parse_csv(replacement_text)  # BadUpload on a malformed file
+
+    sheet_header = [cell.strip() for cell in sheet_rows[0]]
+    repl_header = [cell.strip() for cell in repl_raw[0]] if repl_raw else []
+    if repl_header != sheet_header:
+        raise GenerationError(
+            f"the replacement header {repl_header!r} does not match the sheet's header "
+            f"{sheet_header!r}, so the columns cannot be trusted to line up")
+
+    row_indices = sorted(row_indices)
+    if len(repl["rows"]) != len(row_indices):
+        raise GenerationError(
+            f"{len(row_indices)} row(s) were rejected but the session wrote "
+            f"{len(repl['rows'])} replacement(s); the total is fixed, so the splice needs "
+            f"exactly one new row per rejected row")
+
+    incomplete = [row for row in repl["rows"] if not row["complete"]]
+    if incomplete:
+        names = ", ".join(f"row {row['index'] + 1} missing {'/'.join(row['missing'])}"
+                          for row in incomplete)
+        raise GenerationError(f"replacement rows are incomplete: {names}")
+
+    data = sheet_rows[1:]
+    for target, row in zip(row_indices, repl["rows"]):
+        if not 0 <= target < len(data):
+            raise GenerationError(
+                f"rejected row index {target} is not on the sheet, which has "
+                f"{len(data)} data row(s)")
+        # row["index"] is the parse's position in the replacement file, counting any blank
+        # lines the csv module saw, so it is the right subscript into the RAW rows.
+        data[target] = repl_raw[1:][row["index"]]
+
+    out = io.StringIO()
+    csv.writer(out, lineterminator="\n").writerows([sheet_rows[0]] + data)
+    return out.getvalue()
+
+
+def _push_rewrite(client_slug, month, row_indices, replacement_text, report=None):
+    """Splice the session's replacement rows into Month `month` and land it, one transaction.
+
+    The PRE-REWRITE sheet and its report are archived first, under one stamp, exactly as
+    delete_roadmap archives: the rewrite destroys rows the operator may want back, and the
+    archive is what makes that destruction recoverable. Splice validation runs before any
+    write, so a refused splice leaves the record byte-for-byte untouched.
+
+    `report` is the session's own account, passed IN rather than read from the shared
+    roadmap-report.md on disk: concurrent rewrite batches would clobber each other in that
+    file, and each batch's report must describe its own splice. It lands on the sheet row, so
+    the record's report is always the latest batch's and the older ones sit in the archive.
+
+    The splice runs against the sheet AS IT STANDS NOW, re-read inside this push rather than
+    captured at submit, which is what lets a second batch land after a first without undoing
+    it: batch two's kept rows include batch one's new topics.
+    """
+    cid = db.client_id(client_slug)
+    if not cid:
+        raise GenerationError(f"unknown client {client_slug!r}: the rewrite has no record to land in")
+    row = db.q("select raw_csv, report from roadmap_sheets where client_id = %s and month = %s",
+               (cid, month), fetch="one")
+    if not row:
+        raise GenerationError(
+            f"{client_slug!r} no longer has a Month {month} roadmap; it was deleted while "
+            f"the rewrite ran, so there is nothing to splice into")
+    old_csv, old_report = row
+
+    new_text = splice_sheet(old_csv, row_indices, replacement_text)
+    payload = roadmap.parse_csv(new_text)
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    with db.tx() as cur:
+        cur.execute("insert into roadmap_uploads (client_id, filename, raw) values (%s, %s, %s)",
+                    (cid, f"{stamp}-pre-rewrite.csv", old_csv.encode("utf-8")))
+        if old_report:
+            cur.execute(
+                "insert into roadmap_uploads (client_id, filename, raw) values (%s, %s, %s)",
+                (cid, f"{stamp}-pre-rewrite-report.md", old_report.encode("utf-8")))
+        roadmap._write_sheet(cur, cid, new_text, payload, report=report, month=month)
+
+    # The scratch on disk becomes the FULL spliced sheet, replacing the N-row session output:
+    # the invariant everywhere else is that this path holds the latest full sheet, and a
+    # partial file left here would be read by the next session's validation as its own output.
+    roadmap.roadmap_path(client_slug).write_text(new_text, encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # The session
 # ---------------------------------------------------------------------------
 
-async def generate_roadmap(client_slug, brand_url, piece_count, notes):
+async def generate_roadmap(client_slug, brand_url, piece_count, notes, rewrite_block="",
+                           roadmap_path=None):
     """One real session, always. Returns {"report": str}.
 
     It does not decide whether the run succeeded: the caller re-parses the file on disk. What
@@ -482,7 +802,9 @@ async def generate_roadmap(client_slug, brand_url, piece_count, notes):
 
     text = ""
     try:
-        async for message in query(prompt=build_prompt(client_slug, brand_url, piece_count, notes),
+        async for message in query(prompt=build_prompt(client_slug, brand_url, piece_count,
+                                                       notes, rewrite_block=rewrite_block,
+                                                       roadmap_path=roadmap_path),
                                    options=options):
             found = _final_text(message)
             if found:

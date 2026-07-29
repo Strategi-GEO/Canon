@@ -13,7 +13,13 @@
  */
 
 import { api } from "@/lib/api";
-import type { Client, CreateClientBody, Preflight, UpdateClientBody } from "@/types";
+import type {
+  Client,
+  CreateClientBody,
+  CreateClientResult,
+  Preflight,
+  UpdateClientBody,
+} from "@/types";
 
 /**
  * Preflight rides on the LIST response only. server/app.py decorates each entry of
@@ -29,7 +35,7 @@ export function preflightOf(client: Client, listed?: Client | null): Preflight |
   return listed?.preflight ?? null;
 }
 
-export function createClient(body: CreateClientBody): Promise<Client> {
+export function createClient(body: CreateClientBody): Promise<CreateClientResult> {
   return api.createClient(body);
 }
 

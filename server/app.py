@@ -47,7 +47,7 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
                                StreamingResponse)
 from pydantic import BaseModel
 
-from . import analysis_gen, auth, blog_edit, blog_upload, client_answers, db, describe, docx_export, facts_gen, ledger, report_gen, repurpose, roadmap, roadmap_gen, runner, sync
+from . import analysis_gen, auth, blog_edit, blog_upload, client_answers, db, describe, docx_export, facts_gen, ledger, portal_login, report_gen, repurpose, roadmap, roadmap_gen, runner, sync
 # Aliased: many channel routes take a `channel` path param that would shadow the bare module.
 from . import channel as channel_mod
 # Aliased for the same reason clients is: "questions" is the natural name for the list of
@@ -540,6 +540,10 @@ class UpdateClientRequest(BaseModel):
     # forwarded in api_update_client, or an unmodelled key is dropped and the operator sees
     # "Saved" over a record that never moved. Empty string clears them; None means "not sent".
     custom_instructions: Optional[str] = None
+    # The CMS's own routing slug for this brand. Same modelled-here-AND-forwarded rule as the
+    # others: drop either half and the Settings key vanishes silently. Empty string clears it and
+    # the publish payload falls back to the brand slug; None means "not sent".
+    cms_client: Optional[str] = None
 
 
 def _read_client_or_404(slug, user=None):
@@ -564,7 +568,7 @@ async def api_create_client(body: CreateClientRequest,
     if not body.name.strip():
         raise HTTPException(status_code=422, detail="name is required")
     try:
-        return clients_mod.create_client(
+        client = clients_mod.create_client(
             body.name,
             body.domain,
             body.industry,
@@ -576,6 +580,27 @@ async def api_create_client(body: CreateClientRequest,
         raise HTTPException(status_code=409, detail=str(exc))
     except clients_mod.InvalidClient as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    # Mint the client portal login now, so a new organisation gets its credentials the instant it
+    # exists and the admin is shown the password ONCE (below, in the create response). BEST-EFFORT
+    # and strictly after the brand is written: the brand is the point, the login is a side effect,
+    # and a GoTrue hiccup must never turn a good create into a 500. A brand joining an org that
+    # already has a login mints nothing (has_login), because the one grant already fans out to it.
+    # `portal_login` in the response is the fresh password when this call minted one, else null.
+    portal = None
+    try:
+        org = client.get("organisation") or {}
+        org_slug, org_name = org.get("slug"), org.get("name") or org.get("slug")
+        if org_slug and not portal_login.has_login(org_slug):
+            result = await asyncio.to_thread(portal_login.provision_one, org_slug, org_name)
+            if result.get("password"):
+                portal = {"email": result["email"], "password": result["password"]}
+    except Exception:
+        # Logged, never raised: the operator can still mint the login with
+        # `python -m server.seed_org_users --org <slug>`, and the brand already exists.
+        log.exception("portal login provisioning failed for %s", client.get("slug"))
+
+    return {**client, "portal_login": portal}
 
 
 @app.get("/api/clients/{slug}")
@@ -595,11 +620,28 @@ async def api_update_client(slug: str, body: UpdateClientRequest,
             domain=body.domain,
             market=body.market,
             custom_instructions=body.custom_instructions,
+            cms_client=body.cms_client,
         )
     except clients_mod.UnknownClient as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except clients_mod.InvalidClient as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.delete("/api/clients/{slug}", status_code=204)
+async def api_delete_client(slug: str, user: auth.Identity = Depends(auth.require_admin)):
+    """HARD delete a brand: its record (cascading every blog, channel post, roadmap sheet and
+    resource), the per-client report, analysis and membership rows that do NOT cascade off it, and
+    its scratch on disk. IRREVERSIBLE and admin-only; the dashboard gates it behind a consent
+    checkbox and a slug retype. Refused with 409 while a run is live for the brand, so a delete
+    never races a session writing the very topics it is dropping."""
+    _client_or_404(slug, user)
+    if _client_has_live_run(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"a run is live for {slug!r}; stop it before deleting the brand")
+    await asyncio.to_thread(clients_mod.hard_delete_client, slug)
+    return None
 
 
 def _public_job(job):
@@ -988,6 +1030,16 @@ async def api_generate_roadmap(slug: str, body: GenerateRoadmapRequest,
                       f"rather than starting a second, which would race it to write the same file",
             "job": _public_job(roadmap_gen.get_job(slug)),
         })
+    if roadmap_gen.rewrite_running(slug):
+        # The mirror of the rewrite route's generation guard. A rewrite is splicing the
+        # latest month while a generation would add the next one; the data would survive, but
+        # two agent sessions researching one brand at once compete for the same MCP servers
+        # and quota, and the operator watching "the roadmap session" would be watching two.
+        raise HTTPException(
+            status_code=409,
+            detail=f"topic rewrites for {slug!r} are still running; let them land before "
+                   f"generating a new month",
+        )
     if _client_has_live_run(slug):
         # Same rule the roadmap upload and delete routes enforce, asked the same way: a live
         # run's rows came from a sheet, so no sheet may change underneath it.
@@ -1000,6 +1052,127 @@ async def api_generate_roadmap(slug: str, body: GenerateRoadmapRequest,
     # race them to the same next-month number.
 
     return _public_job(roadmap_gen.start_job(slug, url, body.piece_count, body.notes))
+
+
+class RewriteRoadmapRequest(BaseModel):
+    # 0-based row indices on the LATEST month's sheet, the same numbering RoadmapRow.index and
+    # every display's "#" column carry (displayed as index + 1).
+    row_indices: list[int]
+    # The operator's account of what is wrong with the ticked rows. "" is allowed: rejecting
+    # rows without a note is an ordinary answer, and the prompt says so rather than guessing.
+    feedback: str = ""
+
+
+@app.post("/api/clients/{slug}/roadmap/rewrite", status_code=202)
+async def api_rewrite_roadmap(slug: str, body: RewriteRoadmapRequest,
+                              user: auth.Identity = Depends(auth.require_admin)):
+    """Rewrite the ticked rows of the latest roadmap. Returns immediately; the engine owns it.
+
+    Same shape as /roadmap/generate because it IS a generation scoped to N rows: one long SDK
+    session, 202, the browser watches the same job record. The refusals that are new here are
+    the ones that keep a rewrite honest:
+
+    - 422 for a row that is not on the sheet, named by index.
+    - 422 for a row whose topic already has a blog on disk, at ANY status. The blog was
+      written from that row's brief, and blogs join their row by topic_slug, so rewriting the
+      row would orphan the article. Delete the blog first; that is a deliberate act.
+    - The total never changes: the engine splices exactly one new row per rejected row, and
+      refuses the whole splice otherwise.
+
+    SEVERAL rewrites may run at once, and that is the operator's loop: reject rows 3 and 7,
+    and while that batch runs, reject row 5 with different feedback. What keeps it safe is the
+    409 below on OVERLAP: every running batch owns its rows outright, so two sessions can
+    never splice the same row and the splices commute. A fresh generation stays exclusive.
+
+    The brand's website comes off its own record, never the browser: the replacement topics
+    are researched from it, and the generate dialog already works the same way.
+    """
+    client = _read_client_or_404(slug, user)
+
+    payload = _load_roadmap_or_404(slug, user)
+    if not body.row_indices:
+        raise HTTPException(status_code=422, detail="no rows were selected to rewrite")
+
+    on_sheet = {row["index"]: row for row in payload["rows"]}
+    unknown = sorted(set(body.row_indices) - set(on_sheet))
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"row(s) {', '.join(str(i + 1) for i in unknown)} are not on the latest "
+                   f"roadmap, which has {len(payload['rows'])} row(s)")
+
+    written = {blog["topic_slug"] for blog in _blog_history(slug)}
+    blocked = [on_sheet[i] for i in sorted(set(body.row_indices))
+               if on_sheet[i]["topic_slug"] in written]
+    if blocked:
+        names = "; ".join(f"row {row['index'] + 1} ({row['topic']})" for row in blocked)
+        raise HTTPException(
+            status_code=422,
+            detail=f"these rows already have a blog on disk, and rewriting the row would "
+                   f"orphan the article: {names}. Delete the blog first if you really want "
+                   f"to replace the topic.")
+
+    url = str(client.get("domain") or "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        raise HTTPException(
+            status_code=422,
+            detail=f"{slug!r} has no http(s) website on file, and the replacement topics are "
+                   f"researched from the brand's own site; set the website in settings first")
+
+    taken = roadmap_gen.rewrite_rows_in_flight(slug) & set(body.row_indices)
+    if taken:
+        raise HTTPException(
+            status_code=409,
+            detail=f"row(s) {', '.join(str(i + 1) for i in sorted(taken))} are already being "
+                   f"rewritten by a running batch; wait for it to land, then reject them "
+                   f"again if the replacement still misses")
+    if roadmap_gen.job_running(slug):
+        raise HTTPException(status_code=409, detail={
+            "detail": f"a roadmap generation for {slug!r} is running; a rewrite would race it "
+                      f"over the same sheet, so let it land first",
+            "job": _public_job(roadmap_gen.get_job(slug)),
+        })
+    if _client_has_live_run(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"a run for {slug!r} is live; wait for it to finish before rewriting the roadmap",
+        )
+
+    months = roadmap.list_months(slug)
+    month = months[-1]["month"] if months else 1
+
+    return _public_job(roadmap_gen.start_rewrite_job(
+        slug, url, month, payload, body.row_indices, body.feedback))
+
+
+@app.get("/api/clients/{slug}/roadmap/rewrites")
+async def api_rewrite_jobs(slug: str, user: auth.Identity = Depends(auth.require_user)):
+    """Every rewrite job for this brand, running and settled, oldest first.
+
+    A LIST, unlike the generation's single job, because several batches run at once. An empty
+    list is the normal state, never a 404: most visits have no rewrite in flight. This is what
+    makes a batch survive a refresh: the dialog asks the engine what is running rather than
+    remembering what it started.
+    """
+    _client_or_404(slug, user)
+    return {"jobs": [_public_job(job) for job in roadmap_gen.list_rewrite_jobs(slug)]}
+
+
+@app.delete("/api/clients/{slug}/roadmap/rewrites/{job_id}", status_code=204)
+async def api_clear_rewrite_job(slug: str, job_id: str,
+                                user: auth.Identity = Depends(auth.require_admin)):
+    """Drop ONE settled rewrite job once its report is read or dismissed. A running one is
+    refused: the session is spending quota, and dropping the record would leave it landing a
+    splice no job explains."""
+    _client_or_404(slug, user)
+    job = next((j for j in roadmap_gen.list_rewrite_jobs(slug) if j.get("id") == job_id), None)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"no rewrite job {job_id!r} for {slug!r}")
+    if not roadmap_gen.clear_rewrite_job(slug, job_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"rewrite {job_id!r} is still running; it can be cleared once it lands")
+    return None
 
 
 @app.get("/api/clients/{slug}/roadmap/generate")

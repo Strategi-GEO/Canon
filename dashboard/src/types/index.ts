@@ -38,6 +38,13 @@ export type Client = {
    * so it can be "" there. Absent-safe with `?? ""` at every read.
    */
   custom_instructions: string;
+  /**
+   * The CMS's own routing slug for this brand, edited in Settings. The publish payload routes a
+   * draft to the CMS by this when set, else by the brand slug. Operator material like
+   * custom_instructions: the hosted mirror never selects it, so it can be "" there. Absent-safe
+   * with `?? ""` at every read.
+   */
+  cms_client: string;
   domain: string;
   industry: string;
   /**
@@ -141,9 +148,35 @@ export type CreateClientBody = {
    * "not sent" and leaves the record alone.
    */
   custom_instructions?: string;
+  /**
+   * The CMS's own routing slug for this brand. Settings-only, like custom_instructions: never
+   * collected at create, but modelled here so UpdateClientBody (a Partial of this) can PATCH it.
+   * Empty string clears it and the payload falls back to the brand slug; omitted means "not sent".
+   */
+  cms_client?: string;
 };
 
 export type UpdateClientBody = Partial<CreateClientBody>;
+
+/**
+ * The client portal login minted when a brand's organisation gets its first login. Returned by
+ * POST /api/clients ONCE, in the create response, and never again: the password cannot be read
+ * back from the auth store, so the create dialog shows it for the admin to save and the durable
+ * copy lives only in the engine's local .env.portal-credentials file.
+ */
+export type PortalCredential = {
+  email: string;
+  password: string;
+};
+
+/**
+ * What POST /api/clients actually returns: the created brand, plus the one-time portal login
+ * when this create minted one. `portal_login` is null when the brand joined an org that already
+ * had a login, or when provisioning could not run (the brand is still created either way).
+ */
+export type CreateClientResult = Client & {
+  portal_login?: PortalCredential | null;
+};
 
 /**
  * One brand's description draft, as the engine actually holds it.
@@ -286,6 +319,48 @@ export type GenerateRoadmapBody = {
   brand_url: string;
   piece_count: number;
   notes: string;
+};
+
+/**
+ * What POST /api/clients/{slug}/roadmap/rewrite takes. No brand_url and no piece count: the
+ * site comes off the brand's own record, and the total is fixed by design, one replacement
+ * per ticked row. `feedback` is always sent, "" when the operator left it blank, for the
+ * same one-way-to-say-it reason notes is.
+ */
+export type RewriteRoadmapBody = {
+  /** 0-based sheet indices, the same numbering RoadmapRow.index carries. */
+  row_indices: number[];
+  feedback: string;
+};
+
+/**
+ * One rewrite batch, as the engine remembers it. UNLIKE the generation job there are MANY of
+ * these per brand at once, keyed by `id`: the operator's loop is "reject rows 3 and 7, and
+ * while that runs, reject row 5 with different feedback". Each batch owns its rows outright
+ * (the engine refuses an overlap), so per-row state in the sheet comes from unioning the
+ * running batches' row_indices. Same durability rules as RoadmapGenJob: engine timestamps,
+ * survives refresh, no percentage possible.
+ */
+export type RewriteJob = {
+  /** The job's own key, for dismissing it once its report is read. */
+  id: string;
+  /** The BRAND slug. A key, never a label. */
+  client: string;
+  state: RoadmapGenJobState;
+  /** UTC ISO 8601, from the engine. Every elapsed clock measures from this and nothing else. */
+  started: string;
+  /** Null while running. */
+  finished: string | null;
+  /** The 0-based sheet indices this batch is replacing, echoed back. */
+  row_indices: number[];
+  /** The operator's feedback, echoed back. "" when they gave none. */
+  notes: string;
+  /** The agent's FINAL message: what it planned and what it disputes. Null while running. */
+  report: string | null;
+  /** Rows actually replaced, set only when the splice landed. Null otherwise. */
+  rows: number | null;
+  /** The engine's own sentence when state is "failed". Shown verbatim, never paraphrased. */
+  error: string | null;
 };
 
 /**
