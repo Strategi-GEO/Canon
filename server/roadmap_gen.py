@@ -359,7 +359,28 @@ def rewrite_block(month, payload, row_indices, feedback):
         f'- {f"[{_format_of(row)}] " if _format_of(row) else ""}"{row["topic"]}"'
         for row in kept) or "(none: every row of this sheet was rejected)"
 
-    header_line = _csv_line(payload["columns"])
+    # A sheet whose header row is blank (an upload with an empty leading row) has no header
+    # text to quote, and quoting ",,,,," reads as a mistake rather than an instruction: the
+    # first live rewrite against such a sheet followed the OUTPUT CONTRACT's named header
+    # instead and was refused for it. So the contract the agent is given matches the one the
+    # splice actually enforces there: width alone.
+    if any(cell.strip() for cell in payload["columns"]):
+        header_contract = (
+            "**Header contract: row 1 of your file must be EXACTLY the current sheet's "
+            "header, and your columns must match it:**\n\n"
+            "```\n"
+            f"{_csv_line(payload['columns'])}\n"
+            "```"
+        )
+    else:
+        width = len(payload["columns"])
+        header_contract = (
+            f"**Header contract: this sheet's own header row is BLANK ({width} empty "
+            f"cells), so there is no header text to reproduce. Write the OUTPUT CONTRACT's "
+            f"standard header as row 1 of your file, and make every row EXACTLY {width} "
+            f"column(s) wide: the engine keeps the sheet's own header and checks only that "
+            f"your column count matches.**"
+        )
 
     return f"""
 ---
@@ -379,6 +400,14 @@ defaults exactly as NOTES does, and it is the reason this session exists. Feedba
 
 > {feedback.strip() or "(none given: the operator rejected these rows without a note, so plan stronger replacements by this prompt's own standards)"}
 
+**ONE note can carry instructions for SEVERAL rows, and every one of them is binding.** Where
+the feedback names a row ("Row 3: ...") it means the row with that number in the list below,
+the same numbering the operator saw on the sheet; where it names a topic, it means the
+rejected row carrying that topic. Apply each row-scoped instruction to THAT row's replacement
+and every unscoped instruction to ALL of them. No instruction in the feedback is optional, and
+none may be traded off against another row's: a replacement that satisfies its own instruction
+by ignoring a general one has failed the brief.
+
 **Rejected rows, in order. Your first output row replaces the first row listed here, your
 second the second, and so on:**
 {rejected_lines}
@@ -393,12 +422,7 @@ rows' formats are listed above: never plan a second hub listicle, comparison anc
 sheet, so weigh what the kept rows already cover rather than reproducing the full ratio
 inside {n} rows.
 
-**Header contract: row 1 of your file must be EXACTLY the current sheet's header, and your
-columns must match it:**
-
-```
-{header_line}
-```
+{header_contract}
 
 Everything else in this prompt applies unchanged: read the client's own files first, verify
 against the live site, pull real demand data, and apply every gate to every replacement row.
@@ -650,10 +674,22 @@ def splice_sheet(sheet_text, row_indices, replacement_text):
 
     sheet_header = [cell.strip() for cell in sheet_rows[0]]
     repl_header = [cell.strip() for cell in repl_raw[0]] if repl_raw else []
-    if repl_header != sheet_header:
+    if any(sheet_header):
+        if repl_header != sheet_header:
+            raise GenerationError(
+                f"the replacement header {repl_header!r} does not match the sheet's header "
+                f"{sheet_header!r}, so the columns cannot be trusted to line up")
+    elif len(repl_header) != len(sheet_header):
+        # A sheet whose first row is blank (an operator upload with an empty leading row: the
+        # parser reads row 1 as the header, ALWAYS) has no header text to hold a replacement
+        # against, and refusing on the mismatch made such a sheet impossible to rewrite at
+        # all. Width is the one thing still checkable, and it is what the positional mapping
+        # actually needs; the output keeps the sheet's own blank header row regardless, so the
+        # sheet stays exactly as degenerate as the operator uploaded it, no more and no less.
         raise GenerationError(
-            f"the replacement header {repl_header!r} does not match the sheet's header "
-            f"{sheet_header!r}, so the columns cannot be trusted to line up")
+            f"the sheet's header row is blank, so the splice checks column count alone: the "
+            f"sheet is {len(sheet_header)} column(s) wide and the replacement is "
+            f"{len(repl_header)}")
 
     row_indices = sorted(row_indices)
     if len(repl["rows"]) != len(row_indices):

@@ -405,6 +405,7 @@ export function ChannelLibrary(props: {
                   <Table>
                     <TableHeader>
                       <TableRow>
+                        <TableHead className="w-12">#</TableHead>
                         <TableHead>Post</TableHead>
                         <TableHead className="w-40">Status</TableHead>
                         <TableHead className="w-32">Updated</TableHead>
@@ -415,8 +416,17 @@ export function ChannelLibrary(props: {
                       {posts.map((post) => {
                         const generating = isGenerating(post.source_topic_slug);
                         const state = generating ? "generating" : post.state;
+                        // The SOURCE BLOG's identifier, the same number-or-letter the New tab
+                        // and the blogs table show, so "post 3" and "blog 3" are one thing.
+                        const source = rows.find((b) => b.topic_slug === post.source_topic_slug);
                         return (
                           <TableRow key={post.id}>
+                            <TableCell
+                              className="machine text-xs text-muted-foreground"
+                              title={source?.uploaded ? "Uploaded by hand — letters mark manual blogs" : "Written by the engine"}
+                            >
+                              {labels.get(post.source_topic_slug) ?? "—"}
+                            </TableCell>
                             <TableCell className="max-w-0">
                               <span className="block truncate text-sm font-medium text-foreground">
                                 {post.source_topic}

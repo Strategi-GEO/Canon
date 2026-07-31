@@ -104,6 +104,24 @@ refused("incomplete replacement refused", SHEET, [2],
 refused("off-sheet index refused", SHEET, [7], REPLACEMENT, expect="not on the sheet")
 refused("malformed replacement refused", SHEET, [2], "", expect="")
 
+print("splice: a sheet with a BLANK header row is still rewritable")
+# The homecanvas case: the operator's upload carried an empty first row, the parser read it as
+# the header (row 1 ALWAYS is), and the header-equality refusal made the sheet impossible to
+# rewrite: the agent cannot be asked to reproduce ",,,,,". Width is what gets checked instead,
+# and the sheet's own blank header survives the splice, so the sheet stays exactly as the
+# operator uploaded it.
+BLANK_SHEET = ",,,,,\n" + SHEET
+out3 = splice_sheet(BLANK_SHEET, [3], REPLACEMENT)
+rows3 = parsed(out3)["rows"]
+check("blank-header sheet splices under the standard header",
+      rows3[3]["topic"] == "New Topic", rows3[3]["topic"])
+check("blank header row survives the splice", out3.splitlines()[0] == ",,,,,",
+      out3.splitlines()[0])
+check("kept rows survive under a blank header", rows3[1]["topic"] == "Topic One")
+refused("blank-header sheet still refuses a width mismatch", BLANK_SHEET, [3],
+        'A,B,C,D,E\nNew Topic,New covers,How-to,Commercial,"n1 | n2 | n3"\n',
+        expect="column count")
+
 print("rewrite block: what the session is told")
 payload = parsed(SHEET)
 block = rewrite_block(2, payload, [2], "Go bottom-of-funnel.")
@@ -113,8 +131,16 @@ check("kept rows listed as exclusions", '"Topic One"' in block and '"Topic Two"'
 check("kept formats surface for the quota rule", "[Listicle]" in block)
 check("exact count stated", "EXACTLY 1 data row" in block)
 check("header contract quoted", HEADER in block)
+check("row-scoped feedback mapping stated", "ONE note can carry instructions for SEVERAL rows" in block)
 empty = rewrite_block(2, payload, [2], "   ")
 check("blank feedback stated, not dangling", "(none given" in empty)
+
+print("rewrite block: a blank-header sheet is told the truth about its header")
+blank_payload = parsed(BLANK_SHEET)
+blank_block = rewrite_block(1, blank_payload, [1], "Sharper angle.")
+check("blank header named, not quoted", "header row is BLANK" in blank_block)
+check("no ,,,,, quoted as a contract", ",,,,," not in blank_block)
+check("width stated for the blank case", "6 column(s) wide" in blank_block)
 
 print()
 if FAILURES:

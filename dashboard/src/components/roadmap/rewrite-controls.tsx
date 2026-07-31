@@ -133,8 +133,10 @@ export function RewriteControls({
               />
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                 One note for the batch, binding on the session that replaces exactly these
-                rows. Every unticked row stays word for word and the total never changes. You
-                can start another batch while this one runs.
+                rows. Address rows individually by their number (&quot;Row 3: ...&quot;) and
+                each instruction lands on that row; anything unscoped applies to all of them.
+                Every unticked row stays word for word and the total never changes. You can
+                start another batch while this one runs.
               </p>
             </div>
             <div className="flex shrink-0 flex-col items-end gap-1.5 pt-5">
