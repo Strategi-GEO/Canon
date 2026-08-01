@@ -14,6 +14,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import traceback
@@ -1668,6 +1669,11 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
         # disagree in a way that installs another run's bytes.
         _clear_best_snapshots(out_dir)
 
+        # Snapshot the verdict set the PREVIOUS run left (if any), so a retry that lands lower
+        # can be rolled back at the end. Taken after materialization, so it captures exactly
+        # what the record holds. See _keep_prior_run_if_higher.
+        prior_score = _snapshot_prior_verdict(out_dir)
+
         # Lay this run's session instructions down for the agents to read by path (empty or
         # absent clears any file a prior run left). The brand's standing instructions arrived
         # separately via _materialize_topic_scratch -> materialize_client -> custom-instructions.md.
@@ -1822,6 +1828,11 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
     # actually lands on disk. It is a no-op unless an earlier iteration outscored the final one and
     # nothing is holding the blog for the operator. See _install_best_draft.
     _install_best_draft(client_slug, topic_slug, out_dir, baseline, root=run_dir_root)
+    # Then the same rule ACROSS runs: a failed retry that did not strictly beat the previous
+    # run's score restores the previous verdict set rather than replacing a better blog with a
+    # worse one. No-op on first runs, ships, holds and stops. See _keep_prior_run_if_higher.
+    _keep_prior_run_if_higher(client_slug, topic_slug, out_dir, baseline, prior_score,
+                              root=run_dir_root)
     # The lead's terminal claim is checked here, before the result is reported, because this is
     # where a topic's terminal line stops changing. A needs_review with no answerable question is
     # corrected to done or failed by its score and the override is recorded. See
@@ -1960,8 +1971,17 @@ def _install_best_draft(client_slug, topic_slug, out_dir, baseline, root=None):
     selects among computed scores rather than re-running one. The status is re-resolved from the
     best score through the same _resolve_needs_review the enforcer uses, so a discarded 96 that the
     loop wrongly ran past still ships done rather than dying at the last draft's 89.
+
+    BEST AND LAST ARE COMPUTED FROM THE AGENTS' OWN EVAL LINES ONLY, the ones carrying status
+    "running", never from a terminal line. A lead once shaped its terminal line as an eval end
+    CARRYING THE BEST SCORE ("Best draft iter1=92" on a failed line) without moving any bytes:
+    measured over every line, last == best, this function concluded nothing needed restoring, and
+    an 87 draft shipped under a trail whose final line claimed 92 (supreme-steel, live). The lead
+    cannot be stopped from narrating; what it can no longer do is make the narration count as a
+    scored draft.
     """
-    session = _read_status(out_dir)[baseline:]
+    session = [line for line in _read_status(out_dir)[baseline:]
+               if line.get("status") == "running"]
     best = _max_eval_score(session)
     last = _last_eval_score(session)
     best_blog = Path(out_dir) / BEST_BLOG_NAME
@@ -1972,9 +1992,13 @@ def _install_best_draft(client_slug, topic_slug, out_dir, baseline, root=None):
     blog = Path(out_dir) / "blog.md"
     eval_md = Path(out_dir) / "eval.md"
     best_eval = Path(out_dir) / BEST_EVAL_NAME
-    blog.write_bytes(best_blog.read_bytes())
-    if best_eval.is_file():
-        eval_md.write_bytes(best_eval.read_bytes())
+    # The ARTIFACT SET, through the same rule _restore_artifact_set states: eval.md either
+    # describes the draft beside it or does not exist. A snapshot taken before the evaluator
+    # wrote eval.md has no eval to restore, and leaving the LAST draft's eval next to the best
+    # draft would pair a 92 blog with an 87 audit, which is exactly the mismatch a restore
+    # exists to prevent.
+    _restore_artifact_set(blog, eval_md, best_blog.read_bytes(),
+                          best_eval.read_bytes() if best_eval.is_file() else None)
     status, reason = _resolve_needs_review(client_slug, topic_slug, best, root=root)
     best_iter = _first_iter_for_score(session, best)
     _status_module().append_status(
@@ -1989,6 +2013,95 @@ def _install_best_draft(client_slug, topic_slug, out_dir, baseline, root=None):
     # on-disk marker honest with the terminal line just written.
     (Path(out_dir) / "NEEDS_REVIEW").unlink(missing_ok=True)
     _clear_best_snapshots(out_dir)
+
+
+# The PREVIOUS run's verdict set, snapshotted at run start so a RETRY that lands lower can be
+# rolled back. Local scratch exactly like blog.best.md: never served, never synced, consumed and
+# cleared by _keep_prior_run_if_higher.
+PRIOR_BLOG_NAME = "blog.prior.md"
+PRIOR_EVAL_NAME = "eval.prior.md"
+
+_EVAL_SCORE = re.compile(r"^SCORE:\s*(\d+)\s*$", re.MULTILINE)
+
+
+def _clear_prior_snapshots(out_dir):
+    (Path(out_dir) / PRIOR_BLOG_NAME).unlink(missing_ok=True)
+    (Path(out_dir) / PRIOR_EVAL_NAME).unlink(missing_ok=True)
+
+
+def _snapshot_prior_verdict(out_dir):
+    """Snapshot the blog.md/eval.md a PREVIOUS run left, and return that run's score, or None.
+
+    Runs after materialization laid the record's artifacts down and before the session spawns,
+    so what it captures is exactly the verdict set the operator's library shows now. A topic
+    with no scored eval on disk (first run, stopped mid-write, eval unparsable) returns None
+    and snapshots nothing: there is no prior verdict to defend. Stale snapshots from a killed
+    run are cleared first, for the same reason _clear_best_snapshots runs at session start.
+    """
+    _clear_prior_snapshots(out_dir)
+    blog = Path(out_dir) / "blog.md"
+    eval_md = Path(out_dir) / "eval.md"
+    if not blog.is_file() or not eval_md.is_file():
+        return None
+    match = _EVAL_SCORE.search(eval_md.read_text(encoding="utf-8", errors="replace"))
+    if not match:
+        return None
+    shutil.copy2(blog, Path(out_dir) / PRIOR_BLOG_NAME)
+    shutil.copy2(eval_md, Path(out_dir) / PRIOR_EVAL_NAME)
+    return int(match.group(1))
+
+
+def _keep_prior_run_if_higher(client_slug, topic_slug, out_dir, baseline, prior_score, root=None):
+    """A RETRY NEVER REPLACES A HIGHER-SCORING BLOG.
+
+    _install_best_draft keeps the best draft WITHIN one session; this is the same rule ACROSS
+    sessions. A topic that failed at 92 and was retried used to take whatever the retry landed,
+    so an 87 overwrote a 92 and the operator's best work was gone. Now the retry's result must
+    STRICTLY beat the prior run's score to replace it; otherwise the prior verdict set is
+    restored byte for byte and a superseding eval line records the keep, so the reported score
+    is the one whose draft is actually on disk.
+
+    Three exclusions, each the same shape as _install_best_draft's:
+      - Only a FAILED retry is second-guessed. A retry that shipped (>= 95) beat every
+        re-runnable prior by arithmetic; needs_review holds the exact draft the evaluator asked
+        about; stopped has no verdict, and its bytes may be mid-write.
+      - A current question form vetoes the swap outright, same staleness argument as always.
+      - The ANSWER-DRIVEN revise never comes near this: it runs from revise_topic, which calls
+        neither this nor _install_best_draft, so truth still beats score on that one path.
+    """
+    try:
+        if prior_score is None:
+            return
+        session = _read_status(out_dir)[baseline:]
+        term = _terminal_line(session)
+        if term is None or term.get("status") != "failed":
+            return
+        if _questions_state(client_slug, topic_slug, root=root) == "current":
+            return
+        # Agent-written lines only, for the reason _install_best_draft documents. The install
+        # line this session may have appended is not one, and must not be: what is compared
+        # here is what a real evaluator scored.
+        final = _max_eval_score([l for l in session if l.get("status") == "running"])
+        if final is not None and final > prior_score:
+            return
+        prior_blog = Path(out_dir) / PRIOR_BLOG_NAME
+        prior_eval = Path(out_dir) / PRIOR_EVAL_NAME
+        if not prior_blog.is_file() or not prior_eval.is_file():
+            return
+        (Path(out_dir) / "blog.md").write_bytes(prior_blog.read_bytes())
+        (Path(out_dir) / "eval.md").write_bytes(prior_eval.read_bytes())
+        status, reason = _resolve_needs_review(client_slug, topic_slug, prior_score, root=root)
+        last_iter = max((line.get("iter", 0) for line in session), default=1) or 1
+        _status_module().append_status(
+            str(out_dir), topic_slug, stage="eval", event="end",
+            iter=last_iter, score=prior_score, status=status,
+            note=(f"kept the earlier run's draft scoring {prior_score}: this retry's best was "
+                  f"{final if final is not None else 'unscored'}, and a retry never replaces a "
+                  f"higher-scoring blog. {reason}"),
+        )
+        (Path(out_dir) / "NEEDS_REVIEW").unlink(missing_ok=True)
+    finally:
+        _clear_prior_snapshots(out_dir)
 
 
 def _revise_lead_prompt(client_slug, row, topic_slug, out_dir, iteration):

@@ -2,7 +2,8 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowRight, Loader2, Play, RotateCw, Send, Sparkles } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Loader2, Play, RotateCw, Send, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -26,10 +27,36 @@ import { adminFailedTag } from "@/lib/blog-score";
 import { channelLabel, channelTag, isRepurposable } from "@/lib/channel-state";
 import { useRuns } from "@/lib/runs-context";
 import { formatCount, formatRelative } from "@/lib/format";
-import { sortBlogs } from "@/components/blogs/blogs-filter";
+import { sortBlogs, type SortDir } from "@/components/blogs/blogs-filter";
+import { SortableHead } from "@/components/blogs/blogs-table";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
 import { StateTagChip } from "@/components/shell/state-tag-chip";
-import type { BlogSummary, ChannelPost, RepurposeChannel } from "@/types";
+import type { BlogSummary, ChannelPost, ChannelPostState, RepurposeChannel } from "@/types";
+
+/** The Created tab's sortable columns: every column it renders. */
+type PostSortKey = "num" | "post" | "status" | "updated";
+
+/** Lifecycle order for the status sort, generating first, posted last: sorting by status is
+ *  for grouping like with like, and the lifecycle is the order the group labels read in. */
+const POST_STATE_ORDER: ChannelPostState[] = [
+  "generating",
+  "created",
+  "changes_requested",
+  "sent",
+  "approved",
+  "posted",
+];
+
+/**
+ * The "#" column carries the source blog's grouped identifier: numbers for engine-written,
+ * letters for uploaded. Numbers sort before letters, each kind in its own order, and a post
+ * whose blog fell out of the listing (no label) sorts last rather than posing as row one.
+ */
+function labelRank(label: string | null | undefined): [number, number, string] {
+  if (label === null || label === undefined) return [2, 0, ""];
+  if (/^\d+$/.test(label)) return [0, Number(label), ""];
+  return [1, 0, label];
+}
 
 /**
  * The LinkedIn / Medium tab, two horizontal sub-tabs over ONE brand's work:
@@ -53,6 +80,7 @@ export function ChannelLibrary(props: {
 }) {
   const { orgSlug, brandSlug, brandName, channel, title, blurb } = props;
   const label = channelLabel(channel);
+  const router = useRouter();
 
   const [blogs, setBlogs] = React.useState<BlogSummary[] | null>(null);
   const [posts, setPosts] = React.useState<ChannelPost[]>([]);
@@ -241,6 +269,37 @@ export function ChannelLibrary(props: {
   // The source-grouped identifier (number for AI, letter for uploaded), computed over the WHOLE
   // brand list so the counts match the blogs table even though this tab renders only a subset.
   const labels = React.useMemo(() => blogLabels(blogs ?? []), [blogs]);
+
+  // The Created tab's sort, local state rather than the URL: it is a sub-tab of a sub-tab, and
+  // a link that deep is not a thing anyone shares. Same toggle semantics as the blogs library:
+  // re-picking the active column flips, a new column starts descending.
+  const [postSort, setPostSort] = React.useState<{ key: PostSortKey; dir: SortDir }>({
+    key: "updated",
+    dir: "desc",
+  });
+  const onPostSort = React.useCallback((key: PostSortKey) => {
+    setPostSort((prev) => ({
+      key,
+      dir: key === prev.key && prev.dir === "desc" ? "asc" : "desc",
+    }));
+  }, []);
+  const sortedPosts = React.useMemo(() => {
+    const ranked = [...posts].sort((a, b) => {
+      if (postSort.key === "num") {
+        const [ka, na, sa] = labelRank(labels.get(a.source_topic_slug));
+        const [kb, nb, sb] = labelRank(labels.get(b.source_topic_slug));
+        return ka - kb || na - nb || sa.localeCompare(sb);
+      }
+      if (postSort.key === "post") {
+        return a.source_topic.localeCompare(b.source_topic, undefined, { sensitivity: "base" });
+      }
+      if (postSort.key === "status") {
+        return POST_STATE_ORDER.indexOf(a.state) - POST_STATE_ORDER.indexOf(b.state);
+      }
+      return a.updated_at.localeCompare(b.updated_at);
+    });
+    return postSort.dir === "desc" ? ranked.reverse() : ranked;
+  }, [posts, postSort, labels]);
   const selectableCount = selectableSlugs.length;
   const allSelected = selectableCount > 0 && selectableSlugs.every((s) => selected.has(s));
   const someSelected = !allSelected && selectableSlugs.some((s) => selected.has(s));
@@ -404,23 +463,56 @@ export function ChannelLibrary(props: {
                 <Card className="p-0">
                   <Table>
                     <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-12">#</TableHead>
-                        <TableHead>Post</TableHead>
-                        <TableHead className="w-40">Status</TableHead>
-                        <TableHead className="w-32">Updated</TableHead>
-                        <TableHead className="w-24 text-right">Review</TableHead>
+                      <TableRow className="hover:bg-transparent">
+                        <SortableHead
+                          label="#"
+                          column="num"
+                          sortKey={postSort.key}
+                          sortDir={postSort.dir}
+                          onSort={onPostSort}
+                          className="w-12"
+                        />
+                        <SortableHead
+                          label="Post"
+                          column="post"
+                          sortKey={postSort.key}
+                          sortDir={postSort.dir}
+                          onSort={onPostSort}
+                        />
+                        <SortableHead
+                          label="Status"
+                          column="status"
+                          sortKey={postSort.key}
+                          sortDir={postSort.dir}
+                          onSort={onPostSort}
+                          className="w-40"
+                        />
+                        <SortableHead
+                          label="Updated"
+                          column="updated"
+                          sortKey={postSort.key}
+                          sortDir={postSort.dir}
+                          onSort={onPostSort}
+                          className="w-32"
+                        />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {posts.map((post) => {
+                      {sortedPosts.map((post) => {
                         const generating = isGenerating(post.source_topic_slug);
                         const state = generating ? "generating" : post.state;
                         // The SOURCE BLOG's identifier, the same number-or-letter the New tab
                         // and the blogs table show, so "post 3" and "blog 3" are one thing.
                         const source = rows.find((b) => b.topic_slug === post.source_topic_slug);
                         return (
-                          <TableRow key={post.id}>
+                          <TableRow
+                            key={post.id}
+                            // The whole row opens the review page, exactly like a blogs-table
+                            // row: the pointer gets the row, a screen reader and middle-click
+                            // get the real link in the Post cell.
+                            onClick={() => router.push(reviewHref(post.source_topic_slug))}
+                            className="cursor-pointer"
+                          >
                             <TableCell
                               className="machine text-xs text-muted-foreground"
                               title={source?.uploaded ? "Uploaded by hand — letters mark manual blogs" : "Written by the engine"}
@@ -428,23 +520,25 @@ export function ChannelLibrary(props: {
                               {labels.get(post.source_topic_slug) ?? "—"}
                             </TableCell>
                             <TableCell className="max-w-0">
-                              <span className="block truncate text-sm font-medium text-foreground">
-                                {post.source_topic}
-                              </span>
+                              <Link
+                                href={reviewHref(post.source_topic_slug)}
+                                onClick={(event) => {
+                                  // The row handler would otherwise fire too and navigate twice.
+                                  event.stopPropagation();
+                                }}
+                                className="block w-full rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                              >
+                                <span className="block truncate text-sm font-medium text-foreground">
+                                  {post.source_topic}
+                                </span>
+                                <span className="sr-only">Open the post for review</span>
+                              </Link>
                             </TableCell>
                             <TableCell>
                               <StateTagChip tag={channelTag(state, "admin")} />
                             </TableCell>
                             <TableCell className="machine text-xs text-muted-foreground">
                               {formatRelative(post.updated_at)}
-                            </TableCell>
-                            <TableCell className="text-right">
-                              <Button size="sm" variant="ghost" asChild>
-                                <Link href={reviewHref(post.source_topic_slug)}>
-                                  Open
-                                  <ArrowRight data-icon="inline-end" aria-hidden />
-                                </Link>
-                              </Button>
                             </TableCell>
                           </TableRow>
                         );

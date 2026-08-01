@@ -168,6 +168,68 @@ def test_hard_killed_prior_run_snapshot_is_not_installed():
           not (out / "blog.best.md").exists())
 
 
+def test_lead_terminal_line_at_the_best_score_does_not_veto_the_install():
+    """The supreme-steel live bug: the lead wrote its terminal line SHAPED AS an eval end
+    carrying the best score (92) without moving any bytes, so best == last over the whole
+    trail and the install concluded nothing needed restoring while the 87 draft sat on disk.
+    Best and last are now computed from the agents' running-status lines alone."""
+    print("\ntest_lead_terminal_line_at_the_best_score_does_not_veto_the_install")
+    root, client, topic, out = _new_topic()
+    for iteration, score in enumerate([92, 87], start=1):
+        _write_draft(out, score)
+        _score(out, topic, iteration, score)
+    # The lead's terminal line, narrating the best score it never restored.
+    _score(out, topic, 2, 92, status="failed")
+    runner._install_best_draft(client, topic, out, 0, root=root)
+    check("the 92 draft is restored despite the lead's 92-scored terminal line",
+          _read(out / "blog.md") == "draft-92", _read(out / "blog.md"))
+    check("eval.md is the 92 eval", (_read(out / "eval.md") or "").startswith("eval-92"))
+    summary = runner._summarize(topic, runner._read_status(out))
+    check("the reported score is 92", summary["score"] == 92, str(summary))
+
+
+def test_a_retry_never_replaces_a_higher_scoring_blog():
+    """The cross-run half of the same rule: a topic that failed at 92, retried, and landed 87
+    keeps the 92 verdict set. A retry that strictly beats the prior keeps its own result."""
+    print("\ntest_a_retry_never_replaces_a_higher_scoring_blog")
+    root, client, topic, out = _new_topic()
+    # Run 1: failed at 92, terminal line written, artifacts on disk.
+    _write_draft(out, 92)
+    _score(out, topic, 1, 92)
+    _score(out, topic, 1, 92, status="failed")
+    baseline = len(runner._read_status(out))
+
+    # Run 2 starts: the runner snapshots the prior verdict, then the retry lands lower.
+    prior = runner._snapshot_prior_verdict(out)
+    check("the prior score is read off eval.md", prior == 92, str(prior))
+    runner._clear_best_snapshots(out)
+    _write_draft(out, 87)
+    _score(out, topic, 1, 87)
+    _score(out, topic, 1, 87, status="failed")
+    runner._install_best_draft(client, topic, out, baseline, root=root)
+    runner._keep_prior_run_if_higher(client, topic, out, baseline, prior, root=root)
+    check("the retry's 87 did not replace the prior 92 draft",
+          _read(out / "blog.md") == "draft-92", _read(out / "blog.md"))
+    check("eval.md is the prior 92 eval", (_read(out / "eval.md") or "").startswith("eval-92"))
+    summary = runner._summarize(topic, runner._read_status(out))
+    check("the reported score is the prior 92", summary["score"] == 92, str(summary))
+    check("prior snapshots are cleaned up",
+          not (out / runner.PRIOR_BLOG_NAME).exists() and not (out / runner.PRIOR_EVAL_NAME).exists())
+
+    # Run 3: a retry that strictly beats the kept 92 replaces it.
+    baseline = len(runner._read_status(out))
+    prior = runner._snapshot_prior_verdict(out)
+    check("the kept 92 is now the prior", prior == 92, str(prior))
+    runner._clear_best_snapshots(out)
+    _write_draft(out, 96)
+    _score(out, topic, 1, 96)
+    _score(out, topic, 1, 96, status="done")
+    runner._install_best_draft(client, topic, out, baseline, root=root)
+    runner._keep_prior_run_if_higher(client, topic, out, baseline, prior, root=root)
+    check("a strictly better retry keeps its own draft",
+          _read(out / "blog.md") == "draft-96", _read(out / "blog.md"))
+
+
 def test_score_helpers():
     print("\ntest_score_helpers")
     lines = [
@@ -189,6 +251,8 @@ def main():
                  test_a_current_question_vetoes_the_swap,
                  test_capture_is_scoped_to_the_current_run,
                  test_hard_killed_prior_run_snapshot_is_not_installed,
+                 test_lead_terminal_line_at_the_best_score_does_not_veto_the_install,
+                 test_a_retry_never_replaces_a_higher_scoring_blog,
                  test_score_helpers):
         test()
     print(f"\n{CHECKS[0] - len(FAILURES)}/{CHECKS[0]} checks passed")

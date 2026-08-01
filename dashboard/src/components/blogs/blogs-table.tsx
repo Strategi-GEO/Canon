@@ -431,7 +431,12 @@ function Score({
   return <span className={cn("machine text-sm font-medium", scoreClass(score))}>{score}</span>;
 }
 
-function SortableHead({
+/**
+ * One sortable column header: label, live direction arrow, aria-sort. Generic over the sort
+ * key so the channel Created tabs sort their own columns through the exact control this
+ * table sorts by, arrows and semantics included, instead of a lookalike that drifts.
+ */
+export function SortableHead<K extends string>({
   label,
   column,
   sortKey,
@@ -440,10 +445,10 @@ function SortableHead({
   className,
 }: {
   label: string;
-  column: SortKey;
-  sortKey: SortKey;
+  column: K;
+  sortKey: K;
   sortDir: SortDir;
-  onSort: (key: SortKey) => void;
+  onSort: (key: K) => void;
   className?: string;
 }) {
   const active = sortKey === column;
