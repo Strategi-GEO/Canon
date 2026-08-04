@@ -25,6 +25,7 @@ forbidden_claim_patterns: a forbidden claim stays forbidden even inside a quotat
 import difflib
 import json
 import os
+import pathlib
 import re
 import sys
 
@@ -613,6 +614,65 @@ def run_gates(md: str, cfg: dict) -> list:
                 msg += f": {note}"
             gate("required-link", "FAIL", msg)
 
+    # --- every cited URL was actually fetched -----------------------------------
+    #
+    # THE FETCH-BEFORE-CITE RULE HAD NOTHING MECHANICAL HOLDING IT UP UNTIL THIS GATE. CLAUDE.md
+    # says "fetched full text, or it is not a source", the link pass inside Agent W is instructed
+    # to Firecrawl every link and append it to links-verified.txt, and that file is written,
+    # stored, synced and re-laid across runs. Nothing ever read it back. The sources-last gate
+    # above checks that the final H2 is TITLED "Sources and References"; it does not check that
+    # the section contains a reachable URL, or any URL. So the entire rule rested on an agent
+    # following an instruction, with no check that would notice if it had not.
+    #
+    # WHAT MADE THAT URGENT rather than theoretical: an engine with no Firecrawl credential could
+    # not verify a link even in principle, and until the credential check in server/runner.py
+    # landed beside this, nothing told it so. A writer whose tools all 401 still produces a
+    # Sources section, and every layer downstream, gates, the evaluator, the CMS, would have
+    # accepted it. Two independent holes, and either one alone is enough to publish a claim
+    # nobody checked.
+    #
+    # SCOPED TO EXTERNAL http(s) LINKS ONLY. Relative links and anchors are internal navigation,
+    # not sources, and a URL is compared bare: links-verified.txt is an append-only log the agent
+    # writes, so it holds whole URLs but not necessarily the exact anchor spelling around them.
+    #
+    # ABSENT FILE IS A FAIL AND NOT A SKIP, which is the whole point. A missing links-verified.txt
+    # is not "no links to check", it is "the link pass left no evidence it ran", and skipping
+    # there would make the gate silent in exactly the case it exists to catch. A draft that cites
+    # nothing external has no URLs to look up and passes without the file being consulted.
+    cited = sorted({
+        t.strip() for t in re.findall(r"\]\(([^)\s]+)", md)
+        if t.strip().lower().startswith(("http://", "https://"))
+    })
+    if not cited:
+        gate("links-verified", "PASS", "no external links to verify")
+    else:
+        verified_text = cfg.get("links_verified_text")
+        if verified_text is None:
+            gate("links-verified", "FAIL",
+                 f"{len(cited)} external link(s) cited but no links-verified.txt beside the "
+                 f"draft, so nothing recorded that the link pass fetched any of them")
+        else:
+            # URLS PARSED OUT OF THE LOG AND COMPARED AS A SET, never a substring search of the
+            # file's text. A substring test passes whenever one cited URL is a PREFIX of another
+            # verified one, which is not a corner case: a homepage is a prefix of every page on
+            # its own domain, so citing https://example.com and verifying only
+            # https://example.com/pricing would report the homepage as verified. That is the
+            # exact false PASS this gate exists to prevent, and it is likelier than the failure
+            # it was hiding, because a draft that links a brand's homepage and one inner page is
+            # the ordinary shape of a Sources section.
+            #
+            # Trailing slashes are normalised on both sides: the log is an append-only record of
+            # what the agent fetched, and http://x/page and http://x/page/ are the same fetch.
+            verified = {
+                u.rstrip("/") for u in re.findall(r"https?://[^\s<>\]\)\"']+", verified_text)
+            }
+            unverified = [u for u in cited if u.rstrip("/") not in verified]
+            gate("links-verified", "PASS" if not unverified else "FAIL",
+                 f"all {len(cited)} cited link(s) appear in links-verified.txt" if not unverified
+                 else (f"{len(unverified)} of {len(cited)} cited link(s) are not in "
+                       f"links-verified.txt, so the link pass never confirmed them: "
+                       f"{unverified[:5]}"))
+
     # --- forbidden link targets (client) ----------------------------------------
     link_targets = re.findall(r"\]\(([^)]*)\)", md)
     for fp in cfg["forbidden_link_patterns"]:
@@ -695,6 +755,17 @@ def main(argv) -> int:
         md = open(path, encoding="utf-8").read()
     except OSError as e:
         _die(2, f"cannot read blog file '{path}': {e}")
+    # THE LINK PASS'S OWN LOG, read from beside the draft rather than passed in, because that is
+    # where the contract puts it: outputs/<slug>/<topic>/links-verified.txt sits next to blog.md,
+    # and gates.py is always pointed at the draft by path. None means the file is not there, which
+    # the links-verified gate treats as a FAILURE rather than as nothing to check: an absent log
+    # is the link pass leaving no evidence it ran. Read here rather than inside run_gates so that
+    # function stays a pure function of (text, config) and its unit tests need no filesystem.
+    try:
+        cfg["links_verified_text"] = (pathlib.Path(path).parent / "links-verified.txt").read_text(
+            encoding="utf-8")
+    except OSError:
+        cfg["links_verified_text"] = None
     results = run_gates(md, cfg)
     failed = print_report(results, path, client)
     return 1 if failed else 0

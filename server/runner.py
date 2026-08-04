@@ -1009,11 +1009,45 @@ def _http_mcp_servers():
     return servers
 
 
+# The credentials .mcp.json interpolates into the two stdio servers, NAMED EXPLICITLY rather
+# than scraped out of the file with a regex over ${...}. The file also mentions optional vars
+# (FIRECRAWL_API_URL for a self-hosted endpoint), and a scrape cannot tell an optional one from a
+# required one: it would hard-refuse every run on every machine that never set the optional var,
+# which is a worse failure than the one this check exists to catch. Three names, matching the env
+# blocks of the two servers MCP_SERVER_NAMES declares.
+_STDIO_CRED_VARS = ("FIRECRAWL_API_KEY", "DATAFORSEO_USERNAME", "DATAFORSEO_PASSWORD")
+
+
 def _stdio_mcp_config_ok():
-    """Validate .mcp.json shape without spawning anything. Returns False when the
-    file is absent; raises when it is present but unusable, because a broken
-    project config that the CLI silently ignores is the exact failure this
-    function exists to prevent."""
+    """Validate .mcp.json shape AND that its credentials are actually set, without spawning
+    anything. Returns False when the file is absent; raises when it is present but unusable,
+    because a broken project config that the CLI silently ignores is the exact failure this
+    function exists to prevent.
+
+    THE CREDENTIAL CHECK IS THE HALF THAT WAS MISSING, AND ITS ABSENCE WAS INVISIBLE BY
+    CONSTRUCTION. .mcp.json is CHECKED INTO THE REPO, so it is present and well formed on every
+    machine that has ever cloned or unpacked this app. The shape test below therefore passed
+    everywhere, including on a machine holding not one research credential, and this function
+    returned True to say "the stdio transport is available" when nothing could be fetched with it.
+    The CLI then launched the servers, every tool call came back 401, and the operator read a
+    dead run minutes later with no mention of a credential anywhere in it.
+
+    WHAT THAT COST, MEASURED RATHER THAN IMAGINED. A teammate's packaged install carries no
+    research keys at all: scripts/dev-serve.sh lifts them out of ~/.claude.json, which is a
+    developer-machine path, and engine_secrets did not carry them either. Their canonical-facts
+    build failed with "Claude Code returned an error result: success", a sentence assembled by the
+    SDK out of a reason the CLI never supplied. The same build ran first time on a machine with
+    the keys. Nothing in the failure named the cause, so it read as a broken brand, then as a
+    broken roadmap, and the real answer took a full investigation to reach.
+
+    A BLOG RUN IS THE WORSE CASE AND IT IS WHY THIS RAISES RATHER THAN WARNS. The facts prompt
+    happens to be written to refuse when it cannot source anything, which is why that failure was
+    loud. A writer has no such instinct, gates.py checks that the last H2 is titled "Sources and
+    References" and not that it contains a reachable URL, and no code anywhere reads
+    links-verified.txt back to confirm a cited link was ever fetched. The fetch-before-cite rule
+    rests on an agent following instructions WITH WORKING TOOLS. Take the tools away silently and
+    the rule has nothing holding it up, so this refuses at dispatch instead.
+    """
     if not MCP_CONFIG_PATH.is_file():
         return False
     try:
@@ -1029,10 +1063,21 @@ def _stdio_mcp_config_ok():
             f"{MCP_CONFIG_PATH} does not declare {', '.join(missing)}; a session without "
             f"those tools would invent sources"
         )
+    blank = [name for name in _STDIO_CRED_VARS if not (os.environ.get(name) or "").strip()]
+    if blank:
+        raise RunnerConfigError(
+            f"the engine has no research credentials, so a session could not fetch a single "
+            f"page: {', '.join(blank)} "
+            f"{'is' if len(blank) == 1 else 'are'} unset in this engine's environment. "
+            f"{MCP_CONFIG_PATH} interpolates them into the firecrawl and dataforseo servers, and "
+            f"it is checked into the repo, so its presence says nothing about whether this "
+            f"machine can fetch. Sign in to the app to provision them, or set them in "
+            f"server/.env beside the engine"
+        )
     return True
 
 
-def _resolve_mcp_servers():
+def _resolve_mcp_servers(research=True):
     """Resolve the MCP transport for a real session.
 
     Two transports, checked in this order:
@@ -1047,11 +1092,34 @@ def _resolve_mcp_servers():
     Neither available is a loud RunnerConfigError at dispatch, never a silent
     skip: a session without Firecrawl would quietly produce an unsourced blog,
     because an agent with no fetch tool invents sources rather than failing.
+
+    `research=False` SKIPS THE CREDENTIAL CHECK AND ONLY THAT CHECK, for a session that fetches
+    nothing. The transport is still resolved and the servers are still attached, so the caller's
+    options are unchanged; what is dropped is the refusal that a session which never calls a fetch
+    tool cannot possibly be harmed by.
+
+    THE ONE CALLER IS REPURPOSE, and it earns the exemption on a property of its input rather than
+    on a promise about its behaviour: server/repurpose.py rewrites an ALREADY SHIPPED blog into a
+    LinkedIn post or a Medium article, so every fact and every source in its output came out of a
+    draft that was researched, gated, link checked and scored on a machine that did have
+    credentials. There is nothing left to fetch. Refusing it would take a working feature away
+    from an operator over a credential it was never going to use, which is exactly the
+    over-refusal a blanket check invites.
+
+    IT IS AN ARGUMENT AND NOT A DEFAULT, so a new session type has to state its case. `research`
+    defaults to True, which means anything added later inherits the refusal and a caller that
+    wants out has to write the word down and answer for it here.
     """
     http = _http_mcp_servers()
     if http is not None:
         return http
-    if _stdio_mcp_config_ok():
+    if not research:
+        # The shape test alone, exactly as this function behaved before the credential check
+        # existed. A malformed or absent .mcp.json still refuses: that one is about whether the
+        # tools can attach at all, which a repurpose session needs as much as any other.
+        if MCP_CONFIG_PATH.is_file():
+            return {}
+    elif _stdio_mcp_config_ok():
         return {}
     raise RunnerConfigError(
         "real mode has no MCP transport. Either set FIRECRAWL_MCP_URL and DATAFORSEO_MCP_URL "
@@ -1086,6 +1154,11 @@ def _agent_definitions():
             "for every path and never guess them.\n"
             "Before anything else read clients/<slug>/client.md, clients/<slug>/canonical-facts.md, "
             "and .claude/skills/geo-research/references/source-vetting.md, every run.\n"
+            "Then read <out_dir>/roadmap-row.md, the roadmap row this blog is planned from: the "
+            "topic, its scope, the BINDING target prompts, and every other column the sheet "
+            "carries under that column's own header. The dossier has to carry the evidence those "
+            "prompts need. Nothing in it is a fact, a source, or a statistic, and nothing in it "
+            "overrides canonical-facts.md.\n"
             "Then read the operator's custom instructions, which bind this blog as a MAJOR "
             "priority, ABOVE house style and roadmap guidance but NEVER above canonical-facts.md, "
             "and never as licence to invent a source, statistic, or URL: "
@@ -1116,6 +1189,14 @@ def _agent_definitions():
             "Run the geo-content-writer skill against the FROZEN dossier at <out_dir>/dossier.md. "
             "Never re-research and never invent a citation or URL: a claim with no supporting "
             "source is a Sourcing failure to flag, not to patch.\n"
+            "Read <out_dir>/roadmap-row.md EVERY iteration, including 2, 3 and 4. It is the "
+            "brief: the topic, its scope, the BINDING target prompts, and every other column "
+            "under the sheet's own header. Follow the Format and the Search Intent it names, "
+            "because a Comparison anchor is a different piece from an FAQ (entity) and Commercial "
+            "intent frames differently from Informational. It is GUIDANCE about the shape of the "
+            "piece and the frame of its language: a volume or an estimate there shapes which "
+            "phrasing an H2 reaches for, it NEVER appears in the draft, it can NEVER be cited, "
+            "and nothing in it overrides canonical-facts.md.\n"
             "Follow the operator's custom instructions as a MAJOR priority, ABOVE house style and "
             "roadmap guidance and NEVER above canonical-facts.md, and never as licence to invent a "
             "source or URL: clients/<slug>/custom-instructions.md (the brand's standing "
@@ -1177,18 +1258,24 @@ def _agent_definitions():
     return {"researcher": researcher, "writer": writer, "evaluator": evaluator}
 
 
-def _lead_prompt(client_slug, row, topic_slug, out_dir):
-    prompts = "\n".join(f'- {p}' for p in row.get("prompts", [])) or "- (none provided)"
+def _roadmap_brief(row):
+    """The whole roadmap row as ONE block: the binding three by position, then every other
+    column under the sheet's own header.
 
-    # Columns 1, 2 and 5 are found by position. EVERY other column the sheet carries is
-    # forwarded here under its own header, because the sheet plans real instructions the writer
-    # was never told: a "Comparison anchor" is a different piece from an "FAQ (entity)", and
-    # Commercial intent frames differently from Informational. They used to be dropped at the
-    # parser and this prompt said so.
-    #
-    # They are labelled, never positional. Position 3 is "Format" on a generated sheet and
-    # "Approx. Volume (IN/mo)" on an operator's, so naming them by position would tell a writer
-    # its format was ~1200.
+    Built in one place because it is consumed in two, and that is the point. The lead gets it
+    inside its prompt, and Agent R and Agent W read the SAME text from <out_dir>/roadmap-row.md,
+    so a lead that forgets to relay it on iteration 3 cannot cost the writer its brief. Relay
+    was the whole delivery mechanism until this file existed, and a fresh writer invents
+    whatever it is not handed.
+
+    Columns 1, 2 and 5 are found by position. EVERY other column the sheet carries is forwarded
+    under its own header, because the sheet plans real instructions the writer was never told: a
+    "Comparison anchor" is a different piece from an "FAQ (entity)", and Commercial intent frames
+    differently from Informational. They are labelled, never positional: position 3 is "Format"
+    on a generated sheet and "Approx. Volume (IN/mo)" on an operator's, so naming them by
+    position would tell a writer its format was ~1200.
+    """
+    prompts = "\n".join(f'- {p}' for p in row.get("prompts") or []) or "- (none provided)"
     extras = row.get("extras") or []
     extra_lines = "\n".join(f"- {e['label']}: {e['value']}" for e in extras)
     extra_block = (
@@ -1204,18 +1291,25 @@ overrides canonical-facts.md.
         if extras
         else ""
     )
+    return f"""Topic: {row.get('topic', '')}
+What the piece covers: {row.get('covers', '')}
+Target prompts (BINDING, each answered verbatim somewhere liftable):
+{prompts}
+{extra_block}"""
 
+
+def _lead_prompt(client_slug, row, topic_slug, out_dir):
     return f"""You are the SESSION LEAD for exactly ONE blog topic. Follow CLAUDE.md, the engine
 contract in this repo, exactly. You do not manage a queue and you never launch other blogs.
 
 Client slug: {client_slug}
-Topic: {row.get('topic', '')}
 Topic slug: {topic_slug}
 Output dir: {out_dir}
-What the piece covers: {row.get('covers', '')}
-Target prompts (BINDING, each answered verbatim somewhere liftable):
-{prompts}
-{extra_block}
+{_roadmap_brief(row)}
+The same brief is on disk at {out_dir}/roadmap-row.md, and Agent R and Agent W are told to read
+it there themselves. Pass it in your dispatches anyway: the file is the backstop, not the
+substitute, and neither of them can act on what only your context holds.
+
 Dispatch researcher -> writer -> evaluator via the Agent tool, in that order. Every
 dispatch passes the subagent the client slug, topic slug, output dir, and CURRENT
 ITERATION NUMBER, because a fresh writer on iteration 3 has no memory of iterations
@@ -1239,7 +1333,9 @@ dispatches on iterations 2, 3 and 4, which is where it is easiest to drop: a fre
 writer has none of this, so anything you do not hand it, it invents. Reaching your
 context is not the same as reaching the writer's, and the writer is the agent that
 acts on it. Pass the guidance under the same labels the sheet gave it; never rename a
-label and never reorder it into a meaning of your own.
+label and never reorder it into a meaning of your own. Where you would rather not
+retype it, point the dispatch at {out_dir}/roadmap-row.md, which holds this exact
+text; what you may never do is leave the writer with neither.
 
 Branch on the numeric SCORE from the evaluator (its eval end status line and
 eval.md), never on a verdict word. The in-loop branch reads the SCORE plus exactly
@@ -1348,10 +1444,17 @@ Absolute rules:
 """
 
 
-def _session_options():
+def _session_options(research=True):
     """Build the exact ClaudeAgentOptions a real session runs with. Separate from
     _sdk_session so tests/config_check.py can assert on it without spawning a CLI
-    or calling query()."""
+    or calling query().
+
+    `research` is passed straight through to _resolve_mcp_servers and means what it means there:
+    False for a session that fetches nothing, which today is repurpose alone. The returned options
+    are IDENTICAL either way, including the mcp_servers value; the flag decides only whether a
+    machine with no research credentials is refused. See _resolve_mcp_servers for why repurpose
+    earns that on a property of its input rather than a promise about its behaviour.
+    """
     from claude_agent_sdk import ClaudeAgentOptions
 
     budget = os.environ.get("GEO_MAX_BUDGET_USD")
@@ -1384,7 +1487,7 @@ def _session_options():
         # {} means the CLI loads .mcp.json itself as project config. See
         # _resolve_mcp_servers: strict_mcp_config is deliberately left at its
         # default so that file is not suppressed.
-        mcp_servers=_resolve_mcp_servers(),
+        mcp_servers=_resolve_mcp_servers(research=research),
         agents=_agent_definitions(),
         max_turns=int(os.environ.get("GEO_MAX_TURNS", "250")),
         max_budget_usd=float(budget) if budget else None,
@@ -1586,6 +1689,25 @@ def _write_session_instructions(out_dir, text):
         path.unlink(missing_ok=True)
 
 
+def _write_roadmap_brief(out_dir, row):
+    """Lay the roadmap row at <out_dir>/roadmap-row.md so the agents read it by path.
+
+    Same mechanism as session-instructions.md and answers.json, and for the same reason: an
+    input that exists only inside the lead's prompt reaches an agent only if the lead retypes
+    it. The extras are the half most easily dropped, because the lead has no use for them
+    itself, and a writer that never hears "Format: Comparison anchor" writes a different piece.
+
+    It does NOT delete on an absent row, which is where it parts from _write_session_instructions.
+    That file is cleared because a prior run's operator instruction leaking into this one is the
+    harm. Here the file describes the TOPIC, which does not change between a run and its revise,
+    so a revise whose roadmap row has since gone is better served by the brief the run that wrote
+    the draft was working from than by nothing.
+    """
+    if row:
+        (out_dir / "roadmap-row.md").write_text(
+            "# Roadmap row: the brief for this blog\n\n" + _roadmap_brief(row), encoding="utf-8")
+
+
 async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None):
     """One blog, one SDK session, plus the died-session safety net.
 
@@ -1717,6 +1839,10 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
         # absent clears any file a prior run left). The brand's standing instructions arrived
         # separately via _materialize_topic_scratch -> materialize_client -> custom-instructions.md.
         _write_session_instructions(out_dir, row.get("session_instructions"))
+
+        # And this run's roadmap row, for the same reason: read by path, by the agents that act
+        # on it, instead of surviving only as far as the lead relays it.
+        _write_roadmap_brief(out_dir, row)
 
         # A batch-level refusal is checked BEFORE preflight on purpose. precheck_error is not
         # preflight. Preflight asks whether THIS client's file is fit to write against.
@@ -2144,41 +2270,27 @@ def _keep_prior_run_if_higher(client_slug, topic_slug, out_dir, baseline, prior_
 
 
 def _revise_lead_prompt(client_slug, row, topic_slug, out_dir, iteration):
-    prompt_block = ""
-    guidance_block = ""
-    if row:
-        # Best effort, and absent when the roadmap row has gone. The draft is what is being
-        # revised, so this session works without the row: unlike a first draft, the article
-        # already exists and the piece's shape is already decided. When the row IS still there it
-        # rides along for the same reason the first-draft lead passes it, because a fresh writer
-        # invents whatever it is not handed.
-        prompts = "\n".join(f"- {p}" for p in row.get("prompts", []))
-        if prompts:
-            prompt_block = f"""
-Target prompts (BINDING, each answered verbatim somewhere liftable):
-{prompts}
-"""
-        extras = row.get("extras") or []
-        if extras:
-            extra_lines = "\n".join(f"- {e['label']}: {e['value']}" for e in extras)
-            guidance_block = f"""
-Roadmap guidance, under the sheet's own headers. Pass it to the writer VERBATIM, under these
-same labels:
-{extra_lines}
-
-None of it is a fact, a source, or a statistic, and nothing in it overrides canonical-facts.md.
-"""
+    # Best effort, and reduced to the slug when the roadmap row has gone. The draft is what is
+    # being revised, so this session works without the row: unlike a first draft, the article
+    # already exists and the piece's shape is already decided. When the row IS still there it
+    # rides along for the same reason the first-draft lead passes it, because a fresh writer
+    # invents whatever it is not handed. Same block the first-draft lead gets, from the same
+    # builder, so the guidance cannot drift between the two paths.
+    brief = _roadmap_brief(row) if row else f"Topic: {topic_slug}\n"
 
     return f"""You are the SESSION LEAD for a SURGICAL REVISE of ONE blog that ALREADY EXISTS.
 Follow CLAUDE.md, the engine contract in this repo, exactly. You do not manage a queue and you
 never launch other blogs.
 
 Client slug: {client_slug}
-Topic: {row.get('topic', topic_slug) if row else topic_slug}
 Topic slug: {topic_slug}
 Output dir: {out_dir}
 Iteration number for every dispatch and every status line: {iteration}
-{prompt_block}{guidance_block}
+{brief}
+The same brief is on disk at {out_dir}/roadmap-row.md and the writer reads it there. Pass it in
+your dispatch anyway, VERBATIM and under the sheet's own labels; the file is the backstop, not
+the substitute.
+
 THIS IS NOT A NEW BLOG. The article is at {out_dir}/blog.md and it is finished. You are
 applying two specific inputs to it and nothing else.
 
@@ -2254,6 +2366,9 @@ async def _sdk_revise_session(client_slug, row, topic_slug, out_dir, iteration):
         ClaudeSDKError = ()
 
     options = _session_options()
+    # Re-lay the brief when the row still exists, so a revise reads the row as it stands rather
+    # than whatever the first run happened to write. An absent row keeps the earlier file.
+    _write_roadmap_brief(Path(out_dir), row)
     prompt = _revise_lead_prompt(client_slug, row, topic_slug, out_dir, iteration)
 
     try:

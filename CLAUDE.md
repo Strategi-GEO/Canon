@@ -325,6 +325,15 @@ The row is the brief:
   Comparison anchor` and `Search Intent: Commercial` are instructions about the shape of the
   piece and the frame of its language, and the writer follows them.
 
+The whole row reaches the agents TWICE, by two mechanisms, and the second is what makes it
+reliable. It is in the lead's prompt, and the backend also lays it at
+`outputs/<slug>/<topic-slug>/roadmap-row.md`, which Agent R and Agent W read by path every
+iteration. Relay alone was the delivery mechanism until that file existed, and relay is exactly
+what fails on iteration 3: the lead has no use for `Format` itself, so it is the first thing a
+retyped dispatch drops, and a writer that never hears `Comparison anchor` writes a different
+piece. The lead still passes the brief in every dispatch. The file is the backstop, not the
+substitute. Agent E does NOT read it: its input set is closed by the hostile-isolation rule.
+
 An extra is guidance, never a fact. `Approx. Volume (IN/mo): ~1200` shapes which phrasing an H2
 reaches for; it is NOT a statistic, it never appears in the draft, and it can never be cited.
 Nothing in an extra column is a source, and no extra overrides `canonical-facts.md`.
@@ -355,6 +364,23 @@ script is the authority on these rules:
 - Brand voice, where the client configures a `voice` block: the reader addressed as "you", the
   client speaking as "we/us/our", no generic "we", and every block that uses "we" also naming
   the entity in full. See Voice and topic discipline below.
+- **Every external link in the draft appears in `links-verified.txt`.** The link pass is what
+  puts it there, so this gate is the link pass being CHECKED rather than trusted. A draft citing
+  no external URL passes without the file being read; a draft that cites one and has no
+  `links-verified.txt` beside it FAILS, because an absent log is the link pass leaving no
+  evidence it ran. THIS ORDERS AGENT W'S OWN STEPS: run the link pass, appending as you verify,
+  and run the gates after it, or the gate fails on links you have not logged yet. Nothing here
+  lets you write a URL into that file to satisfy the gate: the file records what was FETCHED,
+  and an entry for a link you did not fetch is a fabricated verification, which is the one
+  failure this gate exists to make impossible.
+
+**The engine REFUSES A RUN OUTRIGHT on a machine with no Firecrawl or DataForSEO credentials**,
+at dispatch, before a session opens (`runner._stdio_mcp_config_ok`). This is not a gate you can
+satisfy and it is not addressed to you: if you are running at all, the credentials were there.
+It exists because `.mcp.json` is checked into the repo, so its presence used to say "the research
+tools are available" on a machine that held no key at all, and every fetch came back 401 while the
+run looked ordinary. A repurpose session is exempt, because it rewrites an already shipped blog
+and fetches nothing.
 
 ## Voice and topic discipline (every article)
 The register is per-client and the engine stays brand-agnostic: `clients/<slug>/gates.json`
@@ -415,6 +441,11 @@ Topic discipline is a HOUSE rule and applies to every client, configured or not:
   link-clean. The ONE exception is the answer-driven revise, which is itself an Agent W pass:
   it re-runs the link pass on changed links only, before its evaluator. There is no link step
   that runs after an eval on a draft nobody touched.
+- **`gates.py` now CHECKS the link pass rather than trusting it**: every external URL in the
+  draft must appear in `links-verified.txt`. For years that file was written, stored, synced and
+  re-laid across runs and NOTHING ever read it back, so the fetch-before-cite rule rested on an
+  agent following an instruction with working tools and on nothing else. Ordering follows from
+  it: verify first, appending as you go, then run the gates.
 
 ## Sourcing discipline
 - Prefer sources local to the client's market (named in `client.md`) over generic or foreign
@@ -449,6 +480,10 @@ house rules always hold:
 
 ## Output (per blog)
 `outputs/<slug>/<topic-slug>/`:
+- `roadmap-row.md` (the brief, laid down by the backend before the session opens: topic, scope,
+  target prompts, and every extra column under the sheet's own header. Agent R and Agent W read
+  it by path, so the guidance survives a lead that does not retype it into iteration 3's
+  dispatch. Never written by an agent, and never a source)
 - `dossier.md` (frozen after Agent R)
 - `blog.md` (final, within the client word band)
 - `eval.md` (`SCORE: NN` on its own line near the top, plus the fix list)

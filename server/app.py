@@ -127,10 +127,34 @@ app.include_router(cms_router, dependencies=[Depends(_cms_admin_gate)])
 @app.on_event("startup")
 async def _warn_single_worker():
     log.warning(
-        "geo-factory must run on ONE uvicorn worker: the client lock and the "
-        "5-topic semaphore are in-process primitives in runner.py, so "
-        "--workers N breaks the concurrency cap (it becomes 5N)."
+        "geo-factory must run on ONE uvicorn worker: the 5-blog queue is an "
+        "in-process primitive in runner.py, so --workers N breaks the "
+        "concurrency cap (it becomes 5N)."
     )
+
+
+@app.on_event("startup")
+async def _export_agent_credentials():
+    """Put the agent's credentials in os.environ before anything can open a session.
+
+    FIRST STARTUP HOOK AND IT HAS TO BE, because everything downstream reads the result: the
+    dispatch-time refusal in runner._stdio_mcp_config_ok reads os.environ, agent_env() filters
+    os.environ, and .mcp.json interpolates out of the child environment. A packaged install gets
+    its keys as a server/.env written after login, which db._load_cfg parses into a PRIVATE dict
+    that deliberately never touches os.environ, so without this line a fully provisioned machine
+    still ran every session with no research tools and no explanation. See db.export_agent_credentials.
+
+    Logged by NAME and never by value, and at warning level when nothing moved on a machine that
+    has no research credentials at all, because that machine is about to refuse every blog run and
+    the reason belongs in the log the operator will actually look at.
+    """
+    moved = db.export_agent_credentials()
+    if moved:
+        log.info("exported %d agent credential(s) from server/.env: %s",
+                 len(moved), ", ".join(sorted(moved)))
+    ok, reason = runner.check_real_mode_ready()
+    if not ok:
+        log.warning("THIS ENGINE CANNOT RESEARCH AND WILL REFUSE EVERY BLOG RUN: %s", reason)
 
 
 # Strong references to fire-and-forget startup tasks, so the reconciler cannot

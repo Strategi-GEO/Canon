@@ -165,6 +165,44 @@ def _venv_bin_dir() -> pathlib.Path | None:
     return d if d.is_dir() else None
 
 
+def export_agent_credentials() -> list[str]:
+    """Lift the credentials an AGENT needs out of server/.env into os.environ. Returns what moved.
+
+    THE ONE GAP THIS CLOSES, AND IT IS WHY SEEDING THE RECORD ALONE FIXED NOTHING. A packaged
+    install receives its credentials as a server/.env written by canon_app/secrets_bootstrap after
+    the operator signs in. _load_cfg parses that file into the PRIVATE _CFG and deliberately never
+    into os.environ, which is rule 1 of this module and stays intact below. But agent_env() filters
+    os.environ, and .mcp.json interpolates ${FIRECRAWL_API_KEY} out of the child environment, so a
+    key that reaches _CFG and stops there reaches no agent at all. Until this function existed the
+    ONLY thing that put those three variables in os.environ was scripts/dev-serve.sh, which lifts
+    them from ~/.claude.json and runs on developer machines only. Every packaged install therefore
+    ran with no research credentials no matter what was in its .env or in the record, and the
+    failure was silent: .mcp.json is checked into the repo, so the transport check said the tools
+    were available while every fetch came back 401.
+
+    THE ALLOWLIST DECIDES WHAT MOVES, and it is the same allowlist agent_env applies, which makes
+    this safe by construction rather than by care. A value only leaves _CFG if an agent was always
+    going to be allowed to see it, so this cannot widen the agent's reach by one variable. The
+    three Supabase credentials in _OWN_CREDENTIALS are not on that list and never move: they stay
+    in the private dict exactly as config_value's contract promises, and an agent still cannot read
+    the database.
+
+    IT WIDENS PROCESS EXPOSURE AND THAT IS THE ACCEPTED COST, stated plainly because _load_cfg's
+    own comment makes the opposite tradeoff for its own keys. An exported variable is visible to
+    anything in this process. For a research credential that is not a real loss: the whole purpose
+    of the value is to be handed to a CLI subprocess that a session can read anyway.
+
+    NEVER OVERWRITES AN EXPORTED VALUE. A shell export, or dev-serve.sh, wins over the file, which
+    keeps a developer's machine behaving exactly as it did.
+    """
+    moved = []
+    for key, value in _load_cfg().items():
+        if key in AGENT_ENV_ALLOW and value and not os.environ.get(key):
+            os.environ[key] = value
+            moved.append(key)
+    return moved
+
+
 def agent_env() -> dict[str, str]:
     """The child env for every Claude CLI subprocess: the allowlist, never the
     whole environment. tests/env_check.py bans the copy-everything idiom.

@@ -80,7 +80,13 @@ async def _sdk_session(client_slug, source_topic_slug, channel, out_dir):
     except ImportError:
         ClaudeSDKError = ()
 
-    options = runner._session_options()
+    # research=False: this session FETCHES NOTHING. Its input is an already shipped blog, so every
+    # fact and every source in the post it writes came out of a draft that was researched, gated,
+    # link checked and scored on a machine that did have credentials. The engine now refuses a
+    # blog session on a machine with no Firecrawl or DataForSEO credential, and without this the
+    # refusal would take working LinkedIn and Medium runs down with it over a credential this
+    # session was never going to use. The tools still attach; only the refusal is skipped.
+    options = runner._session_options(research=False)
     prompt = _lead_prompt(client_slug, source_topic_slug, channel, out_dir)
     try:
         async with aclosing(query(prompt=prompt, options=options)) as session:

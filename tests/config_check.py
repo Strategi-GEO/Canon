@@ -28,6 +28,15 @@ CHECKS = [0]
 MCP_ENV_VARS = ("FIRECRAWL_MCP_URL", "FIRECRAWL_MCP_AUTH",
                 "DATAFORSEO_MCP_URL", "DATAFORSEO_MCP_AUTH")
 
+# The credentials .mcp.json interpolates into the two stdio servers. CLEARED by no_mcp_env and
+# SET explicitly by the test that wants them, which is the only way either state is deterministic:
+# a developer machine has these exported (scripts/dev-serve.sh lifts them out of ~/.claude.json)
+# and a CI runner does not, so a test that simply inherited the ambient environment would assert
+# the opposite thing depending on where it ran. That is how the missing credential check went
+# unnoticed in the first place, since the suite only ever ran where the keys happened to exist.
+STDIO_CRED_VARS = runner._STDIO_CRED_VARS
+STDIO_CREDS_PRESENT = {name: f"test-{name.lower()}" for name in STDIO_CRED_VARS}
+
 
 def check(name, condition, detail=""):
     CHECKS[0] += 1
@@ -59,7 +68,10 @@ def env(**overrides):
 
 @contextlib.contextmanager
 def no_mcp_env():
-    with env(**{key: None for key in MCP_ENV_VARS}):
+    """No transport configured AND no stdio credentials: the state a freshly unpacked install is
+    in. Both groups are cleared together because "no MCP env" has to mean the same thing on every
+    machine that runs this suite."""
+    with env(**{key: None for key in MCP_ENV_VARS + STDIO_CRED_VARS}):
         yield
 
 
@@ -106,8 +118,8 @@ def test_transport_http():
 
 
 def test_transport_stdio():
-    print("\n[2] MCP transport: no URL env, .mcp.json present -> {} and the CLI loads it")
-    with no_mcp_env():
+    print("\n[2] MCP transport: no URL env, .mcp.json present, credentials set -> {} and the CLI loads it")
+    with no_mcp_env(), env(**STDIO_CREDS_PRESENT):
         check(".mcp.json exists at the repo root", runner.MCP_CONFIG_PATH.is_file(),
               str(runner.MCP_CONFIG_PATH))
         servers = runner._resolve_mcp_servers()
@@ -123,6 +135,64 @@ def test_transport_stdio():
         options = runner._session_options()
         check("the runner never sets strict_mcp_config True",
               options.strict_mcp_config is False, repr(options.strict_mcp_config))
+
+
+def test_transport_stdio_without_credentials():
+    """THE CHECK A TEAMMATE'S DEAD RUN PAID FOR. .mcp.json is checked into the repo, so it is
+    present and well formed on every machine that ever unpacked this app, and the shape test
+    alone therefore said "stdio transport available" on a machine holding not one credential.
+    The CLI launched the servers, every tool call came back 401, and the run died minutes later
+    with a message that named no credential anywhere in it.
+
+    BOTH ARMS MATTER AND THEY PULL OPPOSITE WAYS. A blog session must REFUSE, because gates.py
+    checks that the last H2 is titled "Sources and References" rather than that it holds a
+    reachable URL, so an unsourced draft has little else standing in its way. A repurpose session
+    must still RUN, because it rewrites an already shipped blog and fetches nothing, and refusing
+    it would take a working feature away over a credential it was never going to use."""
+    print("\n[2b] MCP transport: .mcp.json present but NO credentials -> refused, repurpose exempt")
+    with no_mcp_env():
+        try:
+            runner._resolve_mcp_servers()
+            check("a blog session is refused when the credentials are unset", False,
+                  "no exception raised: an unsourced draft would have been written")
+        except runner.RunnerConfigError as exc:
+            message = str(exc)
+            check("a blog session is refused when the credentials are unset", True)
+            check("the refusal NAMES every missing variable",
+                  all(name in message for name in STDIO_CRED_VARS), message)
+            check("and says the config file's presence proves nothing",
+                  "checked into the repo" in message, message)
+
+        ok, reason = runner.check_real_mode_ready()
+        check("check_real_mode_ready reports not ready, so a run is refused at submit time",
+              not ok and "research credentials" in reason, reason)
+
+        try:
+            servers = runner._resolve_mcp_servers(research=False)
+            check("a repurpose session still resolves, because it fetches nothing",
+                  servers == {}, repr(servers))
+        except runner.RunnerConfigError as exc:
+            check("a repurpose session still resolves, because it fetches nothing", False, str(exc))
+
+    # ONE CREDENTIAL SHORT IS STILL A REFUSAL, exactly as the http arm already holds for a half
+    # configured transport: dataforseo alone cannot fetch a page.
+    with no_mcp_env(), env(FIRECRAWL_API_KEY="fc-test"):
+        try:
+            runner._resolve_mcp_servers()
+            check("one credential present is still a refusal", False, "no exception raised")
+        except runner.RunnerConfigError as exc:
+            check("one credential present is still a refusal, naming only what is missing",
+                  "DATAFORSEO_USERNAME" in str(exc) and "FIRECRAWL_API_KEY" not in str(exc),
+                  str(exc))
+
+    # A BLANK VALUE IS NOT A VALUE. An empty var is how a half written .env or a cleared secret
+    # arrives, and a bare `in os.environ` would call it present.
+    with no_mcp_env(), env(**{name: "   " for name in STDIO_CRED_VARS}):
+        try:
+            runner._resolve_mcp_servers()
+            check("a blank credential is treated as missing", False, "no exception raised")
+        except runner.RunnerConfigError:
+            check("a blank credential is treated as missing", True)
 
 
 def test_transport_missing():
@@ -141,7 +211,9 @@ def test_transport_missing():
 
 def test_session_options():
     print("\n[4] The ClaudeAgentOptions a real session would run with")
-    with no_mcp_env():
+    # Credentials present: this test is about the OPTIONS, and a session on a machine with no
+    # research credentials no longer builds any (see [2b]).
+    with no_mcp_env(), env(**STDIO_CREDS_PRESENT):
         options = runner._session_options()
 
     check("cwd is the repo root, resolved from __file__ not os.getcwd()",
@@ -169,7 +241,7 @@ def test_session_options():
 
 def test_sdk_field_names():
     print("\n[5] Every option field the runner sets exists on the installed SDK")
-    with no_mcp_env():
+    with no_mcp_env(), env(**STDIO_CREDS_PRESENT):
         options = runner._session_options()
     sdk_fields = {f.name for f in dataclasses.fields(ClaudeAgentOptions)}
     # A future SDK bump that renames or drops a field fails HERE, cheaply,
@@ -266,7 +338,8 @@ def test_repo_has_no_secrets():
 def main():
     print("config_check: static checks only. No CLI spawned, no query() called, "
           "no blog generated.")
-    for test in (test_transport_http, test_transport_stdio, test_transport_missing,
+    for test in (test_transport_http, test_transport_stdio,
+                 test_transport_stdio_without_credentials, test_transport_missing,
                  test_session_options, test_sdk_field_names, test_mcp_json_file,
                  test_repo_has_no_secrets):
         test()
