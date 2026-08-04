@@ -1,4 +1,10 @@
-import { blogState, clientCanSee, type BlogState, type BlogStateFacts } from "@/lib/blog-state";
+import {
+  blogState,
+  clientCanSee,
+  clientFacingState,
+  type BlogState,
+  type BlogStateFacts,
+} from "@/lib/blog-state";
 import { inList, pg, rpc } from "@/lib/server/postgrest";
 import type {
   PortalChannelDetail,
@@ -74,6 +80,12 @@ export type ProducedStateFacts = Required<Omit<BlogStateFacts, "live">>;
  * record, and what kept the two agreeing was a comment in each one asserting that it did. That
  * is a claim rather than a mechanism. `blogState()` is the mechanism, `clientCanSee()` decides
  * what a client is shown of it, and `clientCan()` decides what a client may do to it.
+ *
+ * THE ONE PLACE THE TWO SURFACES GENUINELY DIVERGE IS THE CMS PUSH, and it is still decided in
+ * blog-state.ts rather than here. `published` means "it is in the CMS" to the team and "live on
+ * your site" to the client, so this file asks `clientFacingState()` and the admin surfaces ask
+ * `blogState()`. That is two functions in the deciding module, not a private vocabulary in this
+ * one, and the difference is exactly why the sentence above still holds.
  *
  * THE FACTS, and where each comes from:
  *   status            the run feed's last terminal line, folded below, with ONE correction
@@ -978,7 +990,17 @@ function foldTopics(data: BrandData): TopicFold[] {
       change_round_open: changeRoundOpen,
       published: topic.published_at,
     };
-    const state = blogState(stateFacts);
+    // clientFacingState AND NOT blogState, and this is the ONE line in this file that decides
+    // whether an internal draft can reach a client.
+    //
+    // blogState answers `published` on a CMS push alone, because Post to CMS is offered from
+    // internal review and from failed and the operator must see their own act on the row. To a
+    // client that same word means live on their site, and it is the most generous state there
+    // is: clientCanSee grants it, clientReadsArticle below marks it released, and servedVersion
+    // hands back a body. A push with no send would therefore serve an article nobody released.
+    // clientFacingState recomputes without the push in exactly that case, so every consumer of
+    // fold.state below is right for free. Its own comment carries the full reasoning.
+    const state = clientFacingState(stateFacts);
 
     // clientCanSee decides this, with the TWO arms documented at the top of the file.
     //

@@ -41,6 +41,7 @@ export function PublishAction({
   topic,
   status,
   score,
+  onPublished,
 }: {
   brandSlug: string;
   topicSlug: string;
@@ -56,6 +57,25 @@ export function PublishAction({
    * partial record is only ever safe when every clause on the door reads what it carries.
    */
   score: number | null;
+  /**
+   * Fired once the CMS has taken the article, so the page can re-read the record.
+   *
+   * IT EXISTS BECAUSE THE PUSH NOW MOVES THE STATE. `published` used to require a send stamp
+   * beside the push, so posting from internal review changed no state, moved no tag and needed
+   * no refresh. It is the whole state on its own today: the tag flips to Published and the
+   * admin bench empties, and neither happens until something re-reads the record.
+   *
+   * NO ARGUMENT, DELIBERATELY. The send door hands its caller the review state its POST
+   * answered with, because that POST answers with exactly that. This one answers with the CMS's
+   * own shape (post id, slug, draft status), which carries no published_at, so there is nothing
+   * truthful to pass and a caller that got a synthesised stamp would render this browser's
+   * clock as a database fact.
+   *
+   * FIRED ON `skipped` TOO. That result means a human already moved the post past draft in the
+   * CMS, which is the strongest possible evidence the article is out the door: the engine still
+   * stamps published_at, so the record moved and the page has to follow.
+   */
+  onPublished?: () => void;
 }) {
   const [open, setOpen] = React.useState(false);
   const [posting, setPosting] = React.useState(false);
@@ -104,6 +124,11 @@ export function PublishAction({
       toast.success(describeResult(settled), {
         description: settled.slug ? `Draft: ${settled.slug}` : topic,
       });
+      // AFTER the toast and never in place of it. The push is the operator's act and its
+      // receipt is theirs to see; the re-read is bookkeeping that happens to change the tag
+      // under them, and firing it first would swap the buttons out from under the click that
+      // produced them before the confirmation landed.
+      onPublished?.();
     } catch (cause) {
       setError(cause instanceof ApiError ? cause : new ApiError(0, String(cause), null));
     } finally {

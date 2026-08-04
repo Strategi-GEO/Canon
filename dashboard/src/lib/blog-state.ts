@@ -165,19 +165,26 @@ export function blogState(facts: BlogStateFacts): BlogState {
   if (facts.live ?? facts.status === "running") {
     return "generating";
   }
-  // A SEND STAMP IS REQUIRED, and its absence used to be a client-facing exposure. `published`
-  // sat above every delivery check and clientCanSee grants it unconditionally, so a record with
-  // published_at set and sent_to_client_at null jumped straight from a state the client must
-  // never see to one where the portal renders the full body, captioned as live on their site.
-  // The publish gate itself required only that the status was done, with no send or approval
-  // test, so one CMS push on an internal draft was the whole exploit.
+  // THE PUSH ALONE DECIDES THIS, and the send conjunct that used to sit here is GONE. Post to
+  // CMS is now offered in internal review, with client, changes requested, approved and failed
+  // alike, so the operator can push from any of them; requiring a send meant the tag stayed on
+  // whatever it was and the operator's own act left no mark, which is the thing they read the
+  // tag to find out. A pushed article is `published` and its admin bench is empty, so the row
+  // says the work is out the door and offers nothing further to do to it.
   //
-  // The gate is being fixed to require a send as well, and this stays regardless: a state
-  // machine that depends on every caller upstream getting it right is not a guard. An article
-  // published without ever being sent now reads as whatever it actually is to the team, and the
-  // admin still sees the push itself through the PublishedChip, which reads published_at
-  // directly rather than through the state.
-  if (facts.published && facts.sent_to_client) {
+  // THE EXPOSURE THAT CONJUNCT GUARDED IS REAL AND IT MOVED RATHER THAN LAPSED. `published` is
+  // a state the CLIENT vocabulary also names, clientCanSee grants it, and the portal serves its
+  // body captioned as live on their site, so a record with published_at and no send would put
+  // an internal draft in front of a client who was never sent it. That was a live defect once.
+  // It is now closed where the send stamp actually lives: server/portal-data.ts recomputes the
+  // client's state with `published` dropped whenever there is no send, so the portal sees the
+  // article as whatever it genuinely is to the team and never as released.
+  //
+  // WHY THERE AND NOT HERE. This function answers one question for two readers, and a CMS push
+  // is an ADMIN fact: it means the draft is in the CMS, not that the client has it. Encoding
+  // the client's caveat in the shared answer is what made the admin's tag wrong. The reader who
+  // owns the caveat owns the narrowing.
+  if (facts.published) {
     return "published";
   }
   if (facts.client_approved) {
@@ -510,11 +517,51 @@ export function clientCan(state: BlogState, action: ClientAction): boolean {
 }
 
 /**
+ * The state as the CLIENT's own record implies it, which is `blogState` minus a CMS push the
+ * client was never sent.
+ *
+ * A PUSH IS AN ADMIN FACT AND `published` IS A SHARED WORD, which is the whole of this. The team
+ * reads `published` as "it is in the CMS", and blogState answers that on the push alone so an
+ * operator posting from internal review or from a failed blog sees their own act on the row. The
+ * client vocabulary reads the same word as "live on your site", and it is the most generous state
+ * there is: clientCanSee grants it, portal-data's clientReadsArticle marks it released, and
+ * servedVersion hands back a body. A record with a push and no send would therefore put an
+ * internal draft in front of a client who was never sent it, captioned as their published
+ * article. That was a live defect once, closed then by a send conjunct inside blogState, which
+ * made the admin's own tag wrong to protect the client's.
+ *
+ * RECOMPUTED, NEVER SPECIAL-CASED. Dropping the push from the facts and asking again yields what
+ * the article genuinely is to the client: `internal_review` for a draft they have never seen,
+ * `answers_submitted` for one they just answered on, `failed` for one that never made the bar.
+ * Every downstream reader is then right for free, because they are reading a real state rather
+ * than a state with an exception taped to it.
+ *
+ * IT CAN ONLY EVER REMOVE `published`, which is what makes it safe to apply to a whole list.
+ * Nothing a client earned by being sent the article is touched, so no row vanishes from under
+ * someone standing on it, which is the failure this area keeps reproducing.
+ *
+ * THE ADMIN SURFACES MUST NOT CALL THIS and none do: the tag, the bench and the Posted library
+ * all read blogState directly, which is exactly the point of having two functions.
+ */
+export function clientFacingState(facts: BlogStateFacts): BlogState {
+  const state = blogState(facts);
+  if (state === "published" && !facts.sent_to_client) {
+    return blogState({ ...facts, published: null });
+  }
+  return state;
+}
+
+/**
  * Whether the client can see the article AT ALL.
  *
  * This is not "has any action": a client sees an approved or published article and can do
  * nothing to it, which is correct, because it is theirs to read. What they must never see is an
  * article still with the team, or one that failed.
+ *
+ * IT TAKES A STATE AND NOT A RECORD, so it is only ever as right as the state it is handed. A
+ * caller holding the raw facts owes it clientFacingState(facts) rather than blogState(facts):
+ * `published` is granted here unconditionally, and the two words do not mean the same thing to
+ * the two readers. See clientFacingState directly above.
  */
 export function clientCanSee(state: BlogState): boolean {
   return (

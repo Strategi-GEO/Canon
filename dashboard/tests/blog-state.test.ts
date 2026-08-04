@@ -27,6 +27,7 @@ import {
   clientCan,
   clientCanSee,
   clientCommentsTag,
+  clientFacingState,
   clientTag,
   type AdminAction,
   type BlogState,
@@ -205,11 +206,19 @@ test("blogState: the record maps to exactly one state", () => {
       "published",
     ],
     [
-      // A publish stamp with no send stamp must NOT reach `published`, because clientCanSee
-      // grants that state and the portal would then serve an article nobody released.
-      "a published article that was never sent is not client-visible",
+      // THE PUSH ALONE, with no send anywhere on the record. Post to CMS is offered from
+      // internal review and from failed, so this is the ordinary case and not a corner: the
+      // operator pushed, and the row has to say so or their own act leaves no mark.
+      //
+      // THE CLIENT-FACING HALF OF THIS RULE IS NOT TESTED HERE BECAUSE IT IS NOT HERE ANY MORE.
+      // `published` is a word the client vocabulary also names, and clientCanSee grants it, so
+      // this exact record once served an internal draft to a client who was never sent it. The
+      // guard moved to lib/server/portal-data.ts, which recomputes the client's state with the
+      // push dropped whenever there is no send. Asserting internal_review here again would be
+      // asserting the old location of a rule that still holds.
+      "a CMS push with no send still reads published to the team",
       { status: "done", published: "t" },
-      "internal_review",
+      "published",
     ],
     ["failed", { status: "failed" }, "failed"],
     ["stopped", { status: "stopped" }, "stopped"],
@@ -975,10 +984,11 @@ const REACHABLE: Record<BlogState, GateRecord[]> = {
     { status: "failed", answers_submitted: "t" },
     { status: "stopped", answers_submitted: "t" },
   ],
-  // `done` BY CONSTRUCTION, both of them: the state is derived from `status === "done"` directly,
-  // so no other status reaches it. The second record is the published-but-never-sent article,
-  // which blogState deliberately refuses to call `published`.
-  internal_review: [{ status: "done" }, { status: "done", published: "t" }],
+  // `done` BY CONSTRUCTION: the state is derived from `status === "done"` directly, so no other
+  // status reaches it. It used to carry a SECOND record, the published-but-never-sent article,
+  // back when blogState refused to call that `published`. It does call it that now, so the
+  // record moved to the `published` list below and this one is a single case again.
+  internal_review: [{ status: "done" }],
   // A SEND STAMP IMPLIES A DONE STATUS, which is why every record below the delivery ladder here
   // carries `done`. admin_send_blog_to_client resolves through admin_done_topic (:180), so the
   // send that produced the stamp could not have been made from any other status, and nothing on
@@ -991,7 +1001,15 @@ const REACHABLE: Record<BlogState, GateRecord[]> = {
     { status: "done", sent_to_client: "t", changes_requested: 0, change_round_open: true },
   ],
   approved: [{ status: "done", sent_to_client: "t", client_approved: "t" }],
-  published: [{ status: "done", sent_to_client: "t", client_approved: "t", published: "t" }],
+  // TWO RECORDS, and the second is the whole point of the state now. The first is the article
+  // that went the full distance: sent, approved, then pushed. The second is a CMS push made from
+  // internal review or from a failed blog, which Post to CMS offers and which therefore carries
+  // no send stamp and no approval. Both benches are empty, which is the rule the operator asked
+  // for: once it is in the CMS there is nothing further to do to it here.
+  published: [
+    { status: "done", sent_to_client: "t", client_approved: "t", published: "t" },
+    { status: "done", published: "t" },
+  ],
   // TWO RECORDS, split by the fact the promote door turns on. The scored one is the ordinary
   // failure (a loop that stalled below 95 keeps its best draft's score on the wire) and is what
   // exercises the promote act's accepted path. The scoreless one is the crash or preflight
@@ -1213,6 +1231,78 @@ test("clientCanSee: the client never sees the team's half", () => {
   ];
   for (const state of ALL_STATES) {
     assert.equal(clientCanSee(state), visible.includes(state), state);
+  }
+});
+
+/**
+ * THE ONE PLACE THE ADMIN AND CLIENT VOCABULARIES GENUINELY DISAGREE, pinned from both sides.
+ *
+ * `published` means "it is in the CMS" to the team and "live on your site" to the client, and
+ * Post to CMS is offered from internal review and from failed, so the two readings come apart
+ * on any push made before a send. blogState answers the team; clientFacingState answers the
+ * client by recomputing without the push.
+ *
+ * THIS IS A RE-CLOSED HOLE AND NOT A NEW RULE. The guard used to live inside blogState as a
+ * `&& facts.sent_to_client` conjunct, which closed it for the client by making the admin's own
+ * tag wrong: an operator who pushed saw no change at all. Before that conjunct existed the
+ * portal served internal drafts to clients as their published article. Neither half is
+ * hypothetical, so both are asserted here rather than one being left to a comment.
+ */
+test("a CMS push reaches the team's tag and never the client's article", () => {
+  const pushedNeverSent: BlogStateFacts = { status: "done", published: "t" };
+  assert.equal(blogState(pushedNeverSent), "published", "the operator's own act is on the row");
+  assert.equal(
+    clientFacingState(pushedNeverSent),
+    "internal_review",
+    "and the client sees a draft that is still with the team",
+  );
+  assert.equal(
+    clientCanSee(clientFacingState(pushedNeverSent)),
+    false,
+    "which is not theirs to see at all",
+  );
+
+  // A push on a FAILED blog goes through the promote door first, so its status reads done by the
+  // time published_at is stamped. The scoreless-failure shape is asserted anyway: the recompute
+  // must return the article's real state whatever that is, never a fixed fallback.
+  assert.equal(
+    clientFacingState({ status: "failed", published: "t" }),
+    "failed",
+    "the recompute returns the real state, not a hardcoded internal_review",
+  );
+
+  // A client who answered and is standing on the page keeps their state through a push. The
+  // recompute can only ever REMOVE `published`, so it cannot take a row out from under them.
+  assert.equal(
+    clientFacingState({ status: "needs_review", answers_submitted: "t", published: "t" }),
+    "answers_submitted",
+    "a push does not evict the client who just answered",
+  );
+
+  // THE FULL DISTANCE, where the two answers agree and must: sent, approved, then pushed.
+  const released: BlogStateFacts = {
+    status: "done",
+    sent_to_client: "t",
+    client_approved: "t",
+    published: "t",
+  };
+  assert.equal(blogState(released), "published");
+  assert.equal(clientFacingState(released), "published", "a real release reads published to both");
+
+  // Nothing else moves. clientFacingState is blogState everywhere `published` is not the answer,
+  // so a bug that widened it beyond the push would show up here rather than in the portal.
+  const untouched: BlogStateFacts[] = [
+    { status: "done" },
+    { status: "done", sent_to_client: "t" },
+    { status: "done", sent_to_client: "t", change_round_open: true },
+    { status: "done", sent_to_client: "t", client_approved: "t" },
+    { status: "needs_review" },
+    { status: "failed" },
+    { status: "stopped" },
+    { status: "running" },
+  ];
+  for (const facts of untouched) {
+    assert.equal(clientFacingState(facts), blogState(facts), JSON.stringify(facts));
   }
 });
 

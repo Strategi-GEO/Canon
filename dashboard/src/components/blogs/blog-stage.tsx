@@ -834,6 +834,22 @@ function StageBody({
               topic={blog.topic}
               status={blog.status}
               score={blog.score ?? null}
+              onPublished={() => {
+                // THE PUSH MOVES THE STATE NOW, so it has to move this page the way a send
+                // does. `published` used to require a send stamp as well, which meant a push
+                // changed no state and needed no refresh; it is the whole state on its own
+                // today, so without this the operator posts, reads the same tag and the same
+                // buttons, and posts again.
+                //
+                // RE-READ RATHER THAN A LOCAL FLIP, and that is the difference from onSent
+                // above. The send POST answers with the review state it produced, so that
+                // callback can spread a real record; the publish POST answers with the CMS's
+                // own shape (post id, slug, draft status) and carries no published_at at all.
+                // Synthesising a timestamp here would put this browser's clock on the record
+                // and hand PublishedChip a stamp the database never wrote.
+                void loadReview();
+                onChanged();
+              }}
             />
           ) : null}
           {/* THE STAMP IS A FACT, NOT A CONTROL, so it survives the gating that removes the
