@@ -509,9 +509,12 @@ Honest list, verified against the code as of 2026-07-16:
   `config_check.py` verifies
   the transport resolves, the options the SDK gets are the intended ones, and every field
   name still exists on the installed SDK; it cannot verify the credentials work.
-- **One-client-at-a-time is asserted, not proven over HTTP.** `CLIENT_LOCK` wraps the
-  whole batch in `runner.run_batch`, so interleaving is structurally impossible in one
-  process, but the proof file records that a two-client HTTP run was out of scope.
+- **The queue is five BLOGS, not one session, and brands DO interleave.** `TOPIC_SEMAPHORE`
+  in `runner.py` is the single gate every blog session passes: a Create-tab batch, a retry,
+  an answer-driven revise and a repurpose each take one slot, so two brands can be writing at
+  once as long as five blogs are. `tests/queue_check.py` proves the cap, the mixed doors and
+  the no-batch-barrier claim in-process. The older one-client-at-a-time note in
+  `tests/concurrency-proof.md` describes the repo-wide lock this replaced.
 - **The output endpoint serves exactly five filenames** (`blog.md`, `eval.md`,
   `dossier.md`, `status.jsonl`, `links-verified.txt`). Anything else, including the
   `NEEDS_REVIEW` marker file, is a 404; the marker's information reaches the UI through

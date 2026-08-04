@@ -240,24 +240,29 @@ test("adminActions: the full policy, state by state", () => {
     // three controls the database refuses. A ROW VALUE IS ALL THIS TEST CHECKS: it went green on
     // both of those, so the test that actually governs this row is the lower-layer one below.
     answers_submitted: ["answer", "edit", "comments", "send"],
-    // Includes publish: the operator may post to the CMS directly from internal review, before
-    // the client is ever involved. The backend still refuses anything but status `done`, which
-    // internal_review is, so the push carries the latest committed bytes.
+    // One of exactly TWO states carrying `send` (the other is failed): this is where the
+    // operator decides the client should see the article. Publish sits beside it because the
+    // operator may post to the CMS directly, before the client is ever involved.
     internal_review: ["edit", "comments", "send", "publish"],
-    // Empty again: the reply verb is removed from the product, so while the client reads,
-    // this side waits. Every act that touches the bytes is absent.
-    client_review: [],
-    changes_requested: ["edit", "comments", "send"],
+    // Publish ONLY: every act that touches the bytes stays absent while the client reads, and
+    // there is no send because the article has already been sent. Posting to the CMS is the
+    // operator's call at any point and alters nothing the client is reading.
+    client_review: ["publish"],
+    // NO SEND. Once an article is with the client it stays with them: the portal serves the
+    // latest committed bytes in this state, so resolving a comment updates what they read
+    // without a second delivery, and there is no round to re-close.
+    changes_requested: ["edit", "comments", "publish"],
     // The approved lock covers the bytes; publish is the one act that changes nothing the
     // client approved.
     approved: ["publish"],
-    published: ["publish"],
-    // The full admin-review bench with the send verb swapped for promote: a failed draft is
-    // edited and Claude-polished exactly like a done one (the engine's _require_reviewable
-    // accepts done|failed on the three editing routes), then shipped through the promote
-    // door, where the sub-95 decision is recorded. Retrying stays a RUN, reached by link,
-    // not a verb here.
-    failed: ["edit", "comments", "promote"],
+    // TERMINAL AND EMPTY: the article is live in the CMS and there is nothing left to offer.
+    published: [],
+    // The admin-review bench plus BOTH ship doors: a failed draft the operator has read and
+    // likes goes to the client (`promote`) or to the CMS (`publish`) on their own authority,
+    // without waiting for a rerun to reach 95. Both append the same operator-authority `done`
+    // verdict, so the trail always reads "failed at 87, then a person shipped it". Retrying
+    // stays a RUN, reached by link, not a verb here.
+    failed: ["edit", "comments", "promote", "publish"],
     stopped: [],
     unknown: [],
   };
@@ -298,22 +303,64 @@ test("an approved article is locked for BOTH sides", () => {
     assert.equal(clientCan(state, "suggest"), false, `${state}: client must not suggest`);
     assert.equal(clientCan(state, "approve"), false, `${state}: nothing left to approve`);
   }
-  // Posting is the one act left, because it changes nothing about the article.
+  // Posting is the one act left on approved, because it changes nothing about the article.
   assert.equal(adminCan("approved", "publish"), true);
+  // Published is terminal and offers NOTHING, publish included: the article is live in the
+  // CMS and a published post is administered there, not from this bench.
+  assert.deepEqual([...adminActions("published")], []);
 });
 
-test("the admin cannot touch an article the client is reading", () => {
-  // client_review pins the client to sent_version_id. An edit here changes the article underneath
-  // someone mid-review, so every door that writes a version is shut until they act.
-  //
-  for (const action of ["edit", "comments", "send", "publish"] as AdminAction[]) {
+test("the admin cannot touch the BYTES of an article the client is reading", () => {
+  // client_review pins the client to sent_version_id, so every door that writes a version is
+  // shut until they act. `publish` is deliberately NOT in this list: posting to the CMS writes
+  // no version and moves nothing under the reader, and the operator may do it at any point.
+  for (const action of ["edit", "comments", "send"] as AdminAction[]) {
     assert.equal(
       adminCan("client_review", action),
       false,
       `client_review: "${action}" would move the article out from under the client mid-review`,
     );
   }
-  assert.deepEqual([...adminActions("client_review")], []);
+  assert.deepEqual([...adminActions("client_review")], ["publish"]);
+});
+
+test("send lives in exactly two states, and a sent article stays with the client", () => {
+  // The operator's rule: `send` is the act of handing the article over, so it belongs where
+  // that decision is made (internal_review) and where a sub-95 draft is shipped on the
+  // operator's authority (failed, as `promote`). Once an article is with the client there is
+  // no re-send: changes_requested resolves comments against bytes the client already reads.
+  const withSend = ALL_STATES.filter((state) => adminCan(state, "send"));
+  assert.deepEqual(withSend, ["answers_submitted", "internal_review"]);
+  assert.equal(adminCan("changes_requested", "send"), false, "no re-send once it is with them");
+  assert.equal(adminCan("client_review", "send"), false, "already sent");
+  // failed ships through `promote`, the send door that records the sub-95 decision.
+  assert.equal(adminCan("failed", "promote"), true);
+});
+
+test("posting to the CMS is available wherever the operator may decide to", () => {
+  // The operator's rule: internal review, with client, changes requested, approved and failed.
+  // A failed blog is promoted first by the engine (server/cms/routes.py _promote_if_failed),
+  // so the CMS gate still only ever sees the literal `done`.
+  for (const state of [
+    "internal_review",
+    "client_review",
+    "changes_requested",
+    "approved",
+    "failed",
+  ] as BlogState[]) {
+    assert.equal(adminCan(state, "publish"), true, `${state}: publish must be offered`);
+  }
+  // And nowhere a push would be meaningless or unsafe: mid-run, held for answers, already
+  // live, or with no settled draft at all.
+  for (const state of [
+    "generating",
+    "has_questions",
+    "published",
+    "stopped",
+    "unknown",
+  ] as BlogState[]) {
+    assert.equal(adminCan(state, "publish"), false, `${state}: publish must not be offered`);
+  }
 });
 
 test("nobody edits an article while a run owns it", () => {
@@ -373,7 +420,7 @@ test("answering is the only door when questions are open", () => {
  * each flagged it. Forcing a per-state answer to "can a human get out of here" makes the next
  * dead end a compile error rather than a support ticket.
  */
-const EXIT_OWNER: Record<BlogState, "run" | "client" | "admin"> = {
+const EXIT_OWNER: Record<BlogState, "run" | "client" | "admin" | "terminal"> = {
   // A run is in flight and its terminal line is the exit. Nothing on the page moves this.
   generating: "run",
   // Either side may answer, and the client's own bench is what the portal renders, so the
@@ -400,8 +447,14 @@ const EXIT_OWNER: Record<BlogState, "run" | "client" | "admin"> = {
   changes_requested: "admin",
   // Locked, and publish is the one remaining act.
   approved: "admin",
-  // Terminal, and re-publishing is still the admin's act rather than anyone else's.
-  published: "admin",
+  // TERMINAL IN THE STRICT SENSE: there is no exit because there is nowhere left to go. The
+  // article is live on the client's site, and by the operator's rule this bench offers nothing
+  // at all, re-publishing included. An empty bench is honest here rather than a stall, which is
+  // exactly what the "terminal" classification exists to say: the liveness test below asserts a
+  // non-empty bench only where a human act is genuinely owed, and nothing is owed on an article
+  // that already shipped. A push that genuinely broke is re-driven from the CMS, which is where
+  // a published post is administered.
+  published: "terminal",
   // Two exits now, and the admin owns the one on the bench: promotion, the operator shipping a
   // sub-95 draft they have read on their own authority. Generating the topic again remains the
   // other exit and remains a RUN (the stage links to the Create tab with the row pre-ticked),
@@ -435,16 +488,21 @@ test("no state that only an admin act can leave is left with an empty admin benc
   // THE SHARPER CLAIM, stated separately because a non-empty bench is not enough on its own. A
   // state whose pinning fact is cleared by a send specifically needs SEND on the bench, and an
   // article granted `edit` and `comments` alone would pass the loop above while still having no
-  // way out. These are exactly the three pre-delivery states, and a send is what ends each of
-  // them: the submit stamp is outranked by sent_to_client, the round is closed by mark_sent, and
-  // internal_review is left by the first send.
+  // way out. These are the two PRE-DELIVERY states, and a send is what ends each of them: the
+  // submit stamp is outranked by sent_to_client, and internal_review is left by the first send.
+  //
+  // `changes_requested` IS NOT ONE OF THEM ANY MORE, and that is the re-send leaving the product
+  // rather than an omission. A sent article stays with the client: the portal serves the latest
+  // committed bytes in that state, so a resolved comment reaches them without a second delivery,
+  // and what leaves the state is their approval. The bench there is not empty (edit, comments,
+  // publish), so the loop above still holds it to having somewhere to go.
   //
   // STILL NOT ENOUGH ON ITS OWN EITHER, and the next test is the rest of it. This loop asks only
   // whether the send is GRANTED, which is a question about this table, and `answers_submitted`
   // grants one in a situation where migration 009 refuses it outright. A granted act the layer
   // below rejects is not an exit, so the send belonging on the bench and the send being usable
   // are two claims, and only the first one is checked here.
-  for (const state of ["answers_submitted", "internal_review", "changes_requested"] as BlogState[]) {
+  for (const state of ["answers_submitted", "internal_review"] as BlogState[]) {
     assert.equal(
       adminCan(state, "send"),
       true,
@@ -654,11 +712,17 @@ const SITUATIONS: Situation[] = [
     moves: "comments",
   },
   {
-    what: "every suggestion resolved, the round still open, the fix owed a delivery",
+    // THE RE-SEND IS GONE FROM THE PRODUCT, so the act that moves this article is the last
+    // resolve, not a delivery. Once an article is with the client it stays with them: the
+    // portal serves the latest committed bytes in this state, so resolving the final comment
+    // IS the delivery, and the client reads the fix without a second send. What leaves the
+    // state is their approval, which is theirs to give, and `publish` remains on the bench as
+    // the operator's own act on a record they may post at any time.
+    what: "every suggestion resolved, the round still open, the client reads the fix",
     facts: { status: "done", sent_to_client: "t", changes_requested: 0, change_round_open: true },
     form: "absent",
     state: "changes_requested",
-    moves: "send",
+    moves: "publish",
   },
   {
     what: "the client approved these exact bytes",
@@ -668,11 +732,16 @@ const SITUATIONS: Situation[] = [
     moves: "publish",
   },
   {
-    what: "already in the CMS, where a re-push updates the same post",
+    // TERMINAL: nothing on this page moves a published article, and nothing needs to. It is
+    // live on the client's site, so the bench is empty by design rather than stalled, and
+    // `moves: "run"` is how a situation says "no bench act owns this record" (the same value
+    // the mid-run and stopped situations carry). The assertion that applies here is the
+    // stronger one: not a single control renders that the record would then refuse.
+    what: "already live in the CMS, where nothing on this bench applies",
     facts: { status: "done", sent_to_client: "t", client_approved: "t", published: "t" },
     form: "absent",
     state: "published",
-    moves: "publish",
+    moves: "run",
   },
   {
     // The operator's own exit from a failure. The loop stalled below 95 with nothing left to
@@ -975,10 +1044,6 @@ const DECLARED_REFUSALS: Record<string, string> = {
     "failed and stopped say the record carries no passing draft and that generating the topic " +
     "again is what produces one. The operator is told what clears it rather than pressing a " +
     "control that fails",
-  "changes_requested:send":
-    "send-to-client.tsx replaces the button entirely with the count of suggestions still to " +
-    "resolve, mirroring the open-suggestion WHERE clause at 009:190, so nothing is offered to " +
-    "press while the round is mid flight",
 };
 
 test("no admin bench offers an act the layers under it refuse", () => {
@@ -1233,8 +1298,10 @@ test("adminFailedTag: 90 to 94 is Below bar, below 90 is Failed", () => {
   }
   assert.equal(adminFailedTag(null), adminTag("failed"), "no score reads as the plain failure");
   // The split is a LABEL change, not a new state: the failed bench is untouched, so both bands
-  // keep edit, comments and promote, and the retry-by-roadmap exit.
-  assert.deepEqual([...adminActions("failed")], ["edit", "comments", "promote"]);
+  // keep the full bench (edit, comments, and BOTH ship doors) and the retry-by-roadmap exit.
+  // A Below bar draft is therefore shippable to the client or straight to the CMS on the
+  // operator's authority, exactly as a plain failure is.
+  assert.deepEqual([...adminActions("failed")], ["edit", "comments", "promote", "publish"]);
 });
 
 test("both tag maps are total, and no client label leaks internal vocabulary", () => {

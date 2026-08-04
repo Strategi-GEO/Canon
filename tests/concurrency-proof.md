@@ -98,6 +98,12 @@ refusal is unchanged and still fires for any client in that state.
 
 ## One-client-at-a-time
 
+**SUPERSEDED, AND LEFT STANDING BECAUSE THIS FILE IS A RECORD.** The engine no longer
+serialises whole batches: `CLIENT_LOCK` is gone and every blog takes one slot of five from
+`TOPIC_SEMAPHORE`, whichever door it came in by, so two clients interleaving is now the
+DESIGNED behaviour rather than the thing this section says is impossible. `tests/queue_check.py`
+is the live proof. The paragraph below is what was true when this run was recorded.
+
 Not directly measured here: with a single client submitted, CLIENT_LOCK never
 contends. The lock wraps the whole gather in runner.run_batch, so a second
 client's batch cannot interleave; proving that over HTTP needs a two-client

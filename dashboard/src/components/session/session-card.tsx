@@ -28,7 +28,7 @@ import { StopSessionDialog } from "@/components/session/stop-session-dialog";
 import { ApiError } from "@/lib/api";
 import { formatElapsed } from "@/lib/format";
 import { brandHref, useOrgs } from "@/lib/orgs-context";
-import { clockOf, hasEnded, type Session } from "@/lib/sessions";
+import { ENGINE_SLOTS, clockOf, hasEnded, type Session } from "@/lib/sessions";
 import { cn } from "@/lib/utils";
 import type { RoadmapState } from "@/lib/use-roadmap";
 
@@ -347,7 +347,7 @@ export function SessionCard({
 
 /**
  * A session that has been accepted and has NOT started, because another brand's session holds
- * the engine's CLIENT_LOCK.
+ * the engine's queue.
  *
  * This card exists to answer one question the brand-scoped view otherwise cannot: "why is
  * nothing happening?". The answer is never about this brand, it is about another one, so the
@@ -394,7 +394,7 @@ function QueuedSession({
           region carrying it would recite the clock forever instead of announcing the one
           change that matters, which is this session starting. */}
       <p className="sr-only" aria-live="polite">
-        {`Session queued, ${run.topicCount} ${run.topicCount === 1 ? "blog" : "blogs"}. Nothing in it has started. The engine runs one session at a time across every brand.`}
+        {`Session queued, ${run.topicCount} ${run.topicCount === 1 ? "blog" : "blogs"}. Nothing in it has started. The engine runs ${ENGINE_SLOTS} blogs at a time across every brand, and this session's first blog starts on the next free slot.`}
       </p>
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-(--card-spacing)">
@@ -476,7 +476,15 @@ function AlsoWaiting({ others }: { others: Session[] }) {
   );
 }
 
-/** What sits in front of this session, and therefore when it starts. */
+/**
+ * What sits in front of this session, and therefore when it starts.
+ *
+ * IT STARTS ON A FREED SLOT, NEVER ON A FINISHED SESSION, and the three sentences below say so
+ * because the engine changed under them. The queue holds ENGINE_SLOTS BLOGS, not one session:
+ * a run ahead of this one that is down to its last blog is holding one slot and leaving four,
+ * so "this session starts when they finish" was both wrong and pessimistic. What is genuinely
+ * ahead is other blogs, and the honest promise is the next free slot.
+ */
 function Ahead({
   runningName,
   queuedAhead,
@@ -488,7 +496,7 @@ function Ahead({
     return (
       <>
         <span className="text-foreground">{runningName}</span> is running now, and this session
-        is next.
+        takes the next free slot.
       </>
     );
   }
@@ -499,7 +507,7 @@ function Ahead({
         <span className="text-foreground">{runningName}</span> is running now, and{" "}
         <span className="machine text-foreground">{queuedAhead}</span>{" "}
         {queuedAhead === 1 ? "other session was" : "other sessions were"} submitted before this
-        one. This session starts when they finish.
+        one. Their blogs take free slots first.
       </>
     );
   }
@@ -508,8 +516,8 @@ function Ahead({
     return (
       <>
         <span className="machine text-foreground">{queuedAhead}</span>{" "}
-        {queuedAhead === 1 ? "session was" : "sessions were"} submitted before this one. This
-        session starts when {queuedAhead === 1 ? "it finishes" : "they finish"}.
+        {queuedAhead === 1 ? "session was" : "sessions were"} submitted before this one. Its blogs
+        take free slots first.
       </>
     );
   }

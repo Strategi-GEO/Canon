@@ -18,7 +18,7 @@ type LiveRun = {
   runId: string;
   seeds: Seed[];
   /**
-   * Where the ENGINE says this run sits against CLIENT_LOCK, kept in step with the run list
+   * Where the ENGINE says this run sits against the queue, kept in step with the run list
    * below. It starts "queued" because register_run does: a run is queued from the instant of
    * POST until it takes the lock, and assuming otherwise is how this view came to announce a
    * run in progress over a session that had not started.
@@ -113,7 +113,7 @@ export function CreateForBrand({
    *
    * This used to fetch /api/runs once on mount, which was enough while the only question was
    * "is this brand mid run" and is not enough now that the answer distinguishes queued from
-   * running. A run takes CLIENT_LOCK with no SSE frame on any channel this browser subscribes
+   * running. A run takes its first slot with no SSE frame on any channel this browser subscribes
    * to, so a one shot read would leave a session that started ten minutes ago still reading
    * "queued" until the operator refreshed. The same poll feeds the topbar and the Overview
    * card, so those three surfaces cannot disagree about the queue.
@@ -254,7 +254,7 @@ export function CreateForBrand({
    * The engine's own answer overrides whatever this view assumed. Adjusting state during
    * render is React's answer to external state invalidating local state, and it settles in one
    * pass: these three fields only change when the engine's record changes, which for a given
-   * run happens exactly once, when it takes CLIENT_LOCK.
+   * run happens exactly once, when it takes its first slot.
    */
   if (run !== null && record !== null) {
     const state = runStateOf(record);
@@ -397,7 +397,7 @@ export function CreateForBrand({
       onWatch={() => setWatching(true)}
       onStarted={(runId, seeds, sessionInstructions) => {
         // QUEUED, not running, and that is not a guess: runner.py's register_run marks every
-        // run queued at the instant the POST lands, and only CLIENT_LOCK promotes it. On an
+        // run queued at the instant the POST lands, and only a free slot promotes it. On an
         // idle engine that is over in milliseconds and the next poll says so. Assuming the
         // happy case here instead would put "Run in progress" over a session that may sit
         // behind another brand for twenty minutes.

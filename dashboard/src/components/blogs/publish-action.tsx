@@ -40,11 +40,22 @@ export function PublishAction({
   topicSlug,
   topic,
   status,
+  score,
 }: {
   brandSlug: string;
   topicSlug: string;
   topic: string;
   status: BlogStatus;
+  /**
+   * The evaluator's number, and the publish door genuinely reads it now, which is why this
+   * prop exists at all. `publish_promotes_scored_draft` decides on it: a FAILED blog reaches
+   * the CMS by being promoted first (server/cms/routes.py _promote_if_failed), and the one
+   * thing that promotion cannot waive is a draft no evaluator ever scored. Passing the status
+   * alone would answer that clause by ABSENCE and grey the button on every failed blog,
+   * including the scored ones this door exists for. blockedReason's own note spells out why a
+   * partial record is only ever safe when every clause on the door reads what it carries.
+   */
+  score: number | null;
 }) {
   const [open, setOpen] = React.useState(false);
   const [posting, setPosting] = React.useState(false);
@@ -63,7 +74,7 @@ export function PublishAction({
     return null;
   }
 
-  const blocked = blockedReason(status);
+  const blocked = blockedReason(status, score);
 
   if (blocked) {
     return (
@@ -193,23 +204,32 @@ export function PublishAction({
  * admits exactly one status and refuses every other, including ones no enum here has heard of yet.
  * So the decision is read off the clause and the refusal reported is the layer's own.
  *
- * PASSING A RECORD BUILT FROM THE STATUS ALONE IS SAFE HERE, AND IT IS SAFE FOR A REASON THAT
- * DOES NOT TRAVEL. Every other field of BlogStateFacts is optional and absent reads as false, so a
- * partial record silently answers `pass` for every clause reading a fact it does not carry. The
- * publish door holds exactly one clause and that clause reads `status`, which is the whole of what
- * is passed, so nothing is being answered by absence. Do NOT copy this shape to a gate that reads
- * more: the send door reads the approval and the open-suggestion count as well, and
- * send-to-client.tsx builds it a record carrying all three for precisely this reason. Should a
- * clause reading anything but the status ever join the publish door, this call site owes it that
- * fact rather than an omission.
+ * THE RECORD CARRIES EVERY FACT THE DOOR READS, AND IT NOW READS TWO. This note used to say the
+ * status alone was safe because the publish door held exactly one clause and that clause read the
+ * status. That stopped being true the moment a failed blog became publishable: the door gained
+ * `publish_promotes_scored_draft`, which reads the SCORE, because the promotion that lets a
+ * sub-95 draft reach the CMS (server/cms/routes.py _promote_if_failed) cannot waive a draft no
+ * evaluator ever scored.
+ *
+ * THE OLD SHAPE WOULD HAVE FAILED SILENTLY AND IN THE WORST DIRECTION. Every field of a record is
+ * optional and an absent one reads as absent, so a record built from the status alone answers the
+ * score clause by OMISSION: every failed blog would have been greyed with "no evaluator-scored
+ * draft", including the scored ones the whole door exists for, and the sentence would have been
+ * the layer's own words describing a fact the caller simply declined to pass. That is why the
+ * previous note ended by demanding this exact fix of whoever added such a clause.
+ *
+ * SO THE RULE, RESTATED AS A RULE RATHER THAN AS A PERMISSION: a call site owes this gate every
+ * fact its clauses read, and a partial record is only ever safe by coincidence. The send door
+ * reads the approval and the open-suggestion count, and send-to-client.tsx builds it a record
+ * carrying all three for precisely this reason.
  */
-function blockedReason(status: BlogStatus): string | null {
+function blockedReason(status: BlogStatus, score: number | null): string | null {
   // BOUND AND NARROWED RATHER THAN READ STRAIGHT OFF THE CALL. GateVerdict is a discriminated
   // union and only its refusing arm carries `blocking`, so the allowed arm has to be answered
   // before the clause can be reached. That shape is deliberate on the contract's side: it makes
   // "the gate said yes" and "the gate said no and here is which clause" two different values a
   // caller cannot confuse, and the cost here is one branch that reads as the sentence it is.
-  const verdict = adminGateVerdict("publish", { record: { status }, form: "unread" });
+  const verdict = adminGateVerdict("publish", { record: { status, score }, form: "unread" });
   if (verdict.allowed) {
     return null;
   }

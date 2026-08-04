@@ -914,7 +914,7 @@ def sent_state(client_slug, topic_slug):
     }
 
 
-def promote_to_done(client_slug, topic_slug, score, email):
+def promote_to_done(client_slug, topic_slug, score, email, act="sent it to the client"):
     """Operator promotion: re-verdict one FAILED topic as done, on the operator's authority.
 
     The loop's verdict stays on the trail: the evaluator scored this draft below the house 95
@@ -933,6 +933,12 @@ def promote_to_done(client_slug, topic_slug, score, email):
     score, and no live run holds the topic. A scored draft is gate-clean and link-clean by
     construction (gates and the link pass run BEFORE the eval), so the 95 bar is the only
     thing being waived.
+
+    `act` NAMES WHAT THE OPERATOR DID, in the trail line, because there are now TWO doors out
+    of a failed blog and the record must say which one was taken. The send route keeps the
+    default; the CMS route passes its own wording and performs no send, so a blog published
+    straight from failed does not get a trail line claiming a client received it. The verdict
+    itself is identical either way: this function only ever appends the `done` line.
     """
     # Scratch first, laid from the record, so the appended line lands after the record's own
     # high-water mark and commit_topic's (topic_id, line_no) keying reads it as genuinely new.
@@ -978,7 +984,7 @@ def promote_to_done(client_slug, topic_slug, score, email):
         # would otherwise fold to 0 and wedge the commit on the constraint.
         iter=max(summary["iterations"], 1), score=None, status="done",
         note=f"operator promotion: {email or 'an operator'} shipped this blog at "
-             f"score {score}, below the house 95 bar, and sent it to the client",
+             f"score {score}, below the house 95 bar, and {act}",
     )
 
     # allow_new_version=False: promotion ships the draft the record already holds, so stray

@@ -369,35 +369,42 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   // of an edit racing the pass about to rewrite the same bytes describes a moment this table
   // cannot be asked about. What makes `edit` safe in (a) is the DONE_TOPIC clause withholding it.
   answers_submitted: ["answer", "edit", "comments", "send"],
-  // The refining bench. This is the one state where the admin shapes the article freely, and
-  // the operator may POST TO THE CMS directly from here without waiting for client approval. The
-  // backend still refuses anything but status `done` (assert_publishable), and internal_review IS
-  // status `done`, so the push carries the latest committed bytes, which is exactly right here.
+  // The refining bench, and one of exactly TWO states carrying `send`: this is where the
+  // operator decides the client should see the article. `publish` sits beside it because the
+  // operator may post to the CMS directly from here without waiting for client approval.
   internal_review: ["edit", "comments", "send", "publish"],
-  // WAITING, and the emptiness is the feature. The client is reading the exact bytes pinned by
-  // sent_version_id, so an edit here changes the article underneath someone mid-review. Publish
-  // is deliberately withheld too: pushing to the CMS while the client is still reviewing would
-  // put the article live before they have approved it, which is the guardrail "the admin cannot
-  // touch an article the client is reading" enforces.
-  client_review: [],
-  // The client asked for something, so the admin answers it and sends again. `send` is listed
-  // and is still refused by the record while any suggestion is open: the button appears once
-  // the last one is resolved or dismissed, which is what makes it a queue rather than a trap.
-  changes_requested: ["edit", "comments", "send"],
+  // WAITING for everything that touches the bytes: the client is reading the exact version
+  // pinned by sent_version_id, so an edit here changes the article underneath someone
+  // mid-review. `publish` is the deliberate exception, by the operator's instruction: posting
+  // to the CMS is the operator's call at any point after the article is with the client, and
+  // the push alters nothing the client is reading. There is no `send` here because the
+  // article has ALREADY been sent; it stays with the client until they act.
+  client_review: ["publish"],
+  // The client asked for something, so the admin resolves it. NO `send`: a re-send is not how
+  // this loop closes any more. Once an article is with the client it STAYS with them, reading
+  // the latest committed bytes continuously (the portal serves current bytes in this state,
+  // not the pinned send), so resolving a comment updates what they see without a second
+  // delivery. `publish` is available for the same reason it is in client_review.
+  changes_requested: ["edit", "comments", "publish"],
   // LOCKED for every act that changes the article, which is what the lock is for and all it is
   // for. `publish` is the one act that alters nothing the client approved.
   approved: ["publish"],
-  // Still the one door: pushing again updates the same CMS post rather than creating a
-  // second one, so a re-push is how a failed or partial push is retried.
-  published: ["publish"],
-  // The full admin-review bench, one verb swapped: a failed draft is edited, commented and
-  // Claude-polished exactly like a done one, and then PROMOTED rather than sent, because the
-  // sub-95 ship is the operator's own decision and the promote door is where that decision is
-  // recorded. The engine widened with this bench (_require_reviewable accepts done|failed on
-  // the three editing routes; the send keeps demanding done). Retrying the topic is
-  // deliberately NOT a verb here, because a retry is a RUN: the roadmap keeps failed rows red
-  // and selectable, and the stage links there with the row pre-ticked.
-  failed: ["edit", "comments", "promote"],
+  // TERMINAL AND EMPTY. The article is live in the CMS and the conversation about getting it
+  // there is over, so no verb is offered: not edit (the bytes are published), not send (the
+  // client has it), and not publish again. A re-push after an edit is not reachable because
+  // the edit is not either; a genuinely broken push is re-driven from the CMS itself, which is
+  // where a published post is administered.
+  published: [],
+  // The full admin-review bench plus BOTH exits, because a failed draft the operator has read
+  // and likes is theirs to ship either way: `promote` sends it to the client on their own
+  // authority, and `publish` posts it to the CMS. Neither waits for a rerun to reach 95. A
+  // failed draft is edited and Claude-polished exactly like a done one (the engine's
+  // _require_reviewable accepts done|failed on the three editing routes). Both ship doors
+  // append the same operator-authority `done` verdict to the trail, so the record always reads
+  // "failed at 87, then a person shipped it", never a silent bypass of the bar. Retrying the
+  // topic is deliberately NOT a verb here, because a retry is a RUN: the roadmap keeps failed
+  // rows selectable, and the stage links there with the row pre-ticked.
+  failed: ["edit", "comments", "promote", "publish"],
   // Never reaches a client and carries no review loop: a stopped topic has no verdict at all
   // (no score describes it), so there is nothing to promote and its only exit is generating
   // again.

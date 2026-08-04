@@ -189,6 +189,7 @@ export type GateSourceId =
   | "require_not_with_client"
   | "api_answers"
   | "api_revise_answered"
+  | "answers_refuse_topic_in_flight"
   | "api_save_blog_content"
   | "api_add_blog_comment"
   | "api_resolve_blog_comment"
@@ -197,6 +198,7 @@ export type GateSourceId =
   | "api_promote_blog"
   | "api_publish_blog"
   | "assert_publishable"
+  | "_promote_if_failed"
   | "cms_record_blog"
   | "edit_refuse_if_approved"
   | "edit_refuse_live_run"
@@ -620,7 +622,7 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/app.py",
     symbol: "api_answers",
     kind: "python",
-    fingerprint: "22b454eb2ce45f04",
+    fingerprint: "fee3065ef64f50d5",
     gates: ["answer"],
     what:
       "The submit door behind the `answer` verb. It 404s when no form exists and 409s a stale " +
@@ -633,13 +635,6 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
         why:
           "Identity. This is the one write a non-admin may make, and the role is not a fact about " +
           "the article.",
-      },
-      {
-        id: "answers_live_run",
-        raises: "answer once it finishes so the revise is not",
-        why:
-          "Subsumed: a live run derives `generating`, whose bench is empty, and `live` is on the " +
-          "wire for exactly that reason.",
       },
       {
         id: "answers_unanswered_questions",
@@ -662,7 +657,7 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/app.py",
     symbol: "api_revise_answered",
     kind: "python",
-    fingerprint: "ac872ad086d322c0",
+    fingerprint: "65a6dc9cf340cc9a",
     gates: ["answer"],
     what:
       "The rerun door behind the `answer` verb. It 404s when no form exists, 409s a stale one, " +
@@ -670,17 +665,34 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
       "session.",
     exemptions: [
       {
-        id: "revise_live_run",
-        raises: "rerun once it finishes so the revise is",
-        why: "Subsumed by `generating`, as api_answers' own live-run refusal is.",
-      },
-      {
         id: "revise_claimed_elsewhere",
         raises: "another engine already claimed this rerun",
         why:
           "A fact about ANOTHER machine's engine, held in the record for seconds and released " +
           "when that dispatch settles. Nothing on this page's wire reports it, and a control " +
           "withheld on it would flicker rather than inform.",
+      },
+    ],
+  },
+  answers_refuse_topic_in_flight: {
+    file: "server/app.py",
+    symbol: "_refuse_if_topic_in_flight",
+    kind: "python",
+    fingerprint: "5e994182fdc98029",
+    gates: ["answer"],
+    what:
+      "The shared refusal both answer-verb routes make: this TOPIC is already in a live run, so " +
+      "a revise would open a second session against the draft that run is writing.",
+    exemptions: [
+      {
+        id: "answers_topic_in_flight",
+        raises: "is already in a live run for",
+        why:
+          "Subsumed: a topic in a live run derives `generating`, whose bench is empty, and `live` " +
+          "is on the wire for exactly that reason. It is listed as ONE source rather than twice " +
+          "because both routes now call the same helper, which is the point of the helper: the " +
+          "two used to refuse on the BRAND having any live run, and each carried its own " +
+          "sentence saying so.",
       },
     ],
   },
@@ -870,11 +882,40 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
   // the gate module it calls was. That is the wrong way round to leave a surface: assert_publishable
   // decides, but this route is what an operator's press actually reaches, and it adds five refusals
   // of its own on top of the one it delegates. None of them was fingerprinted.
+  // THE PROMOTION THE PUBLISH ROUTE PERFORMS BEFORE THE GATE, and the reason a failed blog can
+  // reach the CMS at all without assert_publishable being widened by a syllable. It is its own
+  // source rather than part of the route because it carries a real refusal of its own, and a
+  // refusal folded into a neighbour's fingerprint is a refusal nothing checks.
+  _promote_if_failed: {
+    file: "server/cms/routes.py",
+    symbol: "_promote_if_failed",
+    kind: "python",
+    fingerprint: "77c2c0b00a235d73",
+    gates: ["publish"],
+    what:
+      "Promotes a FAILED topic to done on the operator's authority before the CMS gate sees " +
+      "it, appending the same operator-named `done` verdict the promote-and-send door appends " +
+      "and performing no send. A no-op for every other status. It refuses a failed topic with " +
+      "no evaluator-scored draft, which is the one thing a sub-95 ship cannot waive.",
+    exemptions: [
+      {
+        id: "publish_promote_did_not_land",
+        raises: "raise HTTPException(status_code=409, detail=str(exc))",
+        why:
+          "blog_edit.EditError arriving one frame up, and the same pair PROMOTE_HAS_SCORED_DRAFT " +
+          "is exempt against on the send door: a status feed BEHIND the record (another engine " +
+          "ran this topic, so the appended line hits an ordinal the record already owns and the " +
+          "conflict clause swallows it) and a draft the machine MOVED after its last evaluator " +
+          "score. Both are facts about the status feed's line-level shape at one instant, not " +
+          "conditions this page's wire can express, so no clause could decide either.",
+      },
+    ],
+  },
   api_publish_blog: {
     file: "server/cms/routes.py",
     symbol: "api_publish_blog",
     kind: "python",
-    fingerprint: "3293efdea92e8231",
+    fingerprint: "e41dfb7cdf5450db",
     gates: ["publish"],
     what:
       "Pushes one shipped blog to the CMS as a draft, synchronously, because the operator is " +
@@ -1584,8 +1625,48 @@ const PUBLISH_TOPIC_IS_DONE: GateClause = {
   raises: "not done. Only a blog the engine shipped",
   refusal: "409 only a blog the engine shipped may reach the CMS",
   transient: false,
-  decide: ({ record }) => (record.status === "done" ? "pass" : "refuse"),
+  // THE GATE IS UNCHANGED AND STILL DEMANDS THE LITERAL "done". What changed is what reaches
+  // it: server/cms/routes.py _promote_if_failed runs FIRST and promotes a failed topic on the
+  // operator's authority, appending the same `done` verdict the promote-and-send door appends,
+  // so by the time this check runs the status really is done. That is why `failed` passes here
+  // rather than the gate having been widened, and it is why the promotion's own refusal is a
+  // separate clause below rather than a condition folded into this one.
+  //
+  // A SCORELESS FAILURE STILL REFUSES, through PUBLISH_PROMOTES_SCORED_DRAFT: the promotion
+  // cannot happen, so the status stays failed and this check refuses it exactly as before.
+  decide: ({ record }) =>
+    record.status === "done" || (record.status === "failed" && record.score != null)
+      ? "pass"
+      : "refuse",
   witness: { passes: CLEAN, refuses: withRecord({ status: "needs_review" }) },
+};
+
+/**
+ * THE PROMOTION A PUBLISH PERFORMS ON A FAILED BLOG, and the one thing that can refuse it.
+ *
+ * The operator may post a sub-95 draft they have read straight to the CMS, exactly as they may
+ * send one to the client. Both doors express that authority the same way: an appended `done`
+ * verdict naming them and the score. The one refusal is the one the send door already carries,
+ * for the same reason, so it is modelled here rather than left as an exemption: gates and the
+ * link pass run BEFORE the eval, so a scored committed draft is gate-clean and link-clean by
+ * construction, and the 95 bar is the ONLY thing being waived. A failed topic with no scored
+ * version (a crash, a preflight refusal) has nothing shippable in it at all.
+ */
+const PUBLISH_PROMOTES_SCORED_DRAFT: GateClause = {
+  id: "publish_promotes_scored_draft",
+  source: "_promote_if_failed",
+  line: 98,
+  condition: "if score is None:",
+  raises: "has no evaluator-scored draft, so there is nothing to",
+  refusal: "409 no evaluator-scored draft exists to publish",
+  transient: false,
+  // Only a FAILED record passes through the promotion at all; a done one skips it untouched.
+  decide: ({ record }) =>
+    record.status !== "failed" || record.score != null ? "pass" : "refuse",
+  witness: {
+    passes: withRecord({ status: "failed", score: 92 }),
+    refuses: withRecord({ status: "failed" }),
+  },
 };
 
 const FORM_EXISTS_FOR_ANSWERS: GateClause = {
@@ -1670,6 +1751,7 @@ export const ALL_GATE_CLAUSES: readonly GateClause[] = [
   RESOLVE_COMMENT_CAP,
   DISMISS_NOT_APPLYING_SQL,
   DISMISS_NOT_APPLYING_ENGINE,
+  PUBLISH_PROMOTES_SCORED_DRAFT,
   PUBLISH_TOPIC_IS_DONE,
   FORM_EXISTS_FOR_ANSWERS,
   FORM_NOT_STALE_FOR_ANSWERS,
@@ -1798,7 +1880,11 @@ export const ADMIN_GATE_DOORS: Record<AdminAction, readonly GateDoor[]> = {
     },
   ],
   publish: [
-    { id: "publish_to_cms", what: "push the article to the CMS", clauses: [PUBLISH_TOPIC_IS_DONE] },
+    {
+      id: "publish_to_cms",
+      what: "push the article to the CMS",
+      clauses: [PUBLISH_PROMOTES_SCORED_DRAFT, PUBLISH_TOPIC_IS_DONE],
+    },
   ],
 };
 

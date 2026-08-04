@@ -164,15 +164,19 @@ def release(topic_id) -> None:
     db.q("delete from portal_revise_claims where topic_id = %s", (topic_id,), fetch="none")
 
 
-async def sweep(dispatch, has_live_run) -> int:
+async def sweep(dispatch, topic_in_flight) -> int:
     """One pass: claim and dispatch every pending topic this engine may take.
 
     `dispatch(client_slug, topic_slug)` starts the revise and returns its asyncio.Task;
-    `has_live_run(client_slug)` is the same one-session-per-client answer the POST route
-    gives, and a topic behind a live run is simply left for a later sweep rather than
-    queued, so the sweep never stacks work behind a batch. Both arrive as callables
+    `topic_in_flight(client_slug, topic_slug)` is the same refusal the POST route makes, and a
+    topic already being written by a live run is left for a later sweep because a second session
+    against one draft is the one thing the queue cannot make safe. Both arrive as callables
     because they live in server/app.py, which imports this module: importing back would
     be a cycle.
+
+    IT USED TO SKIP ON ANY LIVE RUN FOR THE BRAND, "so the sweep never stacks work behind a
+    batch". Stacking is now exactly what it should do: the engine's queue is per blog, so a
+    dispatched revise takes the next free slot of five rather than waiting out a whole batch.
     """
     try:
         pending = await asyncio.to_thread(pending_topics)
@@ -182,7 +186,7 @@ async def sweep(dispatch, has_live_run) -> int:
 
     dispatched = 0
     for client_slug, topic_slug, topic_id in pending:
-        if has_live_run(client_slug):
+        if topic_in_flight(client_slug, topic_slug):
             continue
         try:
             claimed = await asyncio.to_thread(claim, topic_id, max_attempts=MAX_SWEEP_ATTEMPTS)
@@ -252,8 +256,8 @@ def _settle_sweep(topic_id, client_slug, topic_slug) -> None:
     _off_loop(_do)
 
 
-async def run_forever(dispatch, has_live_run) -> None:
+async def run_forever(dispatch, topic_in_flight) -> None:
     """The background loop app.py starts: sweep now, then every SWEEP_INTERVAL_S."""
     while True:
-        await sweep(dispatch, has_live_run)
+        await sweep(dispatch, topic_in_flight)
         await asyncio.sleep(SWEEP_INTERVAL_S)

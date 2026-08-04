@@ -45,7 +45,7 @@ const POOL = 4;
  *
  * This is a ONE SHOT read per brand rather than a poll. Nothing but the operator's own submit
  * writes an answers.json, and only a run they can already watch rewrites a questions.json, so
- * there is no transition here that arrives on its own the way a run taking CLIENT_LOCK does.
+ * there is no transition here that arrives on its own the way a run taking a queue slot does.
  * `reload` covers the two moments this can change under the page: the submit, and the revise
  * settling.
  *

@@ -19,7 +19,7 @@ const NO_SESSIONS: Session[] = [];
 export type LiveRun = {
   runId: string;
   /**
-   * Where this session sits against the engine's CLIENT_LOCK. "finished" and "stopped" are both
+   * Where this session sits against the engine's queue. "finished" and "stopped" are both
    * reachable here even though neither is a live session, because this outlives the session on
    * purpose: the card's closing summary is its payoff and must not vanish the instant the run
    * ends. That matters most on a stop, where the summary is the reassurance that the finished
@@ -59,7 +59,7 @@ export type LiveRunState = {
   run: LiveRun | null;
   /**
    * The topic feed. EMPTY of real frames while `run.state` is "queued", because a session that
-   * has not taken CLIENT_LOCK cannot have produced one. Read it only once work has started.
+   * has not taken a queue slot cannot have produced one. Read it only once work has started.
    */
   stream: StreamState;
   /** The engine's own refusal, or its unreachability. Never flattened into a null run. */
@@ -74,7 +74,7 @@ export type LiveRunState = {
  * The list is polled ABOVE this hook (lib/runs-context) rather than fetched here. It used to
  * fetch once on mount, which was enough while the only question was "is this brand running",
  * and is not enough now: a session sits queued behind ANOTHER brand's, and the moment it takes
- * CLIENT_LOCK is reported by no SSE frame this card subscribes to. A one shot read would leave
+ * A run taking its first slot is reported by no SSE frame this card subscribes to. A one shot read would leave
  * a session that started ten minutes ago still reading "queued" until the operator refreshed.
  * One poll feeds this card and the topbar both, so they can never disagree about the queue.
  *
@@ -137,7 +137,7 @@ export function useLiveRun(brandSlug: string, roadmap: RoadmapState): LiveRunSta
   );
 
   /**
-   * No subscription while the session is QUEUED. It has not taken CLIENT_LOCK, so no agent has
+   * No subscription while the session is QUEUED. It holds no slot, so no agent has
    * run and no frame exists to receive: the feed would sit silent for as long as another brand
    * held the lock, and every topic would render as accepted-but-idle, which is indistinguishable
    * from a wedged run. The card says "queued" from the run record instead, and this attaches the

@@ -47,7 +47,7 @@ export function WatchState({
 }: {
   runId: string;
   /**
-   * Where the ENGINE says this run sits against CLIENT_LOCK. A run is queued from the instant
+   * Where the ENGINE says this run sits against the queue. A run is queued from the instant
    * of POST until it takes that lock, and this view used to have no idea: it read `live` and
    * announced a run in progress over a session on which nothing had run.
    */
@@ -141,7 +141,7 @@ export function WatchState({
   */
 
   // `queued` means two different things on this screen and they must never be confused: the
-  // RUN is queued behind another brand's session, while a TOPIC is queued behind the engine's
+  // RUN is queued with no blog in a slot yet, while a TOPIC is queued behind the engine's
   // five slots inside a running session. Renamed at the boundary so the distinction survives.
   const {
     shipped,

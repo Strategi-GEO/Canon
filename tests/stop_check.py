@@ -266,13 +266,13 @@ def test_topics_queued_behind_the_semaphore_are_stopped():
     asyncio.run(scenario())
 
 
-def test_a_run_stopped_while_queued_on_the_client_lock_is_swept():
-    """The wait for CLIENT_LOCK is 'many minutes' for real blogs, so it is where a stop is
-    most likely to land. guarded never runs, so not one status.jsonl would exist."""
+def test_a_run_stopped_while_queued_on_the_facts_lock_is_swept():
+    """A run waiting on another run's fact base build has dispatched nothing, so guarded never
+    runs and not one status.jsonl would exist."""
     async def scenario():
         with _Roots():
             rows = _rows(3)
-            async with runner.CLIENT_LOCK:
+            async with runner.facts_lock("brand"):
                 task = asyncio.create_task(runner.run_batch("brand", rows))
                 await asyncio.sleep(0.05)
                 task.cancel()
@@ -291,15 +291,17 @@ def test_a_run_stopped_while_queued_on_the_client_lock_is_swept():
     asyncio.run(scenario())
 
 
-def test_the_client_lock_is_released_on_the_cancel_path():
-    """The highest-consequence line in the feature: a leaked CLIENT_LOCK bricks every brand
-    in the repo until someone restarts the API."""
+def test_the_queue_is_released_on_the_cancel_path():
+    """The highest-consequence line in the feature: a leaked slot shrinks the queue for the
+    life of the process, and five leaked slots brick every brand until someone restarts the API.
+    A leaked fact base lock bricks the one brand the same way."""
     async def scenario():
         with _Roots():
             async def hang(*a, **k):
                 await asyncio.sleep(10)
 
             runner._sdk_session = hang
+            free_before = runner.TOPIC_SEMAPHORE._value
             task = asyncio.create_task(runner.run_batch("brand", _rows(2)))
             await asyncio.sleep(0.05)
             task.cancel()
@@ -308,7 +310,11 @@ def test_the_client_lock_is_released_on_the_cancel_path():
             except asyncio.CancelledError:
                 pass
 
-            check("CLIENT_LOCK is not leaked by a stop", not runner.CLIENT_LOCK.locked())
+            check("every queue slot is given back by a stop",
+                  runner.TOPIC_SEMAPHORE._value == free_before,
+                  f"{free_before} free before, {runner.TOPIC_SEMAPHORE._value} after")
+            check("the fact base lock is not leaked by a stop",
+                  not runner.facts_lock("brand").locked())
 
     asyncio.run(scenario())
 
@@ -760,8 +766,8 @@ def main():
                  test_a_resumed_topic_is_stoppable_again,
                  test_a_resumed_topic_retries_its_own_dead_session,
                  test_topics_queued_behind_the_semaphore_are_stopped,
-                 test_a_run_stopped_while_queued_on_the_client_lock_is_swept,
-                 test_the_client_lock_is_released_on_the_cancel_path,
+                 test_a_run_stopped_while_queued_on_the_facts_lock_is_swept,
+                 test_the_queue_is_released_on_the_cancel_path,
                  test_a_blog_that_shipped_still_reaches_the_ledger,
                  test_a_stopped_blog_never_reaches_the_ledger,
                  test_a_stopped_revise_does_not_unship_a_done_blog,

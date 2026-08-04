@@ -3,9 +3,9 @@
 /**
  * The engine-wide session queue, in the topbar, on every route.
  *
- * WHY THIS IS GLOBAL AND NOT A BRAND CARD. The queue is repo-wide: CLIENT_LOCK admits one
- * session at a time across every brand, so the answer to "why has my session not started" is
- * almost always another brand's session. A brand-scoped surface cannot say that, because the
+ * WHY THIS IS GLOBAL AND NOT A BRAND CARD. The queue is repo-wide: the engine works five blogs
+ * at a time across every brand, so the answer to "why has my session not started" is almost
+ * always another brand's blogs holding the slots. A brand-scoped surface cannot say that, because the
  * fact lives outside the brand. The topbar already owns global engine state and the connection
  * indicator, so the queue belongs in the same place rather than in a seventh nav item or a
  * route that does not exist.
@@ -64,8 +64,7 @@ export function SessionsIndicator() {
 
   /**
    * The noun is not decoration. "queued" means two different things in this product: a SESSION
-   * queued behind another brand against CLIENT_LOCK, and a TOPIC queued behind the engine's
-   * five slots inside a running session. Both appear on a brand Overview at once, this trigger
+   * with no blog in a slot yet, and a TOPIC waiting on a slot inside a running session. Both appear on a brand Overview at once, this trigger
    * saying "1 session running, 2 queued" and the session card below it saying "2 running, 3
    * queued" about blogs. Without the noun those are two contradictory readings of the same
    * word, and the reader has to open the sheet to learn which is which. One word fixes it.

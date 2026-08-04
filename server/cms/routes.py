@@ -58,6 +58,59 @@ def _status_for(upstream):
     return 502
 
 
+def _promote_if_failed(slug, topic_slug, email):
+    """A FAILED blog the operator chose to publish is promoted first, then pushed.
+
+    THE GATE IS NOT WIDENED, and that is the whole design. assert_publishable still demands
+    the literal `done`, because its rule protects something real: a CMS draft is directly
+    approvable by an editor, so anything that reaches the CMS can reach the client. What
+    changes is that the operator may now take responsibility for a sub-95 draft they have
+    READ, exactly as the promote-and-send door already lets them, and the way that
+    responsibility is expressed here is the same appended `done` verdict naming them and the
+    score. The trail therefore reads "failed at 87, then a person published it", never a
+    silent bypass, and every downstream consumer (the fold, topic_rollup, the portal) sees a
+    coherent record instead of a published blog whose status says it failed.
+
+    NO SEND HAPPENS HERE. Posting to the CMS and releasing to the client are two acts and the
+    operator picked this one, so the promotion line says so and sent_to_client stays null.
+
+    Silent no-op for every other status: a `done` blog needs nothing, and needs_review,
+    stopped and running fall through to assert_publishable's own refusal, which already names
+    what it found. Refusals raised here are the promote route's own, re-raised as 409 so the
+    operator reads the same sentence either door produces.
+    """
+    # Imported INSIDE the function so this package still detaches whole: an import at module
+    # scope would make server/cms/ a load-bearing dependency of nothing, but it would also
+    # execute on import of a package whose whole promise is that deleting it costs app.py one
+    # line. blog_edit is the engine proper and never imports cms, so there is no cycle.
+    from .. import blog_edit, db
+
+    if gate.blog_status(runner, slug, topic_slug) != "failed":
+        return
+
+    cid = db.client_id(slug)
+    score = db.q(
+        """select v.score from blog_versions v
+           join topics t on t.id = v.topic_id
+           where t.client_id = %s and t.slug = %s and t.deleted_at is null
+           order by v.version_no desc limit 1""",
+        (cid, topic_slug), fetch="val")
+    if score is None:
+        # The same refusal api_promote_blog gives, for the same reason: gates and the link
+        # pass run BEFORE the eval, so an unscored draft is the one artifact a failed topic
+        # cannot vouch for, and the 95 bar is meant to be the ONLY thing being waived.
+        raise HTTPException(
+            status_code=409,
+            detail=f"{topic_slug!r} has no evaluator-scored draft, so there is nothing to "
+                   f"take responsibility for; generate it again instead",
+        )
+    try:
+        blog_edit.promote_to_done(slug, topic_slug, score, email,
+                                  act="published it to the CMS")
+    except blog_edit.EditError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
 @router.post("/api/clients/{slug}/blogs/{topic_slug}/publish")
 async def api_publish_blog(slug: str, topic_slug: str, request: Request):
     """Push one shipped blog to the CMS as a draft.
@@ -80,6 +133,8 @@ async def api_publish_blog(slug: str, topic_slug: str, request: Request):
     # 404, exactly as it is for the artifact reader.
     if not runner.slugify(topic_slug) == topic_slug:
         raise HTTPException(status_code=404, detail=f"No blog '{topic_slug}'")
+
+    _promote_if_failed(slug, topic_slug, getattr(request.state, "admin_email", None) or "")
 
     try:
         payload = gate.build_for_publish(

@@ -489,9 +489,10 @@ export type IncompleteRowsError = {
 };
 
 /**
- * Where a run sits against the engine's CLIENT_LOCK, which admits ONE session at a time across
- * every brand. "queued" holds from the instant of POST until this run takes that lock, so a
- * session for one brand genuinely waits on a session for another. "finished" is terminal.
+ * Where a run sits against the engine's queue, which admits five BLOGS at a time across every
+ * brand and every door. "queued" holds from the instant of POST until this run's first blog
+ * takes a slot (or until it starts building the brand's fact base, which is its own work
+ * either way), so a session genuinely waits on other blogs. "finished" is terminal.
  *
  * "stopped" is terminal too, and it is deliberately NOT folded into "finished". The operator
  * pressed Stop, so the engine did no more work rather than running out of work to do. A stop
@@ -599,7 +600,8 @@ export type RunSummary = {
   live: boolean;
   state: RunState;
   /**
-   * When this run took CLIENT_LOCK and work actually began. NULL while queued, which is the
+   * When this run's own work actually began, its first queue slot or its fact base build.
+   * NULL while queued, which is the
    * whole reason it is separate from `started`: a running session's clock starts here, a
    * queued session has no such clock because nothing has run.
    */

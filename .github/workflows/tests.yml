@@ -77,9 +77,16 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      # THESE THREE ARE HERMETIC AND THAT IS WHY THEY ARE HERE. Each was run against a tree
+      # THESE FOUR ARE HERMETIC AND THAT IS WHY THEY ARE HERE. Each was run against a tree
       # containing only git-visible files, with no server/.env and no DATABASE_URL, and each
       # passed. They read source, they do not open sockets, and they need no credential.
+      #
+      # queue_check IS THE ONE THAT DRIVES THE ENGINE, and it qualifies for exactly the reason
+      # stop_check does not: it stubs every record reach ahead of the session seam, including
+      # _approved_refusal and _materialize_topic_scratch, which the paragraphs below name as
+      # stop_check's two blockers. It can, because it asserts about SLOT OCCUPANCY and nothing
+      # about verdicts, so a brand the record has never heard of is all it ever needed. Measured
+      # on a git-archive tree with no server/.env and DATABASE_URL unset: 14/14, exit 0.
       #
       # TWO SUITES ARE STILL ABSENT, tests/config_check.py and tests/stop_check.py, and the
       # reason has NARROWED rather than gone away. An earlier version of this comment named ONE
@@ -150,3 +157,4 @@ jobs:
           python tests/portal_check.py
           python tests/cms_check.py
           python tests/env_check.py
+          python tests/queue_check.py

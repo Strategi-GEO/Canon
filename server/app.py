@@ -220,7 +220,9 @@ async def _client_answers_pickup():
         return task
 
     task = asyncio.create_task(
-        client_answers.run_forever(dispatch, _client_has_live_run))
+        client_answers.run_forever(
+            dispatch,
+            lambda slug, topic_slug: topic_slug in _live_run_slugs(slug)))
     _STARTUP_TASKS.add(task)
     task.add_done_callback(_STARTUP_TASKS.discard)
 
@@ -862,6 +864,32 @@ def _client_has_live_run(slug):
     return any(
         run.get("client") == slug and run.get("live") for run in runner.list_runs()
     )
+
+
+def _refuse_if_topic_in_flight(slug, topic_slug, act):
+    """Refuse a revise only where THIS TOPIC is already in a live run.
+
+    NARROWED FROM "the brand has any live run", and the narrowing is the queue change made
+    visible at the API. That older refusal was never about correctness: the engine held one
+    repo-wide lock for a whole batch, so a queued revise meant waiting behind nineteen blogs
+    with no way to say how long, and telling the operator to come back later was the honest
+    answer to a question the engine could not answer. The queue is now per blog, so a revise is
+    an ordinary waiter: it takes the next free slot of five and the operator watches it sit in
+    the same queue as everything else.
+
+    WHAT SURVIVES IS THE REAL CONFLICT, which is one topic being written by two sessions at
+    once. A revise edits blog.md in place while a regenerate rewrites it, so whichever finished
+    last would silently own the article and the other session's evaluator would have scored
+    bytes nobody kept. api_generate refuses the mirror image of this from its own side
+    (_live_run_slugs feeds its in_flight duplicate check), so both doors now refuse on the same
+    fact rather than one on the topic and one on the brand.
+    """
+    if topic_slug in _live_run_slugs(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{topic_slug!r} is already in a live run for {slug!r}; {act} would open a "
+                   f"second session against the same draft. Wait for that run to finish.",
+        )
 
 
 @app.get("/api/clients/{slug}/roadmap")
@@ -2017,7 +2045,7 @@ def _blog_history(slug):
         #
         # The registry has no such history: a run is in RUNS from the operator's POST until its
         # task settles, and nothing else. QUEUED COUNTS AS LIVE, deliberately: register_run
-        # publishes a run as live before it starts (CLIENT_LOCK can hold it for minutes), the
+        # publishes a run as live before it starts (the engine's queue can hold it for minutes), the
         # scratch overlay above already treats those topics as the run's, and every write guard
         # in this file refuses on the same flag. A topic the operator has committed to a run is
         # not one to offer an edit or an answer form on.
@@ -2194,15 +2222,7 @@ async def api_answers(slug: str, topic: str, body: AnswersRequest,
                 f"cannot be applied to the draft that does."
             ),
         )
-    if _client_has_live_run(slug):
-        # One session per client at a time, the rule CLIENT_LOCK enforces anyway. Refusing here
-        # means the operator hears it now, rather than watching a queued revise sit behind a
-        # batch that has nineteen blogs left to write.
-        raise HTTPException(
-            status_code=409,
-            detail=f"a run for {slug!r} is live; answer once it finishes so the revise is not "
-                   f"queued behind it",
-        )
+    _refuse_if_topic_in_flight(slug, topic, "answering")
 
     try:
         questions_mod.write_answers(slug, topic, [item.model_dump() for item in body.answers])
@@ -2272,12 +2292,7 @@ async def api_revise_answered(slug: str, topic: str,
             detail=f"the questions on {topic!r} have no answers yet, so a rerun has nothing "
                    f"to apply; answer them (or wait for the client to) first",
         )
-    if _client_has_live_run(slug):
-        raise HTTPException(
-            status_code=409,
-            detail=f"a run for {slug!r} is live; rerun once it finishes so the revise is "
-                   f"not queued behind it",
-        )
+    _refuse_if_topic_in_flight(slug, topic, "rerunning")
 
     tid = db.topic_id(slug, topic)
     if not client_answers.claim(tid):
@@ -3167,8 +3182,9 @@ async def _batch_task(run_id, slug, rows):
     try:
         callback = lambda result: _on_topic_done(slug, run_id, result)
         # run_id is passed so run_batch can flip this run from queued to running at the
-        # instant it takes CLIENT_LOCK. Only the runner knows that moment: the lock is
-        # repo-wide and a session can wait behind another for minutes.
+        # instant it genuinely starts, which is its first queue slot or its fact base build.
+        # Only the runner knows that moment: the queue is repo-wide and a submit can wait
+        # behind five other blogs for minutes.
         await runner.run_batch(slug, rows, on_topic_done=callback,
                                run_id=run_id)
     except Exception:

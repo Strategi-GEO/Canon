@@ -11,8 +11,10 @@
 import type { RunState, RunSummary } from "@/types";
 
 /**
- * The engine's TOPIC_SEMAPHORE, from runner.py: blogs in flight inside the one session that
- * holds CLIENT_LOCK.
+ * The engine's TOPIC_SEMAPHORE, from runner.py: BLOGS in flight across the whole engine, from
+ * every door there is. A Create-tab batch, a retry, an answer-driven revise and a repurpose all
+ * take one slot each out of this number, so it is the size of one shared queue and not a
+ * per-session allowance.
  *
  * It lives here rather than in either view that prints it, because it describes the ENGINE and
  * not the Create tab. It was declared twice, once in watch-state and once in select-state, so
@@ -109,13 +111,17 @@ export function sessionOf(run: RunSummary): Session | null {
 }
 
 /**
- * The live sessions in the order the engine will actually work them: whatever holds
- * CLIENT_LOCK first, then everyone else by submit time.
+ * The live sessions in the order the engine will actually work them: whatever is already
+ * holding slots first, then everyone else by submit time.
  *
  * The order is not decoration. This list is a QUEUE, so an operator reads position as "how
  * many sessions before mine", and sorting it any other way would state something false about
- * what happens next. Submit time is the tiebreak because the lock is taken in the order the
- * runs were accepted, so `started` ascending is the engine's own ordering and not a guess.
+ * what happens next. Submit time is the tiebreak because asyncio.Semaphore wakes waiters in
+ * arrival order, so `started` ascending is the engine's own ordering and not a guess.
+ *
+ * A RUNNING SESSION AHEAD DOES NOT BLOCK THIS ONE OUTRIGHT, and no caller should imply it does.
+ * The engine works ENGINE_SLOTS blogs at once regardless of which sessions they belong to, so a
+ * session ahead that is down to its last blog is holding one slot and leaving the rest free.
  *
  * Compared as instants rather than as strings. The engine sends uniformly offset ISO, so a
  * collator happens to order these correctly today, but the question being asked is "which was
@@ -138,7 +144,7 @@ export function queueOf(runs: readonly RunSummary[]): Session[] {
 export type SessionClock = {
   /** The ISO instant to measure from. Never null, so formatElapsed can never be fed one. */
   since: string;
-  /** "running" measures blog work. "waiting" measures time queued behind another brand.
+  /** "running" measures blog work. "waiting" measures time queued behind other blogs.
    *  "building" measures the canonical-facts build, which is deliberately NOT blog work. */
   measures: "running" | "waiting" | "building";
 };

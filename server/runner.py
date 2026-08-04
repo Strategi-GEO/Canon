@@ -64,16 +64,43 @@ def ensure_client_output_dir(client_slug, root=None):
 MCP_CONFIG_PATH = REPO_ROOT / ".mcp.json"
 MCP_SERVER_NAMES = ("firecrawl", "dataforseo")
 
-# The two concurrency limits, here and NOWHERE else.
-# CLIENT_LOCK: one client's queue runs at a time, repo-wide.
-# TOPIC_SEMAPHORE: five topics in flight. Every selected topic is dispatched at
-# once with asyncio.gather and the semaphore admits five, so topic six starts
-# the instant a slot frees, never "batch of five then wait".
-# These are in-process primitives, so the deployment MUST run one uvicorn
-# worker; --workers N would give N independent semaphores and the cap silently
-# becomes 5N.
-CLIENT_LOCK = asyncio.Lock()
+# THE ONE QUEUE, HERE AND NOWHERE ELSE.
+#
+# TOPIC_SEMAPHORE is five blog sessions in flight, repo-wide, WHICHEVER DOOR OPENED THEM: a
+# Create-tab batch, a retry of one row, a repurpose, or the answer-driven revise a client's
+# answers are owed. Each takes exactly one slot for exactly its own session, so "five at a time"
+# is a fact about the ENGINE rather than about any one submit. asyncio.Semaphore wakes waiters in
+# arrival order, so a sixth blog starts the instant a slot frees.
+#
+# IT REPLACED A REPO-WIDE LOCK HELD FOR A WHOLE BATCH, and that is the point of the change. With
+# one CLIENT_LOCK around the entire gather, the queue was BATCH-granular: a second submit waited
+# for all twenty of the first batch's blogs rather than for one slot, a second brand could not
+# use the four idle slots the first brand's tail left, and a revise was refused outright at the
+# API rather than queued, because "queued behind a batch" meant a wait nobody could estimate.
+# The unit of the queue is now one blog, which is the unit an operator actually submits.
+#
+# FACTS_LOCKS is per CLIENT and guards the fact-base build ALONE, which is the one thing the old
+# repo-wide lock protected that a semaphore does not. canonical-facts.md is client scoped and
+# every blog of that client inherits it, so two runs for one brand must not build it twice; two
+# runs for DIFFERENT brands share nothing there and are not each other's business.
+#
+# In-process primitives, so the deployment MUST run one uvicorn worker; --workers N would give N
+# independent semaphores and the cap silently becomes 5N.
 TOPIC_SEMAPHORE = asyncio.Semaphore(5)
+_FACTS_LOCKS = {}
+
+
+def facts_lock(client_slug):
+    """The per-client fact-base lock, created on first use.
+
+    A plain dict for the reason the run registry is one: a single uvicorn worker means a single
+    process holds every lock, so there is no second worker whose dict could drift. Never pruned:
+    an asyncio.Lock is a few dozen bytes and the key set is the brand list.
+    """
+    lock = _FACTS_LOCKS.get(client_slug)
+    if lock is None:
+        lock = _FACTS_LOCKS[client_slug] = asyncio.Lock()
+    return lock
 
 # A topic has stopped moving. "stopped" belongs here for one concrete reason: the SSE stream in
 # app.py closes only when every topic's status.jsonl has grown a line whose status is in this set,
@@ -214,10 +241,10 @@ def register_run(run_id, client, topics, kind="blog", channel=None):
     """Record a submitted run. It starts QUEUED, never running.
 
     Registration happens the moment the operator's POST lands, because their own submit has to
-    be visible to them immediately. But CLIENT_LOCK admits ONE session repo-wide, so a run can
-    sit here for as long as the session ahead of it takes, which for real blogs is many
+    be visible to them immediately. But TOPIC_SEMAPHORE admits FIVE blogs repo-wide, so a run
+    can sit here for as long as the blogs ahead of it take, which for real blogs is many
     minutes. Reporting that as running would tell six operators that work is happening on their
-    topics when nothing has started, and the honest answer, "queued behind another session", is
+    topics when nothing has started, and the honest answer, "queued behind other blogs", is
     the one that tells them whether to wait or go do something else.
 
     `kind` distinguishes a blog run from a repurpose run (server/repurpose.py). It defaults to
@@ -261,12 +288,24 @@ def register_run(run_id, client, topics, kind="blog", channel=None):
 def mark_running(run_id):
     """Flip a run from queued to running, at the ONE instant it genuinely starts.
 
-    Called immediately after CLIENT_LOCK is acquired, which is the only moment this session
-    owns the engine. Anything earlier is a guess, and a guess here is the difference between an
-    operator waiting on a live run and an operator waiting on nothing.
+    That instant is now the run's FIRST real work, which for a batch is either the fact base
+    build or the first topic that takes a queue slot, whichever comes first. It used to be the
+    acquisition of a repo-wide lock, and when that lock went so did the single call site: a run
+    whose twenty topics are all waiting on the semaphore has started nothing, and reporting it
+    running would be the same lie the old rule existed to prevent, one level down.
+
+    IDEMPOTENT, and that is what lets every slot acquisition call it without thinking. Five
+    topics of one batch take slots at five different moments and only the first one is when this
+    run started; re-stamping started_running at each of them would walk the operator's clock
+    forward while their blogs were being written.
+
+    IT PROMOTES FROM "queued" AND FROM NOTHING ELSE, which is the same guard finish_run makes and
+    it is made for the same reason. A stop marks the run stopped while its topics are still
+    unwinding, and a later acquire resolving to "running" would report the run they just stopped
+    as working again, with the stop line already written to disk beneath it.
     """
     run = RUNS.get(run_id)
-    if run is not None:
+    if run is not None and run.get("state") == "queued":
         run["state"] = "running"
         run["started_running"] = datetime.now(timezone.utc).isoformat()
 
@@ -455,7 +494,7 @@ def _stop_line_if_unterminated(client_slug, topic_slug, out_dir, baseline, note,
 
     Shared by run_topic (the topic that was mid-session) and run_batch (the topics that never
     got one, either queued behind the semaphore or never dispatched at all because the stop
-    landed while the run was still waiting on CLIENT_LOCK or building the fact base). One
+    landed while the run was still waiting on the fact base lock or building the fact base). One
     implementation because the guard and the line shape must not drift apart: a second copy is
     how a topic comes to be stopped in one path and demoted in the other.
 
@@ -2252,8 +2291,8 @@ def register_revise_run(run_id, client_slug, topic_slug, root=None):
     Registered by the CALLER, synchronously, at the instant the operator's POST lands, for the
     reason api_generate does it there: the 202 carries the record back, and _client_has_live_run
     must see this run immediately or a second POST slips through the gap before the task is
-    scheduled. It starts queued, exactly like a batch, because CLIENT_LOCK is repo-wide and this
-    session can sit behind another for minutes.
+    scheduled. It starts queued, exactly like a batch, because TOPIC_SEMAPHORE is repo-wide and
+    this session can sit behind five other blogs for minutes.
     """
     status_path = output_dir(client_slug, topic_slug, root=root) / "status.jsonl"
     try:
@@ -2353,9 +2392,16 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=Non
     clarified_shipped = False
 
     try:
-        async with CLIENT_LOCK:
-            # Acquiring the lock IS the start of this session, exactly as in run_batch. Until now
-            # it was queued behind whatever else held the engine.
+        async with TOPIC_SEMAPHORE:
+            # A REVISE IS ONE BLOG AND TAKES ONE SLOT, in the same queue a Create-tab batch, a
+            # retry and a repurpose take theirs. It used to take a repo-wide lock instead, which
+            # is why both routes that dispatch it refused outright while any run for the brand was
+            # live: "queued" there meant waiting for a whole batch, so the honest thing was to say
+            # no. In the shared queue it is an ordinary waiter, so those routes queue it.
+            #
+            # Taking the slot IS the start of this session. Until now it was waiting behind other
+            # blogs, and a revise that reported running while it waited would put a working clock
+            # on a session that had not opened.
             mark_running(run_id)
             mark_phase(run_id, "topics")
 
@@ -2833,6 +2879,11 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
         index = row.get("index", position)
         try:
             async with TOPIC_SEMAPHORE:
+                # THE RUN IS RUNNING FROM ITS FIRST SLOT, and mark_running being idempotent is
+                # what makes calling it from all five of them correct. A batch whose topics are
+                # still queued has started nothing, so this is the earliest honest moment for
+                # any run that did not have to build a fact base first.
+                mark_running(run_id)
                 result = await run_topic(client_slug, row,
                                          precheck_error=facts_error)
         except asyncio.CancelledError:
@@ -2880,25 +2931,25 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
         await _notify(on_topic_done, dict(result, row=row, index=index))
         return result
 
-    # THE BASELINES, BEFORE THE RUN QUEUES FOR THE LOCK.
+    # THE BASELINES, BEFORE THE RUN QUEUES FOR ANYTHING.
     #
     # Taken here rather than inside guarded because the sweep below has to work for topics whose
-    # guarded never ran at all, and taken before CLIENT_LOCK because that wait is where a stop is
-    # MOST likely to land: the contract's own estimate of it is "many minutes", and a brand queued
-    # behind another brand's twenty blogs sits here for all of them. See _status_baseline for why
-    # the count and not the file.
+    # guarded never ran at all, and taken before the first await because a wait is where a stop is
+    # MOST likely to land: a topic queued behind the engine's other blogs sits there for as long
+    # as they take, which for real blogs is many minutes. See _status_baseline for why the count
+    # and not the file.
     baselines = {}
     for position, row in enumerate(rows):
         topic_slug = row.get("topic_slug") or slugify(row.get("topic", ""))
         baselines[position] = (topic_slug, _status_baseline(output_dir(client_slug, topic_slug)))
 
     try:
-        async with CLIENT_LOCK:
-            # Acquiring the lock IS the start of this session: until now it was queued behind
-            # whatever else held it. Recorded here rather than at submit time so a queued run
-            # cannot masquerade as a working one.
-            mark_running(run_id)
-
+        # THE FACT BASE LOCK, AND ONLY THE FACT BASE. It is held across the materialize and the
+        # build below and released before a single topic is dispatched, which is the whole
+        # difference between this and the repo-wide lock it replaced: the queue behind it is the
+        # semaphore, so a second submit waits for one SLOT rather than for this batch's last blog.
+        # Scoped per client because that is the scope of the file it protects.
+        async with facts_lock(client_slug):
             # LAY THE CLIENT SCRATCH DOWN FROM THE RECORD, before the facts phase and before any
             # topic can spawn a session. Agents read clients/<slug>/ as real files (gates.json,
             # canonical-facts.md, Resources/), and materialize_client is what makes the disk
@@ -2924,10 +2975,11 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
             # THE FACT BASE, BEFORE ANY TOPIC IS DISPATCHED, AND THE RUN WAITS FOR IT.
             #
             # canonical-facts.md is client scoped and every blog in this batch inherits it, so it is
-            # built once per run and not once per topic. It happens INSIDE the lock, after
-            # mark_running, because this is real work that belongs to this run: a session started
-            # before the lock would run while another client's batch still held the engine, and it
-            # would be invisible to the operator whose run had not started yet.
+            # built once per run and not once per topic. It happens INSIDE the per-client lock,
+            # which is the one thing that lock is for: two runs submitted for one brand seconds
+            # apart would otherwise both find the file missing and both build it, and the second
+            # would overwrite the fact base the first one's blogs were already being written
+            # against.
             #
             # Only a MISSING file is generated. A file carrying PLACEHOLDER is a human's unfinished
             # review: generating over it destroys their work, and running against it is what preflight
@@ -2942,6 +2994,11 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
             # runs inside it), so there is deliberately no facts commit anywhere in this module:
             # a second one here would be a double-commit of the same file.
             if facts_error is None and not has_canonical_facts(client_slug):
+                # BUILDING THE FACT BASE IS THIS RUN'S OWN WORK, so a run that has to do it is
+                # running from here even though no topic has taken a slot yet. A run that does
+                # not (the common case: the file already exists) stays queued until guarded's
+                # first acquire, which is the only other honest moment.
+                mark_running(run_id)
                 mark_phase(run_id, "facts")
                 try:
                     await facts_gen.ensure_facts(client_slug, run_id=run_id)
@@ -2957,31 +3014,37 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
                     mark_run_error(run_id, facts_error)
                     print(f"[runner] {facts_error}", file=sys.stderr)
 
-            # The failure is carried into each topic rather than raised here. Every topic still needs
-            # its own terminal failed line naming this reason: without one the SSE stream never closes
-            # and the operator watches a run that hangs at queued forever, which is strictly worse than
-            # a loud failure. run_topic refuses on precheck_error before any SDK session spawns, so
-            # nothing is dispatched against a client with no facts and no blog is written.
-            if facts_error is None:
-                mark_phase(run_id, "topics")
+        # THE LOCK IS RELEASED BEFORE ONE TOPIC IS DISPATCHED, and the dedent is the feature. The
+        # fact base is built; nothing below it is client-scoped work that a sibling run must wait
+        # for. Holding it across the gather is what made the queue batch-granular.
 
-            # Dispatch every topic at once; the semaphore admits five and topic six
-            # starts the instant a slot frees.
-            raw = await asyncio.gather(
-                *(guarded(position, row) for position, row in enumerate(rows)),
-                return_exceptions=True)
+        # The failure is carried into each topic rather than raised here. Every topic still needs
+        # its own terminal failed line naming this reason: without one the SSE stream never closes
+        # and the operator watches a run that hangs at queued forever, which is strictly worse than
+        # a loud failure. run_topic refuses on precheck_error before any SDK session spawns, so
+        # nothing is dispatched against a client with no facts and no blog is written.
+        if facts_error is None:
+            mark_phase(run_id, "topics")
+
+        # Dispatch every topic at once into the shared queue; five run and the rest wait, and a
+        # waiter starts the instant a slot frees whether the blog that freed it was this brand's,
+        # another brand's, or a revise.
+        raw = await asyncio.gather(
+            *(guarded(position, row) for position, row in enumerate(rows)),
+            return_exceptions=True)
     except asyncio.CancelledError:
         # THE TOPICS NOBODY EVER DISPATCHED. Every arm before this one belongs to a topic that
         # got as far as a session; this one is for the topics that did not, and without it a stop
         # leaves them with no terminal line at all.
         #
-        # Three ways to be one of them, and the first two are the common case rather than a
-        # corner. The run is still QUEUED on CLIENT_LOCK behind another brand, so guarded has
-        # never run and not one status.jsonl exists. The run is in the FACTS phase, inside the
-        # lock, before any topic is dispatched. Or the run is live and topics six and up are
-        # suspended at TOPIC_SEMAPHORE, which is any selection larger than five: the cancel lands
-        # on the acquire, inside guarded but BEFORE run_topic, so run_topic's cancel arm, the only
-        # thing that writes their stopped line, never runs.
+        # Three ways to be one of them, and the last is now the common case rather than a corner.
+        # The run is waiting on the FACT BASE lock behind another run for the same brand, so
+        # guarded has never run and not one status.jsonl exists. The run is in the FACTS phase,
+        # inside that lock, before any topic is dispatched. Or topics are suspended at
+        # TOPIC_SEMAPHORE, which is now every topic beyond the five the engine is working
+        # anywhere, not merely this batch's sixth: the cancel lands on the acquire, inside
+        # guarded but BEFORE run_topic, so run_topic's cancel arm, the only thing that writes
+        # their stopped line, never runs.
         #
         # The SSE closer is what makes silence fatal. It closes only when every topic's own tail
         # has SEEN a terminal status, and it NEVER consults the run record, so marking the run
@@ -3008,10 +3071,11 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
             # await lands between this sweep and the re-raise, so CancelledError propagates
             # exactly as before.
             _schedule_commit(client_slug, topic_slug)
-        # NEVER swallow a cancellation, exactly as run_topic does not. CLIENT_LOCK releases on the
-        # way out because `async with` unwinds on the exception path like any other, which is the
-        # single highest-consequence line in this feature: a leaked lock bricks every brand in the
-        # repo until someone restarts the API.
+        # NEVER swallow a cancellation, exactly as run_topic does not. The fact base lock and every
+        # semaphore slot release on the way out because `async with` unwinds on the exception path
+        # like any other, which is the single highest-consequence line in this feature: a leaked
+        # slot shrinks the queue by one for the life of the process, and five leaked slots brick
+        # every brand in the repo until someone restarts the API.
         raise
 
     results = []

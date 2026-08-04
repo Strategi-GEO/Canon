@@ -52,6 +52,17 @@ iterations the per-blog variance is huge. One session per blog also means one de
 its own process without touching the other four. There is NO queue logic in this file and NO
 "run N topics in parallel" line: concurrency lives in `runner.py` and nowhere else.
 
+**THE QUEUE IS ONE QUEUE OF FIVE BLOGS, AND EVERY DOOR FEEDS IT.** `runner.TOPIC_SEMAPHORE`
+admits five blog sessions repo-wide, and each session takes exactly one slot however it was
+started: a Create-tab batch, a retry of one row, a repurpose, or the answer-driven revise a
+client's answers are owed. A sixth blog waits and starts the instant a slot frees, in arrival
+order, whether the blog that freed it belonged to this brand, another brand, or another door.
+Nothing anywhere may open a blog session outside that gate, and nothing may refuse a blog
+because the engine is busy: busy means QUEUED. The only per-client serialisation left is
+`runner.facts_lock(<slug>)`, held across the fact base build alone, because
+`canonical-facts.md` is client scoped and two runs for one brand must not build it twice.
+`tests/queue_check.py` pins all of this.
+
 Inside one blog's session, the **session lead** dispatches specialised subagents in sequence
 for that single topic. The lead NEVER writes the blog itself. Each subagent carries a minimal
 context, and each dispatch passes the subagent its **slug, output dir, and current iteration

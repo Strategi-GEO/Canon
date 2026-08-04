@@ -11,7 +11,7 @@ import type { RunSummary } from "@/types";
  * WHY POLLING, when this app already has an SSE client it refuses to duplicate: that feed is
  * per run. /api/runs/{id}/events tells a subscriber about the run it names and cannot report a
  * run that does not exist yet, so it can never answer "who is ahead of me". The transition
- * that matters most here is a run taking CLIENT_LOCK, and the engine emits no frame for it on
+ * that matters most here is a run taking its first queue slot, and the engine emits no frame for it on
  * any channel this browser could subscribe to. The list is therefore the only authority, and
  * asking it repeatedly is the only way to watch the queue move.
  *

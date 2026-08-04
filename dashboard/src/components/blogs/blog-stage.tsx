@@ -833,6 +833,7 @@ function StageBody({
               topicSlug={topicSlug}
               topic={blog.topic}
               status={blog.status}
+              score={blog.score ?? null}
             />
           ) : null}
           {/* THE STAMP IS A FACT, NOT A CONTROL, so it survives the gating that removes the
