@@ -230,6 +230,50 @@ def test_a_retry_never_replaces_a_higher_scoring_blog():
           _read(out / "blog.md") == "draft-96", _read(out / "blog.md"))
 
 
+def test_a_crashed_session_still_installs_the_peak():
+    """THE LIVE LOSS THIS TEST EXISTS FOR. sandoz-restaurants scored 93, then 88, then 89, and the
+    session died on iteration 4 with the CLI's own "error result" surfacing as an exception.
+
+    _install_best_draft used to be called ONLY after run_topic's try block, on the clean-return
+    path. Every except arm re-raises, so a crash skipped it entirely and then committed whatever
+    iteration had last edited blog.md. On disk afterwards: blog.best.md holding the 93 and its
+    eval, blog.md holding the 89, and the 89 is what shipped, what the record kept and what the
+    operator read. The engine had the better draft the whole time.
+
+    A CRASH IS WHEN A PEAK IS MOST LIKELY TO BE UNINSTALLED, not least: every extra iteration is
+    another chance both to score lower than the peak and to die before the loop ends cleanly. So
+    the guarantee has to hold on the failure path or it is not a guarantee.
+    """
+    print("\ntest_a_crashed_session_still_installs_the_peak")
+    root, client, topic, out = _new_topic()
+    # The real trail, in the real order.
+    for iteration, score in enumerate([93, 88, 89], start=1):
+        _write_draft(out, score)
+        _score(out, topic, iteration, score)
+    check("the 93 is snapshotted while the loop runs",
+          _read(out / "blog.best.md") == "draft-93", _read(out / "blog.best.md"))
+    check("blog.md still holds the last draft the loop edited",
+          _read(out / "blog.md") == "draft-89")
+
+    # NO TERMINAL LINE. The session died mid-iteration, so the lead never wrote one: this is
+    # exactly the state run_topic's `except Exception` arm inherits, and it is what makes this
+    # different from every other test here.
+    check("the crash leaves no terminal line behind",
+          runner._terminal_line(runner._read_status(out)) is None)
+
+    runner._install_best_draft(client, topic, out, 0, root=root)
+
+    check("the crash path still restores the 93 draft", _read(out / "blog.md") == "draft-93",
+          _read(out / "blog.md"))
+    check("and its matching eval, so the score describes the bytes beside it",
+          (_read(out / "eval.md") or "").startswith("eval-93"), _read(out / "eval.md"))
+    check("the snapshots are consumed",
+          not (out / "blog.best.md").exists() and not (out / "eval.best.md").exists())
+    summary = runner._summarize(topic, runner._read_status(out))
+    check("the reported score is the 93 peak, never the 89 the crash left",
+          summary["score"] == 93, str(summary))
+
+
 def test_score_helpers():
     print("\ntest_score_helpers")
     lines = [
@@ -253,6 +297,7 @@ def main():
                  test_hard_killed_prior_run_snapshot_is_not_installed,
                  test_lead_terminal_line_at_the_best_score_does_not_veto_the_install,
                  test_a_retry_never_replaces_a_higher_scoring_blog,
+        test_a_crashed_session_still_installs_the_peak,
                  test_score_helpers):
         test()
     print(f"\n{CHECKS[0] - len(FAILURES)}/{CHECKS[0]} checks passed")

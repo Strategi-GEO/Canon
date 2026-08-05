@@ -1508,11 +1508,6 @@ async def _sdk_session(client_slug, row, topic_slug, out_dir):
     exits its own process without touching the other four."""
     from claude_agent_sdk import query
 
-    try:
-        from claude_agent_sdk import ClaudeSDKError
-    except ImportError:
-        ClaudeSDKError = ()
-
     options = _session_options()
 
     # aclosing, rather than a bare `async for` over the call. query() is an async generator
@@ -1537,10 +1532,33 @@ async def _sdk_session(client_slug, row, topic_slug, out_dir):
                 # outcomes from status.jsonl and never reads agent output into its
                 # own context.
                 pass
-    except ClaudeSDKError as exc:
-        # A dead CLI process is a died session, not a runner crash. Return and
-        # let the caller's died-session logic write the terminal line or retry.
-        print(f"[runner] SDK session for {topic_slug} died: {exc}", file=sys.stderr)
+    except Exception as exc:
+        # A DEAD CLI IS A DIED SESSION, NOT A RUNNER CRASH, AND THE SDK DOES NOT LET US TELL THEM
+        # APART BY TYPE. This arm caught ClaudeSDKError alone, which looks right and is not: when
+        # the CLI reports a failed result the SDK raises a BARE Exception
+        # (claude_agent_sdk/_internal/query.py, `raise Exception(message.get("error", ...))` on the
+        # error message it puts in its own stream), and a bare Exception is not a ClaudeSDKError.
+        #
+        # WHAT THAT COST, ON A REAL RUN. sandoz-restaurants scored 93, 88, 89 across three
+        # iterations and the CLI failed on the fourth. The bare Exception sailed past the old
+        # `except ClaudeSDKError`, past the retry loop below (whose whole purpose is a died
+        # session), and into run_topic's generic crash arm, which wrote a terminal `failed` and
+        # committed. THREE mechanisms that exist for exactly this event were skipped because of
+        # one exception type: the retry never fired, and the peak was left uninstalled.
+        #
+        # THE MESSAGE IS OFTEN USELESS AND THAT IS THE SDK'S DOING, not something to work around
+        # here. It builds the text from the CLI's result payload, and when `errors` is empty it
+        # falls back to the SUBTYPE, so a failure whose subtype still read "success" surfaces as
+        # the sentence "Claude Code returned an error result: success". Nobody wrote that; it is a
+        # placeholder for a reason the CLI declined to give. It is logged verbatim rather than
+        # prettied up, because the exact string is what a future reader will search for.
+        #
+        # BROAD ON PURPOSE, AND THE BLAST RADIUS IS SMALL. The only code inside this try is
+        # `async for ... pass`; the prompt is built before it and every outcome is read from
+        # status.jsonl afterwards, so there is no runner logic here for a broad catch to mask.
+        # CancelledError is a BaseException and still propagates, so a stop is unaffected.
+        print(f"[runner] SDK session for {topic_slug} died ({type(exc).__name__}): {exc}",
+              file=sys.stderr)
         return
 
 
@@ -1960,6 +1978,32 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
         traceback.print_exc(file=sys.stderr)
         print(f"[runner] run_topic failed for {client_slug}/{topic_slug}: {exc}",
               file=sys.stderr)
+
+        # THE PEAK SURVIVES THE CRASH, AND BEFORE THE FAILED LINE, BEFORE THE COMMIT.
+        #
+        # This call used to live ONLY after the try, on the clean-return path, so a session that
+        # died anywhere in the loop skipped it and left whatever iteration happened to edit
+        # blog.md last sitting on disk. Then this arm committed that draft to the record. A live
+        # run scored 93, then 88, then 89, and crashed on iteration 4: blog.best.md held the 93
+        # and its eval, blog.md held the 89, and the 89 is what shipped and what the operator
+        # read. The engine had the better draft the whole time and threw it away at the last step.
+        #
+        # THAT IS THE SAME DEFECT THE SNAPSHOT MECHANISM EXISTS TO PREVENT, arrived at from a path
+        # nobody had walked. The rule this project keeps restating is that the record only moves
+        # upward, and a rule that holds only when nothing goes wrong is not the rule: a crash is
+        # exactly when the loop is most likely to have a peak it has not installed yet, because
+        # every extra iteration is another chance both to score lower and to die.
+        #
+        # GUARDED, because a recovery path must never mask the original crash. If the install
+        # itself fails, the failed line below still lands and the topic still commits: a lost
+        # peak is bad, a topic with no terminal line is worse, since its SSE stream never closes
+        # and the operator watches a dead session heartbeat forever.
+        try:
+            _install_best_draft(client_slug, topic_slug, out_dir, baseline, root=run_dir_root)
+        except Exception as install_exc:
+            print(f"[runner] could not install the best draft for {client_slug}/{topic_slug} "
+                  f"after a crash: {install_exc}", file=sys.stderr)
+
         append_status(
             str(out_dir), topic_slug,
             stage="research", event="end",
@@ -2360,11 +2404,6 @@ async def _sdk_revise_session(client_slug, row, topic_slug, out_dir, iteration):
     agents, a different lead prompt. The revise is a different JOB, not a different engine."""
     from claude_agent_sdk import query
 
-    try:
-        from claude_agent_sdk import ClaudeSDKError
-    except ImportError:
-        ClaudeSDKError = ()
-
     options = _session_options()
     # Re-lay the brief when the row still exists, so a revise reads the row as it stands rather
     # than whatever the first run happened to write. An absent row keeps the earlier file.
@@ -2376,10 +2415,18 @@ async def _sdk_revise_session(client_slug, row, topic_slug, out_dir, iteration):
             # Consume and DISCARD, as run_topic does: outcomes are read from
             # status.jsonl and never from agent output.
             pass
-    except ClaudeSDKError as exc:
+    except Exception as exc:
         # A dead CLI is a died session. Return and let revise_topic's compare step handle it,
         # which it does by scoring nothing and restoring the original.
-        print(f"[runner] revise session for {topic_slug} died: {exc}", file=sys.stderr)
+        #
+        # BROAD FOR THE REASON _sdk_session STATES AT LENGTH: the SDK raises a BARE Exception when
+        # the CLI reports a failed result, so catching ClaudeSDKError alone let that one escape
+        # into revise_topic's outer handler. Here the consequence is different from a blog run's
+        # and no less wrong: revise_topic's own arms are written to restore the ORIGINAL artifact
+        # set when a session produces no score, which is exactly what should happen, and an
+        # exception routed around them reached the generic handler instead.
+        print(f"[runner] revise session for {topic_slug} died ({type(exc).__name__}): {exc}",
+              file=sys.stderr)
         return
 
 

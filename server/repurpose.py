@@ -75,11 +75,6 @@ async def _sdk_session(client_slug, source_topic_slug, channel, out_dir):
     its CLI child down deterministically rather than orphan it spending quota."""
     from claude_agent_sdk import query
 
-    try:
-        from claude_agent_sdk import ClaudeSDKError
-    except ImportError:
-        ClaudeSDKError = ()
-
     # research=False: this session FETCHES NOTHING. Its input is an already shipped blog, so every
     # fact and every source in the post it writes came out of a draft that was researched, gated,
     # link checked and scored on a machine that did have credentials. The engine now refuses a
@@ -94,9 +89,13 @@ async def _sdk_session(client_slug, source_topic_slug, channel, out_dir):
                 # Consume and discard. The runner reads the outcome from the artifact on disk,
                 # never from agent output, exactly like the blog session.
                 pass
-    except ClaudeSDKError as exc:
+    except Exception as exc:
         # A dead CLI is a died session, not a crash. Return; run_repurpose sees no post.md and
         # writes the failed terminal line.
+        #
+        # BROAD for the reason runner._sdk_session states: the SDK raises a BARE Exception when
+        # the CLI reports a failed result, and a bare Exception is not a ClaudeSDKError, so the
+        # narrower catch let exactly the commonest CLI failure escape the one arm written for it.
         print(f"[repurpose] SDK session for {source_topic_slug}/{channel} died: {exc}",
               file=sys.stderr)
         return
