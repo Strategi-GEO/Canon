@@ -626,14 +626,16 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
 /**
  * One tab's articles in the SHARED BlogsTable, the same component the admin library renders.
  * audience="client" drops Score and Iterations at the component, and the wire never carried
- * them anyway. Sorting is local to the tab: created desc to start, any header toggles.
+ * them anyway. Sorting is local to the tab: sheet order (#) ascending to start, any header
+ * toggles. The client sees the same order the operator does, which is the point: both sides
+ * refer to an article by its roadmap number, so both tables have to open on it.
  */
 function LibraryTable({ cards }: { cards: PortalBlogCard[] }) {
   const { isSingleBrand } = usePortal();
   const router = useRouter();
   const [sort, setSort] = React.useState<{ key: SortKey; dir: SortDir }>({
-    key: "created",
-    dir: "desc",
+    key: "roadmap",
+    dir: "asc",
   });
 
   const rows = React.useMemo(() => {

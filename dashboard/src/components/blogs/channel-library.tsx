@@ -164,8 +164,11 @@ export function ChannelLibrary(props: {
     return m;
   }, [posts]);
 
+  // Sheet order, like every other blog table: the pick list and the library name the same
+  // articles by the same number, so they must not disagree about the order. See DEFAULTS in
+  // library-url.ts.
   const rows = React.useMemo(
-    () => sortBlogs(blogs ?? [], "created", "desc"),
+    () => sortBlogs(blogs ?? [], "roadmap", "asc"),
     [blogs],
   );
 
@@ -273,9 +276,13 @@ export function ChannelLibrary(props: {
   // The Created tab's sort, local state rather than the URL: it is a sub-tab of a sub-tab, and
   // a link that deep is not a thing anyone shares. Same toggle semantics as the blogs library:
   // re-picking the active column flips, a new column starts descending.
+  //
+  // Opens on the source # ascending, like every other blog table. This tab's rows ARE blogs seen
+  // through their posts, and an operator crossing from the library to here is looking for the
+  // same article by the same number, so the two lists must not be in different orders.
   const [postSort, setPostSort] = React.useState<{ key: PostSortKey; dir: SortDir }>({
-    key: "updated",
-    dir: "desc",
+    key: "num",
+    dir: "asc",
   });
   const onPostSort = React.useCallback((key: PostSortKey) => {
     setPostSort((prev) => ({

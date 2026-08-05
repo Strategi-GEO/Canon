@@ -43,8 +43,10 @@ export function PostedLibrary(props: {
   const [blogs, setBlogs] = React.useState<BlogSummary[] | null>(null);
   const [error, setError] = React.useState<ApiError | null>(null);
   const [refreshing, setRefreshing] = React.useState(false);
-  const [sortKey, setSortKey] = React.useState<SortKey>("created");
-  const [sortDir, setSortDir] = React.useState<SortDir>("desc");
+  // Sheet order by default, like every other blog table. See DEFAULTS in library-url.ts for why
+  // the # column and not newest-first.
+  const [sortKey, setSortKey] = React.useState<SortKey>("roadmap");
+  const [sortDir, setSortDir] = React.useState<SortDir>("asc");
 
   const { orgSlug, brandSlug, brandName, title, blurb } = props;
 

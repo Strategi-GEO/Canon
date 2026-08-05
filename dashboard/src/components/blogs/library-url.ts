@@ -23,11 +23,22 @@ import {
  * sent around redirects to that page instead of dying.
  */
 
+/**
+ * SHEET ORDER IS THE DEFAULT, EVERYWHERE A BLOG TABLE RENDERS. The # column is the roadmap row
+ * number, which is the identifier the operator and the client actually use for an article: "we
+ * are done with six, send seven". Newest-first was the old default and it reorders itself under
+ * the reader every time a blog lands, so the row that was third is fourth on the next glance and
+ * the number in the first column runs 7, 3, 12 down the page.
+ *
+ * Ascending, because a sheet is read top down. A blog on no roadmap row sorts LAST rather than
+ * posing as row one: sortBlogs gives it Infinity, since these indices are 0 based and -1 would
+ * put it above row 1.
+ */
 export const DEFAULTS = {
   q: "",
   status: "all" as StateFilter,
-  sort: "created" as SortKey,
-  dir: "desc" as SortDir,
+  sort: "roadmap" as SortKey,
+  dir: "asc" as SortDir,
 };
 
 const PARAM = { q: "q", status: "status", sort: "sort", dir: "dir", blog: "blog" } as const;
