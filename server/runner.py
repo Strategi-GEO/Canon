@@ -481,6 +481,60 @@ def _status_baseline(out_dir):
     return len(_read_status(out_dir))
 
 
+def _fail_line_if_unterminated(client_slug, topic_slug, out_dir, baseline, note):
+    """The terminal failed line for a topic this run left silent on the ORDINARY path.
+
+    THE MIRROR OF _stop_line_if_unterminated, ONE LEVEL OVER, AND IT EXISTS FOR THE SAME HARM.
+    That sweep covers a stop; this covers everything else. The SSE closer waits for every topic's
+    tail to SEE a terminal status and never consults the run record, so ONE topic that wrote
+    nothing keeps a finished run's stream open forever, and its row reads "queued" with nothing
+    running, on a run that ended an hour ago. The operator's only reading of that is "the engine
+    is stuck", and there is no door: no timeout, no way to retry a row the surface still believes
+    is in flight.
+
+    The stop path was swept and the ordinary path was not, which made the hole exactly as wide as
+    the ways a run can end WITHOUT a cancel: a raise inside the fact base phase, a bug in
+    run_batch above the gather, an error between registering the run and dispatching its topics.
+    Every one of those leaves topics that never reached run_topic, and run_topic is where all
+    three of the arms that write a terminal line live.
+
+    The guard is the same and it is not optional: a topic that already wrote a terminal line
+    keeps it, because status.jsonl is append-only and every surface reads the LAST terminal line,
+    so an unguarded append here demotes a blog that shipped.
+
+    `failed`, never `needs_review`: nothing asked the operator anything on this path, and
+    CLAUDE.md is explicit that a machine failure with no question in it is failed. Returns True
+    when a line was written, so the caller can commit exactly the topics it corrected.
+    """
+    lines = _read_status(out_dir)
+    if _terminal_line(lines[baseline:]) is not None:
+        return False
+    last = lines[-1] if lines else {}
+    _status_module().append_status(
+        str(out_dir), topic_slug,
+        stage=last.get("stage", "research"), event="end",
+        iter=last.get("iter", 1), status="failed", note=note,
+    )
+    return True
+
+
+def _sweep_unterminated(client_slug, baselines, note):
+    """Write the failed line for every baselined topic this run left without a verdict.
+
+    Called on BOTH ordinary exits, the crash and the clean return. The clean return looks
+    redundant and is not: it costs one small read per topic and it makes the invariant
+    unconditional, that a settled run leaves no topic without a terminal line, rather than one
+    that holds as long as run_topic's own three arms are the only way a topic can end.
+    """
+    for topic_slug, baseline in baselines.values():
+        out_dir = output_dir(client_slug, topic_slug)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if _fail_line_if_unterminated(client_slug, topic_slug, out_dir, baseline, note):
+            print(f"[runner] {client_slug}/{topic_slug} ended with no terminal line; "
+                  f"wrote failed so the stream can close", file=sys.stderr)
+            _schedule_commit(client_slug, topic_slug)
+
+
 def _stop_line_if_unterminated(client_slug, topic_slug, out_dir, baseline, note, root=None):
     """Append the terminal line for a topic THIS session left without a verdict.
 
@@ -3239,6 +3293,30 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
         # slot shrinks the queue by one for the life of the process, and five leaked slots brick
         # every brand in the repo until someone restarts the API.
         raise
+    except Exception as exc:
+        # THE SAME SWEEP FOR A RUN THAT DIED WITHOUT A CANCEL, and the arm above is why this one
+        # was missing rather than why it is unnecessary. Everything before the gather runs
+        # OUTSIDE any topic's own error handling: the fact base lock, the client materialize, the
+        # facts build, mark_phase. A raise in any of them skips the dispatch entirely, so no
+        # topic ever reaches run_topic, where all three arms that write a terminal line live, and
+        # the run's topics stay silent forever with no cancel in sight to sweep them.
+        #
+        # _batch_task catches and logs this, so without the sweep nothing anywhere ever writes
+        # those lines. Re-raised so that handler still records the crash.
+        _sweep_unterminated(
+            client_slug, baselines,
+            f"the run ended before this topic reached a verdict: {exc}",
+        )
+        raise
+
+    # AND ON THE CLEAN RETURN. Every dispatched topic has already written its own line by now, so
+    # this normally writes nothing at all; it is here so that "a settled run leaves no silent
+    # topic" is an invariant of run_batch rather than a property of run_topic's arms staying
+    # exhaustive. One small read per topic, once per run.
+    _sweep_unterminated(
+        client_slug, baselines,
+        "the run ended without this topic reaching a verdict",
+    )
 
     results = []
     for row, outcome in zip(rows, raw):

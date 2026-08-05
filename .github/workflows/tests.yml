@@ -158,3 +158,4 @@ jobs:
           python tests/cms_check.py
           python tests/env_check.py
           python tests/queue_check.py
+          python tests/silent_topic_check.py

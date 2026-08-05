@@ -3839,6 +3839,25 @@ async def _event_stream(run):
                 closing = {"run_id": run["run_id"], "live": False}
                 yield f"event: run\ndata: {json.dumps(closing)}\n\n"
                 return
+            # THE RUN ITSELF SETTLING IS ALSO AN END, and this is the backstop for the day the
+            # tails do not agree. The test above asks the FILES whether the work is over, which is
+            # right and is not sufficient: a topic that never wrote a line has a tail that can
+            # never turn terminal, so ONE silent topic held this stream open forever, with the
+            # watch view spinning on "0 running, 1 queued" for a run that ended an hour before.
+            # runner's sweeps are what stop a topic going silent in the first place; this is what
+            # makes the next silent topic cost a stale row instead of a stuck screen.
+            #
+            # The record is only consulted AFTER the tails disagree with it, so a live run is
+            # never cut short, and the final drain below is what keeps the last frames: a topic
+            # writes its terminal line strictly before finish_run clears `live`, so anything
+            # unread at this instant is still on disk and still ours to send.
+            if not run.get("live"):
+                for tail in tails:
+                    for line in tail.read_new():
+                        yield f"event: status\ndata: {json.dumps(line)}\n\n"
+                closing = {"run_id": run["run_id"], "live": False}
+                yield f"event: run\ndata: {json.dumps(closing)}\n\n"
+                return
             if time.monotonic() - last_beat >= SSE_HEARTBEAT_SECONDS:
                 yield ": ping\n\n"
                 last_beat = time.monotonic()
