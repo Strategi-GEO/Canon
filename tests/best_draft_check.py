@@ -230,6 +230,39 @@ def test_a_retry_never_replaces_a_higher_scoring_blog():
           _read(out / "blog.md") == "draft-96", _read(out / "blog.md"))
 
 
+def test_a_retry_is_told_its_iteration_budget_is_fresh():
+    """THE OTHER HALF OF THE RETRY CONTRACT, and the half that was missing.
+
+    _keep_prior_run_if_higher defends a retry's downside and is worthless if the retry never
+    runs. status.jsonl is append only ACROSS runs, so a retried topic hands its lead the prior
+    session's whole trail: four iterations, a terminal line, and the engine's restore line under
+    it. cafes-in-connaught-place was retried twice at 09:45 and 09:52 UTC on 2026-08-05; both
+    leads read that spent loop, concluded the 4-iteration cap was reached, wrote the same failed
+    82 back, and returned in about ninety seconds having dispatched no agent and scored nothing.
+    The operator pressed a button that could not do anything.
+
+    The engine cannot enforce this one: the loop runs inside the session. So the prompt names
+    the rule, and it names the prior score rather than leaving the lead to infer it from the
+    trail, because inferring from the trail is the whole of what went wrong.
+    """
+    print("\ntest_a_retry_is_told_its_iteration_budget_is_fresh")
+    row = {"topic": "T", "covers": "C", "prompts": ["p"], "topic_slug": "t", "extras": []}
+    fresh = runner._lead_prompt("c", row, "t", "/tmp/out")
+    retry = runner._lead_prompt("c", row, "t", "/tmp/out", prior_score=82)
+
+    for name, prompt in (("first run", fresh), ("retry", retry)):
+        check(f"the {name} lead is told the four iterations start at one",
+              "THE FOUR ITERATIONS ARE YOURS AND THEY START AT ONE" in prompt)
+        check(f"the {name} lead is told the output dir is a resume point",
+              "RESUME POINT, never a spent one" in prompt)
+    check("a first run is told nothing about a prior draft",
+          "previous run left a draft" not in fresh)
+    check("a retry is told the prior score", "scoring 82" in retry, retry[-600:])
+    check("a retry is told the engine defends that score", "defends that 82" in retry)
+    check("a retry is told to draft from the frozen dossier",
+          "the dossier is frozen" in retry)
+
+
 def test_a_crashed_session_still_installs_the_peak():
     """THE LIVE LOSS THIS TEST EXISTS FOR. sandoz-restaurants scored 93, then 88, then 89, and the
     session died on iteration 4 with the CLI's own "error result" surfacing as an exception.
@@ -297,6 +330,7 @@ def main():
                  test_hard_killed_prior_run_snapshot_is_not_installed,
                  test_lead_terminal_line_at_the_best_score_does_not_veto_the_install,
                  test_a_retry_never_replaces_a_higher_scoring_blog,
+                 test_a_retry_is_told_its_iteration_budget_is_fresh,
         test_a_crashed_session_still_installs_the_peak,
                  test_score_helpers):
         test()

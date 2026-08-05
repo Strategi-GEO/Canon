@@ -126,6 +126,22 @@ number**, because a fresh Agent W on iteration 3 has no memory of iterations 1 a
   if it scores lower, because keeping the higher-scoring draft there restores the original with
   its violation still in it.
 
+**THE 4-ITERATION CAP IS PER SESSION AND THE COUNT STARTS AT ONE, EVERY TIME.** `status.jsonl` is
+append only ACROSS runs, so a topic that has been run before hands its next lead the previous
+session's whole trail: four iterations, a terminal line, and the engine's restore line under it.
+None of that spends the new session's budget. The output dir is a RESUME POINT and never a spent
+one, and a retry is exactly the case: the operator read a failed blog and asked for another
+attempt, so answering with the verdict they just rejected answers a question nobody asked.
+`cafes-in-connaught-place` was retried twice on 2026-08-05 and both leads did precisely that,
+reading the spent loop, writing the same failed 82 back, and returning in ninety seconds having
+dispatched no agent and scored nothing. **THE ENGINE CANNOT ENFORCE THIS ONE**, because the loop
+runs inside the session, so `_lead_prompt` states the rule AND names the prior score outright
+rather than leaving it to be inferred from the trail, since inferring from the trail is the whole
+of what goes wrong. The downside is already covered and the lead is told so:
+`_keep_prior_run_if_higher` restores the earlier verdict set byte for byte if the retry ends
+lower, so a retry cannot make a blog worse and only the lead can make it better.
+`tests/best_draft_check.py` pins both halves.
+
 The session lead branches on the numeric SCORE and never on the verdict word. **The lead's
 IN-LOOP branch reads the SCORE and exactly ONE property of the form: whether it carries a
 Sourcing question.** SCORE >= 95 ENDS THE LOOP and nothing about that changes. At SCORE < 95,

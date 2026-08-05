@@ -148,7 +148,7 @@ def test_stop_keeps_a_blog_that_finished_microseconds_earlier():
         with _Roots():
             out = runner.output_dir("brand", "topic-0")
 
-            async def ships_then_hangs(client_slug, row, topic_slug, out_dir):
+            async def ships_then_hangs(client_slug, row, topic_slug, out_dir, *a, **k):
                 _append(out_dir, topic_slug, status="done", score=96, note="shipped")
                 await asyncio.sleep(10)
 
@@ -218,7 +218,7 @@ def test_a_resumed_topic_retries_its_own_dead_session():
             _append(out, "topic-0", status="stopped", note="run 1, stopped by the operator")
             attempts = []
 
-            async def dies_without_a_verdict(client_slug, row, topic_slug, out_dir):
+            async def dies_without_a_verdict(client_slug, row, topic_slug, out_dir, *a, **k):
                 attempts.append(1)
 
             runner._sdk_session = dies_without_a_verdict
@@ -330,7 +330,7 @@ def test_a_blog_that_shipped_still_reaches_the_ledger():
             async def on_topic_done(payload):
                 recorded.append(payload)
 
-            async def ships_then_hangs(client_slug, row, topic_slug, out_dir):
+            async def ships_then_hangs(client_slug, row, topic_slug, out_dir, *a, **k):
                 _append(out_dir, topic_slug, status="done", score=96, note="shipped")
                 await asyncio.sleep(10)
 

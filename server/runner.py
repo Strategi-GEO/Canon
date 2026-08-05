@@ -1352,7 +1352,17 @@ Target prompts (BINDING, each answered verbatim somewhere liftable):
 {extra_block}"""
 
 
-def _lead_prompt(client_slug, row, topic_slug, out_dir):
+def _lead_prompt(client_slug, row, topic_slug, out_dir, prior_score=None):
+    # What a PREVIOUS run left on disk, named to the lead rather than left for it to infer from
+    # the trail. Inferring is exactly what went wrong: the lead read a spent 4-iteration loop and
+    # closed the session against it. See the iteration budget rule below and
+    # _keep_prior_run_if_higher, which is the promise this paragraph makes on the engine's behalf.
+    prior = "" if prior_score is None else f"""
+  A previous run left a draft on disk scoring {prior_score}, with its eval.md and its frozen
+  dossier beside it. Use them: the dossier is frozen, so draft from it and improve on that
+  draft rather than starting from nothing. The engine defends that {prior_score} for you, and
+  restores it byte for byte if this session ends lower, so trying cannot make the blog worse
+  and you are the only thing that can make it better."""
     return f"""You are the SESSION LEAD for exactly ONE blog topic. Follow CLAUDE.md, the engine
 contract in this repo, exactly. You do not manage a queue and you never launch other blogs.
 
@@ -1435,6 +1445,16 @@ ONE property of the form, whether it carries a Sourcing question, and nothing el
   person holds this fact". Same area word, opposite implications for the loop.
 - Cap at 4 iterations, stop early after two consecutive no-gain iterations, and stop
   immediately on a live Sourcing question per the branch above.
+- THE FOUR ITERATIONS ARE YOURS AND THEY START AT ONE. Count only the iterations YOU
+  dispatch in THIS session. status.jsonl is append only ACROSS runs, so a topic that has
+  been run before hands you a trail of another session's iterations, and its terminal
+  line, and the engine's own restore line under that. None of it is yours and none of it
+  spends your budget. The output dir is a RESUME POINT, never a spent one.
+  This is what a RETRY is: the operator read a failed blog and asked for another attempt.
+  Reading that trail, concluding the cap is reached and writing a terminal line is
+  answering them with the verdict they just rejected, and it ends the session in ninety
+  seconds having dispatched no agent and scored nothing. It has happened, twice in a row,
+  on the same blog.{prior}
 - ONCE ANY ITERATION SCORES ABOVE 90, THE LOOP ONLY CLIMBS. From then on continue only
   while each new score is STRICTLY HIGHER than the best so far; the first iteration that
   fails to beat the best ends the loop, and the best draft is the result. A draft above 90
@@ -1555,7 +1575,7 @@ def _session_options(research=True):
     )
 
 
-async def _sdk_session(client_slug, row, topic_slug, out_dir):
+async def _sdk_session(client_slug, row, topic_slug, out_dir, prior_score=None):
     """One blog, one real SDK session. One session per BLOG, never per batch:
     a batch is a barrier where five blogs wait for the slowest, the revise loop
     runs 0 to 4 iterations so per-blog variance is huge, and one dead blog
@@ -1579,7 +1599,8 @@ async def _sdk_session(client_slug, row, topic_slug, out_dir):
     # so a stubborn child may still need the SDK's atexit reaper. Closing deterministically is
     # strictly better than not, and the remaining gap is the SDK's to shut.
     try:
-        async with aclosing(query(prompt=_lead_prompt(client_slug, row, topic_slug, out_dir),
+        async with aclosing(query(prompt=_lead_prompt(client_slug, row, topic_slug, out_dir,
+                                                      prior_score=prior_score),
                                   options=options)) as session:
             async for _message in session:
                 # Consume and DISCARD every message: the orchestrator records
@@ -1954,7 +1975,7 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
                     note=f"session died without a terminal status; retry {attempt - 1} of "
                          f"{retries} with a fresh SDK session",
                 )
-            await _sdk_session(client_slug, row, topic_slug, out_dir)
+            await _sdk_session(client_slug, row, topic_slug, out_dir, prior_score=prior_score)
 
             lines = _read_status(out_dir)
             # Only lines THIS session appended. Over the whole file, a resumed topic finds the
