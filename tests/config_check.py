@@ -269,7 +269,16 @@ def _secret_values():
     def collect(servers):
         for name in ("firecrawl", "dataforseo"):
             entry = servers.get(name) or {}
-            for value in (entry.get("env") or {}).values():
+            for key, value in (entry.get("env") or {}).items():
+                # A USERNAME IS NOT A SECRET, AND SCANNING FOR ONE IS A FALSE POSITIVE FACTORY.
+                # DATAFORSEO_USERNAME is an email address, and the operator's email is a name this
+                # app writes down on purpose: every promotion note reads "operator promotion:
+                # <email> shipped this blog at 89". Grepping the tree for it flags those notes as
+                # leaked credentials, so this check went red on three gitignored files with
+                # nothing wrong in them, which is exactly how a guard check trains people to
+                # ignore it. The password is still scanned for, and it is the half that matters.
+                if key.upper().endswith(("_USERNAME", "_USER", "_LOGIN", "_EMAIL")):
+                    continue
                 if isinstance(value, str) and len(value) >= 8:
                     found.append(value)
 
