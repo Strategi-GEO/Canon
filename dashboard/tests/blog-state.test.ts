@@ -34,7 +34,7 @@ import {
   type BlogStateFacts,
   type ClientAction,
 } from "../src/lib/blog-state.ts";
-import { BELOW_BAR_FLOOR, SHIP_BAR, adminFailedTag, scoreTone } from "../src/lib/blog-score.ts";
+import { BELOW_BAR_FLOOR, SHIP_BAR, adminFailedTag, scoreChipClass, scoreTone } from "../src/lib/blog-score.ts";
 import {
   ADMIN_GATE_DOORS,
   adminGateAllows,
@@ -1487,4 +1487,39 @@ test("adminUrgency ranks every state distinctly, actionable first", () => {
       assert.ok(adminUrgency(mine) < adminUrgency(theirs), `${mine} must outrank ${theirs}`);
     }
   }
+});
+
+test("a score wears its own band everywhere, chip form included", () => {
+  // The Create tab painted its score trail by terminal STATUS, so `done` took the brand primary
+  // and a shipped 91 rendered amber beside a green "shipped" tag, in the one view whose whole
+  // job is showing the climb. Both forms now read the same two constants, so the number means
+  // its band on every surface.
+  const bands: [number, "ship" | "owed" | "trouble"][] = [
+    [100, "ship"],
+    [SHIP_BAR, "ship"],
+    [91, "ship"],
+    [SHIP_BAR - 1, "owed"],
+    [85, "owed"],
+    [BELOW_BAR_FLOOR, "owed"],
+    [BELOW_BAR_FLOOR - 1, "trouble"],
+    [72, "trouble"],
+    [0, "trouble"],
+  ];
+  for (const [score, tone] of bands) {
+    assert.equal(scoreTone(score), tone, `${score} should be ${tone}`);
+    assert.match(scoreChipClass(score), /border-.+ bg-.+ text-.+/, `${score} chip is incomplete`);
+  }
+
+  // The three bands must be visually DISTINCT, or the trail says nothing it did not already say.
+  const chips = new Set([90, 85, 72].map((s) => scoreChipClass(s)));
+  assert.equal(chips.size, 3, "ship, owed and trouble must not share a chip class");
+
+  // Green for ships, amber for below bar, red under the floor: the operator's own words.
+  assert.match(scoreChipClass(91), /text-ship/);
+  assert.match(scoreChipClass(85), /text-review/);
+  assert.match(scoreChipClass(72), /text-fail/);
+
+  // No score is not a band, and must not borrow one.
+  assert.equal(scoreTone(null), null);
+  assert.match(scoreChipClass(null), /text-muted-foreground/);
 });

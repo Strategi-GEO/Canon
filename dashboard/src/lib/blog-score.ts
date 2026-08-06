@@ -116,3 +116,29 @@ export function scoreClass(score: number | null): string {
   const tone = scoreTone(score);
   return tone ? SCORE_TONE_TEXT[tone] : "text-muted-foreground";
 }
+
+/** The muted chip for a number that has no band: no score at all, or a tone that never carries one. */
+const SCORE_CHIP_NEUTRAL = "border-border bg-muted text-muted-foreground";
+
+/**
+ * The same three bands as scoreClass, as a BORDERED CHIP for surfaces that box the number
+ * instead of printing it bare.
+ *
+ * It exists because the Create tab painted its score trail by terminal STATUS, so `done` took
+ * the brand primary and a shipped 91 rendered amber next to a green "shipped" tag, in the one
+ * view whose whole job is showing the score climb. A number means its band wherever it appears,
+ * and the band is decided in this file or it drifts: that surface reached for `text-primary`
+ * precisely because there was no chip form here to reach for instead.
+ */
+const SCORE_TONE_CHIP: Record<StateTone, string> = {
+  busy: SCORE_CHIP_NEUTRAL,
+  owed: "border-review/25 bg-review-bg text-review",
+  waiting: SCORE_CHIP_NEUTRAL,
+  ship: "border-ship/30 bg-ship-bg text-ship",
+  trouble: "border-fail/25 bg-fail-bg text-fail",
+};
+
+export function scoreChipClass(score: number | null): string {
+  const tone = scoreTone(score);
+  return tone ? SCORE_TONE_CHIP[tone] : SCORE_CHIP_NEUTRAL;
+}

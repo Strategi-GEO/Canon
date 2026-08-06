@@ -21,9 +21,9 @@ import { ArrowRight, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/shell/status-badge";
 import { cn } from "@/lib/utils";
+import { scoreChipClass } from "@/lib/blog-score";
 import { formatElapsed } from "@/lib/format";
 import { SEGMENTS, type TopicRun } from "@/components/create/use-run-stream";
-import type { RunStatus } from "@/types";
 
 export function TopicProgress({
   topic,
@@ -277,28 +277,6 @@ function TerminalActions({
 }
 
 /**
- * done always means the first eval hit 90 or above, so status alone decides the highlight.
- *
- * The stopped arm is explicit rather than left to the fail default below, and it is the one arm
- * here no compiler would have caught: this is an if-chain, so a stopped topic would have taken
- * the red tint in silence, and its last score would have been painted as the score of a blog
- * that went wrong. It scored what it scored, and then a person stopped the run. That is not a
- * verdict, so it wears no verdict colour.
- */
-function terminalChipClass(status: RunStatus): string {
-  if (status === "done") {
-    return "border-primary/30 bg-primary/10 text-primary";
-  }
-  if (status === "needs_review") {
-    return "border-review/25 bg-review-bg text-review";
-  }
-  if (status === "stopped") {
-    return "border-muted-foreground/40 bg-muted text-muted-foreground";
-  }
-  return "border-fail/25 bg-fail-bg text-fail";
-}
-
-/**
  * The score trail is the signature of this product: 72 -> 89 is a blog that climbed seventeen
  * points in one revise and still stopped a point short of the bar, and 84 -> 84 -> 87 is the same
  * story over three iterations, which is a different problem entirely from a blog that never
@@ -313,8 +291,6 @@ function ScoreTrail({ topic }: { topic: TopicRun }) {
     return null;
   }
 
-  const settled = topic.status !== "running";
-
   return (
     <ol
       className="mt-3 flex flex-wrap items-center gap-1"
@@ -323,7 +299,6 @@ function ScoreTrail({ topic }: { topic: TopicRun }) {
       aria-label={`Score trail: ${entries.map(([, score]) => score).join(" then ")}`}
     >
       {entries.map(([iter, score], i) => {
-        const last = i === entries.length - 1;
         return (
           <li key={iter} className="flex items-center gap-1">
             {i > 0 ? (
@@ -334,9 +309,12 @@ function ScoreTrail({ topic }: { topic: TopicRun }) {
             <span
               className={cn(
                 "machine rounded border px-1.5 py-0.5 text-xs leading-none font-medium",
-                last && settled
-                  ? terminalChipClass(topic.status)
-                  : "border-border bg-muted text-muted-foreground",
+                // EVERY chip wears its OWN band, not just the last one and not the run's status.
+                // The trail exists to show the climb, and 72 -> 91 reads as a climb only when the
+                // 72 is red and the 91 is green; painting the earlier chips grey threw away the
+                // very comparison the row is for. The status tag sits beside this and carries the
+                // verdict, so the numbers are free to mean what numbers mean.
+                scoreChipClass(score),
               )}
               title={`Iteration ${iter} scored ${score}`}
             >
