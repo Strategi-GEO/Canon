@@ -100,6 +100,27 @@ INDUSTRY_CATEGORIES = {
 META_TITLE_MAX = 60
 META_DESCRIPTION_TARGET = 155
 
+# The CMS field's OWN limit, and unlike the target above this one is HARD. The editor counts the
+# field and shows "211/160" in red, so an over-length description is not a display nicety, it is
+# a chore handed to a person on every single push. Live on how-leather-becomes-suede: 211 against
+# 160, of which a trailing source parenthetical was 53.
+META_DESCRIPTION_MAX = 160
+
+# A trailing source parenthetical, anchored to the END and required to carry a year. The TL;DR
+# cites inline because the DRAFT must; a search snippet is the one place that provenance buys
+# nothing, since nobody clicks a result for its citation. Requiring the year keeps "(GST
+# included)" and any mid-sentence aside, which are not citations and do belong.
+_TRAILING_CITATION = re.compile(r"\s*\([^()]*\d{4}[^()]*\)\s*\.?\s*$")
+
+# Words that GRAMMATICALLY GOVERN what follows them, so a bracket attached to one is part of the
+# sentence and not an aside. "...the loan closes before retirement, per (Source, 2025)." becomes
+# "...before retirement, per." the moment the bracket is lifted, which is a worse artifact than
+# the length it saves. Caught by tests/cms_check.py on a real Vacation Village excerpt.
+# ponytail: a stop-list, not a parser. Grows a word at a time when a real excerpt trips it.
+_GOVERNS_ITS_CITATION = frozenset({
+    "per", "from", "in", "at", "by", "of", "to", "via", "and", "with", "see", "source", "sources",
+})
+
 # The shortest an SEO title may get by cutting. Below this the cut has destroyed the title
 # rather than shortened it: "FAQ" is not a usable SEO title for anything.
 META_TITLE_MIN = 20
@@ -408,12 +429,45 @@ def _ends_on_abbreviation(text):
     return last in _ABBREVIATIONS or bool(re.fullmatch(r"[a-z]\.", last))
 
 
+def _strip_trailing_citation(text):
+    """Drop a trailing source parenthetical, keeping the sentence a sentence.
+
+    The regex eats the closing full stop along with the bracket, so one is put back: the point is
+    to shorten the description, never to leave it unpunctuated. Returns the input untouched when
+    stripping would empty it, because no description beats an empty one.
+    """
+    stripped = _TRAILING_CITATION.sub("", text).strip().rstrip(",;")
+    if not stripped:
+        return text
+    if stripped.rsplit(" ", 1)[-1].strip(",;:.").lower() in _GOVERNS_ITS_CITATION:
+        return text
+    return stripped if stripped[-1] in ".!?" else f"{stripped}."
+
+
+def _fit_description(text):
+    """Cut to META_DESCRIPTION_MAX at a WORD boundary, marking the cut with an ellipsis."""
+    if len(text) <= META_DESCRIPTION_MAX:
+        return text
+    cut = text[:META_DESCRIPTION_MAX - 1].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return f"{cut}…" if cut else f"{text[:META_DESCRIPTION_MAX - 1]}…"
+
+
 def meta_description_from(excerpt):
     """An SEO description, DERIVED from the TL;DR rather than written fresh.
 
-    Takes WHOLE SENTENCES up to the target, and if even the first sentence runs long it is
-    used whole rather than cut. A complete true sentence that Google truncates on display
-    beats a mangled fragment stored in the client's CMS forever.
+    Takes WHOLE SENTENCES up to the target, then GUARANTEES the CMS field's hard limit.
+
+    THE FIRST SENTENCE IS NO LONGER EXEMPT FROM THE LIMIT, which reverses what stood here. The
+    old rule let a long opening sentence through whole, arguing that "a complete true sentence
+    Google truncates on display beats a mangled fragment stored in the client's CMS forever".
+    The premise was wrong about where the fragment lands: the CMS field has its OWN counter, an
+    over-length value shows as 211/160 in red, and the operator has to hand-edit it before the
+    article can go out. So the choice was never "whole sentence versus fragment", it was "we cut
+    it at a word boundary" versus "a person cuts it, on every push". Two things now keep the cut
+    rare rather than routine: the trailing citation goes first, which is dead weight in a snippet
+    and was 53 of the 211 characters on the live case, and only what still overflows is trimmed,
+    at a word boundary with an ellipsis so the cut is visible rather than looking like the writer
+    stopped mid-thought.
 
     WHY THIS IS NOT A MODEL CALL, which is the obvious "better" implementation and is wrong:
     a meta description is published, client-facing copy. Every other client-facing word this
@@ -422,7 +476,8 @@ def meta_description_from(excerpt):
     writing this field fresh at push time would bypass BOTH: nothing downstream of the eval
     inspects it, so "Bangalore's best microbrewery" or a yield claim would ship to a client's
     CMS with no gate having ever seen it. Deriving from the TL;DR inherits all of that
-    vetting for free, because the TL;DR already passed it.
+    vetting for free, because the TL;DR already passed it. Cutting invents no words either, which
+    is what keeps that guarantee intact here.
     """
     excerpt = (excerpt or "").strip()
     if not excerpt:
@@ -434,13 +489,14 @@ def meta_description_from(excerpt):
 
     out = ""
     for sentence in sentences:
-        candidate = f"{out} {sentence}".strip()
+        candidate = f"{out} {_strip_trailing_citation(sentence)}".strip()
         # `out and` is what guarantees the first sentence is always taken whole, however
         # long: the alternative is returning nothing for a piece with one long TL;DR line.
+        # _fit_description below is what then holds it to the field's hard limit.
         if out and len(candidate) > META_DESCRIPTION_TARGET:
             break
         out = candidate
-    return out or None
+    return _fit_description(out) if out else None
 
 
 def category_for(industry):

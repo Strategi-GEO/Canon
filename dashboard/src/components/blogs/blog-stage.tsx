@@ -1467,6 +1467,18 @@ function ReviewStamp({ review }: { review: BlogReviewState }) {
   if (sent === null) {
     return null;
   }
+  // A PUBLISHED article's send stamp is PLUMBING, and saying "Sent for client review" over it
+  // reports an act the operator did not choose. Post to CMS stamps the send so the portal has a
+  // pinned version to serve (servedVersion reads it for `published`), which is the only reason
+  // the timestamp exists on this path: posting is a RELEASE, and the client sees it under Posted,
+  // never under Ready to post. Both chips rendered together and read as two different decisions.
+  //
+  // AN APPROVAL STILL SHOWS, published or not, and that is the whole of the exception: approval
+  // is a real act by a real person and it is not superseded by our pushing the article. What is
+  // suppressed is only the un-approved send line, whose story PublishedChip already tells better.
+  if (review.client_approved === null && review.published !== null) {
+    return null;
+  }
   // The approval is the later act and supersedes the send in this one line. Both remain
   // readable: the tooltip carries the absolute time and the person for whichever is shown, and
   // the send date is not lost, because an approval cannot exist without one.

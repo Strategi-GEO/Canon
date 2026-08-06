@@ -344,11 +344,33 @@ check("meta_title is never longer than the source title", len(payload.meta_title
 # meta_description: whole sentences only.
 two = "First sentence here. Second sentence here."
 check("short TL;DRs are used whole", payload.meta_description_from(two) == two)
-long_first = "A" * 200 + ". Second."
-check(
-    "a long first sentence is kept WHOLE, never cut mid-thought",
-    payload.meta_description_from(long_first) == "A" * 200 + ".",
-)
+# The CMS field's limit is HARD: an over-length value shows as 211/160 in red and the operator
+# hand-edits it before every push. A long first sentence used to be exempt; it no longer is.
+long_first = "word " * 60 + "end. Second."
+fitted = payload.meta_description_from(long_first)
+check("a long first sentence is CUT to the field's hard limit",
+      len(fitted) <= payload.META_DESCRIPTION_MAX, f"{len(fitted)} chars")
+check("the cut is marked, so it does not read as a writer stopping mid-thought",
+      fitted.endswith("…"), fitted[-30:])
+check("the cut lands on a word boundary", "  " not in fitted and not fitted.endswith(" …"),
+      fitted[-30:])
+
+# A trailing source parenthetical is a third of the field and buys nothing in a search snippet.
+cited = ("Suede is the flesh side of a hide buffed into a soft nap, while full grain leather "
+         "comes from the tough outer grain (Leather Working Group; Leather Naturally, March 2026).")
+trimmed = payload.meta_description_from(cited)
+check("a trailing citation is dropped from the description",
+      "Leather Working Group" not in trimmed, trimmed)
+check("dropping it leaves a real sentence, not a dangling clause",
+      trimmed.endswith("."), trimmed[-30:])
+check("and the live 211-character case now fits", len(trimmed) <= payload.META_DESCRIPTION_MAX,
+      f"{len(trimmed)} chars")
+
+# But NOT when the sentence grammatically governs the bracket: lifting it strands the connector.
+governed = "The loan closes before retirement, per (Reserve Bank of India, 2025)."
+check("a citation its sentence governs is KEPT rather than stranding 'per'",
+      payload.meta_description_from(governed).endswith("2025)."),
+      payload.meta_description_from(governed))
 many = " ".join(f"Sentence number {i} padding padding padding." for i in range(10))
 desc = payload.meta_description_from(many)
 check("sentences stop near the target", len(desc) <= payload.META_DESCRIPTION_TARGET + 60, str(len(desc)))
