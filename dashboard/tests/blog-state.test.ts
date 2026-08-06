@@ -34,8 +34,13 @@ import {
   type BlogStateFacts,
   type ClientAction,
 } from "../src/lib/blog-state.ts";
-import { adminFailedTag, scoreTone } from "../src/lib/blog-score.ts";
-import { adminGateAllows, type GateForm, type GateRecord } from "../src/lib/gate-contract.ts";
+import { BELOW_BAR_FLOOR, SHIP_BAR, adminFailedTag, scoreTone } from "../src/lib/blog-score.ts";
+import {
+  ADMIN_GATE_DOORS,
+  adminGateAllows,
+  type GateForm,
+  type GateRecord,
+} from "../src/lib/gate-contract.ts";
 
 const ALL_STATES: BlogState[] = [
   "generating",
@@ -249,9 +254,9 @@ test("adminActions: the full policy, state by state", () => {
     // three controls the database refuses. A ROW VALUE IS ALL THIS TEST CHECKS: it went green on
     // both of those, so the test that actually governs this row is the lower-layer one below.
     answers_submitted: ["answer", "edit", "comments", "send"],
-    // One of exactly TWO states carrying `send` (the other is failed): this is where the
-    // operator decides the client should see the article. Publish sits beside it because the
-    // operator may post to the CMS directly, before the client is ever involved.
+    // One of exactly THREE states carrying `send`: this is where the operator decides the client
+    // should see the article. Publish sits beside it because the operator may post to the CMS
+    // directly, before the client is ever involved.
     internal_review: ["edit", "comments", "send", "publish"],
     // Publish ONLY: every act that touches the bytes stays absent while the client reads, and
     // there is no send because the article has already been sent. Posting to the CMS is the
@@ -266,12 +271,13 @@ test("adminActions: the full policy, state by state", () => {
     approved: ["publish"],
     // TERMINAL AND EMPTY: the article is live in the CMS and there is nothing left to offer.
     published: [],
-    // The admin-review bench plus BOTH ship doors: a failed draft the operator has read and
-    // likes goes to the client (`promote`) or to the CMS (`publish`) on their own authority,
-    // without waiting for a rerun to reach 95. Both append the same operator-authority `done`
-    // verdict, so the trail always reads "failed at 87, then a person shipped it". Retrying
-    // stays a RUN, reached by link, not a verb here.
-    failed: ["edit", "comments", "promote", "publish"],
+    // The admin-review bench plus BOTH ship doors, and the client-facing one is now `send`, the
+    // same verb internal_review carries. A separate `promote` verb described the identical act
+    // with a different word and put two buttons on one bench; the engine promotes a failed topic
+    // inside the send route (blog_edit.promote_if_failed) instead, so the trail still reads
+    // "failed at 87, then a person shipped it" and no audit line was lost with the button.
+    // Retrying stays a RUN, reached by link, not a verb here.
+    failed: ["edit", "comments", "send", "publish"],
     stopped: [],
     unknown: [],
   };
@@ -333,23 +339,52 @@ test("the admin cannot touch the BYTES of an article the client is reading", () 
   assert.deepEqual([...adminActions("client_review")], ["publish"]);
 });
 
-test("send lives in exactly two states, and a sent article stays with the client", () => {
-  // The operator's rule: `send` is the act of handing the article over, so it belongs where
-  // that decision is made (internal_review) and where a sub-95 draft is shipped on the
-  // operator's authority (failed, as `promote`). Once an article is with the client there is
-  // no re-send: changes_requested resolves comments against bytes the client already reads.
+test("send lives in exactly three states, and a sent article stays with the client", () => {
+  // The operator's rule: `send` is the act of handing the article over, so it belongs where that
+  // decision is made (internal_review), where the sticky submit stamp pins a landed rerun
+  // (answers_submitted), and where a sub-90 draft is released on the operator's authority
+  // (failed). Once an article is with the client there is no re-send: changes_requested resolves
+  // comments against bytes the client already reads.
   const withSend = ALL_STATES.filter((state) => adminCan(state, "send"));
-  assert.deepEqual(withSend, ["answers_submitted", "internal_review"]);
+  assert.deepEqual(withSend, ["answers_submitted", "internal_review", "failed"]);
   assert.equal(adminCan("changes_requested", "send"), false, "no re-send once it is with them");
   assert.equal(adminCan("client_review", "send"), false, "already sent");
-  // failed ships through `promote`, the send door that records the sub-95 decision.
-  assert.equal(adminCan("failed", "promote"), true);
+  // THE BELOW-BAR RELEASE IS THE SAME VERB, which is the whole of the change: a failed draft the
+  // operator has read leaves by the button every other shipped blog leaves by, and the engine
+  // promotes it on the way (server/app.py's send route calling blog_edit.promote_if_failed).
+  assert.equal(adminCan("failed", "send"), true);
+  // AND THE STATES THAT MUST NOT GAIN IT WITH IT. A hold is not discharged by a release, a
+  // stopped run has no verdict to release, and a live run owns the bytes.
+  for (const state of ["has_questions", "stopped", "generating"] as BlogState[]) {
+    assert.equal(adminCan(state, "send"), false, `${state}: nothing here is the operator's to send`);
+  }
+});
+
+test("`promote` is gone as an operator verb, from the bench and from the gate table", () => {
+  // THE VERB IS DELETED, NOT PARKED. It named one half of a two-door model where a below-bar
+  // draft shipped through a button of its own, and the send absorbed it whole. TypeScript already
+  // refuses `adminCan(state, "promote")` because AdminAction no longer carries the member, and
+  // that is exactly why this assertion is written over STRINGS: `npm test` strips types without
+  // checking them, so a union member restored by a future edit would be caught only by the
+  // typecheck script and never by this suite.
+  for (const state of ALL_STATES) {
+    assert.ok(
+      !(adminActions(state) as readonly string[]).includes("promote"),
+      `${state}: the promote verb is on the bench again, and there is only one ship door`,
+    );
+  }
+  // The gate table is the other half: a door surviving its verb would keep the clauses alive for
+  // a control nothing can reach, and gate-contract.test.ts's coverage test reads this same map.
+  assert.ok(
+    !Object.keys(ADMIN_GATE_DOORS).includes("promote"),
+    "the promote door outlived the promote verb",
+  );
 });
 
 test("posting to the CMS is available wherever the operator may decide to", () => {
   // The operator's rule: internal review, with client, changes requested, approved and failed.
-  // A failed blog is promoted first by the engine (server/cms/routes.py _promote_if_failed),
-  // so the CMS gate still only ever sees the literal `done`.
+  // A failed blog is promoted first by the engine (blog_edit.promote_if_failed, the helper the
+  // send door now shares), so the CMS gate still only ever sees the literal `done`.
   for (const state of [
     "internal_review",
     "client_review",
@@ -411,7 +446,7 @@ test("answering is the only door when questions are open", () => {
  *
  * A STICKY PRODUCER IS WHAT TURNS THAT STALL INTO THE HAPPY PATH. server/app.py applies no
  * staleness and no expiry to the answers-submitted stamp, deliberately and with the reasoning
- * written out there, so a rerun landing clean at >= 95 with nothing new to ask leaves the
+ * written out there, so a rerun landing clean at >= 90 with nothing new to ask leaves the
  * article pinned at `answers_submitted` until a SEND moves it past. An empty bench there meant
  * the single act that clears the pin was the single act the admin could not reach, so every
  * article taking the ordinary route through the question loop became undeliverable.
@@ -464,15 +499,15 @@ const EXIT_OWNER: Record<BlogState, "run" | "client" | "admin" | "terminal"> = {
   // that already shipped. A push that genuinely broke is re-driven from the CMS, which is where
   // a published post is administered.
   published: "terminal",
-  // Two exits now, and the admin owns the one on the bench: promotion, the operator shipping a
-  // sub-95 draft they have read on their own authority. Generating the topic again remains the
+  // Two exits now, and the admin owns the one on the bench: the SEND, the operator releasing a
+  // sub-90 draft they have read on their own authority. Generating the topic again remains the
   // other exit and remains a RUN (the stage links to the Create tab with the row pre-ticked),
   // but a state an admin act can leave must carry that act, which is what this classification
   // asserts of the bench below.
   failed: "admin",
   // These two leave only by generating the topic again, which is a new run and not a verb on
   // this page, so an empty bench is honest for both: a stopped topic has no verdict at all, so
-  // there is nothing to promote.
+  // there is nothing to release.
   stopped: "run",
   unknown: "run",
 };
@@ -587,6 +622,12 @@ function lowerLayerAccepts(
     // hosted build by 009:202. A WHERE clause rather than a pre-check, so zero rows IS the
     // refusal, and `changes_requested` counts exactly the top-level client comments in state open
     // or applying that the clause tests.
+    //
+    // EVERYTHING THE ABSORBED PROMOTE DOOR USED TO CHECK IS ALREADY ANSWERED ABOVE, by the
+    // contract rather than restated here: terminal failed with a scored draft on the wire
+    // (DONE_TOPIC_ENGINE and PROMOTES_SCORED_DRAFT) and no live run (SEND_NOT_IN_FLIGHT). What
+    // is left for this ladder is the pair every send has always carried one level down, and a
+    // below-bar release ends in the same mark_sent an ordinary one does.
     case "send":
       return !facts.client_approved && (facts.changes_requested ?? 0) === 0;
     // Both doors behind this verb refuse an approved article, and the answer door is where that
@@ -595,14 +636,6 @@ function lowerLayerAccepts(
     // bench grants no `answer`, so this is belt and braces rather than the thing that saves it.
     case "answer":
       return !facts.client_approved;
-    // The promote door already asked the contract everything record-shaped (terminal failed,
-    // a scored draft on the wire, no live run) through the adminGateAllows call above. What
-    // remains for this ladder is the same pair every send carries one level down: the
-    // approved lock (_require_not_approved runs inside api_promote_blog) and mark_sent's
-    // open-suggestion WHERE clause, because a promotion ENDS in the same mark_sent a send
-    // does.
-    case "promote":
-      return !facts.client_approved && (facts.changes_requested ?? 0) === 0;
     // NOT GATED ON ANY FACT IN THIS RECORD: the CMS push turns on which VERSION the client
     // approved against which is latest, which BlogStateFacts does not carry. Modelling a rule
     // this record cannot express would be inventing a refusal.
@@ -667,7 +700,7 @@ const SITUATIONS: Situation[] = [
     moves: "answer",
   },
   {
-    // SITUATION (b), the happy path. A rerun that lands clean at >= 95 with nothing new to ask
+    // SITUATION (b), the happy path. A rerun that lands clean at >= 90 with nothing new to ask
     // leaves the article pinned here by the sticky submit stamp, and only a send moves it.
     what: "the rerun landed clean and left the article pinned by the sticky submit stamp",
     facts: { status: "done", answers_submitted: "t" },
@@ -753,18 +786,30 @@ const SITUATIONS: Situation[] = [
     moves: "run",
   },
   {
-    // The operator's own exit from a failure. The loop stalled below 95 with nothing left to
-    // ask, the best draft keeps its evaluator score on the wire, and promotion moves it: ship
-    // it on the operator's authority and send it to the client in the same press. The
-    // SCORELESS failure is deliberately not modelled as a situation: the promote door refuses
-    // it at offer time, so nothing renders for it, and the REACHABLE walk above is what
-    // exercises that half. A failed topic with no scored draft really does leave only by
-    // generating again.
-    what: "the loop stalled below 95 with nothing to ask, and the operator ships it anyway",
-    facts: { status: "failed", score: 92 },
+    // The operator's own exit from a failure, and it is the ORDINARY send verb now. The loop
+    // stalled below 90 with nothing left to ask, the best draft keeps its evaluator score on the
+    // wire, and one press releases it: the route promotes it on the operator's authority
+    // (blog_edit.promote_if_failed) and stamps the send in the same act. The SCORELESS failure
+    // is modelled below rather than here, because the door refuses it and a situation names the
+    // act that MOVES the article.
+    what: "the loop stalled below 90 with nothing to ask, and the operator ships it anyway",
+    facts: { status: "failed", score: 87 },
     form: "absent",
     state: "failed",
-    moves: "promote",
+    moves: "send",
+  },
+  {
+    // THE OTHER HALF OF THE FAILED BENCH, and it is the boundary the one ship door did not
+    // widen. No evaluator ever scored a draft, so there is nothing the operator can take
+    // responsibility for: the send door refuses it through PROMOTES_SCORED_DRAFT, the promotion
+    // never happens, and the status stays failed. `moves: "run"` is the honest answer, and the
+    // stronger assertion it carries is the one that matters here: every control this bench
+    // renders over this record must be withheld or declared, never a press that fails.
+    what: "the run died before any evaluator scored a draft, so there is nothing to release",
+    facts: { status: "failed" },
+    form: "absent",
+    state: "failed",
+    moves: "run",
   },
 ];
 
@@ -965,7 +1010,7 @@ const AUDIT_FORMS: [string, GateForm][] = [
   ["stale and answered", { stale: true, answered: true }],
 ];
 
-// GateRecord rather than BlogStateFacts, for exactly one field: the promote door reads the
+// GateRecord rather than BlogStateFacts, for exactly one field: both ship doors read the
 // evaluator's score off the admin wire, and the failed rows below enumerate both sides of it.
 const REACHABLE: Record<BlogState, GateRecord[]> = {
   // Both roads into a live run: a first run with no terminal line behind it, and a re-run whose
@@ -1010,12 +1055,12 @@ const REACHABLE: Record<BlogState, GateRecord[]> = {
     { status: "done", sent_to_client: "t", client_approved: "t", published: "t" },
     { status: "done", published: "t" },
   ],
-  // TWO RECORDS, split by the fact the promote door turns on. The scored one is the ordinary
-  // failure (a loop that stalled below 95 keeps its best draft's score on the wire) and is what
-  // exercises the promote act's accepted path. The scoreless one is the crash or preflight
-  // refusal with nothing shippable in it: the door refuses it at offer time, so the bench
-  // renders nothing and its only exit really is generating again.
-  failed: [{ status: "failed", score: 92 }, { status: "failed" }],
+  // TWO RECORDS, split by the fact the ship doors turn on. The scored one is the ordinary
+  // failure (a loop that stalled below 90 keeps its best draft's score on the wire) and is what
+  // exercises the send's accepted below-bar path. The scoreless one is the crash or preflight
+  // refusal with nothing shippable in it: both doors refuse it, `publish` is withheld outright
+  // and the send is the declared refusal above, so its only exit really is generating again.
+  failed: [{ status: "failed", score: 87 }, { status: "failed" }],
   stopped: [{ status: "stopped" }],
   unknown: [{ status: "unknown" }],
 };
@@ -1031,9 +1076,14 @@ const REACHABLE: Record<BlogState, GateRecord[]> = {
  * AnswerQuestions withheld the control itself, and nothing here could tell that the comment was
  * wrong; round five moved the claim into a predicate and got it wrong in a new place.
  *
- * `send` IS THE ONE ACT STILL DECLARED RATHER THAN EVALUATED, because SendToClient stays mounted
- * on the bench grant and greys itself, so its refusal is a rendering decision in a React component
- * this process cannot call. DECLARED_REFUSALS is where that is written down and checked for rot.
+ * `send` IS THE ONE ACT STILL DECLARED RATHER THAN EVALUATED, and it is the CONSERVATIVE reading
+ * on purpose. SendToClient carries its own blockedReason, which greys the button with a sentence
+ * chosen per status, and whether that sentence or nothing at all reaches the operator is a
+ * rendering decision inside a React component this process cannot call. Assuming the control is
+ * OFFERED is the strict direction: it forces every gate-refused send to be explained in
+ * DECLARED_REFUSALS below, where the explanation is written down and checked for rot. Evaluating
+ * the gate here instead would make the entries vanish and the demand with them, which is the
+ * weaker suite, not the more accurate one.
  */
 function isOffered(action: AdminAction, facts: BlogStateFacts, form: GateForm): boolean {
   if (!adminCan(blogState(facts), action)) {
@@ -1056,12 +1106,24 @@ function isOffered(action: AdminAction, facts: BlogStateFacts, form: GateForm): 
  */
 const DECLARED_REFUSALS: Record<string, string> = {
   "answers_submitted:send":
-    "send-to-client.tsx blockedReason (:325) greys the button for every status that is not done " +
-    "and names the act that comes first, and it names a DIFFERENT act per status, which is what " +
-    "makes one entry honest across four records: needs_review points at the rerun above, while " +
-    "failed and stopped say the record carries no passing draft and that generating the topic " +
-    "again is what produces one. The operator is told what clears it rather than pressing a " +
-    "control that fails",
+    "TWO LAYERS, and either one alone is enough. blog-stage.tsx (:481) mounts SendToClient behind " +
+    "`adminCan(state, 'send') && adminGateAllows('send', gateInput)`, so over the summary record " +
+    "the control is simply absent. Where the component is reached anyway, because its `review` " +
+    "prop is polled separately from the summary and can disagree with it, send-to-client.tsx " +
+    "blockedReason greys the button and names the act that comes first, a DIFFERENT act per " +
+    "status, which is what makes one entry honest across four records: needs_review points at " +
+    "the rerun strip directly above it, failed says no evaluator ever scored a draft, and " +
+    "stopped says the session ended before this article reached a verdict. Each one names " +
+    "generating the topic again as what produces a sendable draft, so the operator is told what " +
+    "clears it rather than pressing a control that fails",
+  "failed:send":
+    "THE ONE FAILED RECORD THE SINGLE SHIP DOOR STILL REFUSES: no evaluator ever scored a draft, " +
+    "so PROMOTES_SCORED_DRAFT refuses, the promotion never happens and the status stays failed. " +
+    "The same two layers cover it. blog-stage.tsx (:481) withholds the mount over the summary " +
+    "record, and send-to-client.tsx blockedReason greys it with the scoreless sentence, which is " +
+    "the only failed sentence left now that below bar is sendable. THE REAL EXIT IS ON THE BENCH " +
+    "BESIDE IT: blog-stage.tsx mounts the 'Retry this topic' link on `state === \"failed\"` alone, " +
+    "deliberately not on the send door, precisely so this record keeps its way out",
 };
 
 test("no admin bench offers an act the layers under it refuse", () => {
@@ -1365,33 +1427,40 @@ test("adminCommentsTag: the admin face of the same split, on the same count", ()
 });
 
 test("scoreTone: the three bands, and no score", () => {
-  assert.equal(scoreTone(95), "ship", "95 is the ship bar");
+  // Read off the constants, never off the numbers they hold today. The bar has moved once, from
+  // 95 to 90, and a suite that spelled the old one out failed as a stale assertion rather than as
+  // a policy change anybody made on purpose.
+  assert.ok(BELOW_BAR_FLOOR < SHIP_BAR, "the amber band has to sit under the bar");
+  assert.equal(scoreTone(SHIP_BAR), "ship", "the bar itself ships");
   assert.equal(scoreTone(100), "ship");
-  assert.equal(scoreTone(94), "owed", "just below the bar is amber, not red");
-  assert.equal(scoreTone(90), "owed");
-  assert.equal(scoreTone(89), "trouble");
+  assert.equal(scoreTone(SHIP_BAR - 1), "owed", "just below the bar is amber, not red");
+  assert.equal(scoreTone(BELOW_BAR_FLOOR), "owed", "the below bar floor is inside the amber band");
+  assert.equal(scoreTone(BELOW_BAR_FLOOR - 1), "trouble");
   assert.equal(scoreTone(0), "trouble");
   assert.equal(scoreTone(null), null, "no score has no tone");
 });
 
-test("adminFailedTag: 90 to 94 is Below bar, below 90 is Failed", () => {
+test("adminFailedTag: the near miss band is Below bar, under it is Failed", () => {
   // The failed tag splits on the score, the fact the state cannot carry, exactly as
   // changes_requested splits on the comment count. Both bands are the `failed` STATE, so the
   // bench and the retry-by-roadmap exit are unchanged; only the label and its tone move.
-  for (const score of [90, 92, 94]) {
+  for (const score of [BELOW_BAR_FLOOR, BELOW_BAR_FLOOR + 1, SHIP_BAR - 1]) {
     assert.equal(adminFailedTag(score).label, "Below bar", `${score} is below bar`);
     assert.equal(adminFailedTag(score).tone, "owed", `${score} reads amber, not the fail red`);
   }
-  for (const score of [0, 50, 89]) {
+  // The band is bounded ABOVE as well, which is the half a floor-only test misses: a promoted
+  // draft sitting on a stale failed row scored at or over the bar and is not one point short.
+  for (const score of [0, 50, BELOW_BAR_FLOOR - 1, SHIP_BAR, 100]) {
     assert.equal(adminFailedTag(score), adminTag("failed"), `${score} is the plain failure`);
     assert.equal(adminFailedTag(score).label, "Failed");
   }
   assert.equal(adminFailedTag(null), adminTag("failed"), "no score reads as the plain failure");
   // The split is a LABEL change, not a new state: the failed bench is untouched, so both bands
   // keep the full bench (edit, comments, and BOTH ship doors) and the retry-by-roadmap exit.
-  // A Below bar draft is therefore shippable to the client or straight to the CMS on the
-  // operator's authority, exactly as a plain failure is.
-  assert.deepEqual([...adminActions("failed")], ["edit", "comments", "promote", "publish"]);
+  // A Below bar draft is therefore releasable to the client or straight to the CMS on the
+  // operator's authority, exactly as a plain failure is, and by the SAME `send` verb every
+  // shipped blog leaves by.
+  assert.deepEqual([...adminActions("failed")], ["edit", "comments", "send", "publish"]);
 });
 
 test("both tag maps are total, and no client label leaks internal vocabulary", () => {

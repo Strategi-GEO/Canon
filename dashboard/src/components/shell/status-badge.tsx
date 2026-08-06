@@ -67,7 +67,7 @@ const STYLES: Record<BlogStatus, Style> = {
  * THE LIVE RUN STREAM ONLY. This badge names how a run is going right now (running, done,
  * failed, stopped) for a topic mid-generation, which has no committed blog to describe. For a
  * whole blog's state, use BlogTag / BlogStateTag (lib/blog-state.ts): those know the score, so
- * they read a 92 as "Below bar" where this badge can only say "failed". Reusing this for a
+ * they read an 87 as "Below bar" where this badge can only say "failed". Reusing this for a
  * settled blog is what let the roadmap overview disagree with the blogs tab.
  *
  * Status colours carry meaning, so they stay off the accent hue in every state.

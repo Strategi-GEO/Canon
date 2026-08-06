@@ -91,7 +91,13 @@ def test_peak_is_snapshotted_and_installed_over_a_lower_last_draft():
           not (out / "blog.best.md").exists() and not (out / "eval.best.md").exists())
     summary = runner._summarize(topic, runner._read_status(out))
     check("the reported score is the 92 peak, not the 89 last", summary["score"] == 92, str(summary))
-    check("the status stays failed (92 is below the 95 ship band)", summary["status"] == "failed")
+    # The verdict is RE-RESOLVED from the restored peak, never copied from the lead's terminal
+    # line: the lead wrote failed at 89, which is below bar, and the restored 92 clears the 90
+    # bar, so the install writes done. A status inherited from the lead would read failed here and
+    # fail this check, so what the check discriminates is re-resolution against inheritance. The
+    # two seeds sit either side of the one bar the engine has, which is the whole of the split.
+    check("the restored 92 peak carries the verdict its own score earns, done over the 90 bar",
+          summary["status"] == "done", str(summary))
 
 
 def test_no_swap_when_the_last_draft_is_already_the_best():
@@ -157,7 +163,11 @@ def test_hard_killed_prior_run_snapshot_is_not_installed():
     # A new run begins. run_topic clears snapshots right after taking the baseline (the fix).
     baseline = len(runner._read_status(out))
     runner._clear_best_snapshots(out)
-    for iteration, score in [(1, 90), (2, 88)]:  # never beats the stale 95
+    # Both sit below the killed run's 95, which carries no terminal line under it and so is still
+    # inside status.py's scope: neither scores a new high, so no snapshot replaces the cleared one.
+    # This is about the SNAPSHOT scope and not about the bar: the 88 the loop ends on is below bar
+    # and the lead's line says so, which is why nothing here reads a verdict.
+    for iteration, score in [(1, 90), (2, 88)]:
         _write_draft(out, score)
         _score(out, topic, iteration, score)
     _score(out, topic, 2, 88, status="failed")
@@ -189,8 +199,9 @@ def test_lead_terminal_line_at_the_best_score_does_not_veto_the_install():
 
 
 def test_a_retry_never_replaces_a_higher_scoring_blog():
-    """The cross-run half of the same rule: a topic that failed at 92, retried, and landed 87
-    keeps the 92 verdict set. A retry that strictly beats the prior keeps its own result."""
+    """The cross-run half of the same rule, and it compares two numbers rather than reading a
+    band: a topic whose first run ended at 92, retried, and landed 87 keeps the 92 verdict set.
+    A retry that strictly beats the prior keeps its own result."""
     print("\ntest_a_retry_never_replaces_a_higher_scoring_blog")
     root, client, topic, out = _new_topic()
     # Run 1: failed at 92, terminal line written, artifacts on disk.

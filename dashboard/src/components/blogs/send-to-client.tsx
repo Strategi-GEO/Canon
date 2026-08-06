@@ -1,8 +1,7 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
-import { Loader2, MessageCircleQuestion, RotateCw, SendHorizontal } from "lucide-react";
+import { Loader2, MessageCircleQuestion, SendHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -19,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { FieldError } from "@/components/clients/engine-error";
 import { ApiError, api } from "@/lib/api";
+import { SHIP_BAR } from "@/lib/blog-score";
 import { adminGateVerdict } from "@/lib/gate-contract";
 import { HOSTED_READONLY } from "@/lib/hosted";
 import type { BlogReviewState, BlogStatus } from "@/types";
@@ -32,10 +32,17 @@ const OPEN_CHANGES_REASON =
   "the client's suggestions are still open; resolve or dismiss each one before sending again";
 
 /**
- * The delivery status control: where one shipped blog sits with the client, and the one
- * button that moves it.
+ * The delivery status control: where one settled blog sits with the client, and the ONE
+ * button that moves it, at every score.
  *
- * Until the first send, a done blog is the team's: editable on this page and invisible to
+ * THERE IS NO SECOND SHIP DOOR. A blog that missed the 90 bar is released by this same button
+ * with this same label, and the engine promotes it on the way through (server/app.py's send
+ * route, calling blog_edit.promote_if_failed, the same helper the CMS push has always used
+ * for the same act): an appended `done` verdict naming the operator and the score, so the trail
+ * still reads "failed at 87, then a person sent it". A separate Promote button said the same
+ * thing twice and made the operator pick which of two identical acts they meant.
+ *
+ * Until the first send, a settled blog is the team's: editable on this page and invisible to
  * the client, and the control is the Send button alone. After it, this component mostly
  * DISAPPEARS: ReviewStamp in blog-stage.tsx carries the "Sent for client review / Approved
  * … ago" fact, and a blog sitting with the client offers no re-send at all. The one
@@ -53,6 +60,7 @@ export function SendToClient({
   topicSlug,
   brandName,
   status,
+  score,
   review,
   onSent,
 }: {
@@ -60,6 +68,9 @@ export function SendToClient({
   topicSlug: string;
   brandName: string;
   status: BlogStatus;
+  /** The evaluator's number, for the dialog's honesty on a below-bar send. Never null when the
+   *  record is `failed` and the button renders: the send door refuses a scoreless failure. */
+  score: number | null;
   /** Where this blog sits in the review loop. The page owns the read; this renders it. */
   review: BlogReviewState;
   /** Hands back the state the POST answered with, so the chip flips without a refetch. */
@@ -126,7 +137,7 @@ export function SendToClient({
     );
   }
 
-  const blocked = blockedReason(status, review);
+  const blocked = blockedReason(status, score, review);
   if (blocked) {
     return (
       <Tooltip>
@@ -154,6 +165,7 @@ export function SendToClient({
         topicSlug={topicSlug}
         brandName={brandName}
         resend={false}
+        belowBar={status === "failed" ? score : null}
         onSent={onSent}
       />
     );
@@ -173,27 +185,36 @@ export function SendToClient({
       topicSlug={topicSlug}
       brandName={brandName}
       resend
+      belowBar={status === "failed" ? score : null}
       onSent={onSent}
     />
   ) : null;
 }
 
 /**
- * The confirmed send, first or repeat. One component for both because the request and its
- * error handling are identical; only the words differ, and the words carry the difference
- * that matters: a re-send clears the client's approval, so its dialog says so.
+ * The confirmed send, first or repeat, above the bar or below it. One component for all of
+ * them because the request and its error handling are identical; only the words differ, and
+ * the words carry the differences that matter: a re-send clears the client's approval, and a
+ * below-bar send waives the 90 bar on the operator's authority and locks the roadmap row.
+ *
+ * `belowBar` IS NULL ON EVERY RE-SEND BY CONSTRUCTION, and the caller passes the same
+ * expression at both sites rather than asserting it: the engine's promotion folds the status
+ * to `done` as it releases, so a blog with a send stamp can no longer read `failed`.
  */
 function SendControl({
   brandSlug,
   topicSlug,
   brandName,
   resend,
+  belowBar,
   onSent,
 }: {
   brandSlug: string;
   topicSlug: string;
   brandName: string;
   resend: boolean;
+  /** The score, when this send is the one that waives the bar. Null on an ordinary send. */
+  belowBar: number | null;
   onSent: (state: BlogReviewState) => void;
 }) {
   const [open, setOpen] = React.useState(false);
@@ -207,9 +228,11 @@ function SendControl({
       const state = await api.sendBlogToClient(brandSlug, topicSlug);
       setOpen(false);
       toast.success(resend ? "Sent again" : "Sent to client", {
-        description: resend
-          ? `${brandName} now sees the updated article as ready to post. Any earlier approval is reset.`
-          : `This blog is now visible in ${brandName}'s portal as ready to post.`,
+        description: belowBar !== null
+          ? `Recorded as shipped at ${belowBar} on your authority. ${brandName} now sees it in their portal as ready to post.`
+          : resend
+            ? `${brandName} now sees the updated article as ready to post. Any earlier approval is reset.`
+            : `This blog is now visible in ${brandName}'s portal as ready to post.`,
       });
       onSent(state);
     } catch (cause) {
@@ -244,9 +267,11 @@ function SendControl({
               : `Send this blog to ${brandName}?`}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            {resend
-              ? "The client sees the updated article as ready to post, exactly as it reads right now. Re-sending stamps a fresh send and resets any approval they have given: an approval belongs to one exact article, so the new text asks for its own."
-              : "The article becomes visible in the client portal as ready to post, exactly as it reads right now, and the client can approve it or suggest changes. Finish your edits first: this is the door out of admin review, and there is no unsend."}
+            {belowBar !== null
+              ? `The evaluator scored this draft ${belowBar}, under the house ${SHIP_BAR} bar, which is the number a run has to reach to ship on its own. Sending it records it as shipped on your authority, with the score kept on the record, and the article becomes visible in the client portal as ready to post exactly as it reads right now. Its roadmap row locks like any shipped blog's, so retry instead if you want another attempt at ${SHIP_BAR}.`
+              : resend
+                ? "The client sees the updated article as ready to post, exactly as it reads right now. Re-sending stamps a fresh send and resets any approval they have given: an approval belongs to one exact article, so the new text asks for its own."
+                : "The article becomes visible in the client portal as ready to post, exactly as it reads right now, and the client can approve it or suggest changes. Finish your edits first: this is the door out of admin review, and there is no unsend."}
           </AlertDialogDescription>
         </AlertDialogHeader>
 
@@ -285,13 +310,16 @@ function SendControl({
  * EVERY STATUS BRANCH BELOW IS REACHABLE FROM ONE STATE ONLY, and knowing which one is what lets
  * these sentences name a real next act instead of a generic refusal. blog-stage.tsx mounts this
  * component behind `canSend`, which is `adminCan(state, "send")` ANDed with this same gate over
- * the summary record, and of the three states that grant a send, two are
+ * the summary record, and of the four states that grant a send, two are
  * `done` by construction: `internal_review` tests the status directly, and `changes_requested`
- * sits above a send stamp that only a done blog could ever have earned. `answers_submitted` is
- * the sole state that grants a send while carrying a not-done status, and it does so because it
- * is derived from the client's submit stamp rather than from the status at all. So a not-done
- * blog arriving here is an article whose client has ALREADY ANSWERED and whose rerun has not
- * delivered a clarified draft, and the act it is waiting on is that rerun.
+ * sits above a send stamp that only a done blog could ever have earned. `failed` is the
+ * below-bar band, where the send door's own clauses decide (a scored draft, no live run), so it
+ * needs no sentence here beyond the scoreless one below. `answers_submitted` is
+ * the sole state that grants a send while carrying a not-done status for a reason the record
+ * cannot fix, and it does so because it
+ * is derived from the client's submit stamp rather than from the status at all. So a
+ * needs_review blog arriving here is an article whose client has ALREADY ANSWERED and whose
+ * rerun has not delivered a clarified draft, and the act it is waiting on is that rerun.
  *
  * ONLY THE `needs_review` BRANCH MAY NAME THE RERUN, and the other two may not, because the record
  * does not support what they used to say. Both asserted that the rerun crashed or was stopped
@@ -318,6 +346,7 @@ function SendControl({
  */
 function blockedReason(
   status: BlogStatus,
+  score: number | null,
   review: BlogReviewState,
 ): string | null {
   // THE GATE DECIDES WHETHER TO BLOCK; THE STATUS ONLY PICKS THE SENTENCE. Those are two different
@@ -346,12 +375,16 @@ function blockedReason(
   // are both on `review`, which this component already renders chips from. The record below
   // carries every delivery fact `review` holds rather than only the three read today, because a
   // clause added to the send door tomorrow should find its fact already supplied instead of
-  // finding an omission that reads as false. The two facts NOT on this component's wire are
-  // `live` and `answers_submitted`: a send clause over either would have to reach this call site,
-  // and until one does there is nothing here to answer them with.
+  // finding an omission that reads as false. `score` is threaded for exactly that reason: the
+  // send door now carries the promotion's scored-draft clause, and a record without it would
+  // grey the button on every below-bar blog with the layer's words about a fact this caller
+  // simply declined to pass. `live` is the one fact still missing, and its clause reads absent
+  // as false, so a mid-run topic is refused by the parent's `canSend` over the real summary
+  // rather than by a sentence here.
   const verdict = adminGateVerdict("send", {
     record: {
       status,
+      score,
       sent_to_client: review.sent_to_client,
       client_approved: review.client_approved,
       changes_requested: review.changes_requested,
@@ -367,7 +400,10 @@ function blockedReason(
     return "The answers are in and the rerun that applies them has not run yet, so there is no clarified draft to send. Start it with Rerun above: this button comes back the moment the rerun lands.";
   }
   if (status === "failed") {
-    return "The last run on this article finished without a shippable draft, so the record carries no passing verdict and there is nothing to deliver. Generating this topic again is what produces one, and this button comes back once a run lands at done.";
+    // BELOW BAR IS SENDABLE NOW, so reaching here means the ONE failed record this door still
+    // refuses: no evaluator ever scored a draft. The 90 bar is the only thing a send waives,
+    // and an unscored draft is the artifact a failed topic cannot vouch for at all.
+    return "No evaluator ever scored a draft on this article, so there is nothing to take responsibility for and nothing to deliver. Generating this topic again is what produces a scored draft, and this button comes back the moment one lands.";
   }
   if (status === "stopped") {
     return "This brand's session was stopped before this article reached a verdict, so the record carries no passing draft to send. Generating this topic again is what produces one, and this button comes back once a run lands at done.";
@@ -386,143 +422,5 @@ function blockedReason(
   return (
     verdict.blocking?.refusal ??
     `This article's last run recorded a status of "${status}", and only a blog the engine has landed at done can be delivered. Generating this topic again is what produces one, and this button comes back once a run lands at done.`
-  );
-}
-
-/**
- * The failed blog's bench: ship it anyway, or retry the topic.
- *
- * The run landed below the house 95 bar with nothing left to ask, so the loop's verdict is on
- * the trail and stays there. What this offers is the OPERATOR'S decision, made after reading
- * the draft: promote it, which appends a `done` verdict naming them and the score, records the
- * ledger row (the roadmap locks the topic exactly as a 95+ ship would), and sends it to the
- * client in the same press. The confirm dialog says all of that, because promotion trades the
- * retry away: a ledgered topic refuses regeneration, so this button and the retry beside it
- * are alternatives, not a sequence.
- *
- * RETRY IS A LINK, NOT A REQUEST. A retry is a new RUN, and runs start in the Create tab: the
- * link lands there with this row pre-ticked (?retry=<slug>), so the operator keeps the
- * instructions box, the queue view, and every duplicate guard the create flow already has,
- * instead of this page growing a second, thinner copy of run submission.
- *
- * Mounted behind `canPromote` in blog-stage.tsx, which is the bench grant ANDed with the
- * promote door (adminGateAllows), so a scoreless failure or a mid-run topic never renders it:
- * the engine would refuse both, and a control that renders only to be refused is the exact
- * defect the gate contract exists to catch.
- */
-export function PromoteFailedBlog({
-  brandSlug,
-  topicSlug,
-  brandName,
-  score,
-  canSend,
-  retryHref,
-  onPromoted,
-}: {
-  brandSlug: string;
-  topicSlug: string;
-  brandName: string;
-  /** The evaluator's number, for the dialog's honesty. Never null when canSend is true: the
-   *  promote door refuses a scoreless record. */
-  score: number | null;
-  /** The promote door's verdict. The Retry link mounts regardless (a failed topic can always
-   *  be generated again); only the ship-anyway half is withheld where the engine would
-   *  refuse it, e.g. a failed run that never scored a draft. */
-  canSend: boolean;
-  /** The Create tab with this row pre-ticked. The route owns URLs; this just renders one. */
-  retryHref: string;
-  /** Hands back the review state the POST answered with, exactly as SendControl's onSent. */
-  onPromoted: (state: BlogReviewState) => void;
-}) {
-  const [open, setOpen] = React.useState(false);
-  const [sending, setSending] = React.useState(false);
-  const [error, setError] = React.useState<ApiError | null>(null);
-
-  if (HOSTED_READONLY) {
-    return null;
-  }
-
-  async function promote() {
-    setSending(true);
-    setError(null);
-    try {
-      const state = await api.promoteBlog(brandSlug, topicSlug);
-      setOpen(false);
-      toast.success("Shipped and sent to client", {
-        description:
-          `Recorded as shipped at ${score ?? "its"} score on your authority. ` +
-          `${brandName} now sees it in their portal as ready to post.`,
-      });
-      onPromoted(state);
-    } catch (cause) {
-      setError(cause instanceof ApiError ? cause : new ApiError(0, String(cause), null));
-    } finally {
-      setSending(false);
-    }
-  }
-
-  return (
-    <div className="flex items-center gap-2">
-      <Button size="sm" variant="outline" asChild>
-        <Link href={retryHref}>
-          <RotateCw data-icon="inline-start" aria-hidden />
-          Retry this topic
-        </Link>
-      </Button>
-
-      {canSend ? (
-      <AlertDialog
-        open={open}
-        onOpenChange={(next) => {
-          setOpen(next);
-          if (!next) {
-            setError(null);
-          }
-        }}
-      >
-        <AlertDialogTrigger asChild>
-          <Button size="sm">
-            <SendHorizontal data-icon="inline-start" aria-hidden />
-            Send to client
-          </Button>
-        </AlertDialogTrigger>
-
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Ship this blog below the bar?</AlertDialogTitle>
-            <AlertDialogDescription>
-              The evaluator scored this draft {score ?? "below 95"}, under the house 95 bar. If
-              you are satisfied with it as it reads, sending it records it as shipped on your
-              authority, with the score kept on the record, and releases it to {brandName}
-              &apos;s portal for review exactly like any other shipped blog. Its roadmap row
-              locks like a shipped blog&apos;s too, so it can no longer be regenerated: retry
-              instead if you want another attempt at 95.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-
-          {error ? <FieldError error={error} /> : null}
-
-          <AlertDialogFooter>
-            <AlertDialogCancel size="sm" disabled={sending}>
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              size="sm"
-              disabled={sending}
-              onClick={(event) => {
-                event.preventDefault();
-                void promote();
-              }}
-            >
-              {sending ? (
-                <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
-              ) : null}
-              Ship and send it
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-      ) : null}
-    </div>
   );
 }

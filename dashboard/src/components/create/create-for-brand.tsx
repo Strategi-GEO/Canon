@@ -7,7 +7,7 @@ import { SelectState } from "@/components/create/select-state";
 import { WatchState } from "@/components/create/watch-state";
 import { seedsFor, useRunStream, type Seed } from "@/components/create/use-run-stream";
 import { liveTopicSlugs } from "@/components/create/row-status";
-import { scoreTone } from "@/lib/blog-score";
+import { isBelowBar } from "@/lib/blog-score";
 import { brandHref } from "@/lib/orgs-context";
 import { useRuns } from "@/lib/runs-context";
 import { factsBuildOf, useFactsGen } from "@/lib/use-facts-gen";
@@ -293,21 +293,20 @@ export function CreateForBrand({
     () => liveTopicSlugs(stream.topics, finished),
     [stream.topics, finished],
   );
-  // A failed blog that scored 90 to 94 is BELOW BAR, not a failure: split by the same score band
-  // the Blogs tab uses (scoreTone), so its row wears the yellow "below bar" chip rather than red,
-  // and one blog cannot read "failed" here and "Below bar" there. The two sets are disjoint.
+  // A failed blog that scored 85 to 89 is BELOW BAR, a near miss rather than a plain failure:
+  // split by the same isBelowBar the Blogs tab tag uses, so its row wears the yellow "below bar"
+  // chip rather than red, and one blog cannot read "failed" here and "Below bar" there. Both are
+  // the failed verdict and the two sets are disjoint.
   const failedBlogs = React.useMemo(
     () => blogs.filter((b) => b.status === "failed"),
     [blogs],
   );
   const belowBar = React.useMemo(
-    () =>
-      new Set(failedBlogs.filter((b) => scoreTone(b.score) === "owed").map((b) => b.topic_slug)),
+    () => new Set(failedBlogs.filter((b) => isBelowBar(b.score)).map((b) => b.topic_slug)),
     [failedBlogs],
   );
   const failed = React.useMemo(
-    () =>
-      new Set(failedBlogs.filter((b) => scoreTone(b.score) !== "owed").map((b) => b.topic_slug)),
+    () => new Set(failedBlogs.filter((b) => !isBelowBar(b.score)).map((b) => b.topic_slug)),
     [failedBlogs],
   );
   // Held blogs: they own a blog.md but sit off the ledger waiting for an operator answer, so

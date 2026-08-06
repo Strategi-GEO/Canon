@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import traceback
 import uuid
 from contextlib import aclosing
@@ -66,11 +67,17 @@ MCP_SERVER_NAMES = ("firecrawl", "dataforseo")
 
 # THE ONE QUEUE, HERE AND NOWHERE ELSE.
 #
-# TOPIC_SEMAPHORE is five blog sessions in flight, repo-wide, WHICHEVER DOOR OPENED THEM: a
-# Create-tab batch, a retry of one row, a repurpose, or the answer-driven revise a client's
-# answers are owed. Each takes exactly one slot for exactly its own session, so "five at a time"
-# is a fact about the ENGINE rather than about any one submit. asyncio.Semaphore wakes waiters in
-# arrival order, so a sixth blog starts the instant a slot frees.
+# TOPIC_SEMAPHORE is GEO_CONCURRENCY blog sessions in flight, repo-wide, WHICHEVER DOOR OPENED
+# THEM: a Create-tab batch, a retry of one row, a repurpose, or the answer-driven revise a
+# client's answers are owed. Each takes exactly one slot for exactly its own session, so "two at
+# a time" is a fact about the ENGINE rather than about any one submit. asyncio.Semaphore wakes
+# waiters in arrival order, so the next blog starts the instant a slot frees.
+#
+# THE DEFAULT IS TWO, AND WIDTH DECIDES WHAT THE OPERATOR OWNS WHEN THE USAGE LIMIT LANDS. It
+# saves no tokens per blog: it decides how the quota is spent when it runs out mid-run. At five
+# wide a real run produced twelve half-finished blogs and zero shipped. At two the same quota
+# buys a handful of FINISHED blogs and leaves the rest untouched, and an untouched topic retries
+# clean while a half-done one does not.
 #
 # IT REPLACED A REPO-WIDE LOCK HELD FOR A WHOLE BATCH, and that is the point of the change. With
 # one CLIENT_LOCK around the entire gather, the queue was BATCH-granular: a second submit waited
@@ -85,8 +92,33 @@ MCP_SERVER_NAMES = ("firecrawl", "dataforseo")
 # runs for DIFFERENT brands share nothing there and are not each other's business.
 #
 # In-process primitives, so the deployment MUST run one uvicorn worker; --workers N would give N
-# independent semaphores and the cap silently becomes 5N.
-TOPIC_SEMAPHORE = asyncio.Semaphore(5)
+# independent semaphores and the cap silently becomes N times GEO_CONCURRENCY.
+
+
+def _concurrency():
+    """Blog sessions in flight repo-wide. GEO_CONCURRENCY, default 2.
+
+    READ THROUGH db.config_value AND NOT os.environ ALONE, because this runs at MODULE IMPORT
+    and the startup hook that exports server/.env has not run yet. Every other GEO_* knob is
+    read inside a function at call time, so os.environ.get is enough for them; this one is not,
+    and a knob the README documents that silently does nothing on every packaged install is
+    worse than no knob at all.
+
+    FLOORED AT 1, because a 0 is the one value that fails silently: Semaphore(0) admits nobody,
+    every blog blocks forever at the acquire, no terminal line is ever written, and every SSE
+    stream stays open with the operator's sheet 409'd behind it. A garbage value falls back to
+    the default rather than raising, because the .env sits beside the app on a desktop install
+    and a typo there must not be an engine that refuses to boot with a bare traceback.
+    """
+    raw = os.environ.get("GEO_CONCURRENCY") or db.config_value("GEO_CONCURRENCY") or "2"
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        print(f"[runner] GEO_CONCURRENCY={raw!r} is not a number, using 2", file=sys.stderr)
+        return 2
+
+
+TOPIC_SEMAPHORE = asyncio.Semaphore(_concurrency())
 _FACTS_LOCKS = {}
 
 
@@ -118,12 +150,41 @@ def facts_lock(client_slug):
 # sees it and why no score is ever inferred for it.
 TERMINAL_STATUSES = {"done", "needs_review", "failed", "stopped"}
 
-# The house ship band, in ONE place. It is the score half of the ship test and NOT the whole of
-# it: a blog at or above this ships only when nothing on disk is holding it, because a current
-# question holds a blog at ANY score (see _resolve_needs_review). Below it, no draft ships under
-# any circumstances. revise_topic and the needs_review enforcement below both branch on it, and a
-# second copy of the number is how an engine comes to ship at one threshold and report at another.
-SHIP_SCORE = 95
+# THE ONE HOUSE THRESHOLD, IN ONE PLACE, AND THE BAND IS BINARY. At or above it a blog ships,
+# below it a blog does not. There is no middle band, no tolerated band, and no second threshold
+# anywhere in this engine. A second copy of the number is how an engine comes to ship at one
+# threshold and report at another.
+#
+# WHY 90 AND NOT 95. 95 was attainable when the rubric's weights totalled 25 and its maximum was
+# 75: tests/concurrency-proof.md records six topics ending done at 95, 95, 96, 97, 98 and 98. C4
+# and D2 then raised the weight total to 30 and the maximum to 90 while the percentage was held
+# constant, so 95 came to demand 86 of 90 weighted points across 14 integer-scored dimensions, and
+# the normalisation skips 95 outright, round(85/90*100) being 94 and round(86/90*100) being 96. A
+# measured 12-blog run afterwards produced a score for only FIVE of its twelve topics, running 72
+# to 89 to 88, 84 to 84 to 87, 79 to 80, 82, and 73, while the other seven died in research on
+# iteration 1 without ever being scored. ZERO of the twelve reached 95, and the two that got
+# furthest were inside their FOURTH iteration when the run died, so the bar was unreachable for
+# every blog that lived long enough to be measured against it.
+#
+# THE BAR. The FIRST score at or above it ENDS THE LOOP AT ONCE: this is the number
+# first-score-is-final attaches to, the one the lead's in-loop branch tests, the one the writer
+# aims at, and the one the rubric's Ship band names. It is the score half of the ship test and NOT
+# the whole of it: a blog at or above it ships only when nothing on disk is holding it, because a
+# current question holds a blog at ANY score (see _resolve_needs_review). Exactly attainable: 81
+# of the 90 available weighted points, which is what makes it a bar a blog can actually clear.
+# Below it the topic is FAILED and the draft stays on disk, so a near miss is not thrown away: the
+# operator reads it and presses send, or it does not ship. That is a person's call and never
+# the engine's. The best draft in the measured run scored 89, one point short, and it waits.
+SHIP_SCORE = 90
+
+# The floor under an automatic retry. A session that wrote NO status line and died faster than
+# this never reached a tool call, so retrying it opens a second full SDK session against whatever
+# killed the first. Measured in the same run: a retry line at 15:29:57 and its failed line at
+# 15:29:59, TWO SECONDS apart, with 19 retry lines written across twelve topics inside a
+# 106-second window, seven of which had produced no status line at all. Both halves of the
+# guard are required, because a slow death with no lines can still be a genuine crash worth
+# retrying and a fast death that DID write lines got somewhere.
+DEAD_SESSION_SECONDS = 60
 
 
 class PreflightError(Exception):
@@ -241,7 +302,8 @@ def register_run(run_id, client, topics, kind="blog", channel=None):
     """Record a submitted run. It starts QUEUED, never running.
 
     Registration happens the moment the operator's POST lands, because their own submit has to
-    be visible to them immediately. But TOPIC_SEMAPHORE admits FIVE blogs repo-wide, so a run
+    be visible to them immediately. But TOPIC_SEMAPHORE admits GEO_CONCURRENCY blogs repo-wide,
+    two by default, so a run
     can sit here for as long as the blogs ahead of it take, which for real blogs is many
     minutes. Reporting that as running would tell six operators that work is happening on their
     topics when nothing has started, and the honest answer, "queued behind other blogs", is
@@ -894,12 +956,17 @@ def _resolve_needs_review(client_slug, topic_slug, score, root=None):
     the evaluator saying the draft may be WRONG, and a wrong 96 is not better than a wrong 89.
     The old order shipped exactly that, twice, both at 96 and both against canonical-facts.
 
-    THE SCORE THEN DECIDES THE NOTHING-TO-ANSWER BRANCH AND ONLY THAT BRANCH. With no form the
-    app will accept, no human is summoned, so at or above SHIP_SCORE the blog ships and below it
-    the loop exhausted itself without being able to say what it needed, which is failed rather
-    than a review nobody can perform. No score falls here too, and falls to failed: an evaluator
-    that died before writing its scored end line must never become a permanent hold. A gates FAIL
-    lands here as well, and lands on failed: it is a machine failure with no human question in it.
+    THE SCORE THEN DECIDES THE NOTHING-TO-ANSWER BRANCH AND ONLY THAT BRANCH, AND IT IS DECIDED
+    AGAINST SHIP_SCORE, WHICH IS THE ONLY BAR THERE IS. The band is binary: with no form the app
+    will accept, no human is summoned, so at or above the bar the blog ships, and below it the
+    loop exhausted itself without being able to say what it needed, which is failed rather than a
+    review nobody can perform. A near miss is failed exactly like an outright miss, because a
+    second threshold that shipped one and not the other is the middle band this engine does not
+    have. What a near miss gets instead is the operator: the draft stays on disk and ships only if
+    a person reads it and promotes it, so the returned reason says so, that reason being what the
+    operator reads on the trail. No score falls here too, and falls to failed: an evaluator that
+    died before writing its scored end line must never become a permanent hold. A gates FAIL lands
+    here as well, and lands on failed: it is a machine failure with no human question in it.
     """
     state = _questions_state(client_slug, topic_slug, root=root)
 
@@ -908,18 +975,19 @@ def _resolve_needs_review(client_slug, topic_slug, score, root=None):
 
     if score is not None and score >= SHIP_SCORE:
         return "done", (
-            f"The score of {score} is at or above {SHIP_SCORE} and nothing is holding the blog, "
-            f"so it ships: {_NO_QUESTIONS_REASONS[state]}"
+            f"The score of {score} is at or above the {SHIP_SCORE} bar and nothing is holding the "
+            f"blog, so it ships: {_NO_QUESTIONS_REASONS[state]}"
         )
 
     if score is None:
-        standing = f"No score was recorded, so nothing reached the {SHIP_SCORE} ship band"
+        standing = f"No score was recorded, so nothing reached the {SHIP_SCORE} bar"
     else:
-        standing = f"The score of {score} is below {SHIP_SCORE}"
+        standing = f"The score of {score} is below the {SHIP_SCORE} bar"
     return "failed", (
         f"{standing}, and {_NO_QUESTIONS_REASONS[state]}. With nothing for a human to answer, "
         f"the score decides and no human is involved: the loop exhausted itself without being "
-        f"able to say what it needed"
+        f"able to say what it needed. The draft is on disk, so shipping it anyway is the "
+        f"operator's call through send and nobody else's"
     )
 
 
@@ -948,7 +1016,7 @@ def _enforce_terminal_status(client_slug, topic_slug, out_dir, root=None):
 
     THE SCORE CORRECTS NOTHING BY ITSELF, in either direction. A needs_review claimed at 96 with
     a current question STANDS, because a passing score is not grounds to override a hold. A done
-    claimed at 88 with nothing to answer also stands: the score decides only the branch a
+    claimed at 82 with nothing to answer also stands: the score decides only the branch a
     needs_review claim falls into, and an engine that re-scored every claim would be a second
     author of the status rather than a check on the first.
 
@@ -1242,7 +1310,18 @@ def _agent_definitions():
             "every path and every status line.\n"
             "Run the geo-content-writer skill against the FROZEN dossier at <out_dir>/dossier.md. "
             "Never re-research and never invent a citation or URL: a claim with no supporting "
-            "source is a Sourcing failure to flag, not to patch.\n"
+            "source is a Sourcing failure to flag, not to patch. Where the LEAD hands you a "
+            "claim to CUT, cut it: cutting is not patching, the ban is on inventing a source, "
+            "and removing a claim invents nothing.\n"
+            "BEFORE you draft, read .claude/skills/geo-content-eval/references/rubric.md, EVERY "
+            "run, iteration 1 and every revise. It is the standard Agent E scores you against: "
+            "the scored buckets (A Extractability, B Evidence, C Entity and voice, D Brief fit), "
+            "the scoring math, and the failure-area routing. Writing against a rubric you have "
+            "never read is how a draft lands twelve points under the 90 you are aiming at, at the "
+            "measured mean of 78, and burns four "
+            "iterations discovering what the rubric says on page one. Reading it costs Agent E "
+            "nothing: the hostile isolation protects the EVALUATOR from your reasoning and the "
+            "dossier, never the reverse, and the rubric is the public standard.\n"
             "Read <out_dir>/roadmap-row.md EVERY iteration, including 2, 3 and 4. It is the "
             "brief: the topic, its scope, the BINDING target prompts, and every other column "
             "under the sheet's own header. Follow the Format and the Search Intent it names, "
@@ -1267,7 +1346,11 @@ def _agent_definitions():
             "Append your own status lines via python3 .claude/status.py: stage write on iteration "
             "1 or revise on later iterations, then gates, then links, each with event start and "
             "end, status running, the given iteration number.\n"
-            "Return only when the draft is gate-clean AND link-clean."
+            "Then SELF-CHECK the finished draft against the rubric, bucket by bucket, and score "
+            "it with the rubric's own math before you hand it over. Fix what you can see failing: "
+            "a bucket you can read is a bucket you can lose points in, and losing them to a fresh "
+            "hostile audit costs a whole iteration to learn.\n"
+            "Return only when the draft is gate-clean, link-clean, AND rubric self-checked."
         ),
         tools=["Read", "Glob", "Grep", "Write", "Edit", "Skill", "TodoWrite", "Bash(python3:*)",
                "mcp__firecrawl", "mcp__dataforseo"],
@@ -1296,8 +1379,10 @@ def _agent_definitions():
             "density and scores the draft DOWN for telling the truth. An answer is still NOT a "
             "source: it can never become a citation, and a claim needing one still needs a "
             "fetched source.\n"
-            "Run the geo-content-eval skill with HOUSE bands: 95-100 SHIP, below 95 REJECT, no "
-            "middle band, and any hard-gate failure is a REJECT regardless of score.\n"
+            "Run the geo-content-eval skill with the HOUSE band, which is BINARY: 90-100 SHIPS, "
+            "below 90 REJECTS, and any hard-gate failure is a REJECT regardless of the graded "
+            "score. There is no middle band. You report the score and nothing more: the terminal "
+            "state is not yours to decide.\n"
             "Write <out_dir>/eval.md with SCORE: NN on its own line near the top, plus a fix "
             "list where every item carries an Area: Sourcing, Structure, Draft, or Mechanics.\n"
             "You MUST NOT touch blog.md. Do not edit it, fix it, or rewrite a single word of it: "
@@ -1404,12 +1489,12 @@ text; what you may never do is leave the writer with neither.
 Branch on the numeric SCORE from the evaluator (its eval end status line and
 eval.md), never on a verdict word. The in-loop branch reads the SCORE plus exactly
 ONE property of the form, whether it carries a Sourcing question, and nothing else.
-- SCORE >= 95 ENDS THE LOOP. Never re-evaluate a passing draft for any reason,
+- SCORE >= 90 ENDS THE LOOP. Never re-evaluate a passing draft for any reason,
   including "the draft changed since" or "let me confirm". The terminal STATE is then
   decided by the question check below, not by the score alone: done only when no
   current questions are on disk, needs_review when any are, at any score including 95
   and 96.
-- SCORE < 95, and BEFORE you dispatch anything: check the form on disk for a Sourcing
+- SCORE < 90, and BEFORE you dispatch anything: check the form on disk for a Sourcing
   QUESTION.
     python3 .claude/questions.py --out {out_dir} --slug {topic_slug} --iter <your current iteration> --check-area Sourcing
   --iter is REQUIRED and is the whole staleness guard: pass the iteration the draft
@@ -1432,17 +1517,28 @@ ONE property of the form, whether it carries a Sourcing question, and nothing el
   A question of area Structure, Draft or Mechanics does NOT end the loop. It is
   superseded by the next iteration's form exactly as before, and you delete
   questions.json before the next evaluator exactly as before.
-- SCORE < 95 with no live Sourcing question: dispatch a FRESH writer with only the
+- SCORE < 90 with no live Sourcing question: dispatch a FRESH writer with only the
   frozen dossier, the current blog.md, and the fix list, at iteration n+1, then a
   FRESH evaluator. Route fixes by Area: Sourcing goes to a bounded researcher top-up
   for that one claim, never to the writer alone; Structure, Draft, and Mechanics go to
   the writer.
+  ONE bounded top-up PER SESSION, counted like your four iterations: only the dispatches
+  YOU make in THIS session spend it, because the output dir is a RESUME POINT and a retry
+  that read the previous session's top-up off the trail would arrive with its budget
+  already spent. It is one DISPATCH and not one item: it covers every Sourcing fix-list
+  item live when you send it, which is what date-night's iteration 2 top-up did when it
+  sourced three of them at once. Once it is spent, a further Sourcing item is closed by
+  handing the writer the claim to CUT. CUTTING IS NOT PATCHING: what this contract forbids
+  is INVENTING a citation or a URL, and removing an unsupported claim invents nothing.
+  Where the claim is load-bearing and only a person holds the fact, the evaluator's
+  Sourcing QUESTION ends the loop exactly as above. NEVER a second research dispatch.
+  Research is the most expensive agent in this chain and it re-buys the expensive half of
+  the blog: one topic dispatched a researcher FOUR times and still did not ship.
   A Sourcing FIX-LIST ITEM is NOT a Sourcing QUESTION, and conflating them is the one
-  mistake to avoid here. A fix-list item still routes to a bounded researcher top-up
-  and still does NOT end the loop; that routing is unchanged and it works, because
-  date-night's iteration 2 top-up sourced three Sourcing fix-list items successfully.
-  A fix-list item says "a machine can find this source". A question says "only a
-  person holds this fact". Same area word, opposite implications for the loop.
+  mistake to avoid here. A fix-list item never ends the loop, and while your top-up is
+  unspent it still routes to the researcher exactly as before. A fix-list item says "a
+  machine can find this source". A question says "only a person holds this fact". Same
+  area word, opposite implications for the loop.
 - Cap at 4 iterations, stop early after two consecutive no-gain iterations, and stop
   immediately on a live Sourcing question per the branch above.
 - THE FOUR ITERATIONS ARE YOURS AND THEY START AT ONE. Count only the iterations YOU
@@ -1455,12 +1551,19 @@ ONE property of the form, whether it carries a Sourcing question, and nothing el
   answering them with the verdict they just rejected, and it ends the session in ninety
   seconds having dispatched no agent and scored nothing. It has happened, twice in a row,
   on the same blog.{prior}
-- ONCE ANY ITERATION SCORES ABOVE 90, THE LOOP ONLY CLIMBS. From then on continue only
+- ONCE ANY ITERATION SCORES ABOVE 85, THE LOOP ONLY CLIMBS. From then on continue only
   while each new score is STRICTLY HIGHER than the best so far; the first iteration that
-  fails to beat the best ends the loop, and the best draft is the result. A draft above 90
-  is close, and another revise is as likely to break it as to lift it, so a non-gain there
-  is a reason to stop and keep what you have, not to spend another iteration. (Below 90 the
-  ordinary rules above run unchanged.) A score of 95 or higher still ends the loop at once.
+  fails to beat the best ends the loop, and the best draft is the result. A draft above 85
+  is close, and a LATER revise is as likely to break it as to lift it. The measured split is the
+  whole argument: the FIRST revise gained +17, 0 and +1, while every revise after it gained only
+  -1 and +3, and each of those costs a research top-up, a revise, a link pass and a fresh hostile
+  audit. This loop-stop threshold was itself once 90 and
+  never once fired, because live scores sat at 84 to 89, so the loop spent iterations 3 and 4 to
+  LOSE a point. IT ENDS THE LOOP AND IT NEVER DECIDES THE VERDICT: 85 is not a bar and a draft
+  above it has passed nothing, it is merely close enough to 90 that spending another iteration
+  risks what it already has.
+  (Below 85 the ordinary rules above run unchanged.) A score of 90 or higher still ends the
+  loop at once.
 - KEEPING THE BEST-SCORING DRAFT IS NOW ENFORCED BY THE ENGINE, not by you. The backend
   snapshots each new high and, once the loop ends, restores the highest-scoring draft as
   blog.md and eval.md and reports its score. You do not hand-restore an earlier draft and
@@ -1476,12 +1579,19 @@ ARE CHECKED FIRST:
   you saying the draft may be WRONG, and a wrong 96 is not better than a wrong 89, so
   a passing score never overrides a hold. Answering is a DEMAND, never an offer, and
   there is no dismiss and no proceed-anyway at any score.
-- Nothing current to answer, score >= 95: done. It SHIPS.
-- Nothing current to answer, score < 95 or no score at all: failed. The loop
+- Nothing current to answer, score >= 90: done. It SHIPS.
+- Nothing current to answer, score < 90 or no score at all: failed. The loop
   exhausted itself and cannot say what it needs, so there is no human task in it. A
   gates FAIL is failed for the same reason: there is no question in it.
 
-Your SCORE >= 95 branch above is FINAL AND TERMINAL ONLY WHEN NO CURRENT QUESTIONS ARE
+90 IS THE ONLY BAR AND THE BAND IS BINARY. At or above 90 the blog ships, below 90 it
+is failed, and there is no middle band, no tolerated band, and no second threshold
+anywhere in this engine. A draft that ends at 87 is BELOW BAR: it is failed, it stays
+on disk, and it ships only if the operator reads it and presses send, which is a
+person's call and never yours. The 85 in the loop-stop rule above is not a bar of any
+kind: it ends an ITERATION and never a verdict.
+
+Your SCORE >= 90 branch above is FINAL AND TERMINAL ONLY WHEN NO CURRENT QUESTIONS ARE
 ON DISK. That is the one narrowing of the rule, and everything else about it stands:
 you never re-evaluate a passing draft because "the draft changed", "eval.md and
 blog.md are inconsistent", "the run was stopped and restarted", or "let me confirm".
@@ -1498,7 +1608,7 @@ not correctness: you burn iterations, then terminal resolution still holds the b
 Python, so you cannot ship one you should have held. OVER-APPLYING it costs a good
 blog: end the loop on a stale or another topic's form and you write needs_review with
 iterations unspent, then terminal resolution reads that same form as non-holding and
-corrects the topic to failed by its score, so a draft that could have reached 95 dies
+corrects the topic to failed by its score, so a draft that could have reached 90 dies
 instead. Pass --iter, every time. It is the whole of what closes that direction.
 
 The engine checks all of this after your session ends and corrects a needs_review that
@@ -1577,9 +1687,9 @@ def _session_options(research=True):
 
 async def _sdk_session(client_slug, row, topic_slug, out_dir, prior_score=None):
     """One blog, one real SDK session. One session per BLOG, never per batch:
-    a batch is a barrier where five blogs wait for the slowest, the revise loop
-    runs 0 to 4 iterations so per-blog variance is huge, and one dead blog
-    exits its own process without touching the other four."""
+    a batch is a barrier where every blog in it waits for the slowest, the revise
+    loop runs 0 to 4 iterations so per-blog variance is huge, and one dead blog
+    exits its own process without touching the others."""
     from claude_agent_sdk import query
 
     options = _session_options()
@@ -1975,7 +2085,17 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
                     note=f"session died without a terminal status; retry {attempt - 1} of "
                          f"{retries} with a fresh SDK session",
                 )
+            started = time.monotonic()
+            # The dead-session guard is PER ATTEMPT, so its floor is taken here rather than from
+            # `baseline`: every attempt after the first appends its own retry note above, which
+            # already puts len(lines) past `baseline` before the retry session writes anything, so
+            # a baseline comparison can never fire on attempt 2 or later and at GEO_RETRIES=2 or 3
+            # the usage-limit storm resumes silently. The _terminal_line check below stays on
+            # `baseline` because it asks a PER SESSION question, whether THIS run reached a
+            # verdict, and a previous run's terminal line must not answer it.
+            pre_session = len(_read_status(out_dir))
             await _sdk_session(client_slug, row, topic_slug, out_dir, prior_score=prior_score)
+            elapsed = time.monotonic() - started
 
             lines = _read_status(out_dir)
             # Only lines THIS session appended. Over the whole file, a resumed topic finds the
@@ -1983,6 +2103,30 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
             # the dead session this loop exists for; _enforce_terminal_status then returns that
             # old verdict as this run's result, so a topic nobody stopped reports stopped.
             if _terminal_line(lines[baseline:]):
+                break
+            # Give a pending cancellation somewhere to land BEFORE anything terminal is written.
+            # append_status is synchronous and nothing below awaits, so a stop requested while
+            # _sdk_session was finishing would otherwise be delivered only after the failed line is
+            # on disk, and _stop_line_if_unterminated skips a topic that already has one: the
+            # operator's stop would be recorded as failed.
+            await asyncio.sleep(0)
+            if len(lines) <= pre_session and elapsed < DEAD_SESSION_SECONDS:
+                # NO STATUS LINE AND A DEATH THIS FAST IS NOT A CRASH WORTH RETRYING. The session
+                # never reached a tool call, so the retry opens a second full SDK session against
+                # whatever killed the first and burns its turn budget failing again, which is
+                # exactly what nine topics did inside a 106-second window. The note names the
+                # SYMPTOM and never a cause: the SDK does not tell us why a session died, and a
+                # usage-limit death arrives here as the string "Claude Code returned an error
+                # result: success", so any diagnosis written in would be a guess on the trail.
+                last = lines[-1] if lines else {}
+                append_status(
+                    str(out_dir), topic_slug,
+                    stage=last.get("stage", "research"), event="end",
+                    iter=last.get("iter", 1), status="failed",
+                    note=f"session died in {elapsed:.0f}s having written no status line; not "
+                         f"retried",
+                )
+                lines = _read_status(out_dir)
                 break
             if attempt > retries:
                 # The session died and retries are spent: the lead never wrote its
@@ -2346,9 +2490,13 @@ def _keep_prior_run_if_higher(client_slug, topic_slug, out_dir, baseline, prior_
     is the one whose draft is actually on disk.
 
     Three exclusions, each the same shape as _install_best_draft's:
-      - Only a FAILED retry is second-guessed. A retry that shipped (>= 95) beat every
-        re-runnable prior by arithmetic; needs_review holds the exact draft the evaluator asked
-        about; stopped has no verdict, and its bytes may be mid-write.
+      - Only a FAILED retry is second-guessed. A retry that SHIPPED scored at or above the 90
+        bar and the operator asked for it, so it stands on its own; needs_review holds the exact
+        draft the evaluator asked about; stopped has no verdict, and its bytes may be mid-write.
+        NOTE that "the prior must therefore have been lower" does NOT follow and is not claimed:
+        _enforce_terminal_status corrects only a needs_review claim, so a lead-written failed at
+        92 survives on the trail and is re-runnable. The exclusion rests on the retry having
+        shipped, never on arithmetic about what it beat.
       - A current question form vetoes the swap outright, same staleness argument as always.
       - The ANSWER-DRIVEN revise never comes near this: it runs from revise_topic, which calls
         neither this nor _install_best_draft, so truth still beats score on that one path.
@@ -2529,7 +2677,7 @@ def register_revise_run(run_id, client_slug, topic_slug, root=None):
     reason api_generate does it there: the 202 carries the record back, and _client_has_live_run
     must see this run immediately or a second POST slips through the gap before the task is
     scheduled. It starts queued, exactly like a batch, because TOPIC_SEMAPHORE is repo-wide and
-    this session can sit behind five other blogs for minutes.
+    this session can sit behind the blogs already in the queue for minutes.
     """
     status_path = output_dir(client_slug, topic_slug, root=root) / "status.jsonl"
     try:
@@ -2847,7 +2995,7 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=Non
         # and regenerating 409s as already_generated, so the operator had no door left. What was
         # stopped here is the OPTIONAL rerun, not the blog: the draft on disk is the one that
         # scored, byte for byte, so it keeps the verdict it earned. The contract says it twice, and
-        # this is both halves: a stop after SCORE >= 95 does not un-ship the blog, and a topic that
+        # this is both halves: a stop after SCORE >= 90 does not un-ship the blog, and a topic that
         # already wrote its terminal line keeps that line, its score, and its ledger entry.
         #
         # Only a topic with NO verdict to restore is stopped here, which is a revise driven at a
@@ -3263,7 +3411,7 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
         if facts_error is None:
             mark_phase(run_id, "topics")
 
-        # Dispatch every topic at once into the shared queue; five run and the rest wait, and a
+        # Dispatch every topic at once into the shared queue; GEO_CONCURRENCY run and the rest wait, and a
         # waiter starts the instant a slot frees whether the blog that freed it was this brand's,
         # another brand's, or a revise.
         raw = await asyncio.gather(
@@ -3278,8 +3426,8 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
         # The run is waiting on the FACT BASE lock behind another run for the same brand, so
         # guarded has never run and not one status.jsonl exists. The run is in the FACTS phase,
         # inside that lock, before any topic is dispatched. Or topics are suspended at
-        # TOPIC_SEMAPHORE, which is now every topic beyond the five the engine is working
-        # anywhere, not merely this batch's sixth: the cancel lands on the acquire, inside
+        # TOPIC_SEMAPHORE, which is now every topic beyond the few the engine is working
+        # anywhere, not merely this batch's own overflow: the cancel lands on the acquire, inside
         # guarded but BEFORE run_topic, so run_topic's cancel arm, the only thing that writes
         # their stopped line, never runs.
         #
@@ -3291,7 +3439,7 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
         #
         # Ordering is what makes this a sweep and not a race. A cancelled gather cancels its
         # children and completes only once every one of them has finished unwinding, so by the
-        # time this arm runs, topics one to five have already written their own lines through
+        # time this arm runs, the topics that reached run_topic have already written their lines through
         # run_topic. The guard inside _stop_line_if_unterminated then sees them and skips: this
         # writes for the silent topics only, and a topic that reached done keeps its done.
         for topic_slug, baseline in baselines.values():
@@ -3311,7 +3459,7 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
         # NEVER swallow a cancellation, exactly as run_topic does not. The fact base lock and every
         # semaphore slot release on the way out because `async with` unwinds on the exception path
         # like any other, which is the single highest-consequence line in this feature: a leaked
-        # slot shrinks the queue by one for the life of the process, and five leaked slots brick
+        # slot shrinks the queue by one for the life of the process, and GEO_CONCURRENCY leaked slots brick
         # every brand in the repo until someone restarts the API.
         raise
     except Exception as exc:

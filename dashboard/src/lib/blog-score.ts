@@ -10,41 +10,92 @@ import { adminTag, ADMIN_BELOW_BAR_TAG, type StateTag, type StateTone } from "./
  * both ship to the portal, so tests/portal_check.py forbids the word there; these helpers live
  * here, imported only by admin surfaces, exactly as ScoreTag lives in the admin status-badge.
  *
- * The BANDS are the single source the list, the roadmap and the stage page all read, so a 92 can
+ * The BANDS are the single source the list, the roadmap and the stage page all read, so an 87 can
  * no longer read "shipped" on one screen and "below bar" on another. blog-state.ts still owns the
  * LABELS (adminTag, ADMIN_BELOW_BAR_TAG); this file owns only the score-to-band arithmetic.
+ *
+ * THE ENGINE HAS ONE NUMBER AND THIS FILE HAS TWO, AND EVERY MENTION HAS TO SAY WHICH. SHIP_BAR
+ * is the engine's bar and the band is BINARY at it: at or above it a blog ships, below it it does
+ * not. BELOW_BAR_FLOOR draws no engine line at all, only the boundary between two LABELS worn by
+ * blogs that already failed. Calling either one "the bar" without saying which is a defect.
  */
 
-/** The band a bare score falls in: 95+ ships (green), 90 to 94 is owed (amber, one rerun from the
- *  bar), below 90 is trouble (red). Null when there is no score to colour. */
+/**
+ * The house bar, and the ONLY score threshold the engine has: the band is BINARY at it, so a run
+ * settling at or above it resolves done and ships, and a run settling below it resolves failed.
+ * It is what the writer aims at, what the lead's in-loop branch tests, and what the rubric's Ship
+ * band names. It MIRRORS SHIP_SCORE in server/runner.py and the engine does not serve the value,
+ * so moving it there means editing this line too, exactly as ENGINE_SLOTS in lib/sessions.ts
+ * mirrors GEO_CONCURRENCY.
+ *
+ * IT IS 90 AND NOT 95 BECAUSE 95 STOPPED BEING ATTAINABLE. tests/concurrency-proof.md records six
+ * topics ending done at 95, 95, 96, 97, 98 and 98, under the rubric as it stood then, when the
+ * weights totalled 25 for a maximum of 75. C4 and D2 took the weights to 30 and the maximum to 90
+ * with the percentage held constant, and rubric.md normalises as round(weighted_total / 90 * 100),
+ * so round(85/90*100) is 94 and round(86/90*100) is 96: the value 95 is now skipped entirely. The
+ * measured 12 blog run that followed scored only five of its twelve topics, at 72 to 89 to 88, 84
+ * to 84 to 87, 79 to 80, 82 and 73, the other seven dying in research on iteration 1 unscored. Zero
+ * of the twelve ever reached 95. 90 is exactly attainable: it is 81 of the 90 weighted points
+ * available.
+ */
+export const SHIP_BAR = 90;
+
+/**
+ * PRESENTATIONAL, and it is a LABEL boundary rather than a threshold: a blog scoring 85 to 89 is
+ * terminal FAILED and reaches a client only when the operator presses Send, so nothing here
+ * softens the binary band above and no surface may word this range as a ship.
+ *
+ * IT EXISTS BECAUSE A NEAR MISS AND AN OUTRIGHT FAILURE WANT DIFFERENT WORDS. Both are the same
+ * `failed` verdict, and an operator reading a list of them is asking which are worth opening: an
+ * 89 is one point short and a 73 is not close, and one red chip for both hides that.
+ *
+ * The engine's monotonic loop-stop threshold is also 85 and is neither renamed nor derived from
+ * this: the coincidence is meaningful, because a draft above 85 is close enough that an iteration
+ * failing to beat it spends budget to risk what it already has.
+ */
+export const BELOW_BAR_FLOOR = 85;
+
+/**
+ * The band a bare score falls in: at or above SHIP_BAR it shipped (green), BELOW_BAR_FLOOR to one
+ * under the bar is the near miss the operator decides on (amber), below that the run failed
+ * outright (red). Null when there is no score to colour.
+ *
+ * The amber band is NOT a second ship band. An 87 did not ship, and its terminal status is failed
+ * until a person sends it, so the colour says "your call", never "out the door".
+ */
 export function scoreTone(score: number | null): StateTone | null {
   if (typeof score !== "number") {
     return null;
   }
-  if (score >= 95) {
+  if (score >= SHIP_BAR) {
     return "ship";
   }
-  if (score >= 90) {
-    return "owed";
-  }
-  return "trouble";
+  return score >= BELOW_BAR_FLOOR ? "owed" : "trouble";
+}
+
+/**
+ * A score in the near miss band: at or above BELOW_BAR_FLOOR and still short of SHIP_BAR. The
+ * UPPER bound is load-bearing, not decoration: without it a sent 96 sitting on a stale
+ * `failed` row would wear the amber "one point short" chip.
+ */
+export function isBelowBar(score: number | null): boolean {
+  return typeof score === "number" && score >= BELOW_BAR_FLOOR && score < SHIP_BAR;
 }
 
 /**
  * The other face of the failed tag, split on the one fact the state cannot carry: the score. A
- * draft that scored 90 to 94 is BELOW BAR, one rerun from the 95 ship bar, not a plain failure;
- * below 90 is the failure the red tag is for. Both are the `failed` STATE and keep its bench, so
- * this is a label split like adminCommentsTag, never a new state. A missing score reads as the
- * plain failure, the honest floor when the loop never scored a draft.
+ * failed draft in the near miss band is BELOW BAR, a point or two under SHIP_BAR and worth
+ * reading before sending; under the floor is the failure the red tag is for. Both are the
+ * `failed` STATE and keep its bench, so this is a label split like adminCommentsTag, never a new
+ * state. A missing score reads as the plain failure, the honest floor when the loop never scored
+ * a draft.
  */
 export function adminFailedTag(score: number | null): StateTag {
-  return typeof score === "number" && score >= 90 && score < 95
-    ? ADMIN_BELOW_BAR_TAG
-    : adminTag("failed");
+  return isBelowBar(score) ? ADMIN_BELOW_BAR_TAG : adminTag("failed");
 }
 
-/** Text-only colour for a bare score number, sharing the tag tones so a 95 reads the same green as
- *  a shipped tag and a 92 the same amber as an owed one. `waiting` and `busy` never occur for a
+/** Text-only colour for a bare score number, sharing the tag tones so a 92 reads the same green as
+ *  a shipped tag and an 87 the same amber as an owed one. `waiting` and `busy` never occur for a
  *  score and fall to muted, as does no score at all. */
 const SCORE_TONE_TEXT: Record<StateTone, string> = {
   busy: "text-muted-foreground",

@@ -708,7 +708,7 @@ export type BlogSummary = {
   score: number | null;
   /**
    * WHY THIS DRAFT DID NOT SHIP: the evaluator's own eval.md verdict and fix list, verbatim, so a
-   * failed row can show its reason without opening the blog. NULL AT THE 95 SHIP BAR AND ABOVE and
+   * failed row can show its reason without opening the blog. NULL AT THE 90 SHIP BAR AND ABOVE and
    * null for an uploaded/unscored blog: a clean ship has no failure to explain. Admin-only, like
    * score and iterations, and the client wire never carries it (failed blogs are not client
    * visible anyway). Optional on the wire for the same engine-age reason as sent_to_client.

@@ -242,7 +242,7 @@ export function PreviewFooter({
  * A row with a blog wears that blog's REAL state, through the same BlogTag the blogs table and
  * the stage page use, so "Internal review", "Has questions", "Below bar", "Failed" and
  * "Stopped" mean here exactly what they mean there, and the score is coloured by the same band
- * rule (scoreClass). This used the raw StatusBadge, which knew only the run status: a 92 read
+ * rule (scoreClass). This used the raw StatusBadge, which knew only the run status: an 87 read
  * "failed" here while the blogs tab read "Below bar", the exact per-surface drift BlogTag ends.
  * The flat "generated" chip this used to show came from the ledger, which records ships only, so
  * a blog held for an answer or failed mid-loop wore "ready" as though nothing had happened, and

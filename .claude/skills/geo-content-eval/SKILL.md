@@ -60,10 +60,12 @@ Score each graded dimension on the rubric's 0 to 3 scale, multiply by its weight
 
 ### Step 5: Apply the house band
 
-The house band is binary. There is no middle band.
-- 95 to 100 is SHIP.
-- Below 95 is REJECT.
-- Any hard-gate failure is a REJECT regardless of the graded score. An 88 is a REJECT, not a ship.
+There is ONE number, it is 90, and the band is BINARY.
+- **90 to 100 is SHIP.** This is the number the loop ends on, and the first score at or above it is final.
+- **Below 90 is REJECT.** An 89 is a REJECT, not a ship, no matter how close it looks. A run that ends between 85 and 89 is below bar: it resolves failed and reaches a client only if the operator promotes it.
+- Any hard-gate failure is a REJECT regardless of the graded score.
+
+Score the draft honestly and let the engine apply the bands. Never nudge a number to land it in a band, and never report 95, which the scoring math cannot produce.
 
 ### Step 5b: Holding a draft for a human is asking a question, so ask it
 
@@ -78,7 +80,7 @@ python3 .claude/questions.py --out <output_dir> --slug <slug> --iter <n> --score
 
 That question is answerable in ten seconds without opening the draft. "A human confirms the citation" is not a question, it is a note, and a note leaves the operator a status demanding they act with nothing naming the act. Write the ask so the source and the claim are both in it, because the operator answers from the question text alone.
 
-If you cannot name a source and a claim, there is nothing to confirm and the draft is not held. Score it and let the number speak. A hold you cannot put into a question is not a hold, and the engine will not keep it: a draft held with no question on disk is corrected to done at 95 or above and to failed below it, and the correction is recorded against your verdict. Ask, or do not hold.
+If you cannot name a source and a claim, there is nothing to confirm and the draft is not held. Score it and let the number speak. A hold you cannot put into a question is not a hold, and the engine will not keep it: a draft held with no question on disk is corrected to done at 90 or above and to failed below it, and the correction is recorded against your verdict. Ask, or do not hold.
 
 **ASKING HOLDS THE BLOG, AT ANY SCORE, INCLUDING 96.** The engine checks the questions FIRST and the score second. A current, answerable question on disk means `needs_review` whatever you scored, and the operator's answer is a DEMAND, never an offer: there is no dismiss and no proceed-anyway at any score. Your score is still your verdict, and a held 96's verdict is SHIP, but the blog does not go out until a human answers. The old rule shipped the question and let the answer be declined forever, and it demonstrably shipped two canonical-facts violations at 96, because an unconfirmed source is not less wrong for scoring well.
 

@@ -364,7 +364,7 @@
 
 <header class="top">
   <h1 class="wordmark">Strategi <b>GEO Factory</b></h1>
-  <p class="tagline">Pick a client, load its roadmap, tick topics, watch each blog ship at 95 or land in review.</p>
+  <p class="tagline">Pick a client, load its roadmap, tick topics, watch each blog ship at 90 or land in review.</p>
 </header>
 
 
@@ -985,7 +985,12 @@ function renderStatus() {
       ? d.scores.map((sc, i) => {
           let cls = "score";
           if (i === d.scores.length - 1 && d.terminal) {
-            if (sc >= 95) cls += " ship";
+            // The ship colour follows the TERMINAL outcome, and the band is BINARY: 90 is the
+            // only bar, so a blog at or above it ships and one below it does not. A draft that
+            // ends at 89 is below bar, coloured by its terminal status, and waits for the
+            // operator to send it, which is the one release door at every score. 90 is
+            // exactly attainable, 81 of 90 weighted points.
+            if (sc >= 90) cls += " ship";
             else if (d.status === "needs_review") cls += " review";
             else if (d.status === "failed") cls += " failed";
           }

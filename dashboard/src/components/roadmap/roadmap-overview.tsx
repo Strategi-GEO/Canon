@@ -305,7 +305,7 @@ export function RoadmapOverview({
               label="Shipped"
               value={stats.shipped}
               tone="ship"
-              note="Scored 95 or above on the first eval with nothing left to ask, which is the only way a blog ships here."
+              note="Scored 90 or above on the first eval with nothing left to ask, which is how a blog clears the bar without you. Anything under that is yours to send or leave."
             />
             <StatTile
               label="Waiting on you"

@@ -6,7 +6,7 @@ import { BlogStateTag } from "@/components/shell/blog-state-tag";
  * ATTACH A BLOG, GET ITS TAG. The one entry point for a whole-blog tag when the caller holds the
  * blog entity rather than a resolved state: it runs blogState() over the wire fields, resolves the
  * failed-below-bar split from the score, and hands both to BlogStateTag. So no surface recomputes
- * the state, forgets the score (which is what made a 92 read "Failed" instead of "Below bar"), or
+ * the state, forgets the score (which is what made an 87 read "Failed" instead of "Below bar"), or
  * disagrees with the next surface about where a blog is.
  *
  * ADMIN-ONLY, and that is why it lives here and not beside BlogStateTag: it reads a score, and a

@@ -826,22 +826,16 @@ export const api = {
    * because the client is approving an exact article and a re-send replaces it. 409 while
    * any client suggestion is still open: resolve or dismiss each one first, and the detail
    * says so in the engine's own words. Answers with the new review state.
+   *
+   * THE ONE RELEASE DOOR, at every score. A blog that missed the 90 bar goes out through this
+   * same call, and the engine promotes it on the way: an appended `done` verdict naming the
+   * operator and the score, plus the ledger row, so the roadmap locks the topic exactly as a
+   * 90+ ship would and the trail reads "failed at 87, then a person sent it". 409 on a live
+   * run, and 409 on a failed topic no evaluator ever scored, because the 90 bar is the only
+   * thing a send waives.
    */
   sendBlogToClient: (slug: string, topicSlug: string) =>
     request<BlogReviewState>(`/api/clients/${slug}/blogs/${topicSlug}/send`, {
-      method: "POST",
-    }),
-
-  /**
-   * Ships a FAILED blog on the operator's authority and sends it to the client, one act.
-   * The engine appends a `done` verdict naming the operator and the score, records the
-   * ledger row (the roadmap locks the topic exactly as a 95+ ship would), and releases the
-   * blog through the same send every shipped blog uses. 409 unless the topic is terminal
-   * `failed` with an evaluator-scored committed draft and no live run holds it. Answers
-   * with the new review state.
-   */
-  promoteBlog: (slug: string, topicSlug: string) =>
-    request<BlogReviewState>(`/api/clients/${slug}/blogs/${topicSlug}/promote`, {
       method: "POST",
     }),
 

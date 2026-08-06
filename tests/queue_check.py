@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """ONE QUEUE FOR EVERY BLOG. Spawns NOTHING and calls NO model.
 
-The engine has exactly one place a blog session waits: `runner.TOPIC_SEMAPHORE`. Five run, the
-rest queue, and a waiter starts the instant a slot frees, whichever door the blog came in by:
+The engine has exactly one place a blog session waits: `runner.TOPIC_SEMAPHORE`. `GEO_CONCURRENCY`
+blogs run and defaults to 2, the rest queue, and a waiter starts the instant a slot frees,
+whichever door the blog came in by:
 
   - the Create tab's batch, and a retry, which are the same route with different row counts
   - the answer-driven revise a client's answers are owed

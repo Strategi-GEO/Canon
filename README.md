@@ -2,8 +2,10 @@
 
 A multi-client GEO blog factory wrapping the Claude Agent SDK. An operator opens the web
 UI, picks a client, loads that client's roadmap CSV, ticks the rows they want, and hits
-generate. The backend runs up to five blogs at a time; each one is researched, written,
-mechanically gated, link-verified, and scored by a hostile evaluator until it hits 95.
+generate. The backend runs two blogs at a time by default (`GEO_CONCURRENCY`); each one is
+researched, written, mechanically gated, link-verified, and scored by a hostile evaluator
+until it hits the bar of 90, which is the only bar: at or above 90 it ships, below 90 it does
+not.
 Output is plain local .md files under `outputs/<slug>/`, which the app previews in
 the browser. Six non-technical people share one deployment; the UI is a single HTML file
 served by the same process at `/`.
@@ -88,6 +90,7 @@ reads):
 |---|---|---|
 | `ANTHROPIC_API_KEY` | strongly recommended | Consumed by the `claude` CLI subprocess the SDK spawns. Without it the CLI falls back to its own login; see the billing warning above. |
 | `GEO_MODEL`, `GEO_MAX_TURNS`, `GEO_MAX_BUDGET_USD`, `GEO_RETRIES` | no | Model override, turn cap (default 250), per-session budget cap, died-session retries (default 1). |
+| `GEO_CONCURRENCY` | no | Blog sessions in flight repo-wide, whichever door opened them (default 2). It saves no tokens per blog; it changes what you OWN when the usage limit lands. At 5-wide a real run produced twelve half-finished blogs and zero shipped. At 2-wide the same quota buys a handful of FINISHED blogs and leaves the rest untouched, and an untouched topic retries clean where a half-done one does not. |
 
 Plus the MCP credentials for one of the two transports below.
 
@@ -275,7 +278,7 @@ dispatches three subagents in sequence and never writes a word itself:
    `canonical-facts.md`. It writes `eval.md` with `SCORE: NN` on its own line.
 
 The lead branches on the numeric SCORE plus exactly one property of the operator's question
-form. Below 95 it dispatches a fresh writer with only the dossier, the current draft, and the
+form. Below 90 it dispatches a fresh writer with only the dossier, the current draft, and the
 fix list. **THREE conditions stop the loop, not two:** the 4-iteration cap, two consecutive
 no-gain iterations, and a live Sourcing question on the form, which ends it at the iteration
 it is filed. Sourcing is the one area no rewrite can close, since the writer has no authority
@@ -284,9 +287,27 @@ the evaluator already knew was terminal. A Sourcing FIX-LIST ITEM is a different
 does NOT stop the loop: it routes to a bounded researcher top-up, because a machine can find a
 source where only a person holds a fact.
 
-**The first score at or above 95 is final and terminal WHEN NO CURRENT QUESTIONS ARE ON DISK.**
-The evaluator is stateless and its score varies by several points on an identical draft, so a
-confirmatory re-eval adds no rigor and can strand a passing blog. **Open questions hold a blog
+**ONE NUMBER, IT IS 90, AND THE BAND IS BINARY:** the first score at or above it ends the loop at
+once, and it is final and terminal WHEN NO CURRENT QUESTIONS ARE ON DISK. Below 90 the blog does
+not ship. There is no middle band and no second threshold, and nothing in the engine compares a
+score against any other number. A hard-gate failure is a REJECT whatever the graded score. **95 is
+not an attainable score and 90 is:** the rubric normalises as `round(weighted_total / 90 * 100)`
+over 14 integer-scored dimensions weighted to 30, so 85/90 lands on 94 and 86/90 lands on 96,
+skipping 95 entirely, while 90 sits exactly on 81/90.
+
+The bar used to be a single 95, which stopped being reachable. 95 was attainable before C4 and D2
+raised the weight total from 25 to 30: `tests/concurrency-proof.md` records six topics ending done
+at 95, 95, 96, 97, 98 and 98 under
+the old 75-point maximum, so what broke the bar was holding the percentage constant through that
+change. A real 12-blog run afterwards produced trajectories of 72 to 89 to 88, 84 to 84 to 87, 79
+to 80, 82 and 73, with ZERO of the twelve ever reaching 95, so every blog was guaranteed to burn
+all four iterations and end failed, which is where the account's usage limit went in two hours.
+Under a bar of 90 the best of them, 89, is one point short and does not ship on its own. **A draft
+that ends between 85 and 89 is BELOW BAR:** it resolves terminal `failed` like any other sub-90 run
+and reaches a client only when the operator presses send, which is a statement about who decides
+and not a second threshold. The dashboard labels that range "Below bar" so a near miss reads
+differently from an outright failure, over a terminal status that is `failed` in both cases. The evaluator is stateless and its score varies by several points on an identical
+draft, so a confirmatory re-eval adds no rigor and can strand a passing blog. **Open questions hold a blog
 at ANY score, and answering is a demand, never an offer:** a 96 with a live question is held,
 not shipped, and the single answer-driven revise is the one licensed re-eval. Because gates and
 the link pass run before the eval, the scored artifact IS the shipped artifact; the only thing
@@ -303,15 +324,26 @@ appends its own lines via `.claude/status.py`; the lead appends only the termina
 
 If a session dies without a terminal line, the runner retries with a fresh session
 (`GEO_RETRIES`, default 1), noting the retry in status.jsonl; when retries are spent it
-writes the `failed` terminal line itself. The server tails these files and streams them to
-the browser over SSE at `/api/runs/{run_id}/events`.
+writes the `failed` terminal line itself. **A session that wrote NO status line AND died
+faster than `runner.DEAD_SESSION_SECONDS` is NOT retried**, and gets its `failed` line at once
+with a note saying so. Both conditions are required: a slow death with no lines can be a
+genuine crash worth retrying, and a fast death that did write lines got somewhere. The guard
+exists because the retry arm used to fire on any dead session with no check on why it died, so
+when the account's usage limit landed every in-flight blog opened a second full SDK session
+against a dead account and burned its turn budget failing again, measured as a retry line at
+15:29:57 and its failed line at 15:29:59, with 19 retry lines written across twelve topics inside
+a 106-second window, seven of which had produced no status line at all. The
+server tails these files and streams them to the browser over SSE at
+`/api/runs/{run_id}/events`.
 
 ## Concurrency evidence
 
 See `tests/concurrency-proof.md` for the recorded evidence that the semaphore and client
 lock behave as claimed: 7 topics against the cap of 5 measured max concurrency of exactly 5,
 and topic 6 started 60 ms after the first slot freed, 3.3 seconds before the slowest
-first-wave topic finished, disproving any batch-of-five barrier.
+first-wave topic finished, disproving any batch-of-five barrier. That run was recorded when
+the cap was hardcoded at 5; the cap is now `GEO_CONCURRENCY` and defaults to 2, and what the
+evidence establishes is how the semaphore behaves at whatever cap it holds.
 
 ## Gates
 
@@ -486,7 +518,7 @@ If an editor has already moved a post past draft, the CMS keeps their version an
 
 ## Not built yet
 
-Honest list, verified against the code as of 2026-07-16:
+Honest list, verified against the code as of 2026-08-05:
 
 - **No auth.** No login, no tokens, no user identity anywhere in `app.py`. Six trusted
   operators behind whatever network boundary you put in front of it. There is no CORS
@@ -495,10 +527,15 @@ Honest list, verified against the code as of 2026-07-16:
   status.jsonl files survive a restart; the run list and its SSE endpoints do not, so
   `/api/runs/{id}/events` 404s for runs started before the restart even though every line
   they wrote is still on disk.
-- **No retry UI.** Died-session retries are automatic (`GEO_RETRIES`) and visible only as
-  note lines in status.jsonl. There is no button to retry a failed or needs_review topic;
-  you resubmit the row.
-- **No run cancellation.** Once a batch is accepted there is no endpoint to stop it.
+- ~~**No retry UI.**~~ FIXED. A failed topic carries a "Retry this topic" link to the Create
+  tab with the row pre-ticked (`components/blogs/blog-stage.tsx`), and beside it the same
+  Send to client button every other blog gets: there is ONE release door at every score, and
+  it promotes a failed topic on the way. Died-session retries remain automatic and note-only
+  (`GEO_RETRIES`).
+- ~~**No run cancellation.**~~ FIXED. `DELETE /api/clients/{slug}/runs` (`api_stop_client_runs`)
+  stops every live run for one brand at once, behind a confirm dialog
+  (`components/session/stop-session-dialog.tsx`). Finished blogs keep their terminal line;
+  in-flight ones are discarded, and nothing on disk is deleted.
 - **No CSV write-back, BY DESIGN.** The roadmap is read-only input; progress and terminal
   status live in the output dirs, never in the CSV.
 - **No multi-worker or multi-host scaling, BY DESIGN.** See the single-worker warning.
@@ -509,11 +546,11 @@ Honest list, verified against the code as of 2026-07-16:
   `config_check.py` verifies
   the transport resolves, the options the SDK gets are the intended ones, and every field
   name still exists on the installed SDK; it cannot verify the credentials work.
-- **The queue is five BLOGS, not one session, and brands DO interleave.** `TOPIC_SEMAPHORE`
-  in `runner.py` is the single gate every blog session passes: a Create-tab batch, a retry,
-  an answer-driven revise and a repurpose each take one slot, so two brands can be writing at
-  once as long as five blogs are. `tests/queue_check.py` proves the cap, the mixed doors and
-  the no-batch-barrier claim in-process. The older one-client-at-a-time note in
+- **The queue is `GEO_CONCURRENCY` BLOGS, not one session, and brands DO interleave.**
+  `TOPIC_SEMAPHORE` in `runner.py` is the single gate every blog session passes: a Create-tab
+  batch, a retry, an answer-driven revise and a repurpose each take one slot, so two brands can
+  be writing at once as long as the cap allows. `tests/queue_check.py` proves the cap, the
+  mixed doors and the no-batch-barrier claim in-process. The older one-client-at-a-time note in
   `tests/concurrency-proof.md` describes the repo-wide lock this replaced.
 - **The output endpoint serves exactly five filenames** (`blog.md`, `eval.md`,
   `dossier.md`, `status.jsonl`, `links-verified.txt`). Anything else, including the

@@ -127,9 +127,9 @@ app.include_router(cms_router, dependencies=[Depends(_cms_admin_gate)])
 @app.on_event("startup")
 async def _warn_single_worker():
     log.warning(
-        "geo-factory must run on ONE uvicorn worker: the 5-blog queue is an "
+        "geo-factory must run on ONE uvicorn worker: the blog queue is an "
         "in-process primitive in runner.py, so --workers N breaks the "
-        "concurrency cap (it becomes 5N)."
+        "concurrency cap (it becomes N times GEO_CONCURRENCY)."
     )
 
 
@@ -1864,12 +1864,19 @@ def _blog_history(slug):
             "iterations": summary.get("iterations"),
             # WHY THIS DRAFT DID NOT SHIP, surfaced verbatim so a failed row shows its reason
             # without opening the blog. This is the evaluator's own eval.md (blog_versions.eval_body),
-            # which IS the response explaining the failure, not a second copy of it. NULL at the 95
-            # ship bar and above, exactly as asked, and null when there is no eval to show (an
-            # uploaded blog, or a run that never scored). The row's own status/score decide whether a
-            # "More info" control renders; this only carries the text.
+            # which IS the response explaining the failure, not a second copy of it. NULL at the
+            # bar and above, exactly as asked, and null when there is no eval to show
+            # (an uploaded blog, or a run that never scored).
+            #
+            # THE BAR HERE IS runner.SHIP_SCORE AND IT IS THE ONLY BAR. The band is binary: at or
+            # above 90 the blog ships, below 90 it does not, so the comparison that answers "why
+            # did this not ship" is the same comparison terminal resolution makes. A draft at 87
+            # is below bar, it resolves failed, and it carries its eval body until the operator
+            # reads it and sends it. It is also never a literal: this comparison once carried its own `95`,
+            # and a second copy of a bar is a bar that drifts. The row's own status/score decide
+            # whether a "More info" control renders; this only carries the text.
             "reason": eval_body if (
-                version_score is not None and version_score < 95 and eval_body
+                version_score is not None and version_score < runner.SHIP_SCORE and eval_body
             ) else None,
             "shipped": topic_slug in led,
             # WHERE THIS BLOG CAME FROM, INFERRED rather than stored, and the inference is
@@ -2008,9 +2015,10 @@ def _blog_history(slug):
     # twins raise stale once a new version lands under the form, because they gate whether the form
     # may still be SUBMITTED or DISPATCHED. This fact says the client already answered, which a new
     # version cannot un-do. Clearing it when the rerun commits is exactly the vanishing card above:
-    # a clean rerun at >= 95 asks nothing new, so the client is meant to keep holding the old draft
-    # and their own answers until an admin sends. The stamp therefore stands until the next round of
-    # questions replaces the anchor or a send moves the article past it in blogState's ladder.
+    # a clean rerun at or above the 90 bar asks nothing new, so the client is meant to
+    # keep holding the old draft and their own answers until an admin sends. The stamp therefore
+    # stands until the next round of questions replaces the anchor or a send moves the article past
+    # it in blogState's ladder.
     answered_map = dict(db.q(
         """with form as (
              select n.topic_id,
@@ -2410,12 +2418,13 @@ def _require_done(slug, topic_slug, act):
 
 def _require_reviewable(slug, topic_slug, act):
     """409 unless the verdict is done OR failed: the admin-review bench, which now includes a
-    failed draft. The operator may polish a sub-95 draft with edits and Claude comments before
-    promoting it (api_promote_blog), because the promoted artifact should be the draft they
-    are satisfied with, not the draft plus a wish list. The boundaries stay hard: needs_review
+    failed draft. The operator may polish a draft that fell below the 90 bar, with
+    edits and Claude comments, before sending it, because the artifact that goes out should be
+    the draft they are satisfied with, not the draft plus a wish list. The
+    boundaries stay hard: needs_review
     is a hold no edit clears (answering is the only door), stopped and running have no settled
-    draft to edit, and the SEND stays behind _require_done, so a failed draft still ships only
-    through promotion."""
+    draft to edit, and the SEND stays behind _require_done, which a failed draft passes only by
+    being promoted into `done` on the way through it."""
     status = _topic_status(slug, topic_slug)
     if status not in ("done", "failed"):
         raise HTTPException(
@@ -2437,9 +2446,11 @@ def _require_not_approved(slug, topic_slug, act):
     It runs beside _require_done rather than inside it because the two say different things and
     send the operator to different places. Not-done means the pipeline is not finished with the
     blog yet; approved means it is finished with it permanently, and the only act left is the
-    CMS push. A blog can be done and approved at once, so both checks run and this one goes
-    second: done is the more basic fact and its message is the more useful one for a topic that
-    is neither.
+    CMS push. A blog can be done and approved at once, so both checks run. On the edit and
+    comment doors this one goes second, because done is the more basic fact and its message is
+    the more useful one for a topic that is neither. On the SEND door it goes first, because the
+    promotion sits between the two there and an approved row must be refused before a done
+    verdict is appended to its trail.
     """
     approved = blog_edit.approved_at(slug, topic_slug)
     if approved is not None:
@@ -2834,14 +2845,27 @@ async def api_save_blog_content(slug: str, topic: str, body: ContentRequest,
 @app.post("/api/clients/{slug}/blogs/{topic}/send")
 async def api_send_blog_to_client(slug: str, topic: str,
                                   user: auth.Identity = Depends(auth.require_admin)):
-    """Release one shipped blog to the client portal, first send and Send again both.
+    """Release one blog to the client portal at ANY score, first send and Send again both.
+
+    THE ONE RELEASE DOOR, and it is always an operator's press. Every blog waits on the
+    admin-review bench whatever it scored, nothing auto-releases, and this button is the exit
+    for all of them: a draft that fell below the 90 bar leaves through it too, on the operator's
+    authority, which is the only thing the separate promote button ever said.
+
+    THE DONE-GATE IS NOT WIDENED. blog_edit.promote_if_failed appends the `done` verdict first,
+    naming the operator and the score, exactly as the CMS door already does
+    (server/cms/routes.py), so _require_done passes because the blog genuinely BECAME done. The
+    trail still reads "failed at 87, then a person sent it": deleting the second button deleted
+    no audit line. Every other status falls through that helper untouched, so needs_review still
+    holds at any score, stopped still has no verdict to release, and a failed topic with no
+    evaluator-scored draft is refused because there is nothing to send.
 
     The portal shows a blog for review only once this stamp exists, so the admin-review
-    stage is the default for every shipped blog and this button is its exit. No longer
+    stage is the default for every blog and this button is its exit. No longer
     idempotent, deliberately: a re-send after a review round is a new release of changed
     bytes, so every press re-stamps the date, pins sent_version_id to the latest
     committed version, and clears the client's approval (mark_sent says why). The one
-    refusal is an open client suggestion, because sending over it would release an
+    refusal at the end is an open client suggestion, because sending over it would release an
     article the client is still waiting to see changed, and the dialog owes them an
     answer (resolve or dismiss) before the next version lands in their portal.
 
@@ -2853,7 +2877,20 @@ async def api_send_blog_to_client(slug: str, topic: str,
     """
     _client_or_404(slug, user)
     _topic_or_404(slug, topic)
-    _require_done(slug, topic, "sending to the client")
+    # ORDER: the two refusals that must land BEFORE anything is appended to the trail, then the
+    # promotion, then the gates that read the verdict it wrote.
+    #
+    # The live-run refusal is first because a stale fold is exactly what makes a send dangerous:
+    # a retry leaves the previous session's terminal status on record until the new run settles,
+    # so a send inside that window would promote and release bytes the running writer is already
+    # replacing. It came off the deleted promote route and it is the one refusal the send never
+    # had.
+    if topic in _live_run_slugs(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{topic!r} is generating right now in a live run; sending is for "
+                   f"settled topics",
+        )
     # THE APPROVED LOCK, AND HERE IT GUARDS AN ACT NO TRIGGER SEES. Sending inserts nothing, it
     # UPDATEs topics, so neither trigger in migration 013 fires on it, and the UPDATE clears
     # client_approved_at as it re-stamps. A re-send would erase the approval that every other
@@ -2864,78 +2901,27 @@ async def api_send_blog_to_client(slug: str, topic: str,
     # protocol is None, which this route already spends on the open-suggestion case below. The
     # operator would read "the client's suggestions are still open" for an article that is
     # locked, which sends them to resolve comments that are not the problem.
+    #
+    # AND BEFORE THE PROMOTION, which is the order the deleted route already recorded: an
+    # approved row that folds back to failed is a resurrected one, and promoting over it would
+    # append a done verdict claiming a send that the very next line refuses.
     _require_not_approved(slug, topic, "sending to the client")
     email = getattr(user, "email", "") or ""
-    state = await asyncio.to_thread(blog_edit.mark_sent, slug, topic, email)
-    if state is None:
-        raise HTTPException(
-            status_code=409,
-            detail="the client's suggestions are still open; resolve or dismiss each "
-                   "one before sending again",
-        )
-    return state
-
-
-@app.post("/api/clients/{slug}/blogs/{topic}/promote")
-async def api_promote_blog(slug: str, topic: str,
-                           user: auth.Identity = Depends(auth.require_admin)):
-    """Ship a FAILED blog on the operator's authority, and send it to the client, one act.
-
-    The evaluator's verdict stays on the trail: this route exists for the blog that stalled
-    below 95 with nothing left to ask, where the operator has read the draft and is satisfied
-    with it. Promotion appends a new terminal `done` line whose note names the operator and
-    the score (blog_edit.promote_to_done), appends the ledger row so the roadmap locks the
-    topic exactly as a 95+ ship would, and then releases the blog to the client through the
-    same mark_sent every send uses. From that moment the blog is treated as passed
-    everywhere, because review, approve and publish all read the folded status, and the fold
-    reads done.
-
-    Scope is exact and each boundary refuses below: terminal `failed` only, never
-    needs_review (questions hold at any score, and promotion is not a dismiss), never
-    stopped (no verdict exists to promote), never mid-run, never approved, and never without
-    an evaluator-scored committed draft. Gates and the link pass run before the eval, so a
-    scored draft is gate-clean and link-clean; the 95 bar is the ONLY thing being waived.
-    """
-    _client_or_404(slug, user)
-    _topic_or_404(slug, topic)
-    if topic in _live_run_slugs(slug):
-        raise HTTPException(
-            status_code=409,
-            detail=f"{topic!r} is generating right now in a live run; promotion is for "
-                   f"settled topics",
-        )
-    status = _topic_status(slug, topic)
-    if status != "failed":
-        raise HTTPException(
-            status_code=409,
-            detail=f"{topic!r} is {status}, not failed; promotion is for failed blogs only",
-        )
-    # Unreachable through the bench in the ordinary world (an approved topic folds to
-    # approved, not failed), but a resurrected topics row keeps its old stamps, and promoting
-    # over one would end in mark_sent's None with a sentence about suggestions that are not
-    # the problem. The precise refusal goes first.
-    _require_not_approved(slug, topic, "promotion")
-    cid = db.client_id(slug)
-    score = db.q(
-        """select v.score from blog_versions v
-           join topics t on t.id = v.topic_id
-           where t.client_id = %s and t.slug = %s and t.deleted_at is null
-           order by v.version_no desc limit 1""",
-        (cid, topic), fetch="val")
-    if score is None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"{topic!r} has no evaluator-scored draft to promote; generate it "
-                   f"again instead",
-        )
-    email = getattr(user, "email", "") or ""
     try:
-        await asyncio.to_thread(blog_edit.promote_to_done, slug, topic, score, email)
+        await asyncio.to_thread(blog_edit.promote_if_failed, slug, topic,
+                                _topic_status(slug, topic), email)
     except blog_edit.EditError as exc:
-        # The promotion line did not land in the record (this machine's status feed is behind
-        # it, promote_to_done says how that happens and what clears it). Nothing was ledgered
-        # and nothing was sent, so the operator retries after the stated fix.
+        # Either the topic has no evaluator-scored draft to take responsibility for, or the
+        # promotion line did not land in the record (promote_to_done says how that happens and
+        # what clears it). Nothing was ledgered and nothing was sent.
         raise HTTPException(status_code=409, detail=str(exc))
+    _require_done(slug, topic, "sending to the client")
+    # A PROMOTION THAT LANDS OVER A SEND THAT IS THEN REFUSED LEAVES THE BLOG DONE AND UNSENT,
+    # and that is accepted rather than designed around. The refusal below lives in mark_sent's
+    # own WHERE precisely because checking first is racy, so no ordering here removes it. What
+    # it leaves is a blog that is genuinely done, sitting on the done bench with this same
+    # button offered, so the operator resolves the client's suggestions and presses again. The
+    # promotion line names the act they took and the second press is what completes it.
     state = await asyncio.to_thread(blog_edit.mark_sent, slug, topic, email)
     if state is None:
         raise HTTPException(
@@ -3148,7 +3134,7 @@ async def _revise_task(run_id, slug, topic_slug):
         return
 
     # THE LEDGER, through the same callback a batch uses, because a revise ships blogs too. A
-    # topic capped at needs_review that the operator lifts to 95+ by answering the blocking
+    # topic capped at needs_review that the operator lifts to 90+ by answering the blocking
     # questions reaches done HERE and nowhere else, so without this call the artifact the ledger
     # exists to record would never enter it: it would be missing from generated.csv, and
     # ledger.live_slugs would not dedupe it, so re-selecting that row in a later batch would

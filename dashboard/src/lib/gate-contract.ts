@@ -130,8 +130,9 @@ export type GateApplying = number | "unread";
  *
  * `score` is DELIBERATELY NOT a BlogStateFacts member. The state never reads it, the portal
  * producers never supply it (tests/portal_check.py bans the token from the client surface
- * outright), and exactly one door needs it: promote, whose engine route refuses a failed
- * record with no evaluator-scored draft. It rides here because the admin wire already carries
+ * outright), and exactly two doors need it: send and publish, each of which promotes a failed
+ * topic before its own gate runs and refuses a failed record with no evaluator-scored draft.
+ * It rides here because the admin wire already carries
  * it (BlogSummary.score), and blog-stage's gateInput record is the merged BlogSummary, so the
  * fact is on the page without touching either state-facts producer. Absent reads as refuse in
  * the one clause that consults it, which is the true answer rather than a guess: a scoreless
@@ -195,10 +196,9 @@ export type GateSourceId =
   | "api_resolve_blog_comment"
   | "api_delete_blog_comment"
   | "api_send_blog_to_client"
-  | "api_promote_blog"
   | "api_publish_blog"
   | "assert_publishable"
-  | "_promote_if_failed"
+  | "promote_if_failed"
   | "cms_record_blog"
   | "edit_refuse_if_approved"
   | "edit_refuse_live_run"
@@ -356,10 +356,11 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     what:
       "Resolves a topic for any admin write, raises PORTAL:NOTDONE unless topic_rollup.status is " +
       "exactly 'done', then PORTAL:LOCKED on an approved article. admin_save_blog_content, " +
-      "admin_add_comment and the send all still route through it on the hosted build, but its " +
-      "clause now sits only on the send door: the failed-draft bench exists on the local build " +
-      "alone, and every hosted admin write route answers 501 before this function runs, so " +
-      "done-only here is defense-in-depth rather than a refusal any mounted control can hit.",
+      "admin_add_comment and the send all still route through it on the hosted build, but only " +
+      "its APPROVED clause sits on a door now: the done-only half has no promotion in front of " +
+      "it, so it would refuse the below-bar bench that exists on the local build alone, and " +
+      "every hosted admin write route answers 501 before this function runs, so done-only here " +
+      "is defense-in-depth rather than a refusal any mounted control can hit.",
     exemptions: [
       {
         id: "done_topic_not_found",
@@ -539,8 +540,10 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     what:
       "The local engine's admin_done_topic: a 409 unless the topic's terminal verdict is done. " +
       "Only api_send_blog_to_client calls it now: the three editing routes moved to " +
-      "_require_reviewable when the admin-review bench gained the failed draft, so this is " +
-      "the gate that keeps a failed draft from SHIPPING by any door other than promote.",
+      "_require_reviewable when the admin-review bench gained the failed draft. IT STILL " +
+      "DEMANDS THE LITERAL done AND IS NOT WIDENED: what changed is what reaches it, because " +
+      "the send route promotes a failed topic first, exactly as the CMS route has always done " +
+      "through blog_edit.promote_if_failed, so the status really is done when this compares it.",
     exemptions: [],
     dependsOn: [
       {
@@ -565,8 +568,9 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     what:
       "The admin-review bench's own gate: a 409 unless the verdict is done OR failed. The " +
       "three editing routes (save, comment filing, comment resolve) call it, so an operator " +
-      "can polish a sub-95 draft before promoting it, while needs_review, stopped and running " +
-      "stay closed and the send keeps demanding the literal done through _require_done.",
+      "can polish a sub-90 draft before releasing it, while needs_review, stopped and running " +
+      "stay closed and _require_done keeps demanding the literal done on the send, which the " +
+      "route's own promotion satisfies rather than widens.",
     exemptions: [],
     dependsOn: [
       {
@@ -584,13 +588,14 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     symbol: "_require_not_approved",
     kind: "python",
     fingerprint: "6302d2452a9c26e4",
-    gates: ["answer", "edit", "comments", "send", "promote"],
+    gates: ["answer", "edit", "comments", "send"],
     what:
       "The HTTP half of the approved lock, and the widest gate in the engine: it stands in front " +
       "of the answer routes as well as the three write routes, because an answer dispatches a " +
-      "revise that rewrites the draft and commits a version. The promote route calls it too: a " +
-      "resurrected topics row keeps its old approval stamp, and promoting over one would end in " +
-      "mark_sent's None with a sentence about suggestions that are not the problem.",
+      "revise that rewrites the draft and commits a version. On the send it also guards the " +
+      "promotion behind it: a resurrected topics row keeps its old approval stamp, and shipping " +
+      "over one would end in mark_sent's None with a sentence about suggestions that are not " +
+      "the problem.",
     exemptions: [],
   },
   require_not_with_client: {
@@ -831,50 +836,42 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
       },
     ],
   },
+  // THE ONE RELEASE DOOR, at every score, and the separate promote route it absorbed is DELETED
+  // rather than parked here. It appends a `done` verdict to the status trail for a below-bar
+  // draft (blog_edit.promote_to_done), ledgers the blog, and releases it through mark_sent, so
+  // every other gate in this table keeps demanding the literal "done" untouched: a promoted blog
+  // satisfies them because the fold genuinely reads done afterward, never because one of them
+  // was widened. That is the shape blog_edit.promote_if_failed already had for the
+  // CMS push, copied rather than invented.
   api_send_blog_to_client: {
     file: "server/app.py",
     symbol: "api_send_blog_to_client",
     kind: "python",
-    fingerprint: "33ef76b3a14badcc",
+    fingerprint: "0948090b650d9e32",
     gates: ["send"],
     what:
-      "The engine's send route. Its one refusal of its own is the open client suggestion, which " +
-      "it reports from mark_sent answering None rather than from a count it ran first.",
-    exemptions: [],
-  },
-  // THE ONE ACT THAT PASSES ON "failed" AND ON NOTHING ELSE: the operator shipping a sub-95
-  // draft they have read. The route appends a `done` verdict to the status trail
-  // (blog_edit.promote_to_done), ledgers the blog, and releases it through mark_sent, so every
-  // other gate in this table keeps demanding the literal "done" untouched: a promoted blog
-  // satisfies them because the fold genuinely reads done afterward, never because one of them
-  // was widened. Its four refusals are the four clauses on the promote door.
-  api_promote_blog: {
-    file: "server/app.py",
-    symbol: "api_promote_blog",
-    kind: "python",
-    // Recorded at the entry's creation, after the four clauses above were written against the
-    // route's four raises and the record-behind mapping was exempted below, so the hash and
-    // the clause set were reconciled together rather than the hash bumped over an unread diff.
-    fingerprint: "6b44d1e9cdf2f84c",
-    gates: ["promote"],
-    what:
-      "Ships a FAILED blog on the operator's authority and sends it to the client in one act: " +
-      "refuses a topic mid-run, a topic that is not terminal failed, one with no " +
-      "evaluator-scored committed draft, and the open-suggestion sentinel from mark_sent. The " +
-      "approved lock is _require_not_approved's own clause, called rather than restated.",
+      "The engine's send route, and the only one an operator's release ever reaches: it " +
+      "refuses a topic mid-run, calls blog_edit.promote_if_failed so a below-bar draft BECOMES " +
+      "done rather than the done gate being widened, then stamps the send and reports the " +
+      "open-suggestion sentinel mark_sent answers None with. The done gate, the approved lock " +
+      "and the scored-draft refusal are _require_done's, _require_not_approved's and " +
+      "promote_if_failed's own clauses, called rather than restated.",
     exemptions: [
       {
-        id: "promote_route_record_behind",
+        id: "send_route_record_behind",
         raises: "status_code=409, detail=str(exc))",
         why:
-          "The HTTP mapping of blog_edit.promote_to_done's own refusals, of which there are " +
-          "two: the status feed on this machine sitting behind a record another engine wrote " +
-          "(the promotion line gets swallowed by the ordinal conflict, verified after commit), " +
-          "and a draft the machine MOVED after its last evaluator score (a retry's writer " +
-          "replaced blog.md and died before an eval, so the score describes other bytes). " +
-          "Both are facts about the status feed's line-level shape at one instant, not " +
-          "conditions the record on this page's wire can express, so no clause could decide " +
-          "either; the 409 carries the fix in the engine's own words.",
+          "blog_edit.EditError arriving one frame up. Its DECIDABLE half is the scoreless " +
+          "failure, and that is a clause (promotes_scored_draft) rather than part of this " +
+          "exemption. What is left is blog_edit.promote_to_done's own pair: the status feed on " +
+          "this machine sitting behind a record another engine wrote (the promotion line gets " +
+          "swallowed by the ordinal conflict, verified after commit), and a draft the machine " +
+          "MOVED after its last evaluator score (a retry's writer replaced blog.md and died " +
+          "before an eval, so the score describes other bytes). Both are facts about the status " +
+          "feed's line-level shape at one instant, not conditions the record on this page's " +
+          "wire can express, so no clause could decide either; the 409 carries the fix in the " +
+          "engine's own words. The publish route carries the identical exemption over the " +
+          "identical call.",
       },
     ],
   },
@@ -882,46 +879,45 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
   // the gate module it calls was. That is the wrong way round to leave a surface: assert_publishable
   // decides, but this route is what an operator's press actually reaches, and it adds five refusals
   // of its own on top of the one it delegates. None of them was fingerprinted.
-  // THE PROMOTION THE PUBLISH ROUTE PERFORMS BEFORE THE GATE, and the reason a failed blog can
-  // reach the CMS at all without assert_publishable being widened by a syllable. It is its own
-  // source rather than part of the route because it carries a real refusal of its own, and a
-  // refusal folded into a neighbour's fingerprint is a refusal nothing checks.
-  _promote_if_failed: {
-    file: "server/cms/routes.py",
-    symbol: "_promote_if_failed",
+  // THE PROMOTION BOTH SHIP DOORS PERFORM BEFORE THEIR OWN GATE, and the reason a failed blog
+  // reaches the client or the CMS without _require_done or assert_publishable being widened by a
+  // syllable. ONE HOME, TWO DOORS: it used to live in server/cms/routes.py, which
+  // the send route would have had to copy, and a second copy is a second answer to "may this
+  // blog be promoted" free to drift from the first.
+  promote_if_failed: {
+    file: "server/blog_edit.py",
+    symbol: "promote_if_failed",
     kind: "python",
-    fingerprint: "77c2c0b00a235d73",
-    gates: ["publish"],
+    // Recorded when the two ship doors were folded into one release button and this helper
+    // became their shared home, reconciled against its one raise rather than bumped.
+    fingerprint: "7571018c45da9f02",
+    gates: ["send", "publish"],
     what:
-      "Promotes a FAILED topic to done on the operator's authority before the CMS gate sees " +
-      "it, appending the same operator-named `done` verdict the promote-and-send door appends " +
-      "and performing no send. A no-op for every other status. It refuses a failed topic with " +
-      "no evaluator-scored draft, which is the one thing a sub-95 ship cannot waive.",
-    exemptions: [
-      {
-        id: "publish_promote_did_not_land",
-        raises: "raise HTTPException(status_code=409, detail=str(exc))",
-        why:
-          "blog_edit.EditError arriving one frame up, and the same pair PROMOTE_HAS_SCORED_DRAFT " +
-          "is exempt against on the send door: a status feed BEHIND the record (another engine " +
-          "ran this topic, so the appended line hits an ordinal the record already owns and the " +
-          "conflict clause swallows it) and a draft the machine MOVED after its last evaluator " +
-          "score. Both are facts about the status feed's line-level shape at one instant, not " +
-          "conditions this page's wire can express, so no clause could decide either.",
-      },
-    ],
+      "Promotes a FAILED topic to done on the operator's authority before either ship door's " +
+      "gate sees it, appending the operator-named `done` verdict and the score. A silent " +
+      "no-op for every other status, so needs_review, stopped and running fall through to the " +
+      "caller's own refusal untouched. It refuses a failed topic with no evaluator-scored " +
+      "draft, which is the one thing a sub-90 ship cannot waive.",
+    exemptions: [],
   },
   api_publish_blog: {
     file: "server/cms/routes.py",
     symbol: "api_publish_blog",
     kind: "python",
-    fingerprint: "e41dfb7cdf5450db",
+    // Moved a second time when publishing began stamping the send. A push to the client's own
+    // CMS puts the article live on their site, so leaving sent_to_client null after it hid an
+    // article the client could already read: blogState drops `published` when there is no send.
+    // The stamp SATISFIES that guard rather than bypassing it, since published-without-a-send
+    // becomes unreachable instead of merely tolerated. Best-effort and after record_publish, so
+    // no bookkeeping failure can report a landed publish as a failed one.
+    fingerprint: "ae8923e81fdb98a5",
     gates: ["publish"],
     what:
       "Pushes one shipped blog to the CMS as a draft, synchronously, because the operator is " +
       "watching. It resolves the brand and the topic, delegates the real gate to " +
-      "server/cms/gate.py, resolves the one shared write key, and maps the CMS's own failure back " +
-      "to a status that blames the right party.",
+      "server/cms/gate.py, resolves the one shared write key, maps the CMS's own failure back " +
+      "to a status that blames the right party, and then stamps the send so the client's portal " +
+      "shows the article they can already read on their site.",
     exemptions: [
       {
         id: "publish_route_client_unknown",
@@ -938,6 +934,17 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
           "Resolution and the traversal guard together, exactly as _topic_or_404's is: a " +
           "topic_slug that does not survive slugify is a smuggled path, and it answers 404 " +
           "rather than naming what it found.",
+      },
+      {
+        id: "publish_promote_did_not_land",
+        raises: "status_code=409, detail=str(exc))",
+        why:
+          "blog_edit.EditError from promote_if_failed, arriving one frame up, and the identical " +
+          "exemption the send route carries over the identical call. Its decidable half is the " +
+          "scoreless failure, which is the promotes_scored_draft clause; what is left is " +
+          "promote_to_done's pair, a status feed BEHIND the record and a draft the machine MOVED " +
+          "after its last evaluator score. Both are facts about the status feed's line-level " +
+          "shape at one instant, not conditions this page's wire can express.",
       },
       {
         id: "publish_route_gate_refused",
@@ -1258,16 +1265,25 @@ const DONE_TOPIC_ENGINE: GateClause = {
   raises: "not done; {act} is for shipped blogs only",
   refusal: "409 this blog is not done, and the stage is for shipped blogs",
   transient: false,
-  decide: ({ record }) => (record.status === "done" ? "pass" : "refuse"),
+  // THE GATE IS UNCHANGED AND STILL DEMANDS THE LITERAL "done", exactly as
+  // PUBLISH_TOPIC_IS_DONE says of its own twin, and this clause is shaped from that one. What
+  // changed is what reaches it: the send route promotes a failed topic with a scored draft
+  // before calling this, appending the operator-named `done` verdict, so the status really is
+  // done by the time the comparison runs. A SCORELESS FAILURE STILL REFUSES, through
+  // PROMOTES_SCORED_DRAFT: the promotion cannot happen, so the status stays failed.
+  decide: ({ record }) =>
+    record.status === "done" || (record.status === "failed" && record.score != null)
+      ? "pass"
+      : "refuse",
   witness: { passes: CLEAN, refuses: withRecord({ status: "failed" }) },
 };
 
 // THE ADMIN-REVIEW BENCH NOW SEATS A FAILED DRAFT, and this clause is the widening, kept as
-// its own function so DONE_TOPIC_ENGINE above stays byte-identical on the send door. The
-// operator may polish a sub-95 draft with edits and Claude comments before promoting it: the
-// promoted artifact should be the draft they are satisfied with. needs_review stays out (a
-// hold no edit clears), stopped and running have no settled draft, and the send still demands
-// the literal done, so a failed draft ships only through the promote door.
+// its own function so DONE_TOPIC_ENGINE above stays a separate statement about a separate
+// gate. The operator may polish a sub-90 draft with edits and Claude comments before sending
+// it: the released artifact should be the draft they are satisfied with. needs_review stays
+// out (a hold no edit clears), stopped and running have no settled draft, and the send is the
+// one door that ships a failed draft, by promoting it on the way through.
 const REVIEWABLE_TOPIC_ENGINE: GateClause = {
   id: "topic_is_reviewable_engine",
   source: "require_reviewable",
@@ -1397,75 +1413,31 @@ const SEND_NO_OPEN_SUGGESTIONS_ENGINE: GateClause = {
 };
 
 // ---------------------------------------------------------------------------
-// The promote door: shipping a FAILED blog on the operator's authority.
+// The two clauses the send door absorbed when the promote door was deleted.
 // ---------------------------------------------------------------------------
-// The engine route (api_promote_blog) appends a `done` verdict to the status trail, ledgers
-// the blog, and sends it, so every OTHER door keeps demanding the literal "done" untouched:
-// a promoted blog satisfies DONE_TOPIC and its siblings because the fold genuinely reads
-// done afterward, not because any of them was widened. These four clauses are the route's
-// own refusals, and they are the inverse gate of the rest of this table: the one act that
-// passes on "failed" and on nothing else.
+// Both were written against a separate route that shipped a FAILED blog, and both survive
+// because the refusals survive: the send route now performs the promotion itself, so a
+// mid-run topic and a scoreless failure are refused by the door the operator actually
+// presses. The two that did NOT survive were about scoping that separate door and nothing
+// else: a status test admitting `failed` alone, which is exactly what DONE_TOPIC_ENGINE now
+// spans from the other side, and a second copy of the open-suggestion sentinel, which
+// SEND_NO_OPEN_SUGGESTIONS_ENGINE already reports from the same mark_sent.
 
-const PROMOTE_NOT_IN_FLIGHT: GateClause = {
-  id: "promote_not_in_flight",
-  source: "api_promote_blog",
-  line: 2286,
+const SEND_NOT_IN_FLIGHT: GateClause = {
+  id: "send_not_in_flight",
+  source: "api_send_blog_to_client",
+  line: 2888,
   condition: "if topic in _live_run_slugs(slug):",
-  raises: "is generating right now in a live run; promotion is for",
+  raises: "is generating right now in a live run",
   refusal: "409 this topic is generating right now in a live run",
   transient: false,
-  // The registry excludes topics whose session already settled (mark_topic_terminal), so a
-  // failed topic mid-batch reads live: false on the wire and is promotable while its
-  // siblings still run, exactly as it is re-selectable on the roadmap.
+  // THE REFUSAL A RETRY NEEDS. A retried topic keeps the PREVIOUS run's `failed` fold on the
+  // wire while the new run is live, so without this a send would promote and release the
+  // draft the operator just asked to be replaced. The registry excludes topics whose session
+  // already settled (mark_topic_terminal), so a failed topic mid-batch reads live: false and
+  // is sendable while its siblings still run, exactly as it is re-selectable on the roadmap.
   decide: ({ record }) => (record.live ? "refuse" : "pass"),
   witness: { passes: CLEAN, refuses: withRecord({ live: true }) },
-};
-
-const PROMOTE_TOPIC_IS_FAILED: GateClause = {
-  id: "promote_topic_is_failed",
-  source: "api_promote_blog",
-  line: 2293,
-  condition: 'if status != "failed":',
-  raises: "promotion is for failed blogs only",
-  refusal: "409 this blog is not failed, and promotion is for failed blogs only",
-  transient: false,
-  // The exact inverse of DONE_TOPIC, and the boundaries are the rule: needs_review is a hold
-  // no score dismisses (promotion is not a dismiss), stopped has no verdict to promote, and
-  // done needs no promotion.
-  decide: ({ record }) => (record.status === "failed" ? "pass" : "refuse"),
-  witness: { passes: withRecord({ status: "failed" }), refuses: CLEAN },
-};
-
-const PROMOTE_HAS_SCORED_DRAFT: GateClause = {
-  id: "promote_has_scored_draft",
-  source: "api_promote_blog",
-  line: 2310,
-  condition: "if score is None:",
-  raises: "has no evaluator-scored draft to promote",
-  refusal: "409 no evaluator-scored draft exists to promote",
-  transient: false,
-  // Gates and the link pass run BEFORE the eval, so a scored committed draft is gate-clean
-  // and link-clean by construction: the 95 bar is the only thing promotion waives. A failed
-  // topic with no scored version (a crash, a preflight refusal) has nothing shippable in it,
-  // and an absent score fails closed because that is the true answer, not a guess.
-  decide: ({ record }) => (record.score != null ? "pass" : "refuse"),
-  witness: { passes: withRecord({ score: 92 }), refuses: CLEAN },
-};
-
-const PROMOTE_NO_OPEN_SUGGESTIONS: GateClause = {
-  id: "promote_no_open_suggestions",
-  source: "api_promote_blog",
-  line: 2325,
-  condition: "if state is None:",
-  raises: "the client's suggestions are still open; resolve or dismiss each",
-  refusal: "409 the client's suggestions are still open",
-  transient: false,
-  // The same mark_sent sentinel the send route reports, arriving through the promote route's
-  // own copy of the mapping. Unreachable for an ordinary failed blog (suggestions require a
-  // send, a send requires done), kept as a clause because the raise exists in the source and
-  // a resurrected topics row can still carry old comments.
-  decide: ({ record }) => ((record.changes_requested ?? 0) > 0 ? "refuse" : "pass"),
-  witness: { passes: CLEAN, refuses: withRecord({ changes_requested: 1 }) },
 };
 
 /**
@@ -1626,13 +1598,13 @@ const PUBLISH_TOPIC_IS_DONE: GateClause = {
   refusal: "409 only a blog the engine shipped may reach the CMS",
   transient: false,
   // THE GATE IS UNCHANGED AND STILL DEMANDS THE LITERAL "done". What changed is what reaches
-  // it: server/cms/routes.py _promote_if_failed runs FIRST and promotes a failed topic on the
-  // operator's authority, appending the same `done` verdict the promote-and-send door appends,
+  // it: blog_edit.promote_if_failed runs FIRST and promotes a failed topic on the
+  // operator's authority, appending the same `done` verdict the send door appends,
   // so by the time this check runs the status really is done. That is why `failed` passes here
   // rather than the gate having been widened, and it is why the promotion's own refusal is a
   // separate clause below rather than a condition folded into this one.
   //
-  // A SCORELESS FAILURE STILL REFUSES, through PUBLISH_PROMOTES_SCORED_DRAFT: the promotion
+  // A SCORELESS FAILURE STILL REFUSES, through PROMOTES_SCORED_DRAFT: the promotion
   // cannot happen, so the status stays failed and this check refuses it exactly as before.
   decide: ({ record }) =>
     record.status === "done" || (record.status === "failed" && record.score != null)
@@ -1642,23 +1614,24 @@ const PUBLISH_TOPIC_IS_DONE: GateClause = {
 };
 
 /**
- * THE PROMOTION A PUBLISH PERFORMS ON A FAILED BLOG, and the one thing that can refuse it.
+ * THE PROMOTION EITHER SHIP DOOR PERFORMS ON A FAILED BLOG, and the one thing that can refuse it.
  *
- * The operator may post a sub-95 draft they have read straight to the CMS, exactly as they may
- * send one to the client. Both doors express that authority the same way: an appended `done`
- * verdict naming them and the score. The one refusal is the one the send door already carries,
- * for the same reason, so it is modelled here rather than left as an exemption: gates and the
- * link pass run BEFORE the eval, so a scored committed draft is gate-clean and link-clean by
- * construction, and the 95 bar is the ONLY thing being waived. A failed topic with no scored
- * version (a crash, a preflight refusal) has nothing shippable in it at all.
+ * The operator may release a sub-90 draft they have read to the client, or post it to the CMS,
+ * and both doors express that authority the same way: an appended `done` verdict naming them and
+ * the score. ONE CLAUSE FOR BOTH, because it is one function refusing once (blog_edit
+ * promote_if_failed); a copy per door would be two statements of one rule, free to drift, which
+ * is the defect this whole file exists to prevent. Gates and the link pass run BEFORE the eval,
+ * so a scored committed draft is gate-clean and link-clean by construction, and the 90 bar is
+ * the ONLY thing being waived. A failed topic with no scored version (a crash, a preflight
+ * refusal) has nothing shippable in it at all.
  */
-const PUBLISH_PROMOTES_SCORED_DRAFT: GateClause = {
-  id: "publish_promotes_scored_draft",
-  source: "_promote_if_failed",
-  line: 98,
+const PROMOTES_SCORED_DRAFT: GateClause = {
+  id: "promotes_scored_draft",
+  source: "promote_if_failed",
+  line: 1078,
   condition: "if score is None:",
   raises: "has no evaluator-scored draft, so there is nothing to",
-  refusal: "409 no evaluator-scored draft exists to publish",
+  refusal: "409 no evaluator-scored draft exists to ship",
   transient: false,
   // Only a FAILED record passes through the promotion at all; a done one skips it untouched.
   decide: ({ record }) =>
@@ -1742,16 +1715,13 @@ export const ALL_GATE_CLAUSES: readonly GateClause[] = [
   SEND_NO_OPEN_SUGGESTIONS_SQL,
   SEND_NO_OPEN_SUGGESTIONS_ENGINE,
   REVIEWABLE_TOPIC_ENGINE,
-  PROMOTE_NOT_IN_FLIGHT,
-  PROMOTE_TOPIC_IS_FAILED,
-  PROMOTE_HAS_SCORED_DRAFT,
-  PROMOTE_NO_OPEN_SUGGESTIONS,
+  SEND_NOT_IN_FLIGHT,
+  PROMOTES_SCORED_DRAFT,
   NO_APPLY_IN_FLIGHT,
   COMMENT_CAP,
   RESOLVE_COMMENT_CAP,
   DISMISS_NOT_APPLYING_SQL,
   DISMISS_NOT_APPLYING_ENGINE,
-  PUBLISH_PROMOTES_SCORED_DRAFT,
   PUBLISH_TOPIC_IS_DONE,
   FORM_EXISTS_FOR_ANSWERS,
   FORM_NOT_STALE_FOR_ANSWERS,
@@ -1855,10 +1825,18 @@ export const ADMIN_GATE_DOORS: Record<AdminAction, readonly GateDoor[]> = {
   send: [
     {
       id: "send_to_client",
-      what: "release the article to the client",
+      what: "release the article to the client, whatever it scored",
+      // DONE_TOPIC IS ABSENT AND ITS ABSENCE IS A DECISION, the same one the edit door records:
+      // migration 013's admin_done_topic still demands the literal done, and unlike the engine's
+      // twin it has NO promotion in front of it, so listing it here would refuse the below-bar
+      // release on the only build that offers one. Every hosted admin write route answers 501
+      // before that SQL runs, and SendToClient returns null on that build. If the hosted build
+      // ever performs admin writes, promote inside admin_send_blog_to_client in a migration
+      // first and restore the clause here.
       clauses: [
-        DONE_TOPIC,
+        SEND_NOT_IN_FLIGHT,
         DONE_TOPIC_ENGINE,
+        PROMOTES_SCORED_DRAFT,
         NOT_APPROVED_SQL,
         NOT_APPROVED_ENGINE,
         SEND_NO_OPEN_SUGGESTIONS_SQL,
@@ -1866,24 +1844,11 @@ export const ADMIN_GATE_DOORS: Record<AdminAction, readonly GateDoor[]> = {
       ],
     },
   ],
-  promote: [
-    {
-      id: "promote_failed_blog",
-      what: "ship this failed blog on your authority and send it to the client",
-      clauses: [
-        PROMOTE_NOT_IN_FLIGHT,
-        PROMOTE_TOPIC_IS_FAILED,
-        NOT_APPROVED_ENGINE,
-        PROMOTE_HAS_SCORED_DRAFT,
-        PROMOTE_NO_OPEN_SUGGESTIONS,
-      ],
-    },
-  ],
   publish: [
     {
       id: "publish_to_cms",
       what: "push the article to the CMS",
-      clauses: [PUBLISH_PROMOTES_SCORED_DRAFT, PUBLISH_TOPIC_IS_DONE],
+      clauses: [PROMOTES_SCORED_DRAFT, PUBLISH_TOPIC_IS_DONE],
     },
   ],
 };

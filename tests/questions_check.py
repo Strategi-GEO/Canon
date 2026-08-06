@@ -7,8 +7,16 @@ no real brand. It pins one table and nothing else, because that table is the who
 
   | Questions                      | Score              | Status       |
   | current                        | any, incl. none    | needs_review |
-  | none/stale/unreadable/answered | >= 95              | done         |
-  | none/stale/unreadable/answered | < 95, or none      | failed       |
+  | none/stale/unreadable/answered | >= 90              | done         |
+  | none/stale/unreadable/answered | < 90, or none      | failed       |
+
+THE NUMBER IN THAT TABLE IS 90 AND IT IS THE ONLY BAR THE ENGINE HAS. The band is BINARY, so the
+same 90 ends the loop, is what the writer aims at, and settles the nothing-to-answer branch here:
+there is no second threshold under any name and no middle band beneath it. 90 is exactly
+attainable, 81 of the 90 available weighted points, which is what makes it a bar a draft can
+actually clear. A blog that ends between 85 and 89 is BELOW BAR: it resolves failed here, and it
+ships only if the operator reads it and presses send, which is a person's call and never this
+resolver's.
 
 THE QUESTION STATE IS CHECKED FIRST AND THE SCORE DECIDES ONLY THE NOTHING-TO-ANSWER BRANCH.
 That order is the rule, not an implementation detail. A current question holds the blog at 96,
@@ -153,14 +161,19 @@ def test_a_current_question_holds_a_passing_blog():
 
 
 def test_a_current_question_holds_a_failing_blog_too():
-    """The score genuinely does not enter it. Below the band, a current question is the same
-    needs_review it is above the band, and for the same reason: a human owes an answer."""
-    with _Roots():
-        out = _seed_blog(score=88)
-        _write_questions(out, "topic-0", iteration=1, score=88)
+    """The score genuinely does not enter it. Below the bar, a current question is the same
+    needs_review it is above the bar, and for the same reason: a human owes an answer.
 
-        status, _ = runner._resolve_needs_review("brand", "topic-0", 88)
-        check("an 88 with a current question is held", status == "needs_review", f"got {status}")
+    82 is a real iteration-1 score from the measured 12-blog run and it must stay genuinely below
+    the 90 bar. Seeded at or above the bar this test passed while testing nothing: it became a
+    second copy of the 96 case above it and the below-the-bar half went unchecked.
+    """
+    with _Roots():
+        out = _seed_blog(score=82)
+        _write_questions(out, "topic-0", iteration=1, score=82)
+
+        status, _ = runner._resolve_needs_review("brand", "topic-0", 82)
+        check("an 82 with a current question is held", status == "needs_review", f"got {status}")
 
 
 def test_a_current_question_holds_a_blog_with_no_score():
@@ -178,17 +191,27 @@ def test_a_current_question_holds_a_blog_with_no_score():
 
 def test_nothing_to_answer_lets_the_score_decide():
     """The other branch of the table, where no human is involved at all and the number is the
-    only thing left to read."""
+    only thing left to read.
+
+    THE SPLIT IS THE 90 BAR AND THESE TWO SEEDS STRADDLE IT WITH NOTHING BETWEEN THEM. 90 is
+    exactly attainable, 81 of 90 weighted points, and 89 is the highest score the normalisation
+    can produce below it, 80 of 90 rounding to 89. Neither 85 nor 95 is seeded anywhere in this
+    file, because no draft can score either: 76 of 90 rounds to 84, 77 of 90 rounds to 86, 85 of
+    90 rounds to 94 and 86 of 90 rounds to 96. A comfortable 96 would pass here while testing only
+    that a good score ships, which is not where this rule breaks: it breaks one point either side
+    of the bar.
+    """
     with _Roots():
-        _seed_blog(score=96)
-        status, reason = runner._resolve_needs_review("brand", "topic-0", 96)
-        check("no questions and a 96 ships", status == "done", f"got {status}")
+        _seed_blog(score=90)
+        status, reason = runner._resolve_needs_review("brand", "topic-0", 90)
+        check("no questions and a 90 ships, exactly on the bar", status == "done", f"got {status}")
         check("the engine records why the hold did not stand", bool(reason))
 
     with _Roots():
-        _seed_blog(slug="topic-1", score=88)
-        status, _ = runner._resolve_needs_review("brand", "topic-1", 88)
-        check("no questions and an 88 fails", status == "failed", f"got {status}")
+        _seed_blog(slug="topic-1", score=89)
+        status, _ = runner._resolve_needs_review("brand", "topic-1", 89)
+        check("no questions and an 89 fails, one point under the bar, and waits for the operator to send it",
+              status == "failed", f"got {status}")
 
 
 def test_no_score_and_nothing_to_answer_is_failed():
@@ -217,12 +240,12 @@ def test_stale_and_unreadable_and_answered_all_summon_nobody():
         check("a stale form never holds a blog", status == "done", f"got {status}")
 
     with _Roots():
-        out = _seed_blog(slug="topic-1", score=88)
+        out = _seed_blog(slug="topic-1", score=82)
         (out / "questions.json").write_text("{not json at all", encoding="utf-8")
         check("a corrupt form reads as unreadable",
               runner._questions_state("brand", "topic-1") == "unreadable",
               f"got {runner._questions_state('brand', 'topic-1')!r}")
-        status, _ = runner._resolve_needs_review("brand", "topic-1", 88)
+        status, _ = runner._resolve_needs_review("brand", "topic-1", 82)
         check("an unreadable form never holds a blog", status == "failed", f"got {status}")
 
     with _Roots():
@@ -305,21 +328,21 @@ def test_a_stale_form_reports_nothing_however_it_is_worded():
 
 
 def test_an_unreadable_form_reports_nothing_rather_than_raising():
-    """The lead asks this on every sub-95 iteration, so a corrupt file must be an answer and not an
+    """The lead asks this on every sub-90 iteration, so a corrupt file must be an answer and not an
     exception: raising here would take down a loop that a bad byte on disk has nothing to say
     about. It reports none for the same reason the resolver refuses it, nobody can render it."""
     with _Roots():
-        out = _seed_blog(score=88)
+        out = _seed_blog(score=82)
         (out / "questions.json").write_text("{not json at all", encoding="utf-8")
         check("an unreadable form reports no Sourcing question rather than raising",
               questions.has_area_question("brand", "topic-0", "Sourcing") is False)
 
 
 def test_no_form_at_all_reports_nothing():
-    """The ordinary sub-95 iteration: the evaluator asked nothing, so nothing ends the loop and the
+    """The ordinary sub-90 iteration: the evaluator asked nothing, so nothing ends the loop and the
     revise the lead was about to dispatch is exactly the right spend."""
     with _Roots():
-        _seed_blog(score=88)
+        _seed_blog(score=82)
         check("no form reports no Sourcing question",
               questions.has_area_question("brand", "topic-0", "Sourcing") is False)
 

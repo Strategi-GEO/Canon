@@ -10,10 +10,11 @@ spends real Firecrawl and model quota to produce something nobody asked for.
 
 WHAT AN UPLOAD IS NOT, and this is the whole design: it is not a shortcut past the
 evaluator, and it does not pretend to be one. A generated blog reaches "done" by scoring
-at or above the ship band. An uploaded blog reaches "done" because a named human vouched
-for it. Those are different warrants, and the record keeps them apart rather than blurring
-them: an uploaded blog carries NO score, NO eval body, NO dossier, and a status note
-naming the uploader. NOTHING HERE WRITES A 95. A synthetic score would read downstream as
+at or above the house bar of 90. An uploaded blog reaches "done" because a named human
+vouched for it. Those are different warrants, and the record keeps them apart rather than
+blurring them: an uploaded blog carries NO score, NO eval body, NO dossier, and a status
+note naming the uploader. NOTHING HERE WRITES A SCORE AT ALL, not the 90 bar and not a
+number on either side of it. A synthetic score would read downstream as
 an audit that never ran, and the library, the ledger, the stage page and the CMS payload
 would all repeat it in good faith. A null score is the honest record of "no evaluator saw
 this", and every gate that matters keys on the status word rather than the number, so
@@ -313,7 +314,8 @@ def upload_blog(client_slug: str, topic_slug: str, title: str, covers: str,
             "topic_slug": topic_slug,
             "covers": covers or "",
             "prompts": prompts or [],
-            # NULL, not 95. See the module docstring: no evaluator scored this.
+            # NULL, never a synthesised 90. See the module docstring: no evaluator
+            # scored this.
             "score": None,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             # NULL run_id is the structural mark of an upload: no run produced it.

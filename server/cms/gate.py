@@ -2,7 +2,7 @@
 
 WHY THIS IS A SERVER-SIDE REFUSAL AND NOT A DISABLED BUTTON. A CMS draft is
 directly approvable by an editor, and the CMS cannot tell a blog that scored 96
-from one that hit the iteration cap at 88 and stopped: both arrive as a draft
+from one that hit the iteration cap at 82 and stopped: both arrive as a draft
 someone can click publish on. So an unvetted piece reaching the CMS is a piece
 that can reach the client. The button hiding itself is a courtesy to the
 operator; THIS is the guard, and it must hold against a stale tab, a replayed
@@ -10,7 +10,7 @@ request, and a hand-rolled curl.
 
 The rule is exactly the engine's own: a blog is publishable when its terminal
 status in the recorded status feed is the literal string "done". Not "not
-failed", not "has a blog", not "scored >= 95 somewhere in its history".
+failed", not "has a blog", not "scored >= 90 somewhere in its history".
 needs_review is the amber path and it is never pushed, which is the whole point.
 
 WHERE THE BYTES COME FROM since the Supabase rewire: the RECORD, always. The

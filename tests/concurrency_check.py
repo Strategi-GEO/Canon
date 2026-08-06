@@ -252,11 +252,29 @@ def main(argv=None):
             + ", ".join(f"{t['slug']}={t['terminal_count']}" for t in replayed)
         )
 
-    done_95 = [t for t in topics if t["terminal_status"] == "done" and (t["final_score"] or 0) >= 95]
+    # N IS THE SHIP BAR AND THERE IS ONLY ONE OF THEM, which is what decides this number. The
+    # assertion claims a topic actually SHIPPED, the loop resolves a shipped topic at terminal
+    # resolution against runner.SHIP_SCORE, and the band is binary, so a topic the loop shipped
+    # scored at or above 90 and nothing below it ships without an operator pressing promote. A
+    # promoted blog is a person's act rather than the engine's, so it is not what this asserts.
+    #
+    # A literal for the same stdlib-only reason as TERMINAL_STATUSES above, and it drifts the same
+    # way: this said 95 for as long as the house bar did, and 95 was attainable under the 75-point
+    # rubric tests/concurrency-proof.md was recorded against, where six topics ended done at 95,
+    # 95, 96, 97, 98 and 98, so this check has always had topics to match. C4 and D2 then took the
+    # weight total to 30 and the maximum to 90 with the percentage held constant, and the
+    # normalisation skips 95 outright: round(85/90*100) is 94 and round(86/90*100) is 96. 90 is
+    # exactly attainable, 81 of 90 weighted points. If runner.SHIP_SCORE moves, it belongs here
+    # the same day.
+    SHIP_SCORE = 90
+    shipped = [
+        t for t in topics
+        if t["terminal_status"] == "done" and (t["final_score"] or 0) >= SHIP_SCORE
+    ]
     check(
-        "at least one topic ended done with score >= 95",
-        bool(done_95),
-        ", ".join(f"{t['slug']}={t['final_score']}" for t in done_95) or "none",
+        f"at least one topic ended done with score >= {SHIP_SCORE}",
+        bool(shipped),
+        ", ".join(f"{t['slug']}={t['final_score']}" for t in shipped) or "none",
     )
 
     mix = {}

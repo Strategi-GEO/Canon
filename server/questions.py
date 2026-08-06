@@ -194,8 +194,9 @@ def is_blocking(client_slug, topic_slug, root=None):
     """Is answering the only way this blog moves? Whenever the questions are CURRENT, YES.
 
     THE SCORE NO LONGER ENTERS THIS, and its removal is the rule rather than a simplification.
-    This used to return False at or above runner.SHIP_SCORE, on the ground that the blog had
-    already shipped, so the answer was an offer the operator could decline forever. A question is
+    This used to return False at or above the score that ships a blog, the house bar of 90, on
+    the ground that the blog had already shipped, so
+    the answer was an offer the operator could decline forever. A question is
     the evaluator saying the DRAFT MAY BE WRONG, and a wrong 96 is not better than a wrong 89.
     The offer branch shipped exactly that: two blogs went out at 96 over their own open
     questions, one publishing a claim its canonical-facts file lists as not citable, the other
@@ -228,12 +229,14 @@ def has_area_question(client_slug, topic_slug, area, root=None):
     """Is a LIVE question of this area on disk right now? The predicate behind --check-area.
 
     THE RULE IT SERVES: A SOURCING QUESTION ENDS THE REVISE LOOP IMMEDIATELY, at the iteration it is
-    filed. At SCORE < 95 the lead checks this before dispatching a revise, and where it holds, the
+    filed. At SCORE < 90 the lead checks this before dispatching a revise, and where it holds, the
     loop ends now: the terminal needs_review line, no revise, no further evaluator, and the form
     stays on disk. Structure, Draft and Mechanics questions do NOT end the loop, so they are
     superseded by the next iteration's form and the lead deletes questions.json before the next
-    evaluator as before. At SCORE >= 95 nothing changes: the loop ends anyway and terminal
-    resolution holds the blog on ANY current question, of any area.
+    evaluator as before. At SCORE >= 90 nothing changes: the loop ends anyway and terminal
+    resolution holds the blog on ANY current question, of any area. 90 is the BAR the lead
+    branches on and the only bar there is: at or above it the blog ships, below it it does not,
+    and no second threshold is consulted anywhere.
 
     THE REASON: Sourcing is the ONE area no rewrite can close, which the contract says in its own
     words, "the writer has no authority to invent a citation or URL". A Sourcing QUESTION names a

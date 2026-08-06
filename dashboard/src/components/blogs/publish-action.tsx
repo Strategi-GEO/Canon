@@ -50,7 +50,7 @@ export function PublishAction({
   /**
    * The evaluator's number, and the publish door genuinely reads it now, which is why this
    * prop exists at all. `publish_promotes_scored_draft` decides on it: a FAILED blog reaches
-   * the CMS by being promoted first (server/cms/routes.py _promote_if_failed), and the one
+   * the CMS by being promoted first (server/blog_edit.py promote_if_failed), and the one
    * thing that promotion cannot waive is a draft no evaluator ever scored. Passing the status
    * alone would answer that clause by ABSENCE and grey the button on every failed blog,
    * including the scored ones this door exists for. blockedReason's own note spells out why a
@@ -233,7 +233,7 @@ export function PublishAction({
  * status alone was safe because the publish door held exactly one clause and that clause read the
  * status. That stopped being true the moment a failed blog became publishable: the door gained
  * `publish_promotes_scored_draft`, which reads the SCORE, because the promotion that lets a
- * sub-95 draft reach the CMS (server/cms/routes.py _promote_if_failed) cannot waive a draft no
+ * sub-90 draft reach the CMS (server/blog_edit.py promote_if_failed) cannot waive a draft no
  * evaluator ever scored.
  *
  * THE OLD SHAPE WOULD HAVE FAILED SILENTLY AND IN THE WORST DIRECTION. Every field of a record is

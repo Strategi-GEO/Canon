@@ -64,8 +64,11 @@ and where the two disagree, `canonical-facts.md` wins and you say so in your ret
 Always read these before drafting:
 - `references/content-structure.md`: heading hierarchy, FAQ blocks, definition patterns, schema
 - `references/geo-mechanics.md`: how AI citation actually works, what AI engines extract, benchmarks
+- `../geo-content-eval/references/rubric.md`: the buckets the evaluator scores (A Extractability, B Evidence, C Entity and voice, D Brief fit), the scoring math, and the failure-area routing
 
-Read `references/quality-checklist.md` before you return.
+**Read the rubric BEFORE you draft, every run.** It is the standard the draft is graded against, and a writer who has never read it is aiming at a bar it cannot see. Reading it at the end is worth far less: it catches what reading it at the start would have prevented. This takes nothing from the evaluator's isolation, which protects the evaluator from your reasoning and the dossier and never the reverse. The rubric is the public standard.
+
+Read `references/quality-checklist.md` after the rubric and before you return. It is the short delta on top of the rubric, the few pre-delivery items no scored bucket covers, and it is never the primary standard.
 
 ### Step 3: The dossier is frozen
 
@@ -93,9 +96,11 @@ Do not write yet. Verify the outline answers the core question completely, cover
 
 Apply all core writing principles (below). Cite only from the dossier. Use the entity names exactly as `canonical-facts.md` gives them. Write the piece to `outputs/<slug>/<topic-slug>/blog.md`.
 
-### Step 6: Run the quality checklist
+### Step 6: Self-check against the rubric, then the checklist delta
 
-Before the gates, verify against `references/quality-checklist.md`. Confirm separately that every external fact in the draft traces to a verified claim in the dossier and that nothing from the Do Not Claim list slipped in as a fact. Fix any failure before moving on.
+Before the gates, score your own draft against `../geo-content-eval/references/rubric.md`: walk every graded dimension in buckets A, B, C and D, apply the scoring math to your own draft, and fix what would lose points.
+
+**Clear 90, the only bar.** A draft that scores 90 or above ends the evaluation loop at once and ships. Below 90 it does not ship: an 89 is a reject, and a draft that ends between 85 and 89 is below bar, resolving failed and reaching a client only if the operator promotes it. There is no middle band to land in, so write for 90. Then verify against `references/quality-checklist.md` for the items no bucket scores. Confirm separately that every external fact in the draft traces to a verified claim in the dossier and that nothing from the Do Not Claim list slipped in as a fact. Fix any failure before moving on.
 
 ### Step 7: Run the mechanical gates until they pass
 
@@ -127,7 +132,7 @@ Return only when the draft is gate-clean AND link-clean. Do not run the evaluato
 
 When the lead supplies a fix list, you are revising, not rewriting. Apply ONLY the listed fixes to the existing draft. Do not restructure the article, do not re-open the dossier for new research, and do not rewrite sections the fix list does not name.
 
-A revise pass must never cut an honest negative to save words. A conceded weak point, a place where another option genuinely wins, is required content, not filler. Under a `never_name` competitor policy that concession is made against the option (the location, the asset class, the price band, the buyer fit) and never against a named company, but it is still made. After applying the fixes, re-run the quality checklist, re-run the gates until they exit 0, and run the link pass on new or changed links only. Then return.
+A revise pass must never cut an honest negative to save words. A conceded weak point, a place where another option genuinely wins, is required content, not filler. Under a `never_name` competitor policy that concession is made against the option (the location, the asset class, the price band, the buyer fit) and never against a named company, but it is still made. After applying the fixes, re-run the Step 6 self-check, re-run the gates until they exit 0, and run the link pass on new or changed links only. Then return.
 
 ## Core writing principles (non-negotiable)
 
@@ -264,5 +269,6 @@ The skill provides: structure, factual density discipline, banned-pattern compli
 
 - `references/geo-mechanics.md`: How AI citation works, referral benchmarks by industry, which content types get cited most
 - `references/content-structure.md`: Heading hierarchy, FAQ blocks, definition patterns, schema markup, hub-and-spoke structures
-- `references/quality-checklist.md`: Complete pre-delivery checklist
+- `../geo-content-eval/references/rubric.md`: The scored buckets, the scoring math, and the failure-area routing the evaluator grades against. Read before drafting and self-checked against before the gates
+- `references/quality-checklist.md`: The short delta on top of the rubric, the pre-delivery items no scored bucket covers
 - `references/industries/`: One reference file per supported industry, the domain layer of the engine. Load the single file named in the client's `client.md`, never a guessed one. These files are not edited per client.

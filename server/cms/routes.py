@@ -58,59 +58,6 @@ def _status_for(upstream):
     return 502
 
 
-def _promote_if_failed(slug, topic_slug, email):
-    """A FAILED blog the operator chose to publish is promoted first, then pushed.
-
-    THE GATE IS NOT WIDENED, and that is the whole design. assert_publishable still demands
-    the literal `done`, because its rule protects something real: a CMS draft is directly
-    approvable by an editor, so anything that reaches the CMS can reach the client. What
-    changes is that the operator may now take responsibility for a sub-95 draft they have
-    READ, exactly as the promote-and-send door already lets them, and the way that
-    responsibility is expressed here is the same appended `done` verdict naming them and the
-    score. The trail therefore reads "failed at 87, then a person published it", never a
-    silent bypass, and every downstream consumer (the fold, topic_rollup, the portal) sees a
-    coherent record instead of a published blog whose status says it failed.
-
-    NO SEND HAPPENS HERE. Posting to the CMS and releasing to the client are two acts and the
-    operator picked this one, so the promotion line says so and sent_to_client stays null.
-
-    Silent no-op for every other status: a `done` blog needs nothing, and needs_review,
-    stopped and running fall through to assert_publishable's own refusal, which already names
-    what it found. Refusals raised here are the promote route's own, re-raised as 409 so the
-    operator reads the same sentence either door produces.
-    """
-    # Imported INSIDE the function so this package still detaches whole: an import at module
-    # scope would make server/cms/ a load-bearing dependency of nothing, but it would also
-    # execute on import of a package whose whole promise is that deleting it costs app.py one
-    # line. blog_edit is the engine proper and never imports cms, so there is no cycle.
-    from .. import blog_edit, db
-
-    if gate.blog_status(runner, slug, topic_slug) != "failed":
-        return
-
-    cid = db.client_id(slug)
-    score = db.q(
-        """select v.score from blog_versions v
-           join topics t on t.id = v.topic_id
-           where t.client_id = %s and t.slug = %s and t.deleted_at is null
-           order by v.version_no desc limit 1""",
-        (cid, topic_slug), fetch="val")
-    if score is None:
-        # The same refusal api_promote_blog gives, for the same reason: gates and the link
-        # pass run BEFORE the eval, so an unscored draft is the one artifact a failed topic
-        # cannot vouch for, and the 95 bar is meant to be the ONLY thing being waived.
-        raise HTTPException(
-            status_code=409,
-            detail=f"{topic_slug!r} has no evaluator-scored draft, so there is nothing to "
-                   f"take responsibility for; generate it again instead",
-        )
-    try:
-        blog_edit.promote_to_done(slug, topic_slug, score, email,
-                                  act="published it to the CMS")
-    except blog_edit.EditError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-
-
 @router.post("/api/clients/{slug}/blogs/{topic_slug}/publish")
 async def api_publish_blog(slug: str, topic_slug: str, request: Request):
     """Push one shipped blog to the CMS as a draft.
@@ -134,7 +81,27 @@ async def api_publish_blog(slug: str, topic_slug: str, request: Request):
     if not runner.slugify(topic_slug) == topic_slug:
         raise HTTPException(status_code=404, detail=f"No blog '{topic_slug}'")
 
-    _promote_if_failed(slug, topic_slug, getattr(request.state, "admin_email", None) or "")
+    # A FAILED blog the operator chose to publish is promoted first, then pushed, and the gate
+    # below is NOT widened: assert_publishable still demands the literal `done`, because a CMS
+    # draft is directly approvable by an editor, so anything reaching the CMS can reach the
+    # client. What changes is that the operator takes responsibility for a draft that fell
+    # below the 90 bar and that they have READ, expressed as the appended `done` verdict naming
+    # them and the score, so the trail reads "failed at 81, then a person published it". Every
+    # other status falls through untouched to assert_publishable's own refusal. NO SEND HAPPENS
+    # HERE: posting to the CMS and releasing to the client are two acts and the operator picked
+    # this one, so the promotion line says so and sent_to_client stays null.
+    #
+    # blog_edit is imported INSIDE the function so this package still detaches whole: a module
+    # scope import would execute on import of a package whose whole promise is that deleting it
+    # costs app.py one line. blog_edit is the engine proper and never imports cms, no cycle.
+    from .. import blog_edit
+    try:
+        blog_edit.promote_if_failed(
+            slug, topic_slug, gate.blog_status(runner, slug, topic_slug),
+            getattr(request.state, "admin_email", None) or "",
+            act="published it to the CMS")
+    except blog_edit.EditError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
     try:
         payload = gate.build_for_publish(
@@ -187,6 +154,34 @@ async def api_publish_blog(slug: str, topic_slug: str, request: Request):
         slug, topic_slug, result,
         email=getattr(request.state, "admin_email", None),
     )
+
+    # PUBLISHING IS A RELEASE, SO IT STAMPS THE SEND. Pushing to the client's own CMS is the
+    # operator's most final act: the article is live on their site by this line. Leaving
+    # sent_to_client null after it meant the portal hid an article the client could already read,
+    # because blogState drops `published` whenever there is no send.
+    #
+    # THAT GUARD IS SATISFIED HERE, NOT BYPASSED, and the difference is the whole reason this is
+    # safe. It exists because a record with published_at and NO send once put an internal draft in
+    # front of a client who was never sent it. Stamping the send makes that state unreachable
+    # instead of tolerated: after this line there is no way to be published without a send.
+    #
+    # Best-effort and AFTER the record, for the same reason record_publish is: the article is in
+    # the CMS, and no bookkeeping failure may report a successful publish as a failed one. A
+    # refused stamp (an open client suggestion, an approved article) leaves the publish standing
+    # and the operator can still send from the stage page.
+    # blog_edit imported inside the function, and asyncio with it, for the reason stated where
+    # promote_if_failed is called above: this package must still detach whole.
+    try:
+        import asyncio
+
+        from .. import blog_edit as _blog_edit
+
+        await asyncio.to_thread(
+            _blog_edit.mark_sent, slug, topic_slug,
+            getattr(request.state, "admin_email", None) or "",
+        )
+    except Exception:
+        log.exception("post-publish send stamp failed for %s/%s", slug, topic_slug)
 
     # After the record, fire any post-publish hooks (the channel auto-repurpose). Best-effort:
     # the article is already in the CMS, so a hook failure is logged and never surfaced as a

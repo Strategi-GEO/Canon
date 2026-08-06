@@ -211,7 +211,15 @@ def test_a_resumed_topic_is_stoppable_again():
 
 def test_a_resumed_topic_retries_its_own_dead_session():
     """The mirror of the same bug: the retry loop saw run 1's terminal line and broke on
-    attempt 1, so a dead session never retried and reported run 1's verdict as run 2's."""
+    attempt 1, so a dead session never retried and reported run 1's verdict as run 2's.
+
+    THE FAKE SESSION WRITES A STATUS LINE BEFORE IT DIES, and that is load-bearing now rather
+    than decoration. A session that appended nothing and died inside DEAD_SESSION_SECONDS is
+    the usage-limit death the no-retry guard exists to refuse, so a fake that returns instantly
+    and silently trips that guard and measures it instead of the resumed-topic bug this test is
+    about. A session that got as far as its researcher and then died is a genuine crash, which
+    is exactly the case the retry loop is for.
+    """
     async def scenario():
         with _Roots():
             out = runner.output_dir("brand", "topic-0")
@@ -220,6 +228,8 @@ def test_a_resumed_topic_retries_its_own_dead_session():
 
             async def dies_without_a_verdict(client_slug, row, topic_slug, out_dir, *a, **k):
                 attempts.append(1)
+                _append(out_dir, topic_slug, stage="research", event="start",
+                        note="got somewhere, then died without a verdict")
 
             runner._sdk_session = dies_without_a_verdict
             result = await runner.run_topic("brand", _rows(1)[0])
@@ -237,8 +247,10 @@ def test_a_resumed_topic_retries_its_own_dead_session():
 # ---------------------------------------------------------------------------
 
 def test_topics_queued_behind_the_semaphore_are_stopped():
-    """Any selection larger than five has topics suspended at TOPIC_SEMAPHORE. The cancel
-    lands on the acquire, before run_topic, so nothing there writes their line."""
+    """Any selection larger than the cap has topics suspended at TOPIC_SEMAPHORE. The cancel
+    lands on the acquire, before run_topic, so nothing there writes their line. Eight rows
+    saturate any cap the engine ships, so this holds at the `GEO_CONCURRENCY` default of 2 and
+    held at the hardcoded 5 it was written against."""
     async def scenario():
         with _Roots():
             async def hang(*a, **k):
@@ -258,7 +270,7 @@ def test_topics_queued_behind_the_semaphore_are_stopped():
                        if not _terminals(runner.output_dir("brand", row["topic_slug"]))]
             doubled = [row["topic_slug"] for row in rows
                        if len(_terminals(runner.output_dir("brand", row["topic_slug"]))) > 1]
-            check("every topic of eight gets a terminal line, not just the five in flight",
+            check("every topic of eight gets a terminal line, not just the ones in flight",
                   not missing, f"no terminal line for {missing}")
             check("no topic gets two terminal lines from one stop",
                   not doubled, f"doubled for {doubled}")
@@ -293,7 +305,8 @@ def test_a_run_stopped_while_queued_on_the_facts_lock_is_swept():
 
 def test_the_queue_is_released_on_the_cancel_path():
     """The highest-consequence line in the feature: a leaked slot shrinks the queue for the
-    life of the process, and five leaked slots brick every brand until someone restarts the API.
+    life of the process, and GEO_CONCURRENCY leaked slots brick every brand until someone
+    restarts the API.
     A leaked fact base lock bricks the one brand the same way."""
     async def scenario():
         with _Roots():
@@ -409,10 +422,12 @@ def _seed_shipped_blog(root, slug="topic-0"):
 
 
 def test_a_stopped_revise_does_not_unship_a_done_blog():
-    """The contract, twice over: a stop after SCORE >= 95 does not un-ship the blog, and a
+    """The contract, twice over: a stop after a shipping SCORE does not un-ship the blog, and a
     topic that already wrote its terminal line keeps that line, its score and its ledger
     entry. This arm used to write `stopped` over a 96 and the CMS gate then refused it
-    forever.
+    forever. THE NUMBER IS NOT LOAD-BEARING HERE and the fixture's 96 is not a threshold: the
+    guard reads the terminal LINE and never the score, so this arm holds identically whatever
+    the house ship bar is, and a bar move must not drag this file with it.
 
     THE CANCELLATION PATH IS WHERE THE BYTE-FOR-BYTE RESTORE STILL LIVES. An answer-driven
     revise now ships its clarified draft whatever it scores, because truth beats score, but a
@@ -643,7 +658,7 @@ def test_a_stop_on_a_current_form_is_held_for_the_answer():
 
 
 def test_a_stop_with_no_form_is_stopped():
-    """The ordinary stop, pinned at the write site so the carve-out has a floor.
+    """The ordinary stop, pinned at the write site so the carve-out has a baseline.
 
     Nobody was asked anything, so `stopped` is the honest word and no marker is written. The
     marker assertion is the load-bearing half: a NEEDS_REVIEW file left beside a stopped topic

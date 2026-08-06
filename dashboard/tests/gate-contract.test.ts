@@ -52,6 +52,7 @@ import {
   adminGateVerdict,
   type GateForm,
   type GateInput,
+  type GateRecord,
   type GateSourceId,
 } from "../src/lib/gate-contract.ts";
 import {
@@ -89,7 +90,10 @@ const CLEAN_INPUT: GateInput = {
   applying: 0,
 };
 
-function at(patch: Partial<BlogStateFacts>): GateInput {
+// Partial<GateRecord>, not Partial<BlogStateFacts>: the send and publish doors both read the
+// evaluator's `score`, which rides on GateRecord alone and which every below-bar assertion here
+// has to be able to set.
+function at(patch: Partial<GateRecord>): GateInput {
   return { ...CLEAN_INPUT, record: { ...CLEAN_INPUT.record, ...patch } };
 }
 
@@ -617,21 +621,37 @@ test("an approved article refuses the answer verb through both of its doors", ()
   assert.equal(verdict.blocking?.id, "not_approved_engine");
 });
 
-test("send and publish open only on done; edit and comments open on the review bench (done or failed)", () => {
-  // TWO STATUS RULES NOW, because the admin-review bench gained the failed draft. The SEND and
-  // the PUBLISH still demand the literal 'done' (server/app.py's _require_done and
-  // server/cms/gate.py's assert_publishable), so a failed draft ships only through the promote
-  // door. The EDIT and the COMMENTS moved to _require_reviewable, which accepts done OR failed,
-  // so the operator can polish a sub-95 draft before promoting it. Neither opens on
-  // needs_review, running, stopped or nonsense.
+test("send and publish open on done and on a SCORED failure; edit and comments open on the review bench (done or failed)", () => {
+  // TWO STATUS RULES, AND THE SHIP RULE NOW READS THE SCORE. Both ship doors still demand the
+  // literal 'done' (server/app.py's _require_done, server/cms/gate.py's assert_publishable) and
+  // NEITHER was widened by a syllable. What changed is what reaches them: each route calls
+  // blog_edit.promote_if_failed FIRST, which appends the operator-named `done` verdict to a
+  // failed topic, so the status genuinely IS done by the time the comparison runs. That is why
+  // `failed` passes here, and it is why it passes only WITH a score: the promotion refuses a
+  // topic no evaluator ever scored, so the status stays failed and the door refuses it exactly
+  // as before. The EDIT and the COMMENTS sit on _require_reviewable, which accepts done OR
+  // failed with no promotion and no score involved, so the operator can polish a sub-90 draft
+  // before releasing it.
+  //
+  // THE BOUNDARIES ARE THE POINT OF THE PAIRED LOOP. Scoring a record does not make it
+  // shippable: needs_review is a hold no score discharges, stopped has no verdict to release,
+  // and running has not finished. Handing every status a passing score is what proves the score
+  // opens `failed` and nothing else.
   for (const status of STATUSES) {
     for (const action of ["send", "publish"] as AdminAction[]) {
       assert.equal(
         adminGateAllows(action, at({ status })),
         status === "done",
-        `${action} at status=${status}: the send and publish gates raise unless the terminal ` +
-          `status is exactly 'done', in server/app.py's _require_done and server/cms/gate.py's ` +
-          `assert_publishable`,
+        `${action} at status=${status} with no evaluator score: the promotion cannot run, so ` +
+          `only the literal 'done' passes server/app.py's _require_done and ` +
+          `server/cms/gate.py's assert_publishable`,
+      );
+      assert.equal(
+        adminGateAllows(action, at({ status, score: 87 })),
+        status === "done" || status === "failed",
+        `${action} at status=${status} with a below-bar score: blog_edit.promote_if_failed ` +
+          `promotes a FAILED topic and is a silent no-op for every other status, so a score ` +
+          `opens this door on 'failed' alone`,
       );
     }
     for (const action of ["edit", "comments"] as AdminAction[]) {
@@ -643,6 +663,45 @@ test("send and publish open only on done; edit and comments open on the review b
       );
     }
   }
+
+  // THE THREE REFUSALS SPELLED OUT, because the loop above proves them as a property and a
+  // reader needs them as sentences. A hold at 96 is the one this project has already shipped
+  // wrong twice, so it is asserted at a PASSING score rather than at a below-bar one.
+  assert.equal(
+    adminGateAllows("send", at({ status: "needs_review", score: 96 })),
+    false,
+    "a current question holds the blog at ANY score, and a release is not a dismiss",
+  );
+  assert.equal(
+    adminGateAllows("send", at({ status: "stopped", score: 96 })),
+    false,
+    "a stopped run has no verdict to release, whatever the last score seen was",
+  );
+  assert.equal(
+    adminGateAllows("send", at({ status: "failed" })),
+    false,
+    "gates and the link pass run BEFORE the eval, so an unscored draft is the one artifact a " +
+      "failed topic cannot vouch for and the only thing a below-bar send may not waive",
+  );
+  // And the door the change opened, stated as itself.
+  assert.equal(
+    adminGateAllows("send", at({ status: "failed", score: 87 })),
+    true,
+    "a below-bar draft the operator has read leaves by the send, promoted on the way through",
+  );
+});
+
+test("the send door refuses a topic whose retry is live, and that clause came off the promote door", () => {
+  // THE ONE REFUSAL THE SEND NEVER HAD. A retried topic keeps the PREVIOUS run's `failed` fold on
+  // the wire until the new session settles, so without this the send would promote and release
+  // the exact draft the operator just asked to be replaced. It is the reason deleting the promote
+  // BUTTON could not simply delete the promote door's clauses.
+  const verdict = adminGateVerdict("send", at({ status: "failed", score: 87, live: true }));
+  assert.equal(verdict.allowed, false);
+  assert.equal(verdict.blocking?.id, "send_not_in_flight");
+  // A settled failure is sendable while its siblings still run: the live registry excludes a
+  // topic whose own session reached mark_topic_terminal.
+  assert.equal(adminGateAllows("send", at({ status: "failed", score: 87 })), true);
 });
 
 test("an approval locks every act that changes the article and leaves publish alone", () => {

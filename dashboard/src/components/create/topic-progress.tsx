@@ -76,7 +76,7 @@ export function TopicProgress({
           {topic.iter > 1 ? (
             <span
               className="machine rounded border border-border bg-muted px-1.5 py-0.5 text-[0.6875rem] leading-none text-muted-foreground"
-              // iter 3 means two evals came back under 95. Spelling that out beats a number
+              // iter 3 means two evals came back under 90. Spelling that out beats a number
               // the operator has to decode.
               title={`Revise iteration ${topic.iter} of a maximum 4`}
             >
@@ -277,7 +277,7 @@ function TerminalActions({
 }
 
 /**
- * done always means the first eval hit 95 or above, so status alone decides the highlight.
+ * done always means the first eval hit 90 or above, so status alone decides the highlight.
  *
  * The stopped arm is explicit rather than left to the fail default below, and it is the one arm
  * here no compiler would have caught: this is an if-chain, so a stopped topic would have taken
@@ -299,8 +299,10 @@ function terminalChipClass(status: RunStatus): string {
 }
 
 /**
- * The score trail is the signature of this product: 88 -> 92 -> 96 is a blog earning its way
- * past the bar, and 88 -> 89 is a different problem entirely from a blog that never started.
+ * The score trail is the signature of this product: 72 -> 89 is a blog that climbed seventeen
+ * points in one revise and still stopped a point short of the bar, and 84 -> 84 -> 87 is the same
+ * story over three iterations, which is a different problem entirely from a blog that never
+ * started.
  *
  * Rendered with the arrow glyph, never a dash of any kind, per house style.
  */

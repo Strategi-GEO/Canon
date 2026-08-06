@@ -82,7 +82,7 @@ export function channelBlogTag(state: ChannelPostState): StateTag {
 /**
  * Which blogs can be turned into a channel post: any blog carrying a committed, evaluator-scored
  * draft. That includes `failed` (and its below-bar face): a failed blog holds the exact scored
- * blog.md that promote and edit operate on, so it is repurposable content. EXCLUDED are the states
+ * blog.md that send and edit operate on, so it is repurposable content. EXCLUDED are the states
  * with nothing settled to lift: `generating` (live, no committed post), `answers_submitted` (a
  * correction is mid-flight), `stopped` (discarded), `unknown` (unreadable), and `has_questions` (a
  * person owes an answer before the draft is trustworthy). Excluded blogs still show in the New tab

@@ -270,21 +270,21 @@ export type AdminAction =
    *  on either bench: comments are not threads. A client files a comment, the team resolves
    *  it with Claude or dismisses it, and that is the whole conversation. */
   | "comments"
-  /** Release it, or release it again after resolving change requests. */
-  | "send"
   /**
-   * Ship a FAILED blog anyway. The loop's verdict stands on the trail (the evaluator scored
-   * the draft below the house 95 bar and had nothing left to ask); this verb is the operator
-   * overruling that bar for a draft they have READ and are satisfied with. One press appends
-   * a `done` verdict naming the operator and the score, records the ledger row so the
-   * roadmap locks the topic exactly as a 95+ ship would, and sends the blog to the client.
-   * FAILED-BENCH ONLY, and the boundaries are the rule: needs_review is a hold no score
-   * dismisses (promotion is not a dismiss), stopped has no verdict to promote, and the
-   * engine refuses a failed record with no evaluator-scored draft, because gates and the
-   * link pass run before the eval and the scored draft is therefore the one shippable
-   * artifact a failed topic can hold.
+   * Release it, or release it again after resolving change requests. THE ONE SHIP DOOR, at
+   * every score: a draft that missed the 90 bar goes out through this same verb, and the
+   * engine promotes it on the way, appending a `done` verdict naming the operator and the
+   * score and recording the ledger row so the roadmap locks the topic exactly as a 90+ ship
+   * would. A second `promote` verb described the same act with a different word and put two
+   * buttons on one bench.
+   *
+   * THE BOUNDARIES SURVIVED THE BUTTON AND THEY ARE THE RULE: needs_review is a hold no
+   * score dismisses (a send is not a dismiss), stopped has no verdict to release, and the
+   * engine refuses a failed record with no evaluator-scored draft, because gates and the link
+   * pass run before the eval and the scored draft is therefore the one shippable artifact a
+   * failed topic can hold. Each is a clause on the send door in gate-contract.ts.
    */
-  | "promote"
+  | "send"
   /** Push it to the CMS. */
   | "publish";
 
@@ -304,7 +304,7 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   //       engine behind it, so a client's submit dispatches nothing, and server/app.py ships the
   //       auto-pickup sweep DISABLED (it returns unless GEO_ANSWERS_PICKUP=1, for the billing
   //       reason written out there). Nothing moves this article on its own. It wants a RERUN.
-  //   (b) The rerun landed clean at >= 95 with nothing new to ask, so the status is now `done`
+  //   (b) The rerun landed clean at >= 90 with nothing new to ask, so the status is now `done`
   //       and the article is a finished draft nobody has delivered. It wants a SEND.
   //
   // THE DISCRIMINATOR IS THE UNDERLYING STATUS, WHICH THIS STATE DELIBERATELY FOLDS AWAY. In (a)
@@ -320,8 +320,8 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   // `answered` flags, which are the fields POST /answers and POST /revise read: in (a) the form is
   // current and unanswered or current and answered, and one of the two doors takes it; in (b) the
   // form is gone or spent and both refuse, so blog-stage.tsx withholds the strip.
-  // `edit`, `comments` and `send` pass through the DONE_TOPIC clause, which carries migration
-  // 009's own `if v_status is distinct from 'done'::topic_status then`: in (b) the status is
+  // `edit`, `comments` and `send` pass through the engine's status clauses, which carry
+  // _require_reviewable's and _require_done's own comparisons: in (b) the status is
   // 'done' and all three render and work, and in (a) it is not and blog-stage.tsx withholds them.
   // SendToClient's blockedReason still names the rerun, because a greyed control with a real next
   // act is better than an absent one where the condition clears on its own.
@@ -376,7 +376,7 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   // of an edit racing the pass about to rewrite the same bytes describes a moment this table
   // cannot be asked about. What makes `edit` safe in (a) is the DONE_TOPIC clause withholding it.
   answers_submitted: ["answer", "edit", "comments", "send"],
-  // The refining bench, and one of exactly TWO states carrying `send`: this is where the
+  // The refining bench, and one of exactly THREE states carrying `send`: this is where the
   // operator decides the client should see the article. `publish` sits beside it because the
   // operator may post to the CMS directly from here without waiting for client approval.
   internal_review: ["edit", "comments", "send", "publish"],
@@ -403,17 +403,17 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   // where a published post is administered.
   published: [],
   // The full admin-review bench plus BOTH exits, because a failed draft the operator has read
-  // and likes is theirs to ship either way: `promote` sends it to the client on their own
-  // authority, and `publish` posts it to the CMS. Neither waits for a rerun to reach 95. A
+  // and likes is theirs to ship either way: `send` releases it to the client on their own
+  // authority, and `publish` posts it to the CMS. Neither waits for a rerun to reach 90. A
   // failed draft is edited and Claude-polished exactly like a done one (the engine's
   // _require_reviewable accepts done|failed on the three editing routes). Both ship doors
   // append the same operator-authority `done` verdict to the trail, so the record always reads
   // "failed at 87, then a person shipped it", never a silent bypass of the bar. Retrying the
   // topic is deliberately NOT a verb here, because a retry is a RUN: the roadmap keeps failed
   // rows selectable, and the stage links there with the row pre-ticked.
-  failed: ["edit", "comments", "promote", "publish"],
+  failed: ["edit", "comments", "send", "publish"],
   // Never reaches a client and carries no review loop: a stopped topic has no verdict at all
-  // (no score describes it), so there is nothing to promote and its only exit is generating
+  // (no score describes it), so there is nothing to release and its only exit is generating
   // again.
   stopped: [],
   unknown: [],
@@ -793,11 +793,11 @@ export function adminCommentsTag(pendingComments: number): StateTag {
 
 /**
  * The other face of the failed tag, split on the one fact the state cannot carry: the score. A
- * draft that scored 90 to 94 is BELOW BAR, one rerun from the 95 ship bar, not a plain failure;
- * below 90 is the failure the red tag is for. Both are the `failed` STATE and both keep its bench
- * (edit, comments, promote) and its retry-by-roadmap exit, so this is a label split exactly like
- * adminCommentsTag, never a new state. Tone `owed` (amber): the operator owes a decision, rerun
- * for the bar or promote it, and amber is not the fail red. A missing score reads as the plain
+ * draft that scored 85 to 89 is BELOW BAR, one rerun from the 90 ship bar, not a plain failure;
+ * below 85 is the failure the red tag is for. Both are the `failed` STATE and both keep its bench
+ * (edit, comments, send) and its retry-by-roadmap exit, so this is a label split exactly like
+ * adminCommentsTag, never a new state. Tone `owed` (amber): the operator owes a decision, retry
+ * for the bar or send it, and amber is not the fail red. A missing score reads as the plain
  * failure, the honest floor when the loop never scored a draft.
  */
 // Exported for the admin-only score helpers in lib/blog-score.ts, which own the score-to-band
@@ -807,8 +807,8 @@ export const ADMIN_BELOW_BAR_TAG: StateTag = {
   label: "Below bar",
   tone: "owed",
   detail:
-    "Scored 90 to 94, just below the 95 ship bar, with nothing left to ask. Rerun it to try for " +
-    "95, or promote it if you have read it and are happy with it.",
+    "Scored 85 to 89, just below the 90 ship bar, with nothing left to ask. Retry it to try for " +
+    "90, or send it to the client if you have read it and are happy with it.",
 };
 
 /**

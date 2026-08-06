@@ -23,7 +23,7 @@ export type RoadmapStats = {
   /** Every blog on disk for this brand, which is the population the four outcomes below count.
    *  It can exceed `topics`: a brand accumulates blogs across every sheet it has ever had. */
   blogs: number;
-  /** Status "done". In this house a blog reaches "done" only on a first eval score of 95 or
+  /** Status "done". In this house a blog reaches "done" only on a first eval score of 90 or
    *  above with no question left waiting, so this is the shipped count exactly and not a count of
    *  what was attempted. */
   shipped: number;

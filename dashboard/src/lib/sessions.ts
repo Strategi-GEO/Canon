@@ -21,8 +21,12 @@ import type { RunState, RunSummary } from "@/types";
  * a change to runner.py had two places to land and no reason to find the second. Everything
  * that names this number now imports it from the same file that decides what the run list
  * means.
+ *
+ * It MIRRORS GEO_CONCURRENCY in server/runner.py, default 2, and the engine does not serve the
+ * value, so raising the env var means editing this line too. An operator told 5 while the engine
+ * runs 2 reads every queue position in this UI wrong.
  */
-export const ENGINE_SLOTS = 5;
+export const ENGINE_SLOTS = 2;
 
 /** A live session, normalised. Nothing finished ever becomes one. */
 export type Session = {

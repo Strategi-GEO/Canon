@@ -151,14 +151,14 @@ weighted_total = sum(dimension_score * dimension_weight)   # weights total 30, m
 normalised     = round(weighted_total / 90 * 100)
 ```
 
-The two dimensions added here (C4 voice register, D2 topic discipline) raise the weight total from 25 to 30 and the max from 75 to 90. The 95 threshold is a PERCENTAGE, so the bar is proportionally identical to what it was: a draft still has to earn about 95% of the available weight. What changed is what counts toward it, not how hard it is to clear.
+**THERE IS ONE NUMBER, IT IS 90, AND THE BAND IS BINARY.** The first score at or above 90 ends the revise loop at once and the piece ships, and it is what a draft is written to reach. Below 90 the piece does not ship. There is no middle band and no second threshold, and no other number is compared against a score anywhere. 90 is exactly attainable: 81 of the 90 available weighted points. **95 is NOT an attainable normalised value**, so do not pretend a draft can score it: 85 of 90 rounds to 94 and 86 of 90 rounds to 96, which skips 95 outright. **85 is not attainable either**, since 76 of 90 rounds to 84 and 77 of 90 rounds to 86.
 
-The house band is binary. There is no middle band.
+The bar used to be a single 95, set by holding the percentage constant when C4 and D2 raised the weight total from 25 to 30, and holding the percentage constant is exactly what broke it. 95 was attainable before that change: `tests/concurrency-proof.md` records six topics ending done at 95, 95, 96, 97, 98 and 98 under the rubric as it stood then, when the weights totalled 25 and the maximum was 75. So the defect was not an ambitious bar, it was a percentage carried unchanged through a weight-total change. 95% of 30 weight units scored in integers means at most 4 weighted points lost across 14 dimensions, near-exemplary on everything, and the normalisation skips 95 anyway. A measured 12-blog run afterwards produced a score for only five of its twelve topics, with trajectories of 72 to 89 to 88, 84 to 84 to 87, 79 to 80, 82, and 73; the other seven died in research on iteration 1 and were never scored at all. Zero of the twelve ever reached 95, and the two that got furthest were inside their fourth iteration when the run died, so the bar was unreachable for every blog that lived long enough to be measured against it. Under a bar of 90 the best of them, 89, is one point short and does not ship on its own: it is below bar, it resolves failed, and it reaches a client only if the operator promotes it.
 
 | Band | Normalised score | Action |
 |------|------------------|--------|
-| Ship | 95 to 100 | Ship. The first score at or above 95 is final and terminal WHEN no current question is on disk |
-| Reject | Below 95 | Revise the flagged areas, then re-eval on a fresh context |
+| Ship | 90 to 100 | Ship. The first score at or above 90 ends the loop at once, and it is final and terminal WHEN no current question is on disk |
+| Reject | Below 90 | Revise the flagged areas, then re-eval on a fresh context. A run that ends here resolves failed |
 | Reject | Any hard gate fail | Reject regardless of graded score |
 
 First-score-is-final is narrowed by the questions, not deleted by them. A current, answerable question on disk holds the blog at ANY score, and the ONE licensed re-eval is the single answer-driven revise the operator's answers trigger. Every other confirmatory re-eval stays forbidden: "the draft changed", "eval.md and blog.md are inconsistent", "the run was stopped and restarted", "let me confirm". Those re-roll a stateless auditor whose score moves several points on an identical draft, and they can strand a blog that had already passed.

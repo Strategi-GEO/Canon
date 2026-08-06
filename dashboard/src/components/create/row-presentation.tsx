@@ -63,10 +63,10 @@ export const ROW_STYLES: Record<
     chip: "border-fail/25 bg-fail-bg text-fail",
     chipLabel: "failed",
   },
-  // Yellow, the review/owed token, split off failed by score: 90 to 94 is one rerun from the 95
-  // bar, not a failure, so it carries the same "below bar" meaning the Blogs tab tag does. The hue
-  // is shared with the amber states above and the chip label carries the difference colour cannot.
-  // Selectable like failed, because retrying for 95 is exactly what an operator wants here.
+  // Yellow, the review/owed token, split off failed by score: 85 to 89 is one rerun from the 90
+  // bar, not a plain failure, so it carries the same "below bar" meaning the Blogs tab tag does.
+  // The hue is shared with the amber states above and the chip label carries the difference colour
+  // cannot. Selectable like failed, because retrying for 90 is exactly what an operator wants.
   below_bar: {
     row: "bg-review-bg hover:bg-review-bg",
     chip: "border-review/25 bg-review-bg text-review",
@@ -166,7 +166,7 @@ export function RowNote({
   if (state === "below_bar") {
     return (
       <p className="mt-1.5 text-xs text-review">
-        Scored 90 to 94, just below the 95 ship bar. Tick it to rerun for 95.
+        Scored 85 to 89, just below the 90 ship bar. Tick it to rerun for 90.
       </p>
     );
   }

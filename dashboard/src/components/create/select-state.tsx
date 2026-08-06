@@ -82,9 +82,9 @@ export function SelectState({
   loading: boolean;
   /** Topic slugs in a live run right now, from GET /api/runs and the SSE stream. */
   live: ReadonlySet<string>;
-  /** Topic slugs whose last terminal status was failed AND scored below 90. */
+  /** Topic slugs whose last terminal status was failed AND scored below 85. */
   failed: ReadonlySet<string>;
-  /** Topic slugs that ended failed but scored 90 to 94: yellow "below bar", not red. */
+  /** Topic slugs that ended failed but scored 85 to 89: yellow "below bar", not red. */
   belowBar: ReadonlySet<string>;
   /** Topic slugs whose blog is held for the operator's answer (status needs_review). */
   needsReview: ReadonlySet<string>;

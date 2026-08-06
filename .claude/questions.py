@@ -119,7 +119,7 @@ def write_questions(out_dir, slug, iter, questions, score=None):
 def read_form(out_dir):
     """The form at <out_dir>/questions.json parsed, or None when there is none worth reading.
 
-    A corrupt file reads as ABSENT here, and the tolerance is scoped to what this reader is FOR:
+    A corrupt file reads as ABSENT here, and that leniency is scoped to what this reader is FOR:
     the check below, which asks whether a live question is holding the loop. A form no parser can
     read is one the app refuses to render, so it summons nobody and it holds nothing.
     server.questions._read_json RAISES on that same file, because it reads it for the OPERATOR'S
@@ -170,13 +170,15 @@ def check_area_cli(out_dir, slug, area, iter):
     iteration logic as a second computation, which is exactly the drift this design avoids.
 
     THE RULE THIS SERVES: A SOURCING QUESTION ENDS THE REVISE LOOP IMMEDIATELY, at the iteration it
-    is filed. At SCORE < 95 the lead runs this BEFORE dispatching a revise, and on exit 0 the loop
+    is filed. At SCORE < 90 the lead runs this BEFORE dispatching a revise, and on exit 0 the loop
     ENDS NOW: it writes the terminal needs_review line and stops, without revising, without
     dispatching another evaluator, and without deleting the form. Questions of area Structure,
     Draft or Mechanics do NOT end the loop: they are superseded by the next iteration's form, and
-    the lead deletes questions.json before the next evaluator exactly as before. At SCORE >= 95
+    the lead deletes questions.json before the next evaluator exactly as before. At SCORE >= 90
     nothing changes, because the loop ends anyway and terminal resolution holds the blog if ANY
-    current question exists, of any area.
+    current question exists, of any area. 90 is the BAR the lead branches on and the only bar there
+    is: at or above it the blog ships, below it it does not, and no second threshold is consulted
+    anywhere.
 
     THE REASON: Sourcing is the ONE area no rewrite can close, which the contract already says in
     its own words, "the writer has no authority to invent a citation or URL". A Sourcing QUESTION
@@ -203,7 +205,7 @@ def check_area_cli(out_dir, slug, area, iter):
       OVER-APPLYING it costs a good blog. Ending the loop on a form that is stale or another
       topic's writes needs_review with iterations unspent, and terminal resolution then reads that
       same form as non-holding and corrects the topic to `failed` by its score. A draft that had
-      budget left to reach 95 dies instead. The required `iter` above is what closes that
+      budget left to reach 90 dies instead. The required `iter` above is what closes that
       direction, which is why it is required rather than advisory.
 
     THIS QUERY NEVER WRITES, and it deliberately does not know about answeredness, unlike the
@@ -272,7 +274,7 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    # The read path, and it returns before anything is written. The lead runs it at SCORE < 95 to
+    # The read path, and it returns before anything is written. The lead runs it at SCORE < 90 to
     # find out whether a Sourcing question has already ended the loop, and a query that could
     # rewrite the form it is asking about would destroy the very thing it reports on.
     if args.check_area:

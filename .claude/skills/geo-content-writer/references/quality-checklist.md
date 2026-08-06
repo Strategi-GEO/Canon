@@ -1,125 +1,29 @@
-# Quality Checklist: Pre-Delivery Verification
+# Quality Checklist: The Delta On Top Of The Rubric
 
-Run through this checklist before delivering any piece. Every item must pass. If any item fails, fix it before delivery.
+`../geo-content-eval/references/rubric.md` is the standard, and you read it before drafting and self-check against it before the gates. This file is only what the rubric leaves out: the requirements no scored bucket covers, so an evaluator reading the rubric alone cannot catch them and a writer reading the rubric alone would not know they exist. Everything the rubric already scores was removed from this file, because a weaker restatement of a scored bucket costs input tokens on every dispatch and teaches nothing.
 
-## Opening checks
+Every item must pass. Fix any failure before the gates.
 
-- [ ] The first paragraph directly answers the core question the article addresses
-- [ ] The primary keyword or topic appears naturally in the first two sentences
-- [ ] No preamble, no "in today's digital landscape," no warm-up
-- [ ] The first 100-150 words contain a standalone citeable answer (the BLUF)
-- [ ] For pieces over 1,500 words: a TL;DR or summary block of 3-5 sentences appears near the top
+## Before drafting
 
-## Structural checks
+- [ ] The H2-to-target-prompt mapping is written out in the Step 4 outline, before a word of the draft exists. The rubric scores the finished tracing, never the outline, because the evaluator never sees one
 
-- [ ] Exactly one H1
-- [ ] All H2s and H3s are descriptive, answer-shaped statements or questions, not generic labels
-- [ ] No heading uses "Overview," "Introduction," "Benefits," "Conclusion," "Key Points," or similar
-- [ ] Paragraphs are 2-4 sentences each
-- [ ] No wall-of-text paragraphs anywhere
-- [ ] Lists are used for processes, comparisons, and multi-point coverage
-- [ ] Every list item is 2-4 sentences, not a phrase
-- [ ] Tables are used for side-by-side comparisons where applicable
-- [ ] A FAQ section with 5-10 Q&A pairs appears for any piece covering a substantive topic
+## Structure the rubric does not score
 
-## Factual density checks
+- [ ] Exactly one H1, and clean markdown hierarchy under it (`#` for H1, `##` for H2, `###` for H3). The rubric scores heading SHAPE, never heading LEVELS, so two H1s or a skipped level passes it clean
+- [ ] A TL;DR or summary block of 3-5 sentences near the top. The rubric presumes one exists and never requires it
+- [ ] A "Sources and References" section at the end listing every external source cited, each with its full URL. The rubric scores citation strength and attribution, never the section itself
 
-- [ ] Every paragraph contains at least one specific, verifiable claim
-- [ ] At least one sourced statistic appears every 150-200 words
-- [ ] Every statistic includes the specific figure, the source name, and the date or time period
-- [ ] Every external source is named, no "studies show," no "experts say," no "research indicates"
-- [ ] At least 3 standalone quotable statements appear in the piece
-- [ ] No invented statistics, no false precision, no made-up percentages
+## Content the rubric does not score
 
-## Topic discipline checks
+- [ ] The piece is within the client word band. `python3 .claude/gates.py --client <slug>` is the authority, do not eyeball it. The rubric has no word-count dimension at all
+- [ ] No keyword stuffing. Target keywords appear naturally where they fit meaning. The rubric requires the keyword early and never penalises over-repeating it
+- [ ] Honest negatives are still present, made against the option rather than against a rival where the client set `"competitor_policy": "never_name"`. The rubric bans rival mentions and rewards no concession, so nothing in it catches a puff piece
 
-- [ ] Every H2 traces to a named target prompt, and the mapping was written out in the outline
-- [ ] No section covers an adjacent subject the brief did not ask for
-- [ ] Category-level background runs no longer than two sentences before the piece returns to its subject
-- [ ] No paragraph survives that a reader who typed the primary target prompt does not need
-- [ ] Nothing was added to reach the word band, the length came from answering the prompts more completely
+## Output conventions
 
-## Competitor silence checks (only where the client set `"competitor_policy": "never_name"`)
-
-- [ ] No rival company, developer, project, brand, platform, agency, or operator is named anywhere, including tables, FAQ answers, and the Sources list
-- [ ] No unnamed competitor framing: "other developers", "most vendors", "unlike other projects", "compared with the competition", "industry peers", "rivals"
-- [ ] Every comparison in the piece is between options (asset type, location, price band, ownership model, buyer situation), never between companies
-- [ ] Honest negatives are still present, made against the option rather than against a rival. The policy rescopes them, it does not cancel them
-
-## Brand voice checks (only where the client configured a `voice` block)
-
-- [ ] The reader is addressed as "you" throughout, not as "buyers" and not as "one"
-- [ ] The client speaks as "we", "us", and "our", not about itself in the third person in every sentence
-- [ ] "We" never means the reader, the industry, or people in general
-- [ ] The TL;DR and the answer-first opening both name the entity in full
-- [ ] Every H2 section that uses "we" also names the entity in full inside that same section
-- [ ] Every FAQ answer about the client names it in the answer's first sentence
-- [ ] Every standalone quotable statement names the entity in full, none rely on "we"
-- [ ] Table cells name the entity in full, no row reads "we"
-
-## Entity clarity checks
-
-- [ ] Every company, product, person, framework, and technology is named explicitly
-- [ ] No "the company" or "this approach" or "the product" substitutions
-- [ ] Key terms are defined using standalone definitional sentences ("X is the practice of...")
-- [ ] Every definition could be extracted and quoted independently
-- [ ] Proprietary frameworks or methodologies are given distinctive names
-
-## Voice and style checks
-
-- [ ] Reads like a knowledgeable person explaining something, not a corporate blog generator
-- [ ] Sentence length varies naturally
-- [ ] Active voice throughout (passive only where the actor is unknown or irrelevant)
-- [ ] Zero hedging language ("might," "could," "possibly," "perhaps") unless expressing genuine uncertainty
-- [ ] Concrete examples and specific numbers wherever possible
-- [ ] No listicle thinking, every list item is substantially developed
-
-## Banned pattern checks
-
-- [ ] No em dashes or en dashes anywhere in the text (search for both dash characters and replace with commas, colons, or periods)
-- [ ] None of these phrases appear: "in today's digital landscape," "leveraging cutting-edge," "robust solution," "game-changer," "unlock potential," "seamless integration," "transformative," "revolutionary," "paradigm shift," "synergy," "best-in-class," "world-class," "next-generation," "at the forefront of," "cutting-edge," "bleeding-edge"
-- [ ] No generic phrases that could apply to any company or industry
-- [ ] No keyword stuffing, target keywords appear naturally where they fit meaning
-- [ ] No buried insights, the most important information appears first
-
-## Industry-specific checks
-
-The piece belongs to one industry, named in the client's `client.md`. Load the matching file from `references/industries/` and verify its industry-specific checks were applied before delivery.
-
-- [ ] The single industry reference named in `client.md` was loaded
-- [ ] The credentials that reference tells you to surface are surfaced
-- [ ] The jurisdiction, market, or location specifics that reference requires are stated explicitly
-- [ ] The disclaimers that reference requires are present and date-stamped where it says so
-- [ ] The segmentation, schema, and factual-density notes for that field are applied
-- [ ] No piece in a covered industry ships without confirming these against the loaded reference
-
-## Output format checks
-
-- [ ] Piece is within the client word band (`python3 .claude/gates.py --client <slug>` is the authority; do not eyeball it)
-- [ ] Markdown hierarchy is clean (# for H1, ## for H2, ### for H3)
 - [ ] Lists use `-` for bullets and `1.` for numbered items
-- [ ] Bold is used for emphasis on key terms only, not decoratively
-- [ ] A Sources and References section at the end lists every external source cited
-- [ ] The piece is saved to `outputs/<slug>/<topic-slug>/blog.md`
-
-## Quotable statement check
-
-Pick any 3 sentences at random from the piece. Each one, removed from context, should:
-- Make complete sense on its own
-- Contain a specific, verifiable claim
-- Be something an AI engine could cite in response to a relevant query
-
-If any of the 3 fails this test, the piece is not dense enough with citeable content. Rewrite until it passes.
-
-## The generic-brand test
-
-Read the piece once through and ask: "Could this have been written about any company in this industry, or is it specifically about the brand / topic in the brief?"
-
-If it reads generic, rewrite with:
-- More specific entity mentions
-- More brand-specific or client-specific data
-- More named examples
-- More industry-specific terminology from the industry reference
+- [ ] Bold is on key terms only, not decorative
 
 ## Final gut check
 

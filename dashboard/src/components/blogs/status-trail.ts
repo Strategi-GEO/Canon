@@ -3,8 +3,8 @@
  *
  * Two things in that file are worth an operator's attention and exist nowhere else in the
  * API: the score at each iteration, and the note on the terminal line. GET /blogs reports
- * only the FINAL score, so "96" alone hides whether the piece landed there or clawed its way
- * up from 88. And needs_review without its reason is a status that tells a human to act
+ * only the FINAL score, so "89" alone hides whether the piece landed there or clawed its way
+ * up from 72. And needs_review without its reason is a status that tells a human to act
  * while withholding what to act on, which is the one thing they need.
  *
  * Every value here is lifted from the engine's own line. Nothing is derived, inferred or

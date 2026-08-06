@@ -20,6 +20,7 @@ import { FieldError } from "@/components/clients/engine-error";
 import { modeOf } from "@/components/blogs/questions-state";
 import { useNow } from "@/components/create/use-now";
 import { ApiError, api } from "@/lib/api";
+import { BELOW_BAR_FLOOR, SHIP_BAR } from "@/lib/blog-score";
 import { formatAbsolute, formatElapsed } from "@/lib/format";
 import { HOSTED_READONLY } from "@/lib/hosted";
 import { useRuns } from "@/lib/runs-context";
@@ -339,18 +340,22 @@ function ReviewNote({
  * What the blog's score says about it, which is the whole of what is left once it is settled that
  * nothing is being asked of the operator.
  *
- * The house bar is 95, and the engine settles a run with nothing to ask on that number alone:
- * at or above it the blog is done, below it the loop exhausted itself and the run failed. So the
- * score is the fact to report here, and the status is not.
+ * THE BAND IS BINARY AT SHIP_BAR, and the engine settles a run with nothing to ask on that number
+ * alone: at or above it the blog is done, below it the loop exhausted itself and the run failed.
+ * BELOW_BAR_FLOOR is no second pass mark, it only says how close the miss was, so the near miss
+ * arm names the operator's send and never calls the draft shipped.
  */
 function standingLine(blogScore: number | null): string {
   if (blogScore === null) {
     return "No eval recorded a score for it either, so status.jsonl and eval.md are all there is to read.";
   }
-  if (blogScore >= 95) {
-    return `It scored ${blogScore}, at or above the 95 bar, so the draft you are reading is one the evaluator passed.`;
+  if (blogScore >= SHIP_BAR) {
+    return `It scored ${blogScore}, at or above the ${SHIP_BAR} bar, so the loop stopped there and the draft you are reading is one the evaluator passed.`;
   }
-  return `It scored ${blogScore}, below the 95 bar, so the loop stopped without a draft the evaluator would pass.`;
+  if (blogScore >= BELOW_BAR_FLOOR) {
+    return `It scored ${blogScore}, ${SHIP_BAR - blogScore} short of the ${SHIP_BAR} bar, so the run failed and this draft goes out only if you read it and send it.`;
+  }
+  return `It scored ${blogScore}, below the ${SHIP_BAR} bar and under ${BELOW_BAR_FLOOR}, so the loop stopped without a draft the evaluator would pass.`;
 }
 
 /**

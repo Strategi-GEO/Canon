@@ -917,28 +917,31 @@ def sent_state(client_slug, topic_slug):
 def promote_to_done(client_slug, topic_slug, score, email, act="sent it to the client"):
     """Operator promotion: re-verdict one FAILED topic as done, on the operator's authority.
 
-    The loop's verdict stays on the trail: the evaluator scored this draft below the house 95
-    bar and the resolver wrote `failed`. Promotion is the operator overruling that bar for one
-    blog they have read and are satisfied with. It deliberately widens NO done-gate:
+    The loop's verdict stays on the trail: the evaluator scored this draft below the house bar
+    of 90 and the resolver wrote `failed`. THE 90 BAR IS WHAT PROMOTION OVERRULES, and it is the
+    only bar there is: the band is binary, so a draft at 87 is below bar, resolves failed, and
+    reaches a client only when the operator reads it and presses Send to client. Promotion is
+    the operator overruling that bar for one blog they have read and are satisfied with. It
+    deliberately widens NO done-gate:
     _require_done, admin_done_topic and assert_publishable keep demanding the literal `done`,
     and promotion satisfies them the way every verdict in this system is expressed, by
     APPENDING a new terminal line to the status trail. Every consumer folds "last non-running
     line wins" (runner._summarize, topic_rollup, the portal's own fold), the appended line's
     note names the operator and the score, and the trail keeps the whole history: failed at
-    92, then a person shipping it anyway. _enforce_terminal_status set the precedent that a
+    81, then a person shipping it anyway. _enforce_terminal_status set the precedent that a
     correction is an appended line, never a rewrite.
 
-    The route (api_promote_blog) owns every refusal; this function is the act. By the time it
-    runs, the fold reads exactly `failed`, the latest committed version carries an evaluator
-    score, and no live run holds the topic. A scored draft is gate-clean and link-clean by
-    construction (gates and the link pass run BEFORE the eval), so the 95 bar is the only
-    thing being waived.
+    promote_if_failed below owns the status refusals and the route owns the rest; this function
+    is the act. By the time it runs, the fold reads exactly `failed`, the latest committed
+    version carries an evaluator score, and no live run holds the topic. A scored draft is
+    gate-clean and link-clean by construction (gates and the link pass run BEFORE the eval), so
+    the 90 bar is the only thing being waived.
 
-    `act` NAMES WHAT THE OPERATOR DID, in the trail line, because there are now TWO doors out
-    of a failed blog and the record must say which one was taken. The send route keeps the
-    default; the CMS route passes its own wording and performs no send, so a blog published
-    straight from failed does not get a trail line claiming a client received it. The verdict
-    itself is identical either way: this function only ever appends the `done` line.
+    `act` NAMES WHAT THE OPERATOR DID, in the trail line, because there are TWO doors out of a
+    failed blog and the record must say which one was taken. The send route keeps the default;
+    the CMS route passes its own wording and performs no send, so a blog published straight
+    from failed does not get a trail line claiming a client received it. The verdict itself is
+    identical either way: this function only ever appends the `done` line.
     """
     # Scratch first, laid from the record, so the appended line lands after the record's own
     # high-water mark and commit_topic's (topic_id, line_no) keying reads it as genuinely new.
@@ -983,8 +986,13 @@ def promote_to_done(client_slug, topic_slug, score, email, act="sent it to the c
         # Floor 1: status_events checks iter >= 1, and a feed whose lines carried no iter
         # would otherwise fold to 0 and wedge the commit on the constraint.
         iter=max(summary["iterations"], 1), score=None, status="done",
-        note=f"operator promotion: {email or 'an operator'} shipped this blog at "
-             f"score {score}, below the house 95 bar, and {act}",
+        # THE NOTE IS DELIBERATELY PLAIN, and it used to name the operator and the score and call
+        # itself an "operator promotion". The operator asked for the two paths to be
+        # indistinguishable, and there is one release door now, so a below-bar send reads exactly
+        # as any other send does. Nothing is lost that the trail did not already hold: status.jsonl
+        # is append only, so the evaluator's own failed line and its score sit directly above this
+        # one, and the sequence still says what happened without this line editorialising about it.
+        note=f"{act}",
     )
 
     # allow_new_version=False: promotion ships the draft the record already holds, so stray
@@ -1016,7 +1024,7 @@ def promote_to_done(client_slug, topic_slug, score, email, act="sent it to the c
         )
 
     # The ledger row is what makes the promotion a real ship: the roadmap row locks exactly
-    # as a 95+ ship locks it, and generate refuses the slug as already_generated. Brief fields
+    # as a 90+ ship locks it, and generate refuses the slug as already_generated. Brief fields
     # come from the roadmap row when the sheet still carries it; a blog whose row is gone
     # ships with the topic title and no prompts, the same degradation blog_upload accepts.
     # append_row is first-write-wins, so a slug that somehow already ledgered keeps its
@@ -1038,6 +1046,46 @@ def promote_to_done(client_slug, topic_slug, score, email, act="sent it to the c
         "score": score,
         "run_id": "operator-promotion",
     })
+
+
+def promote_if_failed(client_slug, topic_slug, status, email, act="sent it to the client"):
+    """Promote a FAILED blog so the door in front of it opens, and do NOTHING to any other.
+
+    ONE HOME, TWO DOORS. Sending to the client and pushing to the CMS both let the operator take
+    responsibility for a draft that fell below the 90 bar, and both satisfy their own done-gate
+    the same way: not by widening it, but by appending the verdict promote_to_done writes. A
+    second copy of this beside the send route would be a second answer to "may this blog be
+    promoted", free to drift from the one the CMS door asks.
+
+    THE SILENT NO-OP FOR EVERY OTHER STATUS IS WHAT MAKES FOLDING THIS INTO A SHIP DOOR SAFE. A
+    `done` blog needs nothing. needs_review is a hold no score discharges and this never touches
+    it, stopped has no verdict to re-verdict, and running has not finished, so all three fall
+    through untouched to the caller's own gate, which refuses them with the sentence it already
+    had. Nothing here reads a score against the bar either: below-bar and outright failure are
+    one terminal status and the operator decides both the same way.
+
+    `status` is the CALLER'S fold, deliberately: app.py folds the record through _topic_status,
+    the CMS door folds through gate.blog_status and its test seam. Folding it a third way here
+    would be a third definition of "failed", free to disagree with the status the operator was
+    looking at when they pressed.
+
+    Refuses by EditError, which both callers already map to a 409.
+    """
+    if status != "failed":
+        return
+    score = db.q(
+        """select v.score from blog_versions v
+           join topics t on t.id = v.topic_id
+           where t.client_id = %s and t.slug = %s and t.deleted_at is null
+           order by v.version_no desc limit 1""",
+        (db.client_id(client_slug), topic_slug), fetch="val")
+    if score is None:
+        # Gates and the link pass run BEFORE the eval, so an unscored draft is the one artifact
+        # a failed topic cannot vouch for, and the 90 bar is meant to be the ONLY thing waived.
+        raise EditError(
+            f"{topic_slug!r} has no evaluator-scored draft, so there is nothing to take "
+            f"responsibility for; generate it again instead")
+    promote_to_done(client_slug, topic_slug, score, email, act=act)
 
 
 def mark_sent(client_slug, topic_slug, email):

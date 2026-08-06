@@ -13,6 +13,7 @@ import {
   Laptop,
   Pencil,
   Redo2,
+  RotateCw,
   TriangleAlert,
   Undo2,
   X,
@@ -26,13 +27,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { NotFoundCard } from "@/components/shell/brand-route";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
-import { adminFailedTag, scoreClass } from "@/lib/blog-score";
+import { BELOW_BAR_FLOOR, SHIP_BAR, adminFailedTag, scoreClass, scoreTone } from "@/lib/blog-score";
 import { blogLabels } from "@/lib/blog-label";
 import { AnswerQuestions } from "@/components/blogs/answer-questions";
 import { BlogEditor } from "@/components/blogs/blog-editor";
 import { MarkdownView } from "@/components/blogs/markdown-view";
 import { PublishAction } from "@/components/blogs/publish-action";
-import { PromoteFailedBlog, SendToClient } from "@/components/blogs/send-to-client";
+import { SendToClient } from "@/components/blogs/send-to-client";
 import { CommentableArticle, type SelectionDraft } from "@/components/blogs/selection-comments";
 import { extractScore } from "@/components/blogs/markdown";
 import { countSources, countWords } from "@/components/blogs/metrics";
@@ -468,20 +469,17 @@ function StageBody({
    * is permanent, so there is nothing to wait out. The child components keep their own reason
    * sentences for the operator, and those sentences are now downstream of a decision made here.
    */
+  /**
+   * ONE RELEASE DOOR FOR EVERY BAND, and the second one is deleted rather than moved. `send`
+   * is now granted on the failed bench too, and the send door absorbed the two clauses that
+   * were the promote door's alone: no live run, and an evaluator-scored draft on the wire. So
+   * a below-bar blog is refused here for the same reasons it always was, and a mid-retry
+   * topic whose stale `failed` fold is still on the wire stays refused while its run is live.
+   * HOSTED_READONLY needs no term: SendToClient returns null on that build, and unlike the
+   * promote route the send route genuinely exists there for the done blogs that reach it.
+   */
   const canSend = adminCan(state, "send") && adminGateAllows("send", gateInput);
   const canPublish = adminCan(state, "publish") && adminGateAllows("publish", gateInput);
-  /**
-   * THE FAILED BENCH'S ONE VERB: ship it anyway. The record axis is the promote door
-   * (terminal failed, an evaluator-scored draft on the wire, no live run, no approval, no
-   * open suggestions), and the deployment axis is HOSTED_READONLY exactly as canEdit carries
-   * it, because there is no hosted promote route. A scoreless failure fails the door and
-   * renders nothing, which is honest: the engine refuses it, and its only exit really is
-   * generating again.
-   */
-  const canPromote =
-    !HOSTED_READONLY &&
-    adminCan(state, "promote") &&
-    adminGateAllows("promote", gateInput);
   /**
    * THE `answer` VERB IS TWO DOORS AND BOTH GATE ON THE FORM, NEVER ON THE STATUS. Rounds four and
    * five of one defect were both this flag, and the second one is why nothing here restates a rule
@@ -740,8 +738,8 @@ function StageBody({
       </Button>
 
       {/* Title on top, then ONE action row beneath it. The buttons used to sit to the RIGHT of
-          the title (justify-between); they now stack below it so every act — Post to CMS, Send,
-          Retry, Promote — lives in a single row the operator scans left to right. */}
+          the title (justify-between); they now stack below it so every act, Post to CMS, Send
+          and Retry, lives in a single row the operator scans left to right. */}
       <div>
         <div className="min-w-0">
           <h2 className="text-xl leading-snug font-semibold tracking-tight text-pretty text-foreground">
@@ -866,6 +864,7 @@ function StageBody({
               topicSlug={topicSlug}
               brandName={brandName}
               status={blog.status}
+              score={blog.score ?? null}
               review={reviewState}
               onSent={(sent) => {
                 // The POST answers with the review state it produced, so the chip flips on the
@@ -884,29 +883,21 @@ function StageBody({
               }}
             />
           ) : null}
-          {/* The failed blog's two exits, side by side: retry the topic (a link into the
-              Create tab with the row pre-ticked, because a retry is a RUN and runs start
-              there) or ship it anyway on the operator's authority. The RETRY link mounts on
-              the state alone, because a retry is always available to a failed topic (the
-              roadmap keeps its row selectable); only the SEND half rides canPromote, so a
-              scoreless failure or a mid-run topic keeps its way out without being offered a
-              ship the engine would refuse. */}
+          {/* THE BELOW-BAR BLOG'S EXTRA AFFORDANCE, and Send above is the other one. A retry
+              is a new RUN and runs start in the Create tab, so this is a LINK there with the
+              row pre-ticked rather than a second, thinner copy of run submission on this page.
+              It mounts on the state alone, because a retry is always available to a failed
+              topic (the roadmap keeps its row selectable) including the scoreless failure the
+              send door refuses, which is exactly the record whose only exit this is. */}
           {state === "failed" && !HOSTED_READONLY ? (
-            <PromoteFailedBlog
-              canSend={canPromote}
-              brandSlug={brandSlug}
-              topicSlug={topicSlug}
-              brandName={brandName}
-              score={blog.score ?? null}
-              retryHref={`${brandHref(orgSlug, brandSlug, "/create")}?retry=${encodeURIComponent(topicSlug)}`}
-              onPromoted={(sent) => {
-                // Same shape as onSent above: the POST answers with the review state the
-                // promotion produced, so the page flips to client_review on the spot and the
-                // summary re-read only has to agree with it.
-                setReview({ ...reviewState, ...sent });
-                onChanged();
-              }}
-            />
+            <Button size="sm" variant="outline" asChild>
+              <Link
+                href={`${brandHref(orgSlug, brandSlug, "/create")}?retry=${encodeURIComponent(topicSlug)}`}
+              >
+                <RotateCw data-icon="inline-start" aria-hidden />
+                Retry this topic
+              </Link>
+            </Button>
           ) : null}
         </div>
       </div>
@@ -1569,8 +1560,8 @@ function PublishedChip({
 }
 
 /**
- * The score, and how it got there. GET /blogs reports only the final number, so "96" alone
- * cannot tell an operator whether the draft landed there or climbed from 88 over four
+ * The score, and how it got there. GET /blogs reports only the final number, so "89" alone
+ * cannot tell an operator whether the draft landed there or climbed from 72 over three
  * iterations. The trail is read from the engine's own eval lines; a run with one iteration
  * has nothing to show and shows nothing.
  */
@@ -1589,8 +1580,9 @@ function ScoreTrail({ score, trail }: { score: number | null; trail: RunTrail | 
             .join("")}
         </span>
       ) : null}
-      {/* Coloured by band, the same scoreClass the list uses: >=95 green, 90-94 amber, below 90
-          red, so the final score reads the same here as in the Blogs tab. */}
+      {/* Coloured by band, the same scoreClass the list uses: at or above 90 green because it
+          shipped, 85 to 89 amber, below 85 red, so the final score reads the same here as in
+          the Blogs tab. */}
       <span className={cn("font-medium", scoreClass(score))}>{score}</span>
       <span className="text-muted-foreground">/100</span>
     </span>
@@ -1703,18 +1695,22 @@ function EvalScore({ text }: { text: string }) {
   if (score === null) {
     return null;
   }
-  const shipped = score >= 95;
-  const belowBar = score >= 90 && score < 95;
+  // The COLOUR is read off scoreTone, so this sentence cannot name a band the colour beside it
+  // disagrees with: this file used to recompute `score >= 95` locally, which is the exact
+  // per-surface drift lib/blog-score.ts was extracted to end. One arm per tone, so the words and
+  // the colour move together or not at all.
+  const tone = scoreTone(score);
   return (
     <div className="mb-5 flex items-baseline gap-3 rounded-md border bg-muted/40 px-4 py-3">
-      {/* Same band colours as the Blogs tab: >=95 green, 90-94 amber, below 90 red. */}
+      {/* Same band colours as the Blogs tab: at or above the bar green, the near miss amber,
+          under it red. */}
       <span className={cn("machine text-3xl font-semibold", scoreClass(score))}>{score}</span>
       <span className="text-xs text-muted-foreground">
-        {shipped
-          ? "At or above 95, so the evaluator passed this draft. A blog holding open questions waits for your answers whatever it scored."
-          : belowBar
-            ? "90 to 94, just below the 95 ship bar. Rerun it to try for 95, or promote it if you have read it and are happy."
-            : "Below 90, so this draft went back for a surgical revise."}
+        {tone === "ship"
+          ? `At or above ${SHIP_BAR}, the bar, so the evaluator passed this draft and the loop stopped there. A blog holding open questions waits for your answers whatever it scored.`
+          : tone === "owed"
+            ? `${BELOW_BAR_FLOOR} to ${SHIP_BAR - 1}: under the ${SHIP_BAR} bar, so the run failed just short of it. Retry it for the bar, or send it to the client once you have read it.`
+            : `Below ${BELOW_BAR_FLOOR}, so this draft went back for a surgical revise and the run failed if it never climbed out.`}
       </span>
     </div>
   );

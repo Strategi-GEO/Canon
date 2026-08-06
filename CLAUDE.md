@@ -37,28 +37,56 @@ client-configurable bits are read from `clients/<slug>/gates.json` and
 | Skill default | Override |
 |---|---|
 | geo-content-writer: 2,500-word cap, 3,000-4,000 for pillars | **The client word band in `clients/<slug>/gates.json`.** House default is 1200-2000 target, hard FAIL above 2500, which `gates.json` may override. |
-| geo-content-eval: Ship band 85-100 | **The house binary 95.** 95-100 SHIP, below 95 REJECT. No middle band. Any hard-gate failure is a REJECT regardless of score. An 88 is a REJECT, not a ship. |
+| geo-content-eval: Ship band 85-100 | **The house binary 90.** 90-100 SHIP, below 90 REJECT. No middle band. Any hard-gate failure is a REJECT regardless of score. An 89 is a REJECT, not a ship. |
 | geo-content-writer Step 3: run geo-research before drafting | **The dossier is frozen.** If one exists for this topic, use it. Never re-research on revision. |
 
 The fetch-before-cite rule is unchanged by any override: fetched full text, or it is not a
 source.
 
+**THERE IS ONE NUMBER, IT IS 90, AND THE BAND IS BINARY.** The first score at or above 90 ENDS THE
+LOOP AT ONCE and the blog ships: it is what first-score-is-final attaches to, what the lead's
+in-loop branch tests, what Agent W aims at, what the rubric's Ship band names, and what terminal
+resolution reads. Below 90 the blog does not ship. There is no middle band, no second threshold,
+and nothing in the engine compares a score against any other number. 90 is exactly attainable, 81
+of the 90 available weighted points, which is what makes it a bar a blog can actually clear:
+`rubric.md` normalises as round(weighted_total / 90 * 100) over 14 integer-scored dimensions.
+
+**A SINGLE BAR OF 95 STOPPED being a score the rubric could produce.** It was attainable once, and
+that is the point: `tests/concurrency-proof.md` records six topics ending done at 95, 95, 96, 97,
+98 and 98, under the rubric as it stood then, when the weights totalled 25 and the maximum was 75.
+C4 (voice register) and D2 (topic discipline) raised the weight total to 30 and the maximum to 90,
+and THE PERCENTAGE WAS HELD CONSTANT, which is the regression: clearing 95% of 30 weight units
+scored in integers meant losing at most 4 weighted points across 14 dimensions, close to exemplary
+on everything, and the normalisation skipped the value anyway, since 85 of 90 rounds to 94 and 86
+of 90 rounds to 96. A real 12-blog run afterwards, which exhausted the account's usage limit in two
+hours, produced trajectories of 72 to 89 to 88, 84 to 84 to 87, 79 to 80, 82, and 73: ZERO of
+twelve ever reached 95, so every blog was GUARANTEED to burn all four iterations and end failed,
+which is where most of the quota went. The operator was already hand-shipping the good ones through
+`blog_edit.promote_to_done`, the mechanism that exists precisely because the loop could never pass
+anything. Under a bar of 90 the best of them, 89, is one point short and does not ship on its own.
+
 ## Execution model: a three-agent chain WITHIN one blog's session
 The old prompt-level orchestrator that dispatched subagents and ran a batch queue is WRONG
 and is deleted. Dispatch, concurrency, and retry are owned by the BACKEND (`server/runner.py`),
 not by any prompt. The runner opens ONE SDK session per blog, never one per batch. A batch is
-a barrier: five blogs would wait for the slowest, and because the revise loop runs 0 to 4
+a barrier: every blog in it would wait for the slowest, and because the revise loop runs 0 to 4
 iterations the per-blog variance is huge. One session per blog also means one dead blog exits
-its own process without touching the other four. There is NO queue logic in this file and NO
+its own process without touching the rest. There is NO queue logic in this file and NO
 "run N topics in parallel" line: concurrency lives in `runner.py` and nowhere else.
 
-**THE QUEUE IS ONE QUEUE OF FIVE BLOGS, AND EVERY DOOR FEEDS IT.** `runner.TOPIC_SEMAPHORE`
-admits five blog sessions repo-wide, and each session takes exactly one slot however it was
-started: a Create-tab batch, a retry of one row, a repurpose, or the answer-driven revise a
-client's answers are owed. A sixth blog waits and starts the instant a slot frees, in arrival
-order, whether the blog that freed it belonged to this brand, another brand, or another door.
+**THE QUEUE IS ONE QUEUE, AND EVERY DOOR FEEDS IT.** `runner.TOPIC_SEMAPHORE`
+admits `GEO_CONCURRENCY` blog sessions repo-wide, TWO by default, and each session takes exactly
+one slot however it was started: a Create-tab batch, a retry of one row, a repurpose, or the
+answer-driven revise a client's answers are owed. A blog over the cap waits and starts the
+instant a slot frees, in arrival order, whether the blog that freed it belonged to this brand,
+another brand, or another door.
 Nothing anywhere may open a blog session outside that gate, and nothing may refuse a blog
-because the engine is busy: busy means QUEUED. The only per-client serialisation left is
+because the engine is busy: busy means QUEUED. **The cap is a number, the invariant is not:** one
+slot per blog and QUEUED over refused hold at every width. Two is the default because the width
+decides what the operator OWNS when the usage limit lands, not what a blog costs in tokens. At
+five wide a real run produced twelve half-finished blogs and zero shipped; at two wide the same
+quota buys a handful of FINISHED blogs and leaves the rest untouched, and an untouched topic
+retries clean where a half-done one does not. The only per-client serialisation left is
 `runner.facts_lock(<slug>)`, held across the fact base build alone, because
 `canonical-facts.md` is client scoped and two runs for one brand must not build it twice.
 `tests/queue_check.py` pins all of this.
@@ -72,8 +100,9 @@ number**, because a fresh Agent W on iteration 3 has no memory of iterations 1 a
   `clients/<slug>/Resources/`. Runs geo-research. Output:
   `outputs/<slug>/<topic-slug>/dossier.md`. Its fetch logs and rejected sources never
   leave its context.
-- **Agent W (writer).** Input: the CSV row + the frozen dossier + `canonical-facts.md` + its
-  iteration number. Runs geo-content-writer, then self-runs the gate command below until it
+- **Agent W (writer).** Input: the CSV row + the frozen dossier + `canonical-facts.md` +
+  `geo-content-eval/references/rubric.md` + its iteration number. Runs geo-content-writer, then
+  self-runs the gate command below until it
   exits 0 (WARN passes, only FAIL blocks). Then runs the link pass. Returns only when the
   draft is gate-clean AND link-clean. Output: `.../blog.md`. Never sees Agent R's reasoning.
 - **Link pass (inside Agent W, BEFORE the eval).** Firecrawl-fetch every link not already in
@@ -94,19 +123,24 @@ number**, because a fresh Agent W on iteration 3 has no memory of iterations 1 a
   as lost factual density and scores the draft DOWN for telling the truth. An answer is still
   NOT a source: it can never become a citation, and a claim needing a citation still needs a
   fetched source. Emits `SCORE: NN` on its
-  own line plus the fix list with each item's Area, using HOUSE bands: 95-100 SHIP, below 95
+  own line plus the fix list with each item's Area, using HOUSE bands: 90-100 SHIP, below 90
   REJECT, any hard-gate failure a REJECT regardless of score. Output: `.../eval.md`.
-- **Revise (surgical, ELECTIVE and score-driven).** If SCORE < 95, spawn a FRESH Agent W with
+- **Revise (surgical, ELECTIVE and score-driven).** If SCORE < 90, spawn a FRESH Agent W with
   ONLY: the frozen dossier, the current `blog.md`, the fix list, and its iteration number. It
   applies **only the listed fixes** to the existing draft. It does not rewrite the article. Then
   re-run gates, the link pass on changed links only, and a FRESH Agent E. FOUR conditions stop
-  this loop: the 4-iteration cap, two consecutive iterations showing no gain, **the above-90
+  this loop: the 4-iteration cap, two consecutive iterations showing no gain, **the above-85
   monotonic rule**, and **a Sourcing QUESTION on the form, which ends the loop at the iteration it
-  is filed.** **ABOVE 90 THE LOOP ONLY CLIMBS:** once any iteration scores above 90, an iteration
+  is filed.** **ABOVE 85 THE LOOP ONLY CLIMBS:** once any iteration scores above 85, an iteration
   that does not STRICTLY beat the best so far ends the loop and the best draft is the result. A
-  draft above 90 is close, and another revise is as likely to break it as to lift it, so a
-  non-gain there is a reason to stop and keep it, not to spend another iteration; below 90 the
-  ordinary rules run unchanged, and 95 still ships at once. The Sourcing-question condition ends
+  draft above 85 is close, and another revise is as likely to break it as to lift it, so a
+  non-gain there is a reason to stop and keep it, not to spend another iteration; below 85 the
+  ordinary rules run unchanged, and 90 still ships at once. This threshold ends the LOOP and never
+  decides the VERDICT, so it is not a second bar: a draft stopped here at 87 is still below 90 and
+  still resolves failed. The monotonic threshold was 90 and live scores
+  sat at 84 to 89, so the guard never fired once: measured gains after the first revise were +1,
+  0, -1 and +3, and each of those iterations bought a research top-up, a revise, a link pass and
+  a fresh hostile audit. The Sourcing-question condition ends
   the loop BEFORE the revise is dispatched, because
   Sourcing is the one area no rewrite can close: this contract already says the writer has no
   authority to invent a citation or URL, so iterating past a Sourcing question spends research
@@ -144,7 +178,7 @@ lower, so a retry cannot make a blog worse and only the lead can make it better.
 
 The session lead branches on the numeric SCORE and never on the verdict word. **The lead's
 IN-LOOP branch reads the SCORE and exactly ONE property of the form: whether it carries a
-Sourcing question.** SCORE >= 95 ENDS THE LOOP and nothing about that changes. At SCORE < 95,
+Sourcing question.** SCORE >= 90 ENDS THE LOOP and nothing about that changes. At SCORE < 90,
 BEFORE dispatching a revise, the lead asks the form whether a Sourcing question is live:
 
 ```
@@ -161,12 +195,12 @@ form, so a failure can never be read as an absence.
 Exit 0 means a live Sourcing question exists and **THE LOOP ENDS NOW**: write the terminal
 `needs_review` line and stop. Do not revise, do not dispatch another evaluator, and do not
 delete the form, because that form is the summons the operator answers. Exit 1 means no live
-Sourcing question, so SCORE < 95 triggers a revise iteration while iterations remain, exactly as
+Sourcing question, so SCORE < 90 triggers a revise iteration while iterations remain, exactly as
 before. The query never writes: a read that rewrote the form would destroy what it reports on.
 
 **Questions of area Structure, Draft or Mechanics do NOT end the loop**, and the lead still
 deletes `questions.json` before the next evaluator, so those are superseded by the next
-iteration's form exactly as they always were. Reading them in-loop would hold a 93 that still had
+iteration's form exactly as they always were. Reading them in-loop would hold an 84 that still had
 three iterations of budget left, and a rewrite is precisely what closes them. Sourcing is
 different because no rewrite closes it: this contract already says the writer has no authority to
 invent a citation or URL, and a Sourcing QUESTION names a fact only a person has, so another
@@ -183,31 +217,45 @@ resolution, where the final form still holds the blog in Python, so it cannot sh
 should have held. OVER-APPLYING it costs a good blog: ending the loop on a form that is stale or
 another topic's writes `needs_review` with iterations unspent, and terminal resolution then reads
 that same form as non-holding and corrects the topic to `failed` by its score, so a draft that had
-budget left to reach 95 dies instead. The required `--iter` above is the whole of what closes that
+budget left to reach 90 dies instead. The required `--iter` above is the whole of what closes that
 second direction, which is why it is required rather than advisory: an optional guard that every
 caller omitted is how this rule shipped broken the first time.
 
 **THE QUESTION STATE IS CHECKED FIRST AT TERMINAL RESOLUTION**, after the loop ends, which is
-where the three-case table applies and where a >= 95 ships only if no current questions are on
-disk. With current questions the blog is HELD for the operator's answer at any score (see Asking
+where the three-case table applies and where a score >= 90 ships only
+if no current questions are on disk. With current questions the blog is HELD for the operator's answer at any score (see Asking
 the operator). The score runs the loop and the full four-valued question state decides the
 terminal status; the in-loop branch borrows exactly ONE bit of the form, the Sourcing bit, and
 borrows nothing else.
 
-**THE FIRST SCORE >= 95 IS FINAL AND TERMINAL WHEN NO CURRENT QUESTIONS ARE ON DISK.** Record
+**THE FIRST SCORE >= 90 IS FINAL AND TERMINAL WHEN NO CURRENT QUESTIONS ARE ON DISK.** Record
 it in `eval.md` and STOP. The single answer-driven revise is the ONE licensed re-eval, and it
 is licensed because the operator's answer changed the fact base the score was computed
 against. Every other confirmatory re-eval stays FORBIDDEN, including "the draft changed
 since", "eval.md and blog.md are inconsistent", "the run was stopped and restarted, so let me
 confirm", or "let me confirm". A confirmatory re-eval adds no rigor: it re-rolls a stateless
 auditor whose score varies by several points on an identical draft, and it can strand a
-shipping blog below the bar. Because gates and the link pass both run BEFORE the evaluator,
+blog below a bar it had already cleared. Because gates and the link pass both run BEFORE the evaluator,
 the scored artifact IS the shipped artifact, and the ONLY thing that touches the draft after
 the eval is an operator answer arriving.
 
 Route fixes by the Area the eval assigns: **Sourcing** goes back to Agent R as a bounded
 top-up for that one claim; **Structure, Draft, Mechanics** go to Agent W. "Add a source"
 NEVER routes to the writer alone; the writer has no authority to invent a citation or URL.
+
+**ONE bounded Agent R top-up PER SESSION, and it is one DISPATCH and not one item.** Research is
+the most expensive agent in the chain, so a second dispatch re-buys the expensive half of the
+blog: one topic dispatched Agent R FOUR times and still did not ship. The top-up covers every
+Sourcing fix-list item live when it is sent, which is exactly what date-night's did in sourcing
+three at once. It is counted PER SESSION for the same reason the four iterations are: the output
+dir is a RESUME POINT, so a retry reading the previous session's top-up off the trail would
+arrive with its budget already spent. Once it is spent, a further Sourcing fix-list item is
+closed by CUTTING the unsupported claim. **CUTTING IS NOT PATCHING**: what this contract forbids
+is INVENTING a citation or a URL, and removing a claim invents nothing, so the cut is licensed
+here rather than borrowed from a rule that says something else. Where the claim is load-bearing
+and only a person holds the fact, Agent E's Sourcing QUESTION ends the loop as it already does.
+Asking stays Agent E's act alone: the lead never files a question and has no helper to file one
+with. NEVER a second research dispatch.
 
 **A Sourcing FIX-LIST ITEM and a Sourcing QUESTION carry the same area word and opposite
 implications for the loop, and this is the thing a reader gets wrong.** A Sourcing fix-list item
@@ -216,7 +264,10 @@ unchanged and it works, because date-night's iteration 2 top-up sourced three So
 items successfully. A Sourcing question ENDS THE LOOP at the iteration it is filed. The
 difference is what each artifact asserts: a fix-list item says "a machine can find this source",
 so another iteration is exactly the right spend, while a question says "only a person holds this
-fact", so another iteration buys nothing. Read the artifact, never the word alone.
+fact", so another iteration buys nothing. Read the artifact, never the word alone. The cap above
+touches only the fix-list side, and date-night's was that blog's first top-up: once the session's
+one dispatch is spent a LATER Sourcing fix-list item is cut instead of researched, and what a
+question does is unchanged.
 
 ## Status protocol
 `outputs/<slug>/<topic-slug>/status.jsonl` is the ONLY progress feed. Each agent
@@ -272,11 +323,16 @@ No other fetch or search tool. If neither can confirm something, it is not a fac
 
 ## Reference files each agent must read
 - Agent R: `geo-research/references/source-vetting.md`, every run.
-- Agent W: `geo-content-writer/references/content-structure.md`,
-  `references/geo-mechanics.md`, and the industry reference named by
-  `clients/<slug>/client.md` (for example `references/industries/<industry>.md`), every run.
-  Skipping the industry reference produces generic content. Then
-  `references/quality-checklist.md` before returning.
+- Agent W: `geo-content-eval/references/rubric.md` FIRST, every run, BEFORE drafting, and again
+  as a SELF-CHECK of the finished draft against its buckets and its scoring math before
+  returning. The writer had never read the standard it is scored against and landed 15 points
+  under the ship bar. This costs Agent E no isolation: isolation protects the EVALUATOR from the
+  writer's reasoning and the dossier, never the writer from the public standard. Then
+  `geo-content-writer/references/content-structure.md`, `references/geo-mechanics.md`, and the
+  industry reference named by `clients/<slug>/client.md` (for example
+  `references/industries/<industry>.md`), every run. Skipping the industry reference produces
+  generic content. Then `references/quality-checklist.md`, which is now only the short delta the
+  rubric does not cover and is never the primary standard.
 - Agent E: `geo-content-eval/references/rubric.md`, every run.
 
 ## The pipeline (per topic)
@@ -528,7 +584,7 @@ python3 .claude/questions.py --out <output_dir> --slug <slug> --iter 2 --score 9
 The score in that example is 96 deliberately, because a question is asked and held at ANY score
 and a passing score is NEVER a reason to withhold one.
 
-**An evaluator asking a Sourcing question is ENDING THE LOOP, not annotating it.** Below 95 the
+**An evaluator asking a Sourcing question is ENDING THE LOOP, not annotating it.** Below 90 the
 lead checks the form for a live Sourcing question before every revise and stops the loop where it
 finds one, spending no further iteration (see the in-loop branch). That is correct, because
 Sourcing is the one area no rewrite can close and the writer has no authority to invent a
@@ -564,14 +620,14 @@ that did not finish.
 
 The QUESTIONS axis is checked FIRST and is the four-valued engine state
 (`current` | `none` | `stale` | `unreadable`), never a binary, plus `answered`. The score is
-DEMOTED: it decides the nothing-to-answer branch, and its ABSENCE is the one thing that outranks
-the questions axis, for the reason stated under the table.
+DEMOTED: it decides the nothing-to-answer branch, and its ABSENCE is the one thing
+that outranks the questions axis, for the reason stated under the table.
 
 | Questions | Score | Status | What it means |
 |---|---|---|---|
 | `current` | any score, 96 included, and none at all | `needs_review` | HELD. A human owes an answer, and there is no dismiss and no proceed. |
-| `none` / `stale` / `unreadable` / `answered` | >= 95 | `done` | It ships. |
-| `none` / `stale` / `unreadable` / `answered` | < 95, or none at all | `failed` | The loop exhausted itself and cannot say what it needs, so there is no human task. |
+| `none` / `stale` / `unreadable` / `answered` | >= 90 | `done` | It ships. |
+| `none` / `stale` / `unreadable` / `answered` | < 90, or none at all | `failed` | The loop exhausted itself and cannot say what it needs, so there is no human task. |
 
 `stale` and `unreadable` group with `none` because THE APP ALREADY REFUSES THEM: a form nobody can
 submit summons nobody, so holding a blog on one is holding it for a person who will never be
@@ -619,8 +675,8 @@ and not style advice.
   ten seconds. "human confirms that citation" is not answerable at all, and it is what stranded a
   real blog. If the evaluator cannot name a source and a claim, there is nothing to confirm and
   the blog is not held.
-- **When there is NOTHING to ask, the score decides and no human is involved.** At 95 or above the
-  blog is done and it ships. Below 95 it is `failed`: the loop exhausted itself and cannot say
+- **When there is NOTHING to ask, the score decides and no human is involved.** At 90 or above the
+  blog is done and it ships. Below 90 it is `failed`: the loop exhausted itself and cannot say
   what it needs, which is a machine's answer, not a human's task.
 - **A gates FAIL is `failed`, never `needs_review`.** There is no question in it. It is a machine
   failure with a machine's fix.
@@ -729,7 +785,7 @@ What a stop does, per topic:
   A blog that shipped before the stop is already in it and stays in it.
 - **Queued topics NEVER START.** The whole brand halts. Generate again to resume.
 
-A stop after SCORE >= 95 does not un-ship the blog, and the reason is the TERMINAL LINE, not the
+A stop after SCORE >= 90 does not un-ship the blog, and the reason is the TERMINAL LINE, not the
 score. The backend writes `stopped` ONLY where no terminal line exists yet, so a topic whose lead
 already wrote `done` keeps `done`, its score, and its ledger entry. A blog HELD at 96 has no
 terminal `done` line to protect, so it is not shipped by a stop either: it keeps whatever line it
@@ -826,28 +882,43 @@ exactly as it never decides `needs_review`. `server/runner.py` writes it through
 `.claude/status.py`, the same code path as every other line, where nothing can argue with it.
 
 ## Ship criteria
-DONE when the FIRST evaluator score is >= 95 on a draft that is already gate-clean and
+DONE when the FIRST evaluator score is >= 90 on a draft that is already gate-clean and
 link-clean AND has no current questions on disk. That score is final. Write the terminal `done`
-status and stop. 95 ships. 96 ships. No score at or above 95 is borderline, and a better one is
+status and stop. 90 ships. 96 ships. No score at or above 90 is borderline, and a better one is
 never worth seeking.
 
-**Operator promotion is the ONE post-run re-verdict, and it is the operator's, never the
-loop's.** After a loop ends terminal `failed` with an evaluator-scored committed draft, the
-operator may ship it anyway from the dashboard (`POST .../promote`, `blog_edit.promote_to_done`).
-The engine appends a new terminal `done` line whose note names the operator and the score,
-commits it, appends the ledger row, and sends the blog to the client in the same act. The
-evaluator's number is never rewritten: the trail reads failed at 92, then promoted by a person,
-which is the same appended-correction idiom `_enforce_terminal_status` already uses. This changes
-NO rule the loop runs under. No agent may write it or ask for it, the resolver's table is
+**A draft that ends between 85 and 89 is BELOW BAR, and below bar is not a ship.** It resolves
+terminal `failed` exactly as any other sub-90 run does, and it reaches a client only when the
+operator presses send. That is a statement about WHO decides and not a second threshold: the
+engine compares against 90 alone, and nothing in the 85 to 89 range changes what the loop, the
+resolver, or the ledger does. The operator reads anything that misses 90 before a client sees it,
+which is the whole point of the choice. The dashboard labels that range "Below bar" so a near miss
+reads differently from an outright failure, and that label is presentation over a terminal status
+which is `failed` in both cases.
+
+**Promotion is the MECHANISM THE SEND DOOR USES, and it stopped being a choice the operator
+makes.** There is ONE release door, SEND TO CLIENT, offered at every score on any blog carrying an
+evaluator-scored committed draft, and nothing auto-releases: a 96 waits for that press exactly as
+an 87 does. Where the fold reads terminal `failed`, the send route promotes first and then sends,
+which is what `blog_edit.promote_if_failed` already does in front of `gate.build_for_publish` on
+the CMS door. There were TWO buttons ending in the same `blog_edit.mark_sent`,
+differing only in the score the dashboard offered each one for, so the operator had to know the
+bar to pick a door; the CMS door had already folded the promotion in and asked nothing, which left
+send as the inconsistent one. The engine still appends a new terminal `done` line whose note names
+the operator and the score, commits it, appends the ledger row, and releases the blog in the same
+act. The evaluator's number is never rewritten: the trail reads failed at 87, then sent by a
+person, which is the same appended-correction idiom `_enforce_terminal_status` already uses. This
+changes NO rule the loop runs under. No agent may write it or ask for it, the resolver's table is
 untouched, first-score-is-final is untouched (promotion re-rolls no evaluator), and every
-done-gate keeps demanding the literal `done`: a promoted blog satisfies them because the fold
-genuinely reads done afterward, never because a gate was widened. Scope is exact and the engine
-refuses the rest: terminal `failed` only, never `needs_review` (a question holds at ANY score and
-promotion is not a dismiss), never `stopped` (no verdict exists to promote), never mid-run, and
-never without a scored committed draft, because gates and the link pass run before the eval, so
-the scored draft is gate-clean and link-clean and the 95 bar is the ONLY thing being waived. A
-promoted blog enters the ledger exactly as a 95+ ship does, so its roadmap row locks and a later
-"failed row in the ledger" is a promotion, not a defect.
+done-gate keeps demanding the literal `done`: a sent below-bar blog satisfies them because the
+fold genuinely reads done by the time they run, never because a gate was widened. Scope is exact
+and the engine refuses the rest: terminal `failed` only, never `needs_review` (a question holds at
+ANY score and sending is not a dismiss), never `stopped` (no verdict exists to promote), never
+mid-run, and never without a scored committed draft, because gates and the link pass run before
+the eval, so the scored draft is gate-clean and link-clean and the 90 bar is the ONLY thing being
+waived. It enters the ledger exactly as a 90+ ship does, so its roadmap row locks and a later
+"failed row in the ledger" is an operator's send, not a defect. Below bar the blog also offers
+RETRY, which is an ADDITIONAL affordance and never a replacement for send.
 
 **A score is not a licence to ship past an open question.** Where the evaluator asked something
 current, the blog is HELD at ANY score, including 96, until the operator answers. Answering is a
@@ -872,7 +943,7 @@ checks it. The four old causes resolve like this:
 - **`gates.py` still FAILing** is `failed`, never `needs_review`. It is a machine failure with no
   human question in it, so summoning a human for it summons them to nothing.
 - **The 4-iteration cap** is `needs_review` only if the evaluator asked something. A loop that
-  stalled below 95 and has nothing to ask is `failed`.
+  stalled below 90 and has nothing to ask is `failed`.
 - **An operator stop** is `stopped`, never `failed`, and never `needs_review` EXCEPT where the
   form the evaluator wrote is on disk and reads `current` at the moment the stop lands. A form
   that is ABSENT, STALE, UNREADABLE or ALREADY ANSWERED is `stopped` like every other stop, and
@@ -890,7 +961,8 @@ passing blog WITH a current question is `needs_review`, and that is not a contra
 verdict is ship, the workflow state is held.
 
 ## Reporting
-Per blog, one line: slug, SCORE, iterations, status, links corrected. A stopped blog reports
+Per blog, one line: slug, SCORE, iterations, status, links corrected. A score of 85 to 89 beside
+status `failed` is a below-bar blog waiting on the operator's send, not a defect. A stopped blog reports
 the last score actually seen or none, the iterations it completed, and status `stopped`; its
 score is never inferred from a loop that did not finish. The lead records only
 these fields plus what the terminal status line carries. It MUST NOT read dossiers, drafts,
