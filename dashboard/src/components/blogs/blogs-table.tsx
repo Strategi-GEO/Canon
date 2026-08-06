@@ -223,12 +223,17 @@ function Row<T extends BlogTableRow>({
       // control: a screen reader gets a real named link, the pointer gets the whole row.
       onClick={() => onOpen(blog)}
       data-active={active || undefined}
-      className={cn(
-        "cursor-pointer",
-        // "You are here" for the keyboard. A left rule rather than a fill, because the fill is
-        // already spoken for by hover and the two would fight.
-        active && "bg-muted/60 shadow-[inset_2px_0_0_0_var(--primary)]",
-      )}
+      // NO STANDING HIGHLIGHT. `active` marks the row holding the table's single tab stop, and
+      // activeSlug FALLS BACK TO THE FIRST VISIBLE ROW, so it is set the moment the list renders,
+      // whether or not anyone has touched the keyboard. Painting it meant row one arrived tinted
+      // and left-ruled on every load, reading as "selected" or "in progress" to a mouse user who
+      // had selected nothing.
+      //
+      // Nothing is lost for the keyboard, which is the only reason this styling existed: `move`
+      // focuses the row's link, and that link carries its own focus-visible ring, so a keyboard
+      // user still sees exactly where they are and sees it ONLY while actually there. The roving
+      // tabindex below is untouched, so j and k still work.
+      className="cursor-pointer"
     >
       {/* No align-top here or on the delete cell at the end of the row. TableCell already centres,
           and those two overrides were the only cells that opted out, so on a title that wrapped to
