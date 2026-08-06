@@ -257,11 +257,14 @@ function Row<T extends BlogTableRow>({
           }}
           className="block min-h-8 w-full rounded-sm text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         >
+          {/* TITLE ONLY. The slug used to print under every title and it cost two lines a row for
+              a value that is the title lowercased with hyphens, so it read as the same sentence
+              twice and made a list of ten blogs a page of thirty lines. It is still the row's
+              identity everywhere it does work: TRIGGER_ATTR above carries it for the keyboard,
+              href routes on it, and the filter still matches it, so searching by slug finds the
+              row that no longer displays one. The stage page shows it in full. */}
           <span className="block text-sm font-medium text-pretty text-foreground">
             {blog.topic}
-          </span>
-          <span className="machine mt-0.5 block text-xs wrap-anywhere text-muted-foreground">
-            {blog.topic_slug}
           </span>
           {/* Inside the link, so the chip is part of what a screen reader reads out when it
               lands on the row rather than a colour a sighted operator alone gets to see. */}
