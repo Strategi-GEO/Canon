@@ -230,7 +230,11 @@ function Row<T extends BlogTableRow>({
         active && "bg-muted/60 shadow-[inset_2px_0_0_0_var(--primary)]",
       )}
     >
-      <TableCell className="py-2.5 align-top">
+      {/* No align-top here or on the delete cell at the end of the row. TableCell already centres,
+          and those two overrides were the only cells that opted out, so on a title that wrapped to
+          two lines the row number and the bin sat at the top while every other column sat in the
+          middle. The title cell sets the row height; nothing else should track its first line. */}
+      <TableCell className="py-2.5">
         <BlogLabel label={label} uploaded={!!blog.uploaded} />
       </TableCell>
       {/* TableCell is nowrap by default, which suits machine values but truncates a real H1.
@@ -310,7 +314,7 @@ function Row<T extends BlogTableRow>({
         </TableCell>
       ) : null}
       {brandSlug !== undefined && onDeleted !== undefined ? (
-        <TableCell className="py-2.5 text-right align-top">
+        <TableCell className="py-2.5 text-right">
           <div className="flex items-center justify-end gap-0.5">
             <DeleteBlogDialog
               brandSlug={brandSlug}
