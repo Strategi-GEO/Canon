@@ -41,20 +41,26 @@ import { adminTag, ADMIN_BELOW_BAR_TAG, type StateTag, type StateTone } from "./
 export const SHIP_BAR = 90;
 
 /**
- * PRESENTATIONAL, and it is a LABEL boundary rather than a threshold: a blog scoring 85 to 89 is
+ * PRESENTATIONAL, and it is a LABEL boundary rather than a threshold: a blog scoring 80 to 89 is
  * terminal FAILED and reaches a client only when the operator presses Send, so nothing here
  * softens the binary band above and no surface may word this range as a ship.
  *
  * IT EXISTS BECAUSE A NEAR MISS AND AN OUTRIGHT FAILURE WANT DIFFERENT WORDS. Both are the same
  * `failed` verdict, and an operator reading a list of them is asking which are worth opening: an
- * 89 is one point short and a 73 is not close, and one red chip for both hides that.
+ * 89 is one point short and a 61 is not close, and one red chip for both hides that.
+ *
+ * THE FLOOR IS 80 BECAUSE THAT IS THE RANGE THE OPERATOR ACTUALLY READS. It was 85, which put the
+ * commonest real outcomes in red beside genuine collapses: live trajectories cluster at 80 to 84
+ * (80-84-84, 81-81-83, 79-79-86, 74-82-81), all of them drafts a person may well decide to send.
+ * Widening the amber band changes no verdict and no engine behaviour, only which chip a failed
+ * row wears.
  *
  * NOTHING IN THE ENGINE COMPARES A SCORE AGAINST THIS NUMBER. The engine's only threshold is
- * SHIP_BAR. A monotonic loop-stop rule once shared this value, which made the coincidence look
- * meaningful; it was deleted for ending the loop on four blogs whose next iteration reached 90, so
- * 85 now lives here alone, as a word on a chip and nothing else.
+ * SHIP_BAR. A monotonic loop-stop rule once shared the old value of 85, which made that
+ * coincidence look meaningful; it was deleted for ending the loop on four blogs whose next
+ * iteration reached 90, and this constant is now free to move on presentational grounds alone.
  */
-export const BELOW_BAR_FLOOR = 85;
+export const BELOW_BAR_FLOOR = 80;
 
 /**
  * The band a bare score falls in: at or above SHIP_BAR it shipped (green), BELOW_BAR_FLOOR to one

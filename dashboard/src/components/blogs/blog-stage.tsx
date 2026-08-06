@@ -1581,7 +1581,7 @@ function ScoreTrail({ score, trail }: { score: number | null; trail: RunTrail | 
         </span>
       ) : null}
       {/* Coloured by band, the same scoreClass the list uses: at or above 90 green because it
-          shipped, 85 to 89 amber, below 85 red, so the final score reads the same here as in
+          shipped, BELOW_BAR_FLOOR to 89 amber, below it red, so the final score reads the same here as in
           the Blogs tab. */}
       <span className={cn("font-medium", scoreClass(score))}>{score}</span>
       <span className="text-muted-foreground">/100</span>
@@ -1710,7 +1710,7 @@ function EvalScore({ text }: { text: string }) {
           ? `At or above ${SHIP_BAR}, the bar, so the evaluator passed this draft and the loop stopped there. A blog holding open questions waits for your answers whatever it scored.`
           : tone === "owed"
             ? `${BELOW_BAR_FLOOR} to ${SHIP_BAR - 1}: under the ${SHIP_BAR} bar, so the run failed just short of it. Retry it for the bar, or send it to the client once you have read it.`
-            : `Below ${BELOW_BAR_FLOOR}, so this draft went back for a surgical revise and the run failed if it never climbed out.`}
+            : `Under ${BELOW_BAR_FLOOR}, well short of the ${SHIP_BAR} bar. The loop revised it up to four times and never got close, so this one is worth a retry rather than a read.`}
       </span>
     </div>
   );

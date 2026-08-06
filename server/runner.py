@@ -1389,7 +1389,20 @@ def _agent_definitions():
             "you audit the draft exactly as it stands and report through eval.md only.\n"
             "Append your own status lines via python3 .claude/status.py: stage eval, event start "
             "when you begin and end when eval.md is written, status running, the given iteration "
-            "number, and --score NN on the end line."
+            "number, and --score NN on the end line.\n"
+            "ORDER MATTERS AND IT IS NOT A STYLE POINT: eval.md MUST ALREADY BE WRITTEN, carrying "
+            "THIS iteration's SCORE, BEFORE you append the end line. The end line is what snapshots "
+            "the draft as a new high, and it snapshots whatever eval.md holds at that instant. Score "
+            "first and the snapshot pairs your draft with the PREVIOUS iteration's audit: live on "
+            "2026-08-06, an iteration-4 draft scoring 87 was snapshotted beside iteration 3's eval "
+            "reading SCORE: 76 over a failure the new draft had already fixed, and 76 is what the "
+            "operator saw. The engine now REFUSES a mismatched eval rather than storing it, so "
+            "scoring first no longer corrupts the record, it just throws your eval away.\n"
+            "SCORE ONCE. You get one end line per iteration and it is final. Do not re-read the "
+            "draft, re-grade it, or append a CORRECTED score that supersedes your own: a second "
+            "opinion from a stateless auditor is a re-roll, not a correction, and one such line "
+            "downgraded a valid 87 to 76 on the run above. If you are unsure, resolve it BEFORE "
+            "you write eval.md."
         ),
         tools=["Read", "Glob", "Grep", "Write", "Skill", "TodoWrite", "Bash(python3:*)"],
     )

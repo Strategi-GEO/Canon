@@ -69,6 +69,33 @@ def _score(out, topic, iteration, score, status="running"):
     ])
 
 
+def test_a_stale_eval_is_never_snapshotted_beside_a_new_draft():
+    """The snapshot must pair a draft with ITS OWN audit, never with the previous iteration's.
+
+    Live defect (width-not-length, 2026-08-06): the evaluator appended its iteration-4 end line
+    BEFORE writing eval.md, so the snapshot took the new blog beside iteration 3's eval, which
+    read SCORE: 76 and failed a G5 check the new draft had already fixed. _install_best_draft then
+    restored that pair, and the stage page showed 76 under a trail whose own line said 87. The
+    old test only ever wrote blog.md and eval.md together, so it could not see this.
+    """
+    print("\ntest_a_stale_eval_is_never_snapshotted_beside_a_new_draft")
+    root, client, topic, out = _new_topic()
+    _write_draft(out, 76)
+    _score(out, topic, 3, 76)
+    # Iteration 4: the writer replaces blog.md, the evaluator scores BEFORE writing its eval.
+    (out / "blog.md").write_text("draft-87", encoding="utf-8")
+    _score(out, topic, 4, 87)
+    check("the winning draft is still snapshotted",
+          _read(out / "blog.best.md") == "draft-87", _read(out / "blog.best.md"))
+    check("the stale 76 eval is REFUSED rather than paired with it",
+          not (out / "eval.best.md").is_file(), _read(out / "eval.best.md"))
+    # And the honest ordering still snapshots the eval.
+    _write_draft(out, 92)
+    _score(out, topic, 4, 92)
+    check("an eval that DOES describe the score is kept",
+          "SCORE: 92" in _read(out / "eval.best.md"), _read(out / "eval.best.md"))
+
+
 def test_peak_is_snapshotted_and_installed_over_a_lower_last_draft():
     print("\ntest_peak_is_snapshotted_and_installed_over_a_lower_last_draft")
     root, client, topic, out = _new_topic()
@@ -334,7 +361,8 @@ def test_score_helpers():
 
 def main():
     print("best_draft_check: static checks only. No CLI spawned, no model called.")
-    for test in (test_peak_is_snapshotted_and_installed_over_a_lower_last_draft,
+    for test in (test_a_stale_eval_is_never_snapshotted_beside_a_new_draft,
+                 test_peak_is_snapshotted_and_installed_over_a_lower_last_draft,
                  test_no_swap_when_the_last_draft_is_already_the_best,
                  test_a_current_question_vetoes_the_swap,
                  test_capture_is_scoped_to_the_current_run,

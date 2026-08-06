@@ -77,6 +77,23 @@ def append_status(out_dir, slug, stage, event, iter, score=None, status="running
     return line
 
 
+def _eval_md_score(path):
+    """The score the eval FILE itself declares, or None when absent or unreadable.
+
+    Reads the contract's own `SCORE: NN on its own line near the top`, which is the only place
+    the eval states which draft it graded. Used to refuse a snapshot that would pair a draft with
+    another iteration's audit.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for raw in handle:
+                if raw.startswith("SCORE:"):
+                    return int(raw.split(":", 1)[1].strip().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
 def _capture_best_draft(out_dir):
     """Snapshot blog.md/eval.md as blog.best.md/eval.best.md when THIS eval end is a new high.
 
@@ -113,8 +130,19 @@ def _capture_best_draft(out_dir):
     try:
         shutil.copy2(blog, os.path.join(out_dir, "blog.best.md"))
         eval_md = os.path.join(out_dir, "eval.md")
-        if os.path.isfile(eval_md):
-            shutil.copy2(eval_md, os.path.join(out_dir, "eval.best.md"))
+        best_eval = os.path.join(out_dir, "eval.best.md")
+        # eval.md must DESCRIBE this score, not merely exist. An evaluator that appends its status
+        # line BEFORE writing eval.md leaves the PREVIOUS iteration's audit sitting on disk, and
+        # copying that pairs this draft with a verdict on a different one. Live on width-not-length
+        # (2026-08-06): iteration 4 scored 87, the snapshot took iteration 3's eval reading
+        # SCORE: 76 with a G5 FAIL the new draft had already fixed, and the restore then installed
+        # that 76 under a trail whose own line said 87. Snapshot NO eval rather than the wrong one:
+        # _restore_artifact_set already treats a missing eval as "remove eval.md", which is honest
+        # where a mismatched one silently misreports the draft it sits beside.
+        if _eval_md_score(eval_md) == this:
+            shutil.copy2(eval_md, best_eval)
+        elif os.path.exists(best_eval):
+            os.remove(best_eval)
     except OSError:
         return
 
