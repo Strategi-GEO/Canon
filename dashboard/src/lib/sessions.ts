@@ -29,10 +29,10 @@ import type { RunState, RunSummary } from "@/types";
  *
  * WHY 5 AND NOT THE CODE DEFAULT: width costs no tokens per blog, it decides what the operator
  * owns when the usage limit lands mid-batch, and 2 is the cautious answer measured under the old
- * unreachable bar where every blog burned four iterations and shipped nothing. With 90 reachable,
- * the loop-stop at 85 and one research top-up per session, a blog is meant to cost far less, so
- * the batch is meant to fit and the wall-clock win is real. Drop back to 2 if a run still dies on
- * the limit with everything half finished.
+ * unreachable bar where every blog burned four iterations and shipped nothing. With 90 reachable
+ * and one research top-up per session, a blog is meant to cost far less, so the batch is meant to
+ * fit and the wall-clock win is real. Drop back to 2 if a run still dies on the limit with
+ * everything half finished.
  */
 export const ENGINE_SLOTS = 5;
 

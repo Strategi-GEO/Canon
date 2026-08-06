@@ -1551,19 +1551,18 @@ ONE property of the form, whether it carries a Sourcing question, and nothing el
   answering them with the verdict they just rejected, and it ends the session in ninety
   seconds having dispatched no agent and scored nothing. It has happened, twice in a row,
   on the same blog.{prior}
-- ONCE ANY ITERATION SCORES ABOVE 85, THE LOOP ONLY CLIMBS. From then on continue only
-  while each new score is STRICTLY HIGHER than the best so far; the first iteration that
-  fails to beat the best ends the loop, and the best draft is the result. A draft above 85
-  is close, and a LATER revise is as likely to break it as to lift it. The measured split is the
-  whole argument: the FIRST revise gained +17, 0 and +1, while every revise after it gained only
-  -1 and +3, and each of those costs a research top-up, a revise, a link pass and a fresh hostile
-  audit. This loop-stop threshold was itself once 90 and
-  never once fired, because live scores sat at 84 to 89, so the loop spent iterations 3 and 4 to
-  LOSE a point. IT ENDS THE LOOP AND IT NEVER DECIDES THE VERDICT: 85 is not a bar and a draft
-  above it has passed nothing, it is merely close enough to 90 that spending another iteration
-  risks what it already has.
-  (Below 85 the ordinary rules above run unchanged.) A score of 90 or higher still ends the
-  loop at once.
+- A DIP IS NOT A REASON TO STOP, AT ANY SCORE. Keep iterating on the three conditions
+  above; never end the loop merely because a score fell. Scores OSCILLATE by ten points
+  across one revise, so a single dip is noise and not a trend. A later iteration cannot
+  cost you the peak you already hold, because the engine restores the highest-scoring
+  draft when the loop ends, so the only thing another iteration risks is tokens, and the
+  measured trade is worth it: across the 36 real multi-iteration sessions on disk,
+  stopping on the first dip above 85 shipped 15 blogs for 95 iterations where running on
+  ships 19 for 102. FOUR blogs reached 90 on an iteration that came AFTER a dip:
+  89-78-93, 76-88-88-94, 86-83-88-92, and 80-89-81-93. Each of those is a blog a
+  stop-on-the-dip rule threw away.
+  A score of 90 or higher still ends the loop at once, and that is the only score that
+  ends it early.
 - KEEPING THE BEST-SCORING DRAFT IS NOW ENFORCED BY THE ENGINE, not by you. The backend
   snapshots each new high and, once the loop ends, restores the highest-scoring draft as
   blog.md and eval.md and reports its score. You do not hand-restore an earlier draft and
@@ -1588,8 +1587,8 @@ ARE CHECKED FIRST:
 is failed, and there is no middle band, no tolerated band, and no second threshold
 anywhere in this engine. A draft that ends at 87 is BELOW BAR: it is failed, it stays
 on disk, and it ships only if the operator reads it and presses send, which is a
-person's call and never yours. The 85 in the loop-stop rule above is not a bar of any
-kind: it ends an ITERATION and never a verdict.
+person's call and never yours. No number other than 90 is compared against a score
+anywhere in this loop.
 
 Your SCORE >= 90 branch above is FINAL AND TERMINAL ONLY WHEN NO CURRENT QUESTIONS ARE
 ON DISK. That is the one narrowing of the rule, and everything else about it stands:

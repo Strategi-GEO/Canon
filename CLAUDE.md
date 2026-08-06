@@ -128,19 +128,28 @@ number**, because a fresh Agent W on iteration 3 has no memory of iterations 1 a
 - **Revise (surgical, ELECTIVE and score-driven).** If SCORE < 90, spawn a FRESH Agent W with
   ONLY: the frozen dossier, the current `blog.md`, the fix list, and its iteration number. It
   applies **only the listed fixes** to the existing draft. It does not rewrite the article. Then
-  re-run gates, the link pass on changed links only, and a FRESH Agent E. FOUR conditions stop
-  this loop: the 4-iteration cap, two consecutive iterations showing no gain, **the above-85
-  monotonic rule**, and **a Sourcing QUESTION on the form, which ends the loop at the iteration it
-  is filed.** **ABOVE 85 THE LOOP ONLY CLIMBS:** once any iteration scores above 85, an iteration
-  that does not STRICTLY beat the best so far ends the loop and the best draft is the result. A
-  draft above 85 is close, and another revise is as likely to break it as to lift it, so a
-  non-gain there is a reason to stop and keep it, not to spend another iteration; below 85 the
-  ordinary rules run unchanged, and 90 still ships at once. This threshold ends the LOOP and never
-  decides the VERDICT, so it is not a second bar: a draft stopped here at 87 is still below 90 and
-  still resolves failed. The monotonic threshold was 90 and live scores
-  sat at 84 to 89, so the guard never fired once: measured gains after the first revise were +1,
-  0, -1 and +3, and each of those iterations bought a research top-up, a revise, a link pass and
-  a fresh hostile audit. The Sourcing-question condition ends
+  re-run gates, the link pass on changed links only, and a FRESH Agent E. THREE conditions stop
+  this loop: the 4-iteration cap, two consecutive iterations showing no gain, and **a Sourcing
+  QUESTION on the form, which ends the loop at the iteration it is filed.**
+  **A FOURTH CONDITION, THE ABOVE-85 MONOTONIC RULE, IS DELETED, AND A DIP IS NOT A REASON TO
+  STOP.** It read "once any iteration scores above 85, an iteration that does not STRICTLY beat
+  the best so far ends the loop", on the ground that a draft above 85 is close and another revise
+  is as likely to break it as to lift it. **THAT GROUND IS VOID, and `_install_best_draft` two
+  paragraphs down is what voids it:** the engine restores the highest-scoring draft once the loop
+  ends, so a later revise CANNOT break the blog. It can only cost tokens. The rule was insuring
+  against a risk this same section had already eliminated in code.
+  What it cost is measured over the 36 genuine multi-iteration sessions on disk under
+  `outputs/`: it ends the loop on FOUR whose LATER iterations reached 90, at 89 on 89-78-**93**,
+  at 88 on 76-88-88-**94**, at 86 on 86-83-88-**92**, and at 89 on 80-89-81-**93**. Scores
+  OSCILLATE by ten points across a single revise, so one dip is noise and not a trend, and
+  stopping on the dip discards the recovery. Replaying those sessions, the rule ships 15 blogs
+  for 95 iterations where its absence ships 19 for 102: 6.3 iterations per shipped blog against
+  5.4. It was the most expensive line in this section and it was sold as a saving. Those
+  trajectories were recorded under the old 95 bar, so the SCORES are real and only the stopping
+  points are simulated. The two surviving conditions were replayed the same way and cost nothing:
+  the no-gain rule changes no outcome at all, and the 4-iteration cap costs exactly one ship of
+  19, which is why neither is cut and why capping at 3 was REJECTED. The Sourcing-question
+  condition ends
   the loop BEFORE the revise is dispatched, because
   Sourcing is the one area no rewrite can close: this contract already says the writer has no
   authority to invent a citation or URL, so iterating past a Sourcing question spends research

@@ -49,9 +49,10 @@ export const SHIP_BAR = 90;
  * `failed` verdict, and an operator reading a list of them is asking which are worth opening: an
  * 89 is one point short and a 73 is not close, and one red chip for both hides that.
  *
- * The engine's monotonic loop-stop threshold is also 85 and is neither renamed nor derived from
- * this: the coincidence is meaningful, because a draft above 85 is close enough that an iteration
- * failing to beat it spends budget to risk what it already has.
+ * NOTHING IN THE ENGINE COMPARES A SCORE AGAINST THIS NUMBER. The engine's only threshold is
+ * SHIP_BAR. A monotonic loop-stop rule once shared this value, which made the coincidence look
+ * meaningful; it was deleted for ending the loop on four blogs whose next iteration reached 90, so
+ * 85 now lives here alone, as a word on a chip and nothing else.
  */
 export const BELOW_BAR_FLOOR = 85;
 
