@@ -455,9 +455,17 @@ run looked ordinary. A repurpose session is exempt, because it rewrites an alrea
 and fetches nothing.
 
 ## Voice and topic discipline (every article)
-The register is per-client and the engine stays brand-agnostic: `clients/<slug>/gates.json`
-carries the `voice` block and `client.md` describes it in prose. Where a client configures none,
-the piece is written in neutral third person exactly as before. Where one is configured:
+The register is the HOUSE DEFAULT and the engine stays brand-agnostic: a register is a SHAPE, and
+the entity it anchors to comes from each client's own `entity_names`. `clients/<slug>/gates.json`
+may still carry a `voice` block and `client.md` describes it in prose, but an ABSENT key now means
+the house register, `second_person` and `first_person_plural` together, and never neutral third
+person. It defaults on because off was never a choice anyone made: the block was opt-in, no client
+had ever set one, so every blog was graded against neutral third person while being written by a
+writer that naturally addresses the reader, and C4 scored 2 of 3 on a real draft for exactly that.
+A client opts OUT by writing the key explicitly, so `"voice": {}` is neutral third person and a
+half-set block takes only the half it sets. **`gates.py` and `rubric.md` C4 read this the same way
+and must keep doing so**: a gate that fails a draft for missing "you" while the rubric grades it
+against neutral third person is a loop no rewrite can close. Under the house register:
 
 - **Second person to the reader.** The reader is "you", never "buyers" and never "one".
 - **First person plural for the client.** The client speaks as "we", "us", and "our", not about

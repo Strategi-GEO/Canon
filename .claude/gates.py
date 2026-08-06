@@ -84,12 +84,30 @@ HOUSE_COMPETITOR_FRAMES = [
     r"\bversus\s+other\b",
 ]
 
-# --- Brand voice register (OFF unless the client configures it) ----------------
-# "voice": {"second_person": true, "first_person_plural": true} in gates.json. The
-# pronoun is only half the rule: a pronoun carries no entity, so a section written
+# --- Brand voice register (ON by default, a client may opt out) ----------------
+# "voice": {"second_person": true, "first_person_plural": true} is the HOUSE DEFAULT
+# and applies to every client that does not say otherwise. It is still brand-agnostic:
+# the register is a shape, and the entity it anchors to comes from each client's own
+# entity_names.
+#
+# IT DEFAULTS ON BECAUSE OFF WAS NEVER A CHOICE ANYONE MADE. The block was opt-in, no
+# client had ever set it, so every blog was graded against neutral third person while
+# being written by a writer that naturally addresses the reader. C4 scored 2 of 3 on a
+# real draft for exactly that: "no voice block configured, so neutral third person is
+# the target, mostly held, but the bullets slip into second-person you/your". The house
+# register is second person to the reader and first person plural for the client, so
+# make that the default and let a client opt out rather than making every client opt in
+# to the only register the house actually writes in.
+#
+# A CLIENT STILL OPTS OUT, and an explicit block always wins: "voice": {} turns the
+# register off entirely, and {"second_person": true, "first_person_plural": false}
+# takes one half. Absent means the house default, never "off".
+#
+# The pronoun is only half the rule: a pronoun carries no entity, so a section written
 # entirely in "we" is invisible to a knowledge graph and useless once an AI engine
 # lifts it away from its surroundings. That is why the anchoring gate rides along
 # with the pronoun gates and cannot be enabled separately.
+HOUSE_VOICE = {"second_person": True, "first_person_plural": True}
 HOUSE_FIRST_PERSON_PLURAL = r"\b(we|us|our|ours)\b"
 HOUSE_SECOND_PERSON = r"\b(you|your|yours)\b"
 # "We" means the client and nothing else. These are the readings that dissolve the
@@ -265,7 +283,13 @@ def load_config(client_slug: str) -> dict:
     band = dict(DEFAULT_WORD_BAND)
     band.update(raw.get("word_band") or {})
 
-    voice = raw.get("voice") or {}
+    # ABSENT means the house default; PRESENT means the client decided, even when what
+    # they decided is {}. `raw.get("voice") or {}` would have collapsed those two into
+    # one, which is the difference between "nobody configured a register" and "this
+    # client turned it off", so the membership test is the whole point here.
+    voice = dict(HOUSE_VOICE) if "voice" not in raw else raw.get("voice")
+    if voice is None:
+        voice = {}
     if not isinstance(voice, dict):
         _die(2, f"'voice' must be an object in {cfg_path}")
     policy = raw.get("competitor_policy", "") or ""

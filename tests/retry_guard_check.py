@@ -153,8 +153,18 @@ def test_the_guard_never_writes_a_second_terminal_line():
 
 
 def test_concurrency_is_floored_and_never_raises():
-    """GEO_CONCURRENCY=0 would block every blog forever; a typo must not stop the engine booting."""
+    """GEO_CONCURRENCY=0 would block every blog forever; a typo must not stop the engine booting.
+
+    HERMETIC ON PURPOSE. _concurrency() falls back to db.config_value, which reads server/.env, so
+    without this stub the "default is 2" check asserts what THIS MACHINE happens to be configured
+    for and fails the moment an operator sets the knob. That is exactly the defect that makes
+    facts_check.py unreproducible, and a test that only passes on one machine pins nothing.
+    """
+    from server import db
+
     old = os.environ.get("GEO_CONCURRENCY")
+    original_cfg = db.config_value
+    db.config_value = lambda name: "" if name == "GEO_CONCURRENCY" else original_cfg(name)
     try:
         cases = {"0": 1, "-3": 1, "": 2, "abc": 2, "4": 4, "1": 1}
         for raw, expected in cases.items():
@@ -164,6 +174,7 @@ def test_concurrency_is_floored_and_never_raises():
         os.environ.pop("GEO_CONCURRENCY", None)
         check("the default is 2", runner._concurrency() == 2, f"got {runner._concurrency()}")
     finally:
+        db.config_value = original_cfg
         if old is None:
             os.environ.pop("GEO_CONCURRENCY", None)
         else:

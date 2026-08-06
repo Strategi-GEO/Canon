@@ -22,11 +22,19 @@ import type { RunState, RunSummary } from "@/types";
  * that names this number now imports it from the same file that decides what the run list
  * means.
  *
- * It MIRRORS GEO_CONCURRENCY in server/runner.py, default 2, and the engine does not serve the
- * value, so raising the env var means editing this line too. An operator told 5 while the engine
- * runs 2 reads every queue position in this UI wrong.
+ * It MIRRORS the DEPLOYED GEO_CONCURRENCY, which is 5 in server/.env here while the code default
+ * in server/runner.py stays 2. The engine does not serve the value, so changing the env var means
+ * editing this line too: an operator told one number while the engine runs another reads every
+ * queue position in this UI wrong.
+ *
+ * WHY 5 AND NOT THE CODE DEFAULT: width costs no tokens per blog, it decides what the operator
+ * owns when the usage limit lands mid-batch, and 2 is the cautious answer measured under the old
+ * unreachable bar where every blog burned four iterations and shipped nothing. With 90 reachable,
+ * the loop-stop at 85 and one research top-up per session, a blog is meant to cost far less, so
+ * the batch is meant to fit and the wall-clock win is real. Drop back to 2 if a run still dies on
+ * the limit with everything half finished.
  */
-export const ENGINE_SLOTS = 2;
+export const ENGINE_SLOTS = 5;
 
 /** A live session, normalised. Nothing finished ever becomes one. */
 export type Session = {
