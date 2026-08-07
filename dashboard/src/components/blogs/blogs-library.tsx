@@ -41,7 +41,7 @@ import {
   waitingSignal,
   type WaitingSignal,
 } from "@/components/blogs/questions-state";
-import type { BlogSummary } from "@/types";
+import type { BlogSummary, RoadmapMonth } from "@/types";
 
 // Built FROM the admin tags, so an option and the tag it filters for carry the identical word.
 // Add a state to blogState and its filter option appears here labelled the same, with nothing to
@@ -129,6 +129,45 @@ function Library({
       router.replace(blogHref(legacyPreview));
     }
   }, [legacyPreview, blogHref, router]);
+
+  // THE MONTH PICKER'S OPTIONS ARE THE ROADMAPS THAT EXIST, never a range derived from the blogs.
+  // A month is a roadmap plus the blogs written from it, and deleting the roadmap deletes those
+  // blogs, so the sheets ARE the month list and a month can never appear with nothing behind it.
+  const [months, setMonths] = React.useState<RoadmapMonth[] | null>(null);
+  const [month, setMonth] = React.useState<number | null>(null);
+
+  React.useEffect(() => {
+    const controller = new AbortController();
+    api.roadmapMonths(brandSlug, controller.signal).then(
+      (data) => setMonths(data.months),
+      // A brand with no roadmap is the ordinary empty state, not an error worth a banner: the
+      // picker simply does not render and every blog shows.
+      () => setMonths([]),
+    );
+    return () => controller.abort();
+  }, [brandSlug]);
+
+  // The newest month the brand holds, which is both the picker's default and where an
+  // off-roadmap blog files. Null until the months load, and for a brand with no roadmap at all.
+  const latestMonth = React.useMemo(
+    () => (months?.length ? Math.max(...months.map((m) => m.month)) : null),
+    [months],
+  );
+
+  // Default to the latest ONCE, and never again: re-applying it on every render would drag the
+  // operator back to this month the moment a poll refreshed the list under them.
+  React.useEffect(() => {
+    setMonth((current) => (current === null ? latestMonth : current));
+  }, [latestMonth]);
+
+  // A month the brand no longer has (its roadmap was deleted while this list was open) would
+  // filter every blog away and leave the operator on an empty tab with no way back.
+  React.useEffect(() => {
+    if (month !== null && months && months.length > 0
+        && !months.some((m) => m.month === month)) {
+      setMonth(latestMonth);
+    }
+  }, [month, months, latestMonth]);
 
   // The engine is an external system, so this subscribes to it and writes state only from
   // the settled callbacks rather than synchronously inside the effect body.
@@ -275,8 +314,9 @@ function Library({
   }
 
   const shown = React.useMemo(
-    () => selectBlogs(blogs ?? [], url.query, url.status, url.sortKey, url.sortDir),
-    [blogs, url.query, url.status, url.sortKey, url.sortDir],
+    () => selectBlogs(blogs ?? [], url.query, url.status, url.sortKey, url.sortDir,
+                      month, latestMonth),
+    [blogs, url.query, url.status, url.sortKey, url.sortDir, month, latestMonth],
   );
 
   // The keyboard's row. A filter can hide whatever was picked, and a row that is not rendered
@@ -345,6 +385,27 @@ function Library({
               className="h-8 w-52 pl-8 text-xs"
             />
           </div>
+          {/* Only with TWO OR MORE months. One month is every blog there is, so a picker that
+              cannot change anything is a control that only asks the operator a question. */}
+          {months && months.length > 1 ? (
+            <select
+              value={month ?? ""}
+              onChange={(event) => setMonth(Number(event.target.value))}
+              aria-label="Filter by roadmap month"
+              className={cn(
+                "h-8 rounded-lg border border-input bg-background px-2 text-xs",
+                "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+              )}
+            >
+              {/* Newest first: the operator is almost always looking at this month's work, and
+                  the default lands on the top entry rather than somewhere down the list. */}
+              {[...months].sort((a, b) => b.month - a.month).map((m) => (
+                <option key={m.month} value={m.month}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <select
             value={url.status}
             onChange={(event) => url.setStatus(event.target.value as StateFilter)}

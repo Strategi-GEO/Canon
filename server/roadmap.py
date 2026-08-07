@@ -382,6 +382,37 @@ def index_by_slug(client_slug):
     return {row["topic_slug"]: row["index"] for row in payload["rows"] if row.get("topic_slug")}
 
 
+def month_by_slug(client_slug):
+    """topic_slug -> the month whose sheet holds that row. {} when the brand has no roadmap.
+
+    THE WHOLE OF HOW A BLOG KNOWS ITS MONTH. Nothing is stored on the topic: the sheet's rows are
+    the record of which month asked for a topic, and a month's blogs are deleted with its sheet
+    (api_delete_roadmap), so a blog can never outlive the row that answers this. That cascade is
+    the reason a derived month is sound here and a stored one would be redundant.
+
+    Across ALL months, unlike index_by_slug, which answers only for the current sheet. A blog
+    written in month 1 must keep saying month 1 after month 2 arrives, so this cannot go through
+    load_roadmap's month=None "current sheet" reading.
+
+    A slug on two months' sheets resolves to the LOWEST month, the one that asked first, which is
+    also the month whose run actually produced the blog: generation is locked to the latest month
+    and refuses a slug the ledger already holds, so the later sheet's copy never ran.
+    """
+    cid = db.client_id(client_slug)
+    if not cid:
+        return {}
+    out = {}
+    for topic_slug, month in db.q(
+            """select rr.topic_slug, s.month from roadmap_rows rr
+               join roadmap_sheets s on s.id = rr.sheet_id
+               where s.client_id = %s and rr.topic_slug is not null
+               order by s.month desc""",
+            (cid,)):
+        # Descending, so the lowest month written last is the one that survives.
+        out[topic_slug] = month
+    return out
+
+
 def safe_filename(filename):
     """Untrusted browser-supplied name -> a name safe to join onto a path."""
     name = Path(str(filename or "")).name
@@ -456,19 +487,55 @@ def read_sheet(client_slug, month=None):
     }
 
 
+def sheet_topic_slugs(client_slug, month):
+    """Every topic_slug on ONE month's sheet, as a set. Empty when there is no such sheet.
+
+    THE MONTH A BLOG BELONGS TO IS DERIVED THROUGH THIS JOIN and is not stored on the topic. It
+    can be, because a month's blogs are deleted with its sheet (api_delete_roadmap), so a blog
+    can never outlive the rows that say which month it came from. Stamping the month on topics
+    would survive a sheet deletion, which is exactly the case that no longer exists.
+
+    Read BEFORE the sheet goes: roadmap_rows carries `on delete cascade` off roadmap_sheets, so
+    inside delete_roadmap this must be collected first or it returns nothing.
+    """
+    cid = db.client_id(client_slug)
+    if not cid:
+        return set()
+    return {
+        s for (s,) in db.q(
+            """select rr.topic_slug from roadmap_rows rr
+               join roadmap_sheets s on s.id = rr.sheet_id
+               where s.client_id = %s and s.month = %s and rr.topic_slug is not null""",
+            (cid, month))
+    }
+
+
 def delete_roadmap(client_slug, month):
-    """Archive ONE month's roadmap into roadmap_uploads, then remove that sheet. True when one
-    was removed.
+    """Archive ONE month's roadmap into roadmap_uploads, then remove that sheet. Returns the set
+    of topic_slugs that sheet owned when one was removed, and None when there was no such sheet.
+
+    THE RETURN TYPE CHANGED FROM A BOOL and the caller is what makes that worth it: deleting a
+    roadmap now deletes that month's blogs too, and only this function can still see which blogs
+    those were. roadmap_rows cascades off roadmap_sheets, so a caller that deleted the sheet and
+    then asked would get an empty answer every time. An empty set is a real result (a sheet with
+    no parsed rows) and is not None, so callers test `is None` for "no such sheet" rather than
+    truthiness.
 
     `month` names which roadmap to delete: with a brand holding several, client_id alone no
     longer identifies one sheet. The gaps a delete leaves are never reused (see next_month).
 
-    Only the roadmap_sheets row goes (its roadmap_rows cascade with it). The roadmap_uploads
-    archive stays, because /generate re-parses a live run by upload_id and deleting the sheet
-    under a run would strand it. The LEDGER (generated.csv) and every blog under outputs/ also
-    stay: they are what the roadmap PRODUCED, not part of it, and a roadmap is replaced far
-    more often than a brand's work should be destroyed. Deleting a roadmap must never be a way
-    to lose a shipped blog.
+    The roadmap_sheets row goes and its roadmap_rows cascade with it. The roadmap_uploads archive
+    stays, because /generate re-parses a live run by upload_id and deleting the sheet under a run
+    would strand it.
+
+    THE MONTH'S BLOGS GO TOO, and that REVERSES what stood here. This function used to argue that
+    blogs "are what the roadmap PRODUCED, not part of it" and that deleting a roadmap "must never
+    be a way to lose a shipped blog". The operator asked for the opposite and it is their work to
+    scope: a month is now a unit that holds a sheet and the blogs written from it, so removing the
+    month removes both and the Blogs tab's month list can never offer a month with no sheet behind
+    it. This function does not delete them itself, because a blog is more than a record row (it
+    owns a scratch tree, and api_delete_blog is where that pairing is defined); it returns the
+    slugs and api_delete_roadmap deletes each through the one path that already knows how.
 
     IT IS ARCHIVED FIRST, and that is not belt and braces. Delete is the ONLY route to a new
     roadmap: the app refuses an upload or a generation while one exists, so an operator who
@@ -489,13 +556,15 @@ def delete_roadmap(client_slug, month):
     """
     cid = db.client_id(client_slug)
     if not cid:
-        return False
+        return None
     row = db.q(
         "select id, raw_csv, report from roadmap_sheets where client_id = %s and month = %s",
         (cid, month), fetch="one")
     if not row:
-        return False
+        return None
     sheet_id, raw_csv, report = row
+    # BEFORE the delete below, for the cascade reason sheet_topic_slugs states.
+    owned = sheet_topic_slugs(client_slug, month)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
     with db.tx() as cur:
@@ -516,7 +585,7 @@ def delete_roadmap(client_slug, month):
     # session had written it, silently resurrecting the sheet the operator just deleted.
     roadmap_path(client_slug).unlink(missing_ok=True)
     (REPO_ROOT / "clients" / client_slug / "roadmap-report.md").unlink(missing_ok=True)
-    return True
+    return owned
 
 
 def _write_sheet(cur, cid, raw_text, payload, report=None, month=1):

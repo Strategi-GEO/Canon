@@ -10,6 +10,7 @@
 
 import type { BlogStatus, BlogSummary } from "@/types";
 import { adminUrgency, blogState, type BlogState } from "@/lib/blog-state";
+import { inMonth } from "@/lib/blog-month";
 
 export type SortKey = "created" | "score" | "status" | "topic" | "roadmap";
 export type SortDir = "asc" | "desc";
@@ -151,9 +152,16 @@ export function selectBlogs(
   state: StateFilter,
   key: SortKey,
   dir: SortDir,
+  // Optional, and undefined means "every month", so every existing caller and the portal keep
+  // their current behaviour without passing a month they have no picker for.
+  month?: number | null,
+  latest?: number | null,
 ): BlogSummary[] {
   const filtered = blogs.filter(
-    (blog) => (state === "all" || blogState(blog) === state) && matchesQuery(blog, query),
+    (blog) =>
+      (state === "all" || blogState(blog) === state) &&
+      matchesQuery(blog, query) &&
+      inMonth(blog, month, latest ?? null),
   );
   return sortBlogs(filtered, key, dir);
 }

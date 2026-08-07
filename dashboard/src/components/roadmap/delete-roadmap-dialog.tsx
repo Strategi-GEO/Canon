@@ -22,11 +22,13 @@ import { formatCount } from "@/lib/format";
  * Deletes ONE month's roadmap, behind a confirm that says what is actually lost.
  *
  * A brand holds many monthly roadmaps now, so this deletes the ONE named by `month` and leaves
- * every other month standing. What is lost is that month's TOPIC LIST and nothing else: the
- * engine removes its roadmap.csv and leaves every blog on disk and in the ledger, because a
- * roadmap is the input and deleting an input never destroys what it already produced. Saying
- * that is not reassurance for its own sake: an operator who thinks this destroys their blogs
- * will not press it.
+ * every other month standing.
+ *
+ * IT DELETES THAT MONTH'S BLOGS TOO, and this copy used to promise the opposite. It said "blogs
+ * already written stay" over a route that kept them, and the route no longer does: a month is a
+ * roadmap plus the blogs written from it, and the Blogs tab groups by month, so a month whose
+ * sheet is gone could not be named or reached. Reassurance that has stopped being true is worse
+ * than no reassurance at all, because it is exactly what an operator reads before pressing.
  *
  * The trigger is an icon in the preview sidebar, one per month, so it names the month it deletes
  * for a reader who cannot see which row a bare trash icon sits on.
@@ -101,15 +103,20 @@ export function DeleteRoadmapDialog({
         {/* Outside the description, and as a list, because this is the part that decides the
             answer. A description is read past; two lines under a heading are read. */}
         <div className="text-sm">
-          <p className="font-medium text-foreground">Blogs already written stay</p>
+          <p className="font-medium text-fail">This month&apos;s blogs are deleted with it</p>
           <ul className="mt-1.5 flex flex-col gap-1 text-xs leading-relaxed text-muted-foreground">
             <li>
-              Every blog is on disk and in the ledger, and both survive this. They stay in the
-              Blogs library, readable and unchanged.
+              Every blog written from this month&apos;s roadmap is deleted: its draft, its
+              evaluation, its research and its history. This cannot be undone.
             </li>
             <li>
-              The roadmap is the input, not the work. Deleting this month costs you its list of
-              what to write, never anything already written.
+              That includes blogs already sent to a client or posted to a CMS. A post already
+              live on a client&apos;s site is <span className="font-medium">not</span> taken
+              down; only this app&apos;s record of it goes.
+            </li>
+            <li>
+              The sheet itself is archived first, so the topic list can be recovered. The blogs
+              cannot.
             </li>
           </ul>
         </div>

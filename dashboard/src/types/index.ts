@@ -759,6 +759,22 @@ export type BlogSummary = {
    */
   roadmap_index: number | null;
   /**
+   * WHICH MONTH'S ROADMAP THIS BLOG CAME FROM, or null when no sheet holds its slug: a blog made
+   * off-roadmap through /create/new or dropped in by hand.
+   *
+   * Derived on the engine from the sheet whose row asked for the topic, never stored on the
+   * topic, and that is sound because deleting a month's roadmap deletes that month's blogs with
+   * it, so a blog cannot outlive the row that answers this.
+   *
+   * NOT the same question as roadmap_index, which is a position on the CURRENT sheet and
+   * renumbers when a sheet is replaced. This is the month that ASKED, and a month 1 blog keeps
+   * saying month 1 forever after month 2 arrives.
+   *
+   * Optional on the wire so a summary from an engine build predating the field reads as "no
+   * month" rather than breaking the list.
+   */
+  month?: number | null;
+  /**
    * When an operator last pressed Send to client, UTC ISO, or null while the blog is still
    * the team's. A done blog with null here sits in ADMIN REVIEW: shipped, editable on the
    * blog stage page, and invisible to the client portal until the send. Every send re-stamps

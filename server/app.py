@@ -977,24 +977,44 @@ async def api_roadmap_sheet(slug: str, month: Optional[int] = None,
 @app.delete("/api/clients/{slug}/roadmap", status_code=204)
 async def api_delete_roadmap(slug: str, month: int,
                              user: auth.Identity = Depends(auth.require_admin)):
-    """Remove ONE month's roadmap. `month` is required: with a brand holding several, the caller
-    must name which one.
+    """Remove ONE month's roadmap AND every blog written from it. `month` is required: with a
+    brand holding several, the caller must name which one.
 
-    Deleting a roadmap removes that month's topic list and NOTHING else. Blogs already written
-    stay on disk, and the ledger still records them. A roadmap is the input, not the work.
-    Deleting is explicit and the UI confirms it.
+    DELETING A MONTH DELETES ITS BLOGS, which reverses the old behaviour of keeping them. A month
+    is the unit the operator works in: it holds a sheet and the blogs written from that sheet, and
+    the Blogs tab groups by it. Keeping the blogs would leave a month that owns work but has no
+    sheet behind it, which is a month the tab can no longer name, so the work would be
+    unreachable rather than preserved.
+
+    THIS IS DESTRUCTIVE AND IRREVERSIBLE, including for blogs that already shipped, were sent to
+    a client, or were pushed to a CMS. A pushed blog's CMS post is NOT retracted, because this
+    engine cannot un-publish someone else's site: the post stays live and the record of it goes,
+    so the dialog names that count separately rather than burying it in a total. The sheet itself
+    is archived to roadmap_uploads first (delete_roadmap), so the SHEET is recoverable and the
+    blogs are not.
+
+    Each blog goes through _delete_blog, the same path api_delete_blog uses, so the topic row
+    cascades to its versions, status events, comments and review notes, and the scratch tree goes
+    with it. Reusing that function rather than writing a second delete is what keeps "what it
+    means to delete a blog" defined once.
     """
     _client_or_404(slug, user)
     if _client_has_live_run(slug):
         # A live run's rows came from a sheet. Deleting one underneath would leave the status
-        # table describing topics whose source no longer exists.
+        # table describing topics whose source no longer exists, and the cascade below would be
+        # racing the engine for the scratch tree it is writing into right now.
         raise HTTPException(
             status_code=409,
             detail=f"a run for {slug!r} is live; wait for it to finish before deleting a roadmap",
         )
-    if not roadmap.delete_roadmap(slug, month):
+    owned = await asyncio.to_thread(roadmap.delete_roadmap, slug, month)
+    # `is None` and never falsiness: an empty set is a real answer, a sheet whose rows parsed to
+    # nothing, and it must delete no blogs rather than 404 as though the month did not exist.
+    if owned is None:
         raise HTTPException(
             status_code=404, detail=f"{slug!r} has no Month {month} roadmap to delete")
+    for topic_slug in sorted(owned):
+        await asyncio.to_thread(_delete_blog, slug, topic_slug)
     return None
 
 
@@ -1822,6 +1842,9 @@ def _blog_history(slug):
     # Read ONCE for the whole listing, not once per blog: this is a sheet parse, and doing it
     # inside the loop would re-read the same sheet twenty times for twenty copies of one question.
     row_index = roadmap.index_by_slug(slug)
+    # Read once for the whole listing, for the same reason row_index is: both are one query
+    # answering a question the loop below asks per blog.
+    month_index = roadmap.month_by_slug(slug)
     summaries = _status_summaries(client_id)
 
     # The record: every live topic that carries at least one committed version,
@@ -1909,6 +1932,15 @@ def _blog_history(slug):
             # this field existed the app could not answer it. Zero based, exactly like
             # RoadmapRow.index; every DISPLAY adds one. See roadmap.index_by_slug.
             "roadmap_index": row_index.get(topic_slug),
+            # WHICH MONTH THIS BLOG BELONGS TO, derived from the sheet whose row asked for it.
+            # None when no sheet holds the slug, which is a blog created off-roadmap through
+            # /create/new or a hand-upload. The Blogs tab groups by this and files a None under
+            # the latest month, because generation is locked to the latest month, so an
+            # off-roadmap blog was necessarily made while that month was current.
+            #
+            # Unlike roadmap_index this is NOT the current sheet's answer: a month 1 blog must
+            # keep saying month 1 once month 2 exists. See roadmap.month_by_slug.
+            "month": month_index.get(topic_slug),
         }
 
     # Read ONCE and used TWICE below: the scratch overlay picks its topics from this set, and
@@ -1925,6 +1957,11 @@ def _blog_history(slug):
             continue
         live_entry = _scratch_entry(slug, topic_slug, led, row_index)
         if live_entry is not None:
+            # Stamped here rather than threaded into _scratch_entry, so month_index stays the one
+            # source both paths read and a mid-run blog files under the same month it will keep
+            # once it settles. A live blog with no sheet row reads None exactly as a settled one
+            # does, and the tab files both the same way.
+            live_entry["month"] = month_index.get(topic_slug)
             entries[topic_slug] = live_entry
 
     # THE OPERATOR TITLE OVERRIDE, applied to settled and live entries alike in ONE place.
