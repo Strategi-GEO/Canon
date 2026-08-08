@@ -243,6 +243,37 @@ test("blogState: absent and null delivery fields read the same", () => {
   );
 });
 
+test("blogState: a failed run splits on WHO wrote the terminal line", () => {
+  // The lead reached a verdict and it missed the bar. There is a scored draft to read.
+  assert.equal(blogState({ status: "failed" }), "failed");
+  assert.equal(blogState({ status: "failed", died: false }), "failed");
+  // The engine wrote the line because the session never got there. Nothing judged the article.
+  assert.equal(blogState({ status: "failed", died: true }), "died");
+
+  // A SCORE DOES NOT MAKE IT A VERDICT, which is the case a reader gets wrong. A topic that scored
+  // 87 on an earlier attempt and whose latest session died carries both facts, and `died` is the
+  // one describing the latest run.
+  assert.equal(blogState({ status: "failed", died: true, score: 87 } as never), "died");
+
+  // The flag NEVER outranks a human act above it in the ladder. A delivered article whose later
+  // rerun died is still with the client: the send happened, and a dead session does not un-send it.
+  assert.equal(
+    blogState({ status: "failed", died: true, sent_to_client: "t" }),
+    "client_review",
+  );
+  assert.equal(
+    blogState({ status: "failed", died: true, client_approved: "t", sent_to_client: "t" }),
+    "approved",
+  );
+  // And a live rerun still outranks everything, exactly as it does for `failed`.
+  assert.equal(blogState({ status: "failed", died: true, live: true }), "generating");
+
+  // died is only read on a `failed` status. It cannot manufacture the state from anything else,
+  // which matters because the engine refuses to write the flag on a non-failed line at all.
+  assert.equal(blogState({ status: "done", died: true } as never), "internal_review");
+  assert.equal(blogState({ status: "stopped", died: true } as never), "stopped");
+});
+
 test("adminActions: the full policy, state by state", () => {
   const expected: Record<BlogState, string[]> = {
     generating: [],
@@ -278,6 +309,13 @@ test("adminActions: the full policy, state by state", () => {
     // "failed at 87, then a person shipped it" and no audit line was lost with the button.
     // Retrying stays a RUN, reached by link, not a verb here.
     failed: ["edit", "comments", "send", "publish"],
+    // NO SHIP DOOR, and the contrast with the row above it is the reason the state exists. A
+    // `failed` blog was READ and SCORED by an evaluator, so send and publish are the operator
+    // disagreeing with the bar on evidence. Here nothing judged anything, so there is no verdict
+    // to overrule; the engine refuses a send for a failed record with no evaluator-scored draft
+    // anyway, and a button whose only outcome is a refusal teaches an operator to distrust the
+    // bench. Edit and comments survive because a died run often leaves an earlier draft to read.
+    died: ["edit", "comments"],
     stopped: [],
     unknown: [],
   };
@@ -300,6 +338,7 @@ test("clientActions: the full policy, state by state", () => {
     approved: [],
     published: [],
     failed: [],
+    died: [],
     stopped: [],
     unknown: [],
   };
@@ -505,6 +544,10 @@ const EXIT_OWNER: Record<BlogState, "run" | "client" | "admin" | "terminal"> = {
   // but a state an admin act can leave must carry that act, which is what this classification
   // asserts of the bench below.
   failed: "admin",
+  // WITH `stopped` AND NOT WITH `failed`, which is exactly the classification the split makes. An
+  // admin act cannot leave this state: there is no verdict to release, so the bench correctly
+  // carries no ship door, and the one exit is generating the topic again.
+  died: "run",
   // These two leave only by generating the topic again, which is a new run and not a verb on
   // this page, so an empty bench is honest for both: a stopped topic has no verdict at all, so
   // there is nothing to release.
@@ -1061,6 +1104,11 @@ const REACHABLE: Record<BlogState, GateRecord[]> = {
   // refusal with nothing shippable in it: both doors refuse it, `publish` is withheld outright
   // and the send is the declared refusal above, so its only exit really is generating again.
   failed: [{ status: "failed", score: 87 }, { status: "failed" }],
+  // BOTH CARRY died, and the scored one is the case a reader gets wrong: a topic that scored 87
+  // on Monday and whose Tuesday session died carries both facts at once and both are true. The
+  // score says an earlier draft exists and is worth reading; `died` says the latest run judged
+  // nothing, so neither ship door opens on it.
+  died: [{ status: "failed", died: true, score: 87 }, { status: "failed", died: true }],
   stopped: [{ status: "stopped" }],
   unknown: [{ status: "unknown" }],
 };

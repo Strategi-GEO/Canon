@@ -37,6 +37,7 @@ export const STATE_FILTERS: StateFilter[] = [
   "approved",
   "published",
   "failed",
+  "died",
   "stopped",
   "unknown",
 ];

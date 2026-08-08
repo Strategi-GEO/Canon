@@ -182,7 +182,12 @@ function TopicClock({ topic, now }: { topic: TopicRun; now: Date | null }) {
         // Three states, three verbs, and none of them borrowed.
         <span>
           {topic.status === "failed"
-            ? "failed after"
+            ? // FOUR VERBS NOW, and the split is the one this row is read for during a quota
+              // storm: "failed after 4m" is a loop that ran and missed the bar, "did not finish
+              // after 8s" is a session that never reached a verdict. Same status, opposite events.
+              topic.died
+              ? "did not finish after"
+              : "failed after"
             : topic.status === "stopped"
               ? "stopped after"
               : "took"}{" "}

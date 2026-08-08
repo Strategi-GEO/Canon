@@ -888,8 +888,14 @@ function StageBody({
               row pre-ticked rather than a second, thinner copy of run submission on this page.
               It mounts on the state alone, because a retry is always available to a failed
               topic (the roadmap keeps its row selectable) including the scoreless failure the
-              send door refuses, which is exactly the record whose only exit this is. */}
-          {state === "failed" && !HOSTED_READONLY ? (
+              send door refuses, which is exactly the record whose only exit this is.
+
+              `died` IS THE SECOND STATE HERE AND IT IS THE ONE THAT NEEDS IT MOST. A run that
+              reached no verdict has no ship door at all (adminActions grants it neither send nor
+              publish, because there is no judgement to overrule), so this link is not an extra
+              affordance there, it is the ONLY exit. Omitting it would leave the exact dead end
+              with no door that the failed row's own comment above is about. */}
+          {(state === "failed" || state === "died") && !HOSTED_READONLY ? (
             <Button size="sm" variant="outline" asChild>
               <Link
                 href={`${brandHref(orgSlug, brandSlug, "/create")}?retry=${encodeURIComponent(topicSlug)}`}
@@ -1593,7 +1599,7 @@ function ScoreTrail({ score, trail }: { score: number | null; trail: RunTrail | 
         </span>
       ) : null}
       {/* Coloured by band, the same scoreClass the list uses: at or above 90 green because it
-          shipped, BELOW_BAR_FLOOR to 89 amber, below it red, so the final score reads the same here as in
+          shipped, BELOW_BAR_FLOOR to SHIP_BAR-1 amber, below it red, so the final score reads the same here as in
           the Blogs tab. */}
       <span className={cn("font-medium", scoreClass(score))}>{score}</span>
       <span className="text-muted-foreground">/100</span>

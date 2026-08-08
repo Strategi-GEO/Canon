@@ -20,7 +20,7 @@ import sys
 import time
 import traceback
 import uuid
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -122,6 +122,211 @@ TOPIC_SEMAPHORE = asyncio.Semaphore(_concurrency())
 _FACTS_LOCKS = {}
 
 
+# A SLOT IS HELD BY WORK THAT IS PROVABLY ALIVE, AND THIS IS WHAT MAKES THAT TRUE.
+#
+# The queue above bricks in exactly one way, and it is silent. `async with TOPIC_SEMAPHORE`
+# releases on every path a coroutine can UNWIND, and a wedged coroutine unwinds on none of them: a
+# task suspended inside asyncio.to_thread never resumes to acknowledge a cancel, because a thread
+# cannot be cancelled, and a stuck CLI child can hold the SDK generator's aclose the same way. The
+# slot is then held by something that will never finish and never let go. At GEO_CONCURRENCY=2 two
+# of those halt every brand in the repo until someone restarts the API, with no error, no log line,
+# and a dashboard that reads exactly like an idle engine: every topic queued, none running.
+#
+# THE TIMEOUT THAT LOOKS LIKE THE FIX IS NOT ONE. asyncio.wait_for cancels the inner task and then
+# AWAITS that cancellation, so against the wedge above it hangs in the same place while still
+# holding the slot. It also charges every slow blog for the sins of a stuck one: a real session
+# runs for tens of minutes and a wall-clock cap cannot tell the two apart.
+#
+# PROGRESS IS THE HEARTBEAT, because the engine already emits one. Every stage boundary appends to
+# the topic's status.jsonl, which is append-only, so its SIZE is a monotonic liveness signal that
+# costs one stat() per tick. A blog is healthy while that file grows, however long it runs; it is
+# wedged when the file has not grown in GEO_STALL_TIMEOUT. Then the watchdog cancels once, and if
+# the slot is STILL held a grace period later, it releases the slot out from under the holder and
+# writes the topic's terminal failed line.
+#
+# THAT LAST STEP DELIBERATELY BREAKS THE CAP, IN THE ONLY DIRECTION WORTH BREAKING IT. A holder
+# that later revives makes GEO_CONCURRENCY+1 blogs run for one session. Running one extra blog
+# once is strictly better than running zero forever, which is what the engine does today, so the
+# trade is made on purpose and named here rather than discovered.
+#
+# _release is IDEMPOTENT and that is load-bearing: the watchdog and the holder's own finally arm
+# both call it, and a second release would raise the cap permanently, which is the same bug as the
+# leak with the sign flipped.
+_SLOTS = {}
+_SLOT_SEQ = 0
+
+# Tunable so an operator whose blogs legitimately run long can move it without a rebuild. The
+# default is deliberately generous: the longest silent gap a healthy blog has is inside ONE stage,
+# and no stage of a real session has ever approached 45 minutes.
+def _stall_timeout():
+    try:
+        return max(300, int(os.environ.get("GEO_STALL_TIMEOUT") or 2700))
+    except ValueError:
+        return 2700
+
+
+# Between the cancel and the forced release. A cancel that is going to work, works in seconds.
+SLOT_GRACE_SECONDS = 120
+WATCHDOG_TICK_SECONDS = 60
+
+
+def _slot_progress(out_dir):
+    """The topic's liveness signal: the size of its append-only status feed, 0 when absent.
+
+    st_size and not a line count, because this runs once per held slot per tick and the file only
+    ever grows. Parsing it would read and JSON-decode the whole feed to learn one number.
+    """
+    try:
+        return (Path(out_dir) / "status.jsonl").stat().st_size
+    except OSError:
+        return 0
+
+
+def _release_slot(slot):
+    """Give the semaphore its slot back, at most once per slot. Safe to call from anywhere."""
+    if slot["released"]:
+        return False
+    slot["released"] = True
+    _SLOTS.pop(slot["token"], None)
+    TOPIC_SEMAPHORE.release()
+    return True
+
+
+@asynccontextmanager
+async def topic_slot(client_slug, topic_slug, out_dir):
+    """ONE BLOG'S PLACE IN THE ONE QUEUE. Every door goes through here.
+
+    It replaces a bare `async with TOPIC_SEMAPHORE` at all three acquire sites (a batch topic, an
+    answer-driven revise, a repurpose) and takes the same slot with the same fairness. What it adds
+    is that the engine now knows WHO holds each slot and whether they are still moving, which is
+    the whole of what the watchdog needs and the whole of what /api/queue reports.
+
+    The acquire is deliberately OUTSIDE the try: a caller cancelled while waiting never held a
+    slot, so it has nothing to release and nothing to record.
+    """
+    global _SLOT_SEQ
+    waiting_since = time.time()
+    await TOPIC_SEMAPHORE.acquire()
+    _SLOT_SEQ += 1
+    slot = {
+        "token": _SLOT_SEQ,
+        "client": client_slug,
+        "topic_slug": topic_slug,
+        "out_dir": str(out_dir),
+        "task": asyncio.current_task(),
+        "acquired": time.time(),
+        "waited": time.time() - waiting_since,
+        "baseline": _status_baseline(Path(out_dir)),
+        "size": _slot_progress(out_dir),
+        "progress_at": time.time(),
+        "cancelled_at": None,
+        "released": False,
+    }
+    _SLOTS[slot["token"]] = slot
+    if slot["waited"] >= 60:
+        log.info("%s/%s waited %.0fs for a queue slot (%d in use)",
+                 client_slug, topic_slug, slot["waited"], len(_SLOTS))
+    try:
+        yield slot
+    finally:
+        _release_slot(slot)
+
+
+def _sweep_slots(now=None):
+    """One watchdog tick. Returns the slots it force-released, for the test to assert on.
+
+    Split from the loop so it is callable synchronously: a test that had to run a real 60-second
+    timer would be a test nobody runs.
+    """
+    now = time.time() if now is None else now
+    stall = _stall_timeout()
+    freed = []
+    for slot in list(_SLOTS.values()):
+        size = _slot_progress(slot["out_dir"])
+        if size != slot["size"]:
+            # It moved. A blog is healthy for as long as it keeps writing, no matter how long the
+            # whole session takes, which is the entire reason this is not a wall-clock cap.
+            slot["size"], slot["progress_at"] = size, now
+            continue
+        if now - slot["progress_at"] < stall:
+            continue
+        if slot["cancelled_at"] is None:
+            slot["cancelled_at"] = now
+            log.warning(
+                "%s/%s has held a queue slot for %.0fs with no progress for %.0fs; cancelling it",
+                slot["client"], slot["topic_slug"], now - slot["acquired"], now - slot["progress_at"])
+            task = slot["task"]
+            if task is not None and not task.done():
+                task.cancel()
+            continue
+        if now - slot["cancelled_at"] < SLOT_GRACE_SECONDS:
+            continue
+        # THE CANCEL DID NOT LAND, which is the wedge this whole mechanism exists for. Take the
+        # slot back so the queue moves, and give the topic the terminal line it will otherwise
+        # never write: without one the SSE stream stays open forever and the operator's roadmap
+        # stays 409'd behind a run that is already dead.
+        out_dir = Path(slot["out_dir"])
+        if _release_slot(slot):
+            freed.append(slot)
+            log.error(
+                "%s/%s ignored a cancel for %.0fs; releasing its queue slot and failing the topic",
+                slot["client"], slot["topic_slug"], now - slot["cancelled_at"])
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+                _fail_line_if_unterminated(
+                    slot["client"], slot["topic_slug"], out_dir, slot["baseline"],
+                    "the session stopped responding and did not answer a cancel, so the engine "
+                    "reclaimed its queue slot",
+                )
+            except Exception:
+                # A watchdog that can die is a watchdog that stops watching. The slot is already
+                # back, which is the part that unblocks every other brand.
+                log.exception("could not write the stall line for %s/%s",
+                              slot["client"], slot["topic_slug"])
+    return freed
+
+
+async def queue_watchdog():
+    """Ticks forever. Started once by app.py's startup hook, never by a run."""
+    while True:
+        await asyncio.sleep(WATCHDOG_TICK_SECONDS)
+        try:
+            _sweep_slots()
+        except Exception:
+            # Same reason as the inner catch: this loop must outlive any one bad tick.
+            log.exception("queue watchdog tick failed")
+
+
+def queue_state():
+    """What the queue is doing right now, for /api/queue.
+
+    The reason this endpoint exists at all: a wedged queue and an idle one were indistinguishable
+    from every surface the operator has, so a stuck engine read as a slow one for hours.
+    """
+    now = time.time()
+    return {
+        "concurrency": _concurrency(),
+        "in_use": len(_SLOTS),
+        "waiting": len(getattr(TOPIC_SEMAPHORE, "_waiters", None) or ()),
+        "stall_timeout": _stall_timeout(),
+        # None when the engine is dispatching normally. A sentence when it has stopped, because
+        # "no blogs are starting" and "no blogs were submitted" are the same picture otherwise.
+        "dispatch_blocked": breaker_block(),
+        "silent_deaths": _BREAKER["strikes"],
+        "slots": [
+            {
+                "client": s["client"],
+                "topic_slug": s["topic_slug"],
+                "held_seconds": round(now - s["acquired"]),
+                "since_progress_seconds": round(now - s["progress_at"]),
+                "waited_seconds": round(s["waited"]),
+                "cancelled": s["cancelled_at"] is not None,
+            }
+            for s in sorted(_SLOTS.values(), key=lambda s: s["acquired"])
+        ],
+    }
+
+
 def facts_lock(client_slug):
     """The per-client fact-base lock, created on first use.
 
@@ -185,6 +390,74 @@ SHIP_SCORE = 90
 # guard are required, because a slow death with no lines can still be a genuine crash worth
 # retrying and a fast death that DID write lines got somewhere.
 DEAD_SESSION_SECONDS = 60
+
+# THE ENGINE STOPS DISPATCHING INTO A DEAD ACCOUNT, AFTER TWO STRIKES AND NOT AFTER TWELVE.
+#
+# The guard at DEAD_SESSION_SECONDS is per TOPIC: it stops one dead session buying a second dead
+# session, and it works. What it cannot see is that the topic beside it just died the same way,
+# because nothing in this module was allowed to remember. On 2026-08-08 that cost five topics in
+# one second: the usage window was exhausted, five sessions opened, all five died in 8s having
+# written nothing, and five topics went from untouched and retryable to terminal `failed` for no
+# work done. The per-topic guard fired correctly five times and was never the right unit.
+#
+# ENGINE WIDE, NOT PER BRAND, because the thing that dies is the ACCOUNT and the account is not
+# scoped to a brand. The cost of that choice is stated rather than hidden: one genuinely broken
+# brand, whose lead dies instantly on its own config, trips the breaker for every brand. The
+# cooldown is what bounds that to minutes, and any session that writes a single status line clears
+# it at once, so a working engine can never sit tripped.
+#
+# THE STRIKE IS THE SAME SIGNAL THE RETRY GUARD ALREADY COMPUTES, deliberately: a fast death that
+# WROTE lines is a blog that ran and broke, which is a different event and never a strike.
+SILENT_DEATHS_TO_TRIP = 2
+BREAKER_COOLDOWN_SECONDS = 900
+
+_BREAKER = {"strikes": 0, "tripped_at": None, "last": None}
+
+
+def _note_silent_death(client_slug, topic_slug, elapsed):
+    """One strike. Trips the breaker on the second consecutive one."""
+    _BREAKER["strikes"] += 1
+    _BREAKER["last"] = f"{client_slug}/{topic_slug} died in {elapsed:.0f}s"
+    if _BREAKER["strikes"] >= SILENT_DEATHS_TO_TRIP and _BREAKER["tripped_at"] is None:
+        _BREAKER["tripped_at"] = time.time()
+        log.error(
+            "DISPATCH HALTED: %d sessions in a row died in seconds having written nothing "
+            "(latest %s). The usual cause is the account's usage window being exhausted. No new "
+            "blog session will open for %d minutes, or until one writes a status line.",
+            _BREAKER["strikes"], _BREAKER["last"], BREAKER_COOLDOWN_SECONDS // 60,
+        )
+
+
+def _note_session_alive():
+    """A session wrote a status line, so the CLI and the account are working. Clears everything.
+
+    Called on the evidence rather than on success: a blog that runs and then fails honestly still
+    proves the account is alive, and holding the breaker shut over it would halt a working engine.
+    """
+    if _BREAKER["strikes"] or _BREAKER["tripped_at"] is not None:
+        _BREAKER.update(strikes=0, tripped_at=None)
+
+
+def breaker_block():
+    """The reason to refuse a dispatch right now, or None.
+
+    Expiry lets exactly ONE topic probe: the strike count is left one short of the trip, so a
+    single further silent death shuts it again immediately rather than spending a second topic
+    proving what the first just showed.
+    """
+    tripped_at = _BREAKER["tripped_at"]
+    if tripped_at is None:
+        return None
+    left = BREAKER_COOLDOWN_SECONDS - (time.time() - tripped_at)
+    if left <= 0:
+        _BREAKER.update(strikes=SILENT_DEATHS_TO_TRIP - 1, tripped_at=None)
+        return None
+    return (
+        f"the engine stopped opening blog sessions: {SILENT_DEATHS_TO_TRIP} in a row died in "
+        f"seconds having written nothing, which usually means the account's usage window is "
+        f"exhausted. Nothing was spent on this topic and it is unchanged on disk. Retry it in "
+        f"{left / 60:.0f} minutes, or sooner once any session runs."
+    )
 
 
 class PreflightError(Exception):
@@ -575,7 +848,7 @@ def _fail_line_if_unterminated(client_slug, topic_slug, out_dir, baseline, note)
     _status_module().append_status(
         str(out_dir), topic_slug,
         stage=last.get("stage", "research"), event="end",
-        iter=last.get("iter", 1), status="failed", note=note,
+        iter=last.get("iter", 1), status="failed", note=note, died=True,
     )
     return True
 
@@ -778,6 +1051,12 @@ def _summarize(topic_slug, lines):
         "status": terminal["status"] if terminal else "running",
         "score": score,
         "iterations": iterations,
+        # DID THIS RUN REACH A VERDICT, or did the engine write the line for a session that could
+        # not? Read off the TERMINAL line and never off the file, because `score` above is the last
+        # score ANY session left behind: a topic that scored 87 on Monday and whose Tuesday session
+        # died carries both facts at once, and they are both true. The score says there is a draft
+        # worth reading; this says the latest attempt produced no judgement of it.
+        "died": bool(terminal.get("died")) if terminal else False,
     }
 
 
@@ -2083,6 +2362,14 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
                 f"the token PLACEHOLDER and has not been reviewed"
             )
 
+        # THE BREAKER, CHECKED WHERE PREFLIGHT IS AND FOR THE SAME REASON: refusing here costs
+        # nothing and refusing mid-run costs a blog. It raises PreflightError so it inherits the
+        # arm that already writes the terminal failed line and commits, because a topic with no
+        # terminal line hangs its SSE stream forever whatever the reason it was refused.
+        blocked = breaker_block()
+        if blocked is not None:
+            raise PreflightError(blocked)
+
         retries = int(os.environ.get("GEO_RETRIES", "1"))
         attempt = 0
         while True:
@@ -2110,6 +2397,11 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
             elapsed = time.monotonic() - started
 
             lines = _read_status(out_dir)
+            if len(lines) > pre_session:
+                # THE ACCOUNT IS ALIVE. One status line is proof the CLI reached a tool call, which
+                # is the whole of what the breaker doubts, so it clears here rather than on a
+                # verdict: a blog that runs and then fails honestly still proves the engine works.
+                _note_session_alive()
             # Only lines THIS session appended. Over the whole file, a resumed topic finds the
             # PREVIOUS run's terminal line sitting there, breaks on attempt 1, and never retries
             # the dead session this loop exists for; _enforce_terminal_status then returns that
@@ -2130,11 +2422,19 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
                 # SYMPTOM and never a cause: the SDK does not tell us why a session died, and a
                 # usage-limit death arrives here as the string "Claude Code returned an error
                 # result: success", so any diagnosis written in would be a guess on the trail.
+                #
+                # THE STRIKE IS COUNTED HERE, on the one branch that has already established both
+                # halves of the signal: no status line, and dead faster than a session can reach a
+                # tool call. The breaker reads the count and stops the NEXT topic opening a session
+                # at all; this line still records only the symptom, and the guidance about a usage
+                # window lives in the refusal note, which is the engine's own reasoning rather than
+                # a cause attributed to a death nobody explained.
+                _note_silent_death(client_slug, topic_slug, elapsed)
                 last = lines[-1] if lines else {}
                 append_status(
                     str(out_dir), topic_slug,
                     stage=last.get("stage", "research"), event="end",
-                    iter=last.get("iter", 1), status="failed",
+                    iter=last.get("iter", 1), status="failed", died=True,
                     note=f"session died in {elapsed:.0f}s having written no status line; not "
                          f"retried",
                 )
@@ -2148,7 +2448,7 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
                 append_status(
                     str(out_dir), topic_slug,
                     stage=last.get("stage", "research"), event="end",
-                    iter=last.get("iter", 1), status="failed",
+                    iter=last.get("iter", 1), status="failed", died=True,
                     note="session died without writing a terminal status line",
                 )
                 lines = _read_status(out_dir)
@@ -2193,7 +2493,7 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
         append_status(
             str(out_dir), topic_slug,
             stage="research", event="end",
-            iter=1, status="failed", note=str(exc),
+            iter=1, status="failed", note=str(exc), died=True,
         )
         # A refused topic commits too: the terminal failed line is a record the
         # dashboard reads, and waiting for the startup reconciler would leave the
@@ -2238,7 +2538,7 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
         append_status(
             str(out_dir), topic_slug,
             stage="research", event="end",
-            iter=1, status="failed",
+            iter=1, status="failed", died=True,
             note=f"{type(exc).__name__}: {exc}",
         )
         # A CRASH THAT LANDS ON A CURRENT QUESTION HOLDS THE BLOG, exactly as a clean loop-end or a
@@ -2789,7 +3089,7 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=Non
     clarified_shipped = False
 
     try:
-        async with TOPIC_SEMAPHORE:
+        async with topic_slot(client_slug, topic_slug, out_dir):
             # A REVISE IS ONE BLOG AND TAKES ONE SLOT, in the same queue a Create-tab batch, a
             # retry and a repurpose take theirs. It used to take a repo-wide lock instead, which
             # is why both routes that dispatch it refused outright while any run for the brand was
@@ -3062,7 +3362,7 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=Non
         # nothing to restore.
         append_status(
             str(out_dir), topic_slug, stage="revise", event="end", iter=iteration,
-            status="failed", note=str(exc),
+            status="failed", note=str(exc), died=True,
         )
         # Commit the terminal failed line after the append. Nothing touched the draft, so the
         # only thing that moves is the line itself. Fire-and-forget; the re-raise is unchanged.
@@ -3275,7 +3575,7 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
         # the operator's sheet position rather than an accident of selection.
         index = row.get("index", position)
         try:
-            async with TOPIC_SEMAPHORE:
+            async with topic_slot(client_slug, topic_slug, output_dir(client_slug, topic_slug)):
                 # THE RUN IS RUNNING FROM ITS FIRST SLOT, and mark_running being idempotent is
                 # what makes calling it from all five of them correct. A batch whose topics are
                 # still queued has started nothing, so this is the earliest honest moment for

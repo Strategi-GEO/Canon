@@ -89,7 +89,47 @@ quota buys a handful of FINISHED blogs and leaves the rest untouched, and an unt
 retries clean where a half-done one does not. The only per-client serialisation left is
 `runner.facts_lock(<slug>)`, held across the fact base build alone, because
 `canonical-facts.md` is client scoped and two runs for one brand must not build it twice.
+
+**A SLOT IS HELD ONLY BY WORK THAT IS PROVABLY ALIVE, AND A WATCHDOG IS WHAT MAKES THAT TRUE.**
+`async with` gives a slot back on every path a coroutine can UNWIND, and a wedged one unwinds on
+none: a task suspended inside `asyncio.to_thread` never resumes to acknowledge a cancel, because a
+thread cannot be cancelled. Two of those at the default width halted every brand in the repo until
+someone restarted the process, SILENTLY, and the dashboard read exactly like an idle engine, every
+topic queued and none running. A duration cap is not the fix and looks like one: `asyncio.wait_for`
+awaits the cancellation it just requested, so it hangs in the same place still holding the slot,
+and it charges every slow blog for the sins of a stuck one. PROGRESS IS THE HEARTBEAT instead,
+because the engine already emits one: `status.jsonl` is append only, so its size is a monotonic
+liveness signal costing one `stat()`. A blog is healthy while that file grows, for as long as it
+likes; it is wedged when the file has not grown in `GEO_STALL_TIMEOUT` (default 45 minutes, longer
+than any stage a real session has ever run). `runner._sweep_slots` then cancels ONCE, and if the
+slot is still held two minutes later it RECLAIMS the slot and writes the topic's terminal `failed`
+line, because a topic with no terminal line hangs its SSE stream forever. That reclaim deliberately
+breaks the cap in the only direction worth breaking it: a holder that later revives makes
+`GEO_CONCURRENCY`+1 blogs run once, and running one extra blog once beats running zero forever. The
+release is IDEMPOTENT, which is load-bearing, because the watchdog and the holder's own `finally`
+both call it and a second release would raise the cap for the life of the process. `GET /api/queue`
+reports slots in use, who holds each, and seconds since each last moved, because a wedged queue and
+an idle one were otherwise indistinguishable from every surface an operator has.
 `tests/queue_check.py` pins all of this.
+
+**THE ENGINE STOPS DISPATCHING INTO A DEAD ACCOUNT AFTER TWO STRIKES, NOT AFTER TWELVE.** A session
+that dies faster than `DEAD_SESSION_SECONDS` having written NO status line is not retried, and that
+guard is per TOPIC: it stops one dead session buying a second, and it cannot see that the topic
+beside it just died the same way. On 2026-08-08 that cost five topics in one second, when the usage
+window was exhausted, five sessions opened, all five died in 8s having written nothing, and five
+untouched retryable topics became terminal `failed` for no work done. `SILENT_DEATHS_TO_TRIP`
+consecutive strikes now halt dispatch: the next topic raises `PreflightError` BEFORE any SDK spawn,
+so it inherits the arm that already writes a terminal line and commits, because a topic with no
+terminal line hangs its stream whatever refused it. The breaker is ENGINE WIDE, because the thing
+that dies is the ACCOUNT and an account is not scoped to a brand; the cost, stated rather than
+hidden, is that one brand whose lead dies instantly on its own config halts every brand for
+`BREAKER_COOLDOWN_SECONDS`. TWO DOORS LEAD OUT AND NEITHER NEEDS AN OPERATOR: any session that
+writes a single status line clears it at once, because one line proves the CLI reached a tool call,
+which is the whole of what the breaker doubts; and the cooldown elapsing lets exactly ONE topic
+probe, with the strike count left one short so a single further death shuts it again rather than
+spending a second topic proving what the first just showed. The strike is counted on the retry
+guard's own branch and never on a fast death that WROTE lines, which is a blog that ran and broke.
+`tests/retry_guard_check.py` pins both directions.
 
 Inside one blog's session, the **session lead** dispatches specialised subagents in sequence
 for that single topic. The lead NEVER writes the blog itself. Each subagent carries a minimal
@@ -304,6 +344,30 @@ Agents append lines by running the helper, never by hand-writing JSON:
 python3 .claude/status.py --out <output_dir> --slug <slug> --stage eval --event end --iter 2 --score 96 --status running --note "..."
 ```
 `--score` and `--note` are optional; the helper stamps `ts` and validates the enum.
+
+**A TERMINAL `failed` LINE MAY CARRY `"died": true`, AND ONLY THE ENGINE EVER WRITES IT.** The word
+`failed` wore two opposite meanings. A loop that RAN, scored, and missed the bar leaves a real draft
+an operator reads and may send on their own authority; a run that reached NO verdict leaves nothing
+to judge and wants a retry, and reading its number as a verdict reads a score that was never taken
+of it. The flag separates them, and the invariant is exact and needs no note-parsing: EVERY terminal
+`failed` line the ENGINE writes is a death, and every one the LEAD writes is a verdict. It holds by
+construction, because the lead writes through `.claude/status.py`'s CLI and that CLI deliberately
+offers NO flag for the field: a lead that reached a verdict is not dead, and one that died is not
+there to say so. The engine's six write sites are the fast silent death, retries spent, the
+unterminated sweeps and the watchdog reclaim, the preflight or config refusal, the crash arm, and
+the revise refusal.
+
+**IT IS NOT A FOURTH TERMINAL STATUS AND MUST NOT BECOME ONE.** `failed` still means exactly what
+this file says, so every rule resting on that word holds untouched: the three-case resolver table,
+the ledger, and the send door's refusal of a failed record with no evaluator-scored draft. This is
+the REASON beside the verdict, which is why it is a flag. The field is OMITTED when false, so every
+line written before it existed reads identically to one written after, and absent means not died.
+`status.py` refuses it on any status other than `failed`, because a `done` blog did not die.
+
+Downstream it is one derived state, `died`, whose admin bench carries `edit` and `comments` and NO
+ship door: send and publish are the operator overruling the bar on a draft an evaluator judged, and
+here nothing judged anything, so the only exit is generating the topic again.
+`tests/retry_guard_check.py` and `dashboard/tests/blog-state.test.ts` pin both directions.
 
 ## Preflight
 Before starting a topic, refuse to run if `clients/<slug>/canonical-facts.md` is missing or

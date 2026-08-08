@@ -20,6 +20,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError, api } from "@/lib/api";
 import { brandHref } from "@/lib/orgs-context";
 import { HOSTED_READONLY } from "@/lib/hosted";
+import { inMonth } from "@/lib/blog-month";
 import { adminTag, blogState } from "@/lib/blog-state";
 import { formatCount } from "@/lib/format";
 import {
@@ -208,16 +209,31 @@ function Library({
     reload: reloadQuestions,
   } = useBlogQuestions(brandSlug, topicSlugs);
 
+  /**
+   * The month the picker is showing, before the search box and the status filter touch it. The
+   * two notices on this page are counted against THIS and not against `blogs`: a banner naming
+   * three held blogs on a month whose list holds none of them is a banner about somebody else's
+   * month, and the operator cannot act on one row of it. Not `shown` either, because typing in
+   * the search box must not silence a blog that is still held.
+   */
+  const monthBlogs = React.useMemo(
+    () => (blogs ?? []).filter((blog) => inMonth(blog, month, latestMonth)),
+    [blogs, month, latestMonth],
+  );
+
   const waiting = React.useMemo(() => {
+    const inScope = new Set(monthBlogs.map((blog) => blog.topic_slug));
     const signals = new Map<string, WaitingSignal>();
     for (const [slug, entry] of byTopic) {
       const signal = waitingSignal(entry.payload);
-      if (signal !== null) {
+      // Every row the table renders is in this month, so scoping here can never strip a signal
+      // off a visible row. It only stops another month's holds being counted in the banner.
+      if (signal !== null && inScope.has(slug)) {
         signals.set(slug, signal);
       }
     }
     return signals;
-  }, [byTopic]);
+  }, [byTopic, monthBlogs]);
 
   /**
    * The bell hears about the portal HERE, at the reads that discover it, because the portal
@@ -357,7 +373,11 @@ function Library({
   useHotkey("arrowup", () => move(-1), engaged);
   useHotkey("/", () => searchRef.current?.focus());
 
-  const total = blogs?.length ?? 0;
+  // The month on screen is the whole list as far as this page's counts and empty state are
+  // concerned. `anyBlogs` is the brand-wide question, and only Download all asks it: that button
+  // bundles every blog the brand has, so a month with nothing in it must not hide it.
+  const total = monthBlogs.length;
+  const anyBlogs = (blogs?.length ?? 0) > 0;
   const filtering = url.query.trim() !== "" || url.status !== "all";
 
   return (
@@ -431,7 +451,7 @@ function Library({
           </Button>
           {/* Desktop-only (the engine builds the .docx) and only when there is something to
               bundle. Downloads ALL blogs, ignoring the search and status filters above. */}
-          {!HOSTED_READONLY && total > 0 ? (
+          {!HOSTED_READONLY && anyBlogs ? (
             <Button
               variant="outline"
               size="sm"
@@ -457,7 +477,15 @@ function Library({
 
       {!error && blogs !== null ? (
         total === 0 ? (
-          <NoBlogs brandName={brandName} createHref={brandHref(orgSlug, brandSlug, "/create")} />
+          <NoBlogs
+            brandName={brandName}
+            // Only with a picker on screen. With one month there is nothing to name, and "no
+            // blogs in Month 1" would suggest a month the operator could switch away from.
+            monthLabel={months && months.length > 1
+              ? months.find((m) => m.month === month)?.label ?? null
+              : null}
+            createHref={brandHref(orgSlug, brandSlug, "/create")}
+          />
         ) : (
           <>
             <Card className="overflow-hidden p-0">
@@ -498,7 +526,10 @@ function Library({
               </p>
             </div>
 
-            {(blogs ?? []).some((blog) => blog.status === "needs_review") ? (
+            {/* Scoped to the month on screen, exactly as the banner above is. This explains rows
+                the operator can see, so last month's holds must not summon it onto a month whose
+                list has none. */}
+            {monthBlogs.some((blog) => blog.status === "needs_review") ? (
               // Quiet, and never styled as an error: needs_review is the pipeline working.
               //
               // It says questions rather than reasons because that is now the whole of what the
@@ -576,14 +607,26 @@ function NoMatches({ onClear }: { onClear: () => void }) {
   );
 }
 
-function NoBlogs({ brandName, createHref }: { brandName: string; createHref: string }) {
+function NoBlogs({
+  brandName,
+  monthLabel,
+  createHref,
+}: {
+  brandName: string;
+  /** The month on screen, when a picker is offering more than one. Null means say nothing. */
+  monthLabel: string | null;
+  createHref: string;
+}) {
   return (
     <Card>
       <CardContent className="py-14 text-center">
         <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-muted">
           <FileText className="size-5 text-muted-foreground" aria-hidden />
         </div>
-        <p className="mt-3 text-sm font-medium text-foreground">No blogs for {brandName} yet</p>
+        <p className="mt-3 text-sm font-medium text-foreground">
+          No blogs for {brandName}
+          {monthLabel ? ` in ${monthLabel}` : ""} yet
+        </p>
         <p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-muted-foreground">
           This list reads the disk, so a blog appears here the moment the engine writes it.
           Pick topics from the roadmap to start.

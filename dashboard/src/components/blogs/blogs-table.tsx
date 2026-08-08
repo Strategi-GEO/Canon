@@ -438,7 +438,7 @@ function Score({
     return <span className="text-xs text-muted-foreground">no score</span>;
   }
   // Coloured by band, not by ledger membership: at or above 90 green because the run shipped,
-  // BELOW_BAR_FLOOR to 89 amber for the near miss the operator decides on, below it red. This used to paint
+  // BELOW_BAR_FLOOR to SHIP_BAR-1 amber for the near miss the operator decides on, below it red. This used to paint
   // green only when the ledger held the topic, which disagreed with the stage page's own
   // score>=95 rule; scoreClass is now the one source both read.
   return <span className={cn("machine text-sm font-medium", scoreClass(score))}>{score}</span>;

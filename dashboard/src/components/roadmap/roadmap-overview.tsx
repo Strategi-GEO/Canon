@@ -184,8 +184,9 @@ export function RoadmapOverview({
             Content roadmap
           </h2>
           <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-muted-foreground">
-            The topic list {brandName}&apos;s blogs are written from, and where it stands.
-            Picking topics and writing them happen on Create Blogs.
+            This month&apos;s topic list for {brandName}, and where it stands. Earlier months are
+            on the Blogs tab, behind its month picker. Picking topics and writing them happen on
+            Create Blogs.
           </p>
         </div>
 
@@ -290,16 +291,15 @@ export function RoadmapOverview({
             <StatTile
               label="Topics on the roadmap"
               value={stats.topics}
-              note={`Everything ${brandName} has planned to write.`}
+              note={`Everything ${brandName} has planned to write this month.`}
             />
-            {/* The outcome tiles count every blog on disk, not only the ones whose row is
-                still on the sheet, so this states the population they are counted against. It
-                can legitimately exceed the topic count: blogs outlive the sheets that planned
-                them, and a brand keeps every blog it has ever written. */}
+            {/* Every tile on this page counts THIS MONTH, which is the sheet the tab is reading.
+                Earlier months are on the Blogs tab behind its month picker. The number can still
+                exceed the topic count, by blogs made off the roadmap. */}
             <StatTile
               label="Blogs written"
               value={stats.blogs}
-              note={`Every blog ${brandName} has on disk, across every roadmap it has had.`}
+              note={`This month's blogs for ${brandName}, on disk.`}
             />
             <StatTile
               label="Shipped"
@@ -314,11 +314,27 @@ export function RoadmapOverview({
               note="Written and waiting on a person, not broken. A blog lands here when the evaluator asked something only you can answer, and it waits whatever it scored: a 96 with an open question is held too."
             />
             <StatTile
-              label="Failed"
+              label="Below bar"
               value={stats.failed}
               tone="fail"
-              note="The run ended without a draft that could ship."
+              note="The loop ran, scored the draft, and it missed 90. There is an article to read, and sending it anyway is your call."
             />
+            {/* Only when there is one, like Stopped and Running: most runs finish, and a tile
+                reading zero would put a permanent reminder of a thing that did not happen on a
+                page whose job is the numbers that mean something.
+
+                SEPARATE FROM "Below bar" BECAUSE THE TWO WANT OPPOSITE THINGS. That one is a
+                judgement the operator makes about a draft an evaluator scored. This one is work
+                the engine still owes: nothing judged the article, so any score it carries is an
+                earlier attempt's, and the fix is to generate the topic again. */}
+            {stats.died > 0 ? (
+              <StatTile
+                label="Did not finish"
+                value={stats.died}
+                tone="fail"
+                note={`${plural(stats.died, "This run", "These runs")} reached no verdict: the session died, stopped responding, or was refused before it opened. Generate ${plural(stats.died, "the topic", "the topics")} again.`}
+              />
+            ) : null}
             {/* Only when there is one, like Running below: most brands were never stopped, and a
                 tile reading zero would put a permanent reminder of a thing that never happened on
                 a page whose job is the numbers that mean something.

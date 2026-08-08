@@ -82,9 +82,10 @@ export function SelectState({
   loading: boolean;
   /** Topic slugs in a live run right now, from GET /api/runs and the SSE stream. */
   live: ReadonlySet<string>;
-  /** Topic slugs whose last terminal status was failed AND scored below 85. */
+  /** Topic slugs whose last terminal status was failed AND scored under BELOW_BAR_FLOOR. */
   failed: ReadonlySet<string>;
-  /** Topic slugs that ended failed but scored 85 to 89: yellow "below bar", not red. */
+  /** Topic slugs that ended failed but landed in the BELOW_BAR_FLOOR to SHIP_BAR-1 band:
+   *  yellow "below bar", not red. Named by the constants because the band has moved once. */
   belowBar: ReadonlySet<string>;
   /** Topic slugs whose blog is held for the operator's answer (status needs_review). */
   needsReview: ReadonlySet<string>;

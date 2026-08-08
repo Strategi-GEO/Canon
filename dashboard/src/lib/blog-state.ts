@@ -65,6 +65,14 @@ export type BlogState =
   | "published"
   /** The loop exhausted itself with nothing to ask. A machine's answer, not a human's task. */
   | "failed"
+  /**
+   * The run reached NO verdict: the session died, stopped responding, or was refused before it
+   * opened. Split out of `failed` because the two want opposite things from the operator and
+   * wore one word. A `failed` blog has a draft that was read and scored, so the question is
+   * whether to send it. This one was never judged, so there is nothing to decide and the answer
+   * is a retry. Reading its score as a verdict reads a number that belongs to an earlier attempt.
+   */
+  | "died"
   /** The operator ended the run before it reached a verdict. Not a failure. */
   | "stopped"
   /** No readable status line. Real on the wire, so it is handled rather than assumed away. */
@@ -73,6 +81,16 @@ export type BlogState =
 /** Exactly the fields both backends already return for a blog. Nothing derived, nothing extra. */
 export type BlogStateFacts = {
   status: string;
+  /**
+   * Whether the terminal `failed` line was written by the ENGINE for a session that produced no
+   * verdict, rather than by the lead reporting one. Absent reads as false, so a backend too old
+   * to report it degrades to the old behaviour of calling every failure `failed`.
+   *
+   * IT IS NOT A FOURTH TERMINAL STATUS, and that is deliberate: `failed` still means what the
+   * engine contract says, so the resolver's table, the ledger and the send door's refusal of a
+   * failed record with no scored draft all hold unchanged. This is the reason beside the verdict.
+   */
+  died?: boolean;
   /**
    * Whether a run owns this topic RIGHT NOW, from the run registry rather than from the status
    * feed. Absent means "this backend does not report it", which falls back to the status test.
@@ -228,7 +246,10 @@ export function blogState(facts: BlogStateFacts): BlogState {
     return "internal_review";
   }
   if (facts.status === "failed") {
-    return "failed";
+    // BELOW every stamp above it, because a died run does not un-send or un-approve an article
+    // that was already delivered: the stamps record human acts on a draft that exists, and a
+    // later session dying says nothing about them.
+    return facts.died ? "died" : "failed";
   }
   if (facts.status === "stopped") {
     return "stopped";
@@ -412,6 +433,17 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   // topic is deliberately NOT a verb here, because a retry is a RUN: the roadmap keeps failed
   // rows selectable, and the stage links there with the row pre-ticked.
   failed: ["edit", "comments", "send", "publish"],
+  // NO SHIP DOOR, and the absence is the whole point of the state. `send` and `publish` release
+  // a draft on the operator's authority, and that authority rests on their having READ a scored
+  // draft: the failed row above offers both precisely because an evaluator judged it and they can
+  // disagree with the bar. Here nothing judged anything, so there is no verdict to overrule and
+  // the engine refuses the send anyway (a failed record with no evaluator-scored draft). Offering
+  // a button whose only outcome is a refusal is how an operator learns to distrust the bench.
+  //
+  // `edit` and `comments` SURVIVE, because a died run often leaves a real draft from an earlier
+  // attempt and reading or annotating it costs nothing. Retrying is a RUN and so is not a verb
+  // here, exactly as it is not on `failed`: the roadmap keeps the row selectable.
+  died: ["edit", "comments"],
   // Never reaches a client and carries no review loop: a stopped topic has no verdict at all
   // (no score describes it), so there is nothing to release and its only exit is generating
   // again.
@@ -504,6 +536,7 @@ const CLIENT_ACTIONS: Record<BlogState, readonly ClientAction[]> = {
   // Live on their site. The conversation about getting it there is over.
   published: [],
   failed: [],
+  died: [],
   stopped: [],
   unknown: [],
 };
@@ -664,6 +697,17 @@ const ADMIN_TAGS: Record<BlogState, StateTag> = {
     tone: "trouble",
     detail: "The run finished without reaching a shippable draft and had nothing to ask.",
   },
+  died: {
+    label: "Did not finish",
+    tone: "trouble",
+    detail:
+      // No admin-only vocabulary in the STRING, deliberately: this file is shared with the client
+      // surface and portal_check forbids that word in code, prose included, because a literal is
+      // not a comment. The distinction the operator needs survives without it.
+      "The run reached no verdict: the session died, stopped responding, or was refused before " +
+      "it opened. Nothing judged this article, so anything the row shows came from an earlier " +
+      "attempt. Generate the topic again.",
+  },
   stopped: {
     label: "Stopped",
     tone: "trouble",
@@ -734,6 +778,7 @@ const CLIENT_TAGS: Record<BlogState, StateTag> = {
   },
   // Never rendered: clientCanSee is false for all three. Present so the map is total.
   failed: { label: "In progress", tone: "busy", detail: "Our team is working on this article." },
+  died: { label: "In progress", tone: "busy", detail: "Our team is working on this article." },
   stopped: { label: "In progress", tone: "busy", detail: "Our team is working on this article." },
   unknown: { label: "In progress", tone: "busy", detail: "Our team is working on this article." },
 };
@@ -793,8 +838,8 @@ export function adminCommentsTag(pendingComments: number): StateTag {
 
 /**
  * The other face of the failed tag, split on the one fact the state cannot carry: the score. A
- * draft that scored 85 to 89 is BELOW BAR, one rerun from the 90 ship bar, not a plain failure;
- * below 85 is the failure the red tag is for. Both are the `failed` STATE and both keep its bench
+ * draft inside lib/blog-score's below-bar band is one rerun from the ship bar, not a plain failure;
+ * under that floor is the failure the red tag is for. Both are the `failed` STATE and both keep its bench
  * (edit, comments, send) and its retry-by-roadmap exit, so this is a label split exactly like
  * adminCommentsTag, never a new state. Tone `owed` (amber): the operator owes a decision, retry
  * for the bar or send it, and amber is not the fail red. A missing score reads as the plain
@@ -803,12 +848,19 @@ export function adminCommentsTag(pendingComments: number): StateTag {
 // Exported for the admin-only score helpers in lib/blog-score.ts, which own the score-to-band
 // arithmetic. The LABEL stays here with every other label; the arithmetic that reads a number
 // cannot, because a score never crosses the client wire and this module ships to the portal.
+// NO BAND EDGES IN THE SENTENCE, and the omission is deliberate rather than lazy. This read
+// "Scored 85 to 89, just below the 90 ship bar" for as long as the floor was 85 and went on
+// saying it after the floor moved to 80, so the tag described a band the code had stopped using.
+// It cannot import the constants to fix that: blog-score.ts imports THIS module, so the numbers
+// would close a cycle, and the file ships to the portal where a score may not appear at all. The
+// edges therefore live only in blog-score.ts, which owns the arithmetic, and the row already
+// shows the actual number beside this tag.
 export const ADMIN_BELOW_BAR_TAG: StateTag = {
   label: "Below bar",
   tone: "owed",
   detail:
-    "Scored 85 to 89, just below the 90 ship bar, with nothing left to ask. Retry it to try for " +
-    "90, or send it to the client if you have read it and are happy with it.",
+    "Under the ship bar with nothing left to ask, and close enough that a rerun is worth it. " +
+    "Retry it for the bar, or send it to the client if you have read it and are happy with it.",
 };
 
 /**
@@ -841,6 +893,10 @@ const ADMIN_URGENCY: Record<BlogState, number> = {
   // below it, and the rerun is cheap to dispatch once it is seen.
   answers_submitted: 2,
   failed: 3,
+  // WITH `failed`, one rank apart and above it. Both are the operator's to look at rather than
+  // anyone else's, and this one is fractionally more urgent because its fix is a button they
+  // press rather than a judgement they make: a died row is work the engine still owes.
+  died: 3.5,
   unknown: 4,
   stopped: 5,
   internal_review: 6,

@@ -292,7 +292,15 @@ export async function GET(
       // one of them stops compiling. It has drifted twice, both times by a key living here and not
       // there, and both times the portal silently took a blogState fallback this route never took.
       // Spread into the payload below so the wire shape is unchanged.
+      // FALSE ON BOTH RECORD-BACKED SURFACES, and it is a stated limitation rather than drift.
+      // `died` is a fact of the STATUS FEED (which writer appended the terminal line), and neither
+      // of these producers reads status.jsonl: they fold the record, which does not carry it. False
+      // is exactly what "not reported" means for this key everywhere else, so both degrade to the
+      // old behaviour of calling every failure `failed`. The client surface is unaffected either
+      // way, because CLIENT_TAGS gives `died` and `failed` the same words and clientCanSee denies
+      // both. Storing the flag on the record is what would lift this, and it wants a migration.
       const stateFacts: ProducedStateFacts = {
+        died: false,
         status: folded.status,
         sent_to_client: topic.sent_to_client_at,
         client_approved: topic.client_approved_at,

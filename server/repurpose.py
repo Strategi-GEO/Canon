@@ -139,7 +139,9 @@ async def run_repurpose(client_slug, source_topic_slug, channel, source_body,
     baseline = len(runner._read_status(out_dir))
 
     try:
-        async with runner.TOPIC_SEMAPHORE:
+        # The synthetic slug, not the source topic's: this session's own status feed lives in
+        # out_dir, and that feed is what the watchdog reads to decide the slot is still alive.
+        async with runner.topic_slot(client_slug, synthetic, out_dir):
             runner.mark_running(run_id)
             append(str(out_dir), synthetic, stage="write", event="start", iter=1,
                    status="running", note=f"repurpose to {channel}")

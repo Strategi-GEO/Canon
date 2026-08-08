@@ -293,7 +293,7 @@ export function CreateForBrand({
     () => liveTopicSlugs(stream.topics, finished),
     [stream.topics, finished],
   );
-  // A failed blog that scored 85 to 89 is BELOW BAR, a near miss rather than a plain failure:
+  // A failed blog inside the below-bar band is a near miss rather than a plain failure:
   // split by the same isBelowBar the Blogs tab tag uses, so its row wears the yellow "below bar"
   // chip rather than red, and one blog cannot read "failed" here and "Below bar" there. Both are
   // the failed verdict and the two sets are disjoint.

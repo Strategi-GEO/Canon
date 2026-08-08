@@ -197,6 +197,26 @@ async def _reconcile_on_startup():
 
 
 @app.on_event("startup")
+async def _start_queue_watchdog():
+    """The one thing standing between a wedged session and a bricked engine.
+
+    A blog session that stops responding holds its queue slot forever, because `async with`
+    releases only when a coroutine UNWINDS and a task suspended in a thread never does. At the
+    default width of two, two of those halt every brand in the repo until someone restarts this
+    process, silently: the dashboard shows every topic queued and none running, which is exactly
+    what an idle engine looks like. runner.queue_watchdog reclaims the slot; /api/queue is how
+    anyone can tell the two apart. See the block above runner.topic_slot.
+
+    Started here rather than lazily on the first run, because the failure it catches is one the
+    run itself cannot notice, and one tick per minute over an idle engine costs a stat() of
+    nothing.
+    """
+    task = asyncio.create_task(runner.queue_watchdog())
+    _STARTUP_TASKS.add(task)
+    task.add_done_callback(_STARTUP_TASKS.discard)
+
+
+@app.on_event("startup")
 async def _fail_stranded_comment_applies():
     """A comment apply lives in an in-memory task, so a restart orphans any comment this
     engine left marked applying: it would hold the in-flight cap, refuse dismissal, and
@@ -1805,6 +1825,11 @@ def _scratch_entry(slug, topic_slug, led, row_index):
         "score": summary.get("score"),
         "status": summary.get("status") or "unknown",
         "iterations": summary.get("iterations"),
+        # DID THE LATEST RUN REACH A VERDICT? False on a `failed` row means the loop ran and missed
+        # the bar, so there is a draft to read and a decision to make. True means the run produced
+        # no judgement at all, so the row wants a retry and its score, if any, belongs to an
+        # earlier attempt. See runner._summarize.
+        "died": bool(summary.get("died")),
         # Always None on this path: a live/mid-run topic has committed no version, so there is no
         # terminal eval to explain a failure yet. The key is present for the one response shape,
         # exactly like version_no and uploaded below.
@@ -1885,6 +1910,7 @@ def _blog_history(slug):
             "score": version_score,
             "status": summary.get("status") or "unknown",
             "iterations": summary.get("iterations"),
+            "died": bool(summary.get("died")),
             # WHY THIS DRAFT DID NOT SHIP, surfaced verbatim so a failed row shows its reason
             # without opening the blog. This is the evaluator's own eval.md (blog_versions.eval_body),
             # which IS the response explaining the failure, not a second copy of it. NULL at the
@@ -3202,6 +3228,22 @@ class GenerateRequest(BaseModel):
     # in api_generate so it rides down to run_topic, which lays it down as a file every agent
     # reads. It ranks with the brand instructions (major priority, never above canonical-facts).
     session_instructions: Optional[str] = None
+
+
+@app.get("/api/queue")
+async def api_queue(user: auth.Identity = Depends(auth.require_admin)):
+    """What the one queue is doing: slots in use, who holds each, and how long since it moved.
+
+    IT EXISTS BECAUSE A WEDGED QUEUE AND AN IDLE ONE LOOKED IDENTICAL. Every surface reads
+    status.jsonl, so a blog whose session hung wrote nothing and rendered exactly like a blog
+    waiting its turn, and a stuck engine read as a slow one for hours. `since_progress_seconds`
+    beside `stall_timeout` is the whole answer: one number says whether the watchdog is about to
+    act, and until now nothing in the app could report either.
+
+    Admin only and repo-wide, because the queue is repo-wide: scoping it per brand would describe
+    a cap that is not per brand. It reads in-process state and touches no database.
+    """
+    return runner.queue_state()
 
 
 @app.get("/api/runs")

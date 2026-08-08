@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { BELOW_BAR_FLOOR, SHIP_BAR } from "@/lib/blog-score";
 import { cn } from "@/lib/utils";
 import type { RowState } from "@/components/create/row-status";
 import type { RoadmapRow } from "@/types";
@@ -63,8 +64,9 @@ export const ROW_STYLES: Record<
     chip: "border-fail/25 bg-fail-bg text-fail",
     chipLabel: "failed",
   },
-  // Yellow, the review/owed token, split off failed by score: 85 to 89 is one rerun from the 90
-  // bar, not a plain failure, so it carries the same "below bar" meaning the Blogs tab tag does.
+  // Yellow, the review/owed token, split off failed by score: the below-bar band is one rerun
+  // from the ship bar, not a plain failure, so it carries the same "below bar" meaning the Blogs
+  // tab tag does. The band's edges live in lib/blog-score and are never written out here.
   // The hue is shared with the amber states above and the chip label carries the difference colour
   // cannot. Selectable like failed, because retrying for 90 is exactly what an operator wants.
   below_bar: {
@@ -165,8 +167,15 @@ export function RowNote({
 
   if (state === "below_bar") {
     return (
+      // FROM THE CONSTANTS, NEVER FROM LITERALS. This sentence said "85 to 89" for as long as the
+      // floor was 85 and kept saying it after the floor moved to 80, so the chip and the sentence
+      // explaining it named two different bands on the same row. A number an operator reads off
+      // the screen has to be the number the code compares against.
       <p className="mt-1.5 text-xs text-review">
-        Scored 85 to 89, just below the 90 ship bar. Tick it to rerun for 90.
+        Scored <span className="machine">{BELOW_BAR_FLOOR}</span> to{" "}
+        <span className="machine">{SHIP_BAR - 1}</span>, below the{" "}
+        <span className="machine">{SHIP_BAR}</span> ship bar. Tick it to rerun for{" "}
+        <span className="machine">{SHIP_BAR}</span>.
       </p>
     );
   }

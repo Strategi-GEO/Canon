@@ -29,11 +29,12 @@ export type RowState =
    * never here, so this row cannot be selected to generate.
    */
   | "needs_review"
-  /** Its last terminal status was failed AND it scored below 85. Red, still selectable to
+  /** Its last terminal status was failed AND it scored under BELOW_BAR_FLOOR. Red, still selectable to
    *  retry. */
   | "failed"
   /**
-   * Its last run ended failed but scored 85 to 89: a point or two under the 90 ship bar, still a
+   * Its last run ended failed but landed in the BELOW_BAR_FLOOR to SHIP_BAR-1 band, under the
+   * ship bar but close enough to be worth a rerun rather than a rewrite, still a
    * failed verdict and not a shipped blog. Yellow and SELECTABLE, exactly like failed, because a
    * rerun for the bar is the obvious next move, and sending it is the other. It is the
    * create-page face of the Blogs tab's "Below bar" tag, split off failed by the same isBelowBar
@@ -48,12 +49,13 @@ export type RowFacts = {
   /** Topic slugs in a live run right now, from GET /api/runs and the SSE stream. */
   live: ReadonlySet<string>;
   /**
-   * Topic slugs whose last terminal status was failed AND scored below 85, from GET
-   * /api/clients/{brand}/blogs. The 85-to-89 failures live in `belowBar` instead.
+   * Topic slugs whose last terminal status was failed AND scored under BELOW_BAR_FLOOR, from GET
+   * /api/clients/{brand}/blogs. The near misses inside the band live in `belowBar` instead. The
+   * edge is never written out here: lib/blog-score owns it and it has moved once already.
    */
   failed: ReadonlySet<string>;
   /**
-   * Topic slugs that ended failed but scored 85 to 89, split from `failed` by the shared
+   * Topic slugs that ended failed but landed in the below-bar band, split from `failed` by the shared
    * isBelowBar so they wear the yellow "below bar" chip, not the red one. The two sets are
    * disjoint by construction.
    */

@@ -675,6 +675,12 @@ export type StatusEvent = {
   score: number | null;
   status: RunStatus;
   note: string;
+  /**
+   * Present and true only on a terminal `failed` frame the ENGINE wrote for a session that
+   * reached no verdict. Absent on every other frame, including every frame written before the
+   * field existed, so absent reads as false. See BlogSummary.died.
+   */
+  died?: boolean;
 };
 
 /** The final SSE frame on the "run" event channel. */
@@ -715,6 +721,19 @@ export type BlogSummary = {
    */
   reason?: string | null;
   status: BlogStatus;
+  /**
+   * On a `failed` row: did the run reach a VERDICT, or none at all?
+   *
+   * False means the loop ran, scored, and missed the bar, so there is a draft that was read and
+   * judged and the only open question is whether to send it. True means the engine wrote this
+   * line for a session that produced no judgement: it died, stopped responding, or was refused
+   * before it opened. Then `score` above, if any, belongs to an EARLIER attempt and says nothing
+   * about this run, and the row wants a retry rather than a decision.
+   *
+   * Optional on the wire for the same engine-age reason as `reason`: absent reads as false, which
+   * is how every status line written before the flag existed already reads.
+   */
+  died?: boolean;
   /** Null on the same path that produces status "unknown": no status line, no count. */
   iterations: number | null;
   shipped: boolean;

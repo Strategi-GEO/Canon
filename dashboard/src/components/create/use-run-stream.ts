@@ -57,6 +57,12 @@ export type TopicRun = {
   scores: Map<number, number>;
   iter: number;
   status: RunStatus;
+  /**
+   * On a `failed` topic: did the run reach a verdict, or none at all? The live card needs the
+   * same split the library shows, because "failed after 4m" and "did not finish after 8s" are
+   * different events and the second is the one the operator watches for during a quota storm.
+   */
+  died: boolean;
   note: string;
   /** False until a frame names this topic, which is how a queued topic reads as queued. */
   started: boolean;
@@ -172,6 +178,7 @@ function blank(seed: Seed): TopicRun {
     scores: new Map(),
     iter: 1,
     status: "running",
+    died: false,
     note: "",
     started: false,
     startedAt: null,
@@ -216,6 +223,10 @@ function applyEvent(topic: TopicRun, e: StatusEvent): TopicRun {
     // Terminal state is the status field, never the stage: the loop can revisit any stage,
     // so a stage name says nothing about being finished.
     status: e.status,
+    // LATCHED FROM THIS FRAME AND NOT ACCUMULATED. The flag describes the terminal line, and a
+    // topic that dies, is retried and then reaches a verdict must not keep the older frame's
+    // answer: every frame overwrites it, exactly as `status` above does.
+    died: e.died === true,
     note: e.note !== "" ? e.note : topic.note,
     started: true,
     startedAt: topic.startedAt ?? e.ts,

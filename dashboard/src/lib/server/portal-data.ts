@@ -981,7 +981,15 @@ function foldTopics(data: BrandData): TopicFold[] {
     // who can actually see that form and act on it, so repairing the status there would hide a
     // hold from the one reader it is addressed to. Every other key below is the same fold as the
     // hosted route's, row filters included, and any future divergence in one of them is a bug.
+    // FALSE ON BOTH RECORD-BACKED SURFACES, and it is a stated limitation rather than drift.
+    // `died` is a fact of the STATUS FEED (which writer appended the terminal line), and neither
+    // of these producers reads status.jsonl: they fold the record, which does not carry it. False
+    // is exactly what "not reported" means for this key everywhere else, so both degrade to the
+    // old behaviour of calling every failure `failed`. The client surface is unaffected either
+    // way, because CLIENT_TAGS gives `died` and `failed` the same words and clientCanSee denies
+    // both. Storing the flag on the record is what would lift this, and it wants a migration.
     const stateFacts: ProducedStateFacts = {
+      died: false,
       status: unansweredSpentHold ? "running" : status,
       answers_submitted: answeredAt,
       sent_to_client: topic.sent_to_client_at,

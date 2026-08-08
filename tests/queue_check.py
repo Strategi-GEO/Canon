@@ -26,6 +26,7 @@ import asyncio
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -86,6 +87,10 @@ class _Roots:
         runner.OUTPUTS_ROOT = Path(self.tmp.name)
         runner.TOPIC_SEMAPHORE = asyncio.Semaphore(5)
         runner._FACTS_LOCKS.clear()
+        # The held-slot table, for the same reason the semaphore is replaced: it is module state
+        # that outlives one test's loop, and a slot left behind by a previous test would be swept
+        # by the next one's watchdog tick against a task from a dead loop.
+        runner._SLOTS.clear()
         # THE RECORD IS OUT OF SCOPE HERE AND MUST ALSO BE OUT OF THE WAY. Both materialize
         # hooks and the commit reach Postgres, and they run INSIDE a held slot: on a machine
         # whose database is slow or absent they dominate the fake session entirely, so five
@@ -113,6 +118,7 @@ class _Roots:
         runner.OUTPUTS_ROOT = self.saved["root"]
         runner.TOPIC_SEMAPHORE = self.saved["semaphore"]
         runner._FACTS_LOCKS.clear()
+        runner._SLOTS.clear()
         runner.has_canonical_facts = self.saved["facts"]
         runner.canonical_facts_path = self.saved["facts_path"]
         runner._sdk_session = self.saved["session"]
@@ -426,6 +432,153 @@ def test_every_queued_blog_still_reaches_a_terminal_line():
     asyncio.run(scenario())
 
 
+def _only_slot():
+    """The one held slot, by identity rather than by token: the token is a process-wide counter,
+    so the second test to run would index a key the first test consumed."""
+    return next(iter(runner._SLOTS.values()))
+
+
+def test_a_wedged_session_gives_its_slot_back():
+    """THE QUEUE CANNOT BE BRICKED BY A SESSION THAT STOPS RESPONDING.
+
+    A slot used to be held by a coroutine, and a coroutine that never unwinds never releases:
+    `async with` runs its exit on the cancel path like any other, but a task suspended inside
+    asyncio.to_thread never RESUMES to take that path, because a thread cannot be cancelled. Two
+    of those at the default width halted every brand in the repo until someone restarted the API,
+    with no error and no log line, and a dashboard that read exactly like an idle engine.
+
+    The wedge here swallows CancelledError in a loop, which is a faithful in-process stand-in: the
+    engine asks it to stop, it does not stop, and the watchdog must not need its cooperation.
+    Clocks are INJECTED rather than slept through, because a test that waited out a 45-minute
+    stall window is a test nobody runs.
+    """
+    async def scenario():
+        with _Roots() as root:
+            # One slot, so the wedge is the whole engine and the queue behind it is provable.
+            runner.TOPIC_SEMAPHORE = asyncio.Semaphore(1)
+            out_dir = root / "brand" / "wedged"
+            out_dir.mkdir(parents=True)
+            (out_dir / "status.jsonl").write_text(
+                json.dumps({"ts": "2026-08-08T00:00:00+00:00", "slug": "wedged",
+                            "stage": "research", "event": "start", "iter": 1,
+                            "status": "running", "note": ""}) + "\n", encoding="utf-8")
+
+            stop = asyncio.Event()
+
+            async def wedged():
+                async with runner.topic_slot("brand", "wedged", out_dir):
+                    while not stop.is_set():
+                        try:
+                            await stop.wait()
+                        except asyncio.CancelledError:
+                            pass  # exactly what a task stuck in a thread does
+
+            held = asyncio.create_task(wedged())
+            await asyncio.sleep(0)
+            check("the wedged session holds the only slot",
+                  runner.TOPIC_SEMAPHORE._value == 0 and len(runner._SLOTS) == 1)
+
+            started = []
+
+            async def waiter():
+                async with runner.topic_slot("brand", "next", root / "brand" / "next"):
+                    started.append(True)
+
+            queued = asyncio.create_task(waiter())
+            await asyncio.sleep(0)
+            check("every other blog is queued behind it", not started)
+
+            now, stall = time.time(), runner._stall_timeout()
+
+            # A tick INSIDE the stall window must do nothing at all: a real session goes minutes
+            # between stage lines, and a watchdog that cancelled on that would kill healthy blogs.
+            runner._sweep_slots(now=now + stall - 1)
+            check("a quiet blog inside the stall window is left alone",
+                  len(runner._SLOTS) == 1 and _only_slot()["cancelled_at"] is None)
+
+            # Past it: cancel first, and ONLY cancel. A cooperative session would end here.
+            runner._sweep_slots(now=now + stall + 1)
+            await asyncio.sleep(0)
+            check("the first tick past the window cancels without taking the slot",
+                  len(runner._SLOTS) == 1 and not started)
+
+            # The cancel was ignored, so the slot is reclaimed out from under it.
+            freed = runner._sweep_slots(now=now + stall + runner.SLOT_GRACE_SECONDS + 2)
+            check("an ignored cancel costs the session its slot", len(freed) == 1)
+
+            await asyncio.wait_for(queued, 2)
+            check("the queued blog starts on the reclaimed slot", started == [True])
+
+            lines = runner._read_status(out_dir)
+            terminal = [l for l in lines if l.get("status") in runner.TERMINAL_STATUSES]
+            check("the reclaimed topic gets its terminal line, so no stream hangs on it",
+                  len(terminal) == 1 and terminal[0]["status"] == "failed",
+                  f"terminal lines: {terminal}")
+
+            # THE OVER-RELEASE GUARD. The holder eventually unwinds and its finally calls the same
+            # release the watchdog already called. A second release would raise the cap for the
+            # life of the process, which is the leak with its sign flipped.
+            stop.set()
+            await asyncio.wait_for(held, 2)
+            check("the wedged holder's own release is a no-op, so the cap is not raised",
+                  runner.TOPIC_SEMAPHORE._value == 1 and not runner._SLOTS,
+                  f"value {runner.TOPIC_SEMAPHORE._value}, slots {runner._SLOTS}")
+
+    asyncio.run(scenario())
+
+
+def test_progress_keeps_a_long_blog_alive_forever():
+    """A BLOG IS JUDGED ON MOVEMENT, NEVER ON WALL CLOCK, and that is why this is not a timeout.
+
+    The obvious fix was a cap on session duration. It punishes the common case (a real blog runs
+    for tens of minutes and a pillar longer) to catch the rare one, and against the actual wedge
+    it does not even work, because asyncio.wait_for awaits the cancellation it just requested. The
+    signal used instead is the topic's own append-only status feed: while it grows, the session is
+    alive, for as long as it likes.
+    """
+    async def scenario():
+        with _Roots() as root:
+            runner.TOPIC_SEMAPHORE = asyncio.Semaphore(1)
+            out_dir = root / "brand" / "slow"
+            out_dir.mkdir(parents=True)
+            feed = out_dir / "status.jsonl"
+            feed.write_text("", encoding="utf-8")
+
+            stop = asyncio.Event()
+
+            async def slow():
+                async with runner.topic_slot("brand", "slow", out_dir):
+                    await stop.wait()
+
+            task = asyncio.create_task(slow())
+            await asyncio.sleep(0)
+
+            now, stall = time.time(), runner._stall_timeout()
+            # Five stall windows of elapsed time, with one line written per window. Under a
+            # duration cap this blog is long dead; here it is simply working.
+            for step in range(1, 6):
+                with feed.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps({"ts": "2026-08-08T00:00:00+00:00", "slug": "slow",
+                                             "stage": "write", "event": "start", "iter": step,
+                                             "status": "running", "note": ""}) + "\n")
+                runner._sweep_slots(now=now + step * (stall - 1))
+
+            check("a session that keeps writing is never cancelled, however long it runs",
+                  len(runner._SLOTS) == 1 and _only_slot()["cancelled_at"] is None)
+
+            state = runner.queue_state()
+            check("the queue reports who holds the slot and how long since it moved",
+                  state["in_use"] == 1 and state["slots"][0]["topic_slug"] == "slow"
+                  and state["slots"][0]["cancelled"] is False,
+                  json.dumps(state))
+
+            stop.set()
+            await asyncio.wait_for(task, 2)
+            check("and it gives the slot back on its own", runner.TOPIC_SEMAPHORE._value == 1)
+
+    asyncio.run(scenario())
+
+
 TESTS = [
     test_the_cap_holds_across_every_door_at_once,
     test_a_revise_takes_a_slot_rather_than_running_beside_the_queue,
@@ -433,6 +586,8 @@ TESTS = [
     test_the_sixth_blog_starts_when_a_slot_frees_not_when_the_batch_ends,
     test_a_run_whose_blogs_are_all_queued_reads_queued,
     test_every_queued_blog_still_reaches_a_terminal_line,
+    test_a_wedged_session_gives_its_slot_back,
+    test_progress_keeps_a_long_blog_alive_forever,
 ]
 
 

@@ -10,6 +10,12 @@ This is the ONLY way any agent reports progress. One JSON object per line:
 Rules the shape encodes:
 - Agents always write status "running". ONLY the session lead writes a terminal
   line (done | needs_review | failed), and it is the last line for that topic.
+- A terminal "failed" line MAY additionally carry "died": true, and only the
+  engine ever writes it. It separates a loop that ran and missed the bar, which
+  leaves a draft to read and send, from a run that reached no verdict at all,
+  which leaves nothing to judge and wants a retry. The field is omitted entirely
+  when false, so every line written before it existed reads the same as one
+  written after. There is no CLI flag for it on purpose: see append_status.
 - "stopped" is the ONE terminal status the lead never writes, and it is the
   reason the sentence above says "ONLY the lead" and still holds. A stop kills
   the session, so the lead is not there to report it; the backend
@@ -47,12 +53,32 @@ STATUSES = ("running", "done", "needs_review", "failed", "stopped")
 _TERMINAL = ("done", "needs_review", "failed", "stopped")
 
 
-def append_status(out_dir, slug, stage, event, iter, score=None, status="running", note=""):
+def append_status(out_dir, slug, stage, event, iter, score=None, status="running", note="",
+                  died=False):
     """Validate the enums, stamp ts, and append exactly one JSON line.
 
     Python callers (the runner, the mock's died-session handler) reuse this so
     every status line in existence goes through one code path. `iter` shadows
     the builtin on purpose: it matches the field name in the line shape.
+
+    `died` SEPARATES TWO THINGS THAT WORE ONE WORD. A terminal `failed` line means
+    two opposite situations today: the loop RAN, scored, and missed the bar, which
+    leaves a real draft an operator can read and send; or the run produced no
+    verdict at all, because the session died, stopped responding, or was refused
+    before it opened. The first is a blog waiting on a decision. The second is a
+    blog waiting on a retry, and reading it as a quality verdict is reading a score
+    that was never taken.
+
+    It is NOT a fourth terminal status, deliberately. `failed` still means what the
+    contract says it means, so every rule resting on it holds unchanged: the
+    resolver's table, the ledger, the send door's refusal of a failed record with no
+    evaluator-scored draft. This is the REASON beside the verdict, which is why it
+    is a flag and not a status.
+
+    NO AGENT EVER SETS IT, and the CLI deliberately offers no flag for it. A lead
+    that reached a verdict is not dead, and one that died is not there to say so, so
+    every writer of this field is the ENGINE writing a line on behalf of a session
+    that could not write its own.
     """
     if stage not in STAGES:
         raise ValueError(f"bad stage {stage!r}: must be one of {'|'.join(STAGES)}")
@@ -60,6 +86,8 @@ def append_status(out_dir, slug, stage, event, iter, score=None, status="running
         raise ValueError(f"bad event {event!r}: must be one of {'|'.join(EVENTS)}")
     if status not in STATUSES:
         raise ValueError(f"bad status {status!r}: must be one of {'|'.join(STATUSES)}")
+    if died and status != "failed":
+        raise ValueError(f"died is only meaningful on a failed line, not on {status!r}")
 
     line = {
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -71,6 +99,11 @@ def append_status(out_dir, slug, stage, event, iter, score=None, status="running
         "status": status,
         "note": str(note),
     }
+    # OMITTED when false rather than written as false, so every line ever appended before this
+    # field existed reads identically to a line written after it. Absent means "not died", which
+    # is what a reader that has never heard of the field already assumes.
+    if died:
+        line["died"] = True
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "status.jsonl"), "a", encoding="utf-8") as handle:
         handle.write(json.dumps(line, ensure_ascii=False) + "\n")
