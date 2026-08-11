@@ -93,5 +93,10 @@ export function tabOfState(state: BlogState): BlogTab | null {
   if (clientCanSee(state)) {
     return "client";
   }
+  // The one state that decides itself: a roadmap row with no blog behind it cannot be anywhere
+  // but New, and unlike the two below it there is no score that could move it.
+  if (state === "not_generated") {
+    return "new";
+  }
   return null;
 }

@@ -745,7 +745,7 @@ function StageBody({
             {label !== null ? (
               <span
                 className="machine mr-1.5 font-normal text-muted-foreground"
-                title={blog.uploaded ? "Uploaded by hand — letters mark manual blogs" : "Written by the engine"}
+                title={blog.uploaded ? "Uploaded by hand: letters mark manual blogs" : "Written by the engine"}
               >
                 {label}.
               </span>

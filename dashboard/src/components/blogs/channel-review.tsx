@@ -264,7 +264,7 @@ export function ChannelReview(props: {
                   className="machine mr-1.5 font-normal text-muted-foreground"
                   title={
                     sourceBlog?.uploaded
-                      ? "Uploaded by hand — letters mark manual blogs"
+                      ? "Uploaded by hand: letters mark manual blogs"
                       : "Written by the engine"
                   }
                 >

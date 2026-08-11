@@ -75,6 +75,19 @@ export type BlogState =
   | "died"
   /** The operator ended the run before it reached a verdict. Not a failure. */
   | "stopped"
+  /**
+   * A roadmap row nothing has written yet: no run, no draft, no verdict. It is the only state
+   * that describes a topic rather than an article, which is exactly why it belongs here rather
+   * than being faked at the table: the merged Blogs page renders roadmap rows and blogs through
+   * ONE table, and a row needs a state to carry a tag. Reusing `unknown` for it would tell an
+   * operator the status line was unreadable, which is a fault report about a row that is simply
+   * waiting to be picked.
+   *
+   * blogState NEVER returns it, and that is deliberate: it is derived from facts a blog record
+   * has, and a topic with no record has no facts to derive from. The New tab supplies it for the
+   * rows it invents.
+   */
+  | "not_generated"
   /** No readable status line. Real on the wire, so it is handled rather than assumed away. */
   | "unknown";
 
@@ -448,6 +461,9 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   // (no score describes it), so there is nothing to release and its only exit is generating
   // again.
   stopped: [],
+  // NOTHING, because there is no article. Generate is the New tab's own act over the ticked set
+  // rather than a row's bench, and every AdminAction here names something done TO a draft.
+  not_generated: [],
   unknown: [],
 };
 
@@ -538,6 +554,9 @@ const CLIENT_ACTIONS: Record<BlogState, readonly ClientAction[]> = {
   failed: [],
   died: [],
   stopped: [],
+  // NOTHING, because there is no article. Generate is the New tab's own act over the ticked set
+  // rather than a row's bench, and every AdminAction here names something done TO a draft.
+  not_generated: [],
   unknown: [],
 };
 
@@ -638,6 +657,11 @@ export type StateTag = {
  * these is mine to move.
  */
 const ADMIN_TAGS: Record<BlogState, StateTag> = {
+  not_generated: {
+    label: "Not generated",
+    tone: "waiting",
+    detail: "This topic is on the roadmap and nothing has written it yet. Tick it and generate.",
+  },
   generating: {
     label: "Generating",
     tone: "busy",
@@ -729,6 +753,15 @@ const ADMIN_TAGS: Record<BlogState, StateTag> = {
  * waiting for the first record that reaches a state the map forgot.
  */
 const CLIENT_TAGS: Record<BlogState, StateTag> = {
+  // A client never sees an unwritten topic: clientCanSee is false for it and the portal is served
+  // articles rather than plans. The entry exists because the map is total over the union, and it
+  // is written in the client's own vocabulary anyway rather than left as a placeholder nobody
+  // checked, because "unreachable" is a claim that stops being true quietly.
+  not_generated: {
+    label: "Not started",
+    tone: "waiting",
+    detail: "This article is planned and our team has not started writing it yet.",
+  },
   generating: {
     label: "In progress",
     tone: "busy",
@@ -904,6 +937,12 @@ const ADMIN_URGENCY: Record<BlogState, number> = {
   client_review: 8,
   approved: 9,
   published: 10,
+  // LAST, below `published`, and it is the only rank here that is not about how much someone is
+  // owed. Every state above describes an article that exists and is somewhere; this one describes
+  // a plan. An unwritten topic is never competing for an operator's attention against a real
+  // article, and sorting it anywhere higher would push work that has not started over work that
+  // is stuck.
+  not_generated: 11,
 };
 
 export function adminUrgency(state: BlogState): number {

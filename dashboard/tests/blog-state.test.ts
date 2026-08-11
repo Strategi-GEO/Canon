@@ -317,6 +317,8 @@ test("adminActions: the full policy, state by state", () => {
     // bench. Edit and comments survive because a died run often leaves an earlier draft to read.
     died: ["edit", "comments"],
     stopped: [],
+    // No article, so no bench. Generate is the New tab's act over its ticked set, not a row's.
+    not_generated: [],
     unknown: [],
   };
   for (const state of ALL_STATES) {
@@ -340,6 +342,9 @@ test("clientActions: the full policy, state by state", () => {
     failed: [],
     died: [],
     stopped: [],
+    // A client is never shown an unwritten topic (clientCanSee is false for it), and would have
+    // nothing to do with one anyway.
+    not_generated: [],
     unknown: [],
   };
   for (const state of ALL_STATES) {
@@ -553,6 +558,11 @@ const EXIT_OWNER: Record<BlogState, "run" | "client" | "admin" | "terminal"> = {
   // there is nothing to release.
   stopped: "run",
   unknown: "run",
+  // A RUN, and the only entry here where "run" means the run has not happened yet rather than
+  // that one is in flight or fell over. The exit from an unwritten topic is generating it, which
+  // is the New tab's Generate over the ticked set: an engine act, not an act on a draft. An empty
+  // admin bench is therefore honest for it, which is what this record exists to check.
+  not_generated: "run",
 };
 
 test("no state that only an admin act can leave is left with an empty admin bench", () => {
@@ -1111,6 +1121,11 @@ const REACHABLE: Record<BlogState, GateRecord[]> = {
   died: [{ status: "failed", died: true, score: 87 }, { status: "failed", died: true }],
   stopped: [{ status: "stopped" }],
   unknown: [{ status: "unknown" }],
+  // EMPTY, AND IT IS THE ONLY EMPTY ENTRY HERE. blogState cannot return this state from any
+  // record at all: it describes a roadmap row with no blog behind it, so there are no facts to
+  // fold and the New tab supplies the state directly for rows it invents. An entry inventing a
+  // record that "reaches" it would be asserting the fold does something it must never do.
+  not_generated: [],
 };
 
 /**

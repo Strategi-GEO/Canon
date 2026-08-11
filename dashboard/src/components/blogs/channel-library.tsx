@@ -657,9 +657,9 @@ export function ChannelLibrary(props: {
                             ) : null}
                             <TableCell
                               className="machine text-xs text-muted-foreground"
-                              title={blog.uploaded ? "Uploaded by hand — letters mark manual blogs" : "Written by the engine"}
+                              title={blog.uploaded ? "Uploaded by hand: letters mark manual blogs" : "Written by the engine"}
                             >
-                              {labels.get(blog.topic_slug) ?? "—"}
+                              {labels.get(blog.topic_slug) ?? "-"}
                             </TableCell>
                             <TableCell className="max-w-0">
                               <span className="flex items-center gap-2">
@@ -779,9 +779,9 @@ export function ChannelLibrary(props: {
                             ) : null}
                             <TableCell
                               className="machine text-xs text-muted-foreground"
-                              title={source?.uploaded ? "Uploaded by hand — letters mark manual blogs" : "Written by the engine"}
+                              title={source?.uploaded ? "Uploaded by hand: letters mark manual blogs" : "Written by the engine"}
                             >
-                              {labels.get(post.source_topic_slug) ?? "—"}
+                              {labels.get(post.source_topic_slug) ?? "-"}
                             </TableCell>
                             <TableCell className="max-w-0">
                               <Link

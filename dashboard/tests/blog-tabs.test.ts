@@ -20,7 +20,14 @@ import { blogTab, hasDraft, tabOfState, type BlogTab } from "../src/lib/blog-tab
 import { blogState, clientCanSee, type BlogState } from "../src/lib/blog-state.ts";
 import type { TabFacts } from "../src/lib/blog-tabs.ts";
 
-/** Every state the union names. A new one added to blog-state.ts and not here fails the count. */
+/**
+ * Every state a RECORD can produce. A new one added to blog-state.ts and not here fails the count.
+ *
+ * `not_generated` is deliberately absent and is asserted separately below. It is the one member of
+ * the union blogState can never return, because it describes a roadmap row with no blog behind it:
+ * there are no facts to fold. Giving it a fixture here would mean inventing a record that produces
+ * it, which would assert the fold does something it must not.
+ */
 const ALL_STATES: BlogState[] = [
   "generating",
   "has_questions",
@@ -64,8 +71,21 @@ function factsFor(state: BlogState, score: number | null = 91): TabFacts {
       return { ...base, status: "stopped" };
     case "unknown":
       return { ...base, status: "" };
+    case "not_generated":
+      // Unreachable from any record, which is the point of the assertion below rather than of a
+      // fixture here. Throwing keeps the switch exhaustive without inventing a record for it.
+      throw new Error("not_generated is not derivable from facts; see ALL_STATES");
   }
 }
+
+test("blogState can never return not_generated: it describes a row with no blog", () => {
+  for (const state of ALL_STATES) {
+    assert.notEqual(blogState(factsFor(state)), "not_generated", state);
+  }
+  // The New tab supplies it directly for the roadmap rows it invents, and it files under New,
+  // which is the only tab a topic with no article can be in.
+  assert.equal(tabOfState("not_generated"), "new");
+});
 
 test("every state produces the state it claims to (the fixtures are honest)", () => {
   for (const state of ALL_STATES) {

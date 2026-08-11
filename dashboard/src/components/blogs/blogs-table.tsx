@@ -1,5 +1,6 @@
 "use client";
 
+import * as React from "react";
 import Link from "next/link";
 import { ArrowDown, ArrowUp, ChevronsUpDown, MessageCircleQuestion } from "lucide-react";
 import {
@@ -40,6 +41,15 @@ export type BlogTableRow = {
   topic_slug: string;
   created: string;
   roadmap_index: number | null;
+  /**
+   * The sheet's "What the Piece Covers" cell, rendered as a column on the New tab alone.
+   *
+   * It is on the row type rather than fetched here because New's rows ARE roadmap rows: a topic
+   * nothing has written yet has a scope and an angle and nothing else, and that scope is most of
+   * what an operator reads when deciding whether to tick it. Absent on a written blog, where the
+   * article itself has long since replaced the brief.
+   */
+  covers?: string | null;
   /** Unaddressed client comments (open, applying, failed). Splits the changes_requested tag
    *  live in BOTH vocabularies; absent falls back to the plain state tag. */
   comments_pending?: number | null;
@@ -64,6 +74,8 @@ export function BlogsTable<T extends BlogTableRow>({
   stateOf,
   audience = "admin",
   selection,
+  columns = "full",
+  rowAction,
 }: {
   blogs: T[];
   /**
@@ -112,9 +124,38 @@ export function BlogsTable<T extends BlogTableRow>({
     onToggle: (topicSlug: string) => void;
     /** Ticks every rendered row, or clears them when they are all already ticked. */
     onToggleAll: (topicSlugs: readonly string[]) => void;
+    /**
+     * SHIFT-CLICK: tick every row between the last one clicked and this one, inclusive.
+     *
+     * The anchor and the range live in this component and not in the caller, because the range is
+     * defined by the ORDER ON SCREEN and this is what holds it: the caller has a Set, which has no
+     * order, and would have to re-derive the sort to answer "between". Absent means shift does
+     * nothing, which is what a table without it did.
+     */
+    onSelectRange?: (topicSlugs: readonly string[]) => void;
   };
+  /**
+   * WHICH COLUMNS. "full" is the written-blog set. "brief" is the New tab, whose rows are roadmap
+   * rows: it drops Created, Score and Iterations, which a topic nothing has written cannot have,
+   * and adds the sheet's own scope column in their place.
+   *
+   * A MODE RATHER THAN A SECOND TABLE. New used to be RoadmapTable, a separate component that had
+   * drifted into its own header, its own row rhythm and its own status vocabulary, and merging the
+   * two tabs onto one page would have put the two side by side under one strip of tabs. Every
+   * feature that lived only there (this scope column, the range select above, the upload below)
+   * moved here rather than being lost or duplicated.
+   */
+  columns?: "full" | "brief";
+  /**
+   * A trailing control per row, rendered in a column of its own. The New tab passes the per-row
+   * upload: an operator standing over a list of topics deciding what to do with each one is
+   * exactly who wants "upload the article I already have", and unlike Generate, which acts on the
+   * whole ticked set, an upload is inherently one file for one topic.
+   */
+  rowAction?: (blog: T) => React.ReactNode;
 }) {
-  const admin = audience === "admin";
+  const admin = audience === "admin" && columns === "full";
+  const brief = columns === "brief";
   const shownSlugs = blogs.map((blog) => blog.topic_slug);
   const allSelected =
     selection !== undefined && shownSlugs.length > 0 &&
@@ -122,6 +163,39 @@ export function BlogsTable<T extends BlogTableRow>({
   const someSelected =
     selection !== undefined && !allSelected &&
     shownSlugs.some((slug) => selection.selected.has(slug));
+
+  /**
+   * The last row whose checkbox was clicked, and the shift flag from the click that is happening
+   * right now.
+   *
+   * The flag is read off the checkbox's own onClick rather than tracked globally, because Radix
+   * runs onClick BEFORE its onCheckedChange, so by the time the toggle fires it describes exactly
+   * the click that fired it. A keyboard space press arrives with shiftKey false, which is the
+   * correct answer for it: there is no anchor a keyboard user has expressed.
+   */
+  const anchor = React.useRef<string | null>(null);
+  const extending = React.useRef(false);
+  function clickRow(topicSlug: string) {
+    if (!selection) {
+      return;
+    }
+    const from = anchor.current;
+    const range = selection.onSelectRange;
+    // A shift-click with no prior click has no range to describe, so it is an ordinary toggle.
+    if (extending.current && range && from !== null && from !== topicSlug) {
+      const a = shownSlugs.indexOf(from);
+      const b = shownSlugs.indexOf(topicSlug);
+      if (a !== -1 && b !== -1) {
+        range(shownSlugs.slice(Math.min(a, b), Math.max(a, b) + 1));
+        // The anchor MOVES to the row just clicked, so a second shift-click extends from here
+        // rather than replaying the original span. That is what every file list does.
+        anchor.current = topicSlug;
+        return;
+      }
+    }
+    anchor.current = topicSlug;
+    selection.onToggle(topicSlug);
+  }
   // The source-grouped identifier for every row, computed over the WHOLE list so the running
   // counts are right: AI blogs number, uploaded blogs letter. Cheap enough to recompute per render
   // (a sort over the current page's blogs), so no memo.
@@ -160,14 +234,23 @@ export function BlogsTable<T extends BlogTableRow>({
             sortDir={sortDir}
             onSort={onSort}
           />
-          <SortableHead
-            label="Created"
-            column="created"
-            sortKey={sortKey}
-            sortDir={sortDir}
-            onSort={onSort}
-            className="w-32"
-          />
+          {/* The sheet's scope, on the New tab alone, where it is most of what an operator reads
+              before ticking a row. No width class: it is the last prose column and takes the
+              remainder. */}
+          {brief ? (
+            <TableHead className="machine align-middle text-xs font-medium text-muted-foreground">
+              What it covers
+            </TableHead>
+          ) : (
+            <SortableHead
+              label="Created"
+              column="created"
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={onSort}
+              className="w-32"
+            />
+          )}
           {admin ? (
             <SortableHead
               label="Score"
@@ -189,6 +272,13 @@ export function BlogsTable<T extends BlogTableRow>({
           {admin ? (
             <TableHead className="machine w-20 text-xs font-medium">Iterations</TableHead>
           ) : null}
+          {/* Unlabelled and named for a screen reader: a column of one icon button needs no
+              title, and a word over twenty five rows earns nothing. */}
+          {rowAction ? (
+            <TableHead className="w-12">
+              <span className="sr-only">Row actions</span>
+            </TableHead>
+          ) : null}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -204,7 +294,16 @@ export function BlogsTable<T extends BlogTableRow>({
             href={hrefFor(blog)}
             onOpen={onOpen}
             selected={selection ? selection.selected.has(blog.topic_slug) : null}
-            onSelect={selection ? () => selection.onToggle(blog.topic_slug) : undefined}
+            onSelect={selection ? () => clickRow(blog.topic_slug) : undefined}
+            onSelectMouseDown={
+              selection
+                ? (event) => {
+                    extending.current = event.shiftKey;
+                  }
+                : undefined
+            }
+            columns={columns}
+            action={rowAction ? rowAction(blog) : undefined}
           />
         ))}
       </TableBody>
@@ -223,6 +322,9 @@ function Row<T extends BlogTableRow>({
   onOpen,
   selected,
   onSelect,
+  onSelectMouseDown,
+  columns,
+  action,
 }: {
   blog: T;
   /** This blog's source-grouped identifier (number for AI, letter for uploaded), from the parent's
@@ -243,8 +345,19 @@ function Row<T extends BlogTableRow>({
   /** Ticked, unticked, or null where this table has no selection at all (the client portal). */
   selected: boolean | null;
   onSelect?: () => void;
+  /** Records the shift key before Radix's change handler reads it. See the anchor in the parent. */
+  onSelectMouseDown?: (event: React.MouseEvent) => void;
+  columns: "full" | "brief";
+  /**
+   * The trailing control, already rendered by the parent's rowAction. UNDEFINED means this table
+   * has no action column; null means it has one and this row has nothing in it. Collapsing the
+   * two would drop a cell from any row whose action is conditional and shift its columns left
+   * under the header.
+   */
+  action?: React.ReactNode;
 }) {
-  const admin = audience === "admin";
+  const brief = columns === "brief";
+  const admin = audience === "admin" && !brief;
   return (
     <TableRow
       // The row is a click target for the mouse, but the LINK in the title cell is the
@@ -270,6 +383,7 @@ function Row<T extends BlogTableRow>({
         <TableCell className="py-2.5" onClick={(event) => event.stopPropagation()}>
           <Checkbox
             checked={selected}
+            onClick={onSelectMouseDown}
             onCheckedChange={() => onSelect?.()}
             aria-label={`Select ${blog.topic}`}
           />
@@ -317,15 +431,23 @@ function Row<T extends BlogTableRow>({
           <span className="sr-only">Open blog</span>
         </Link>
       </TableCell>
-      <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="machine cursor-default">{formatRelative(blog.created)}</span>
-          </TooltipTrigger>
-          {/* Relative time is what the operator thinks in; the exact stamp is one hover away. */}
-          <TooltipContent className="machine">{formatAbsolute(blog.created)}</TooltipContent>
-        </Tooltip>
-      </TableCell>
+      {/* No clamp and no expander on the scope: it is a sentence or two, it wraps, and the row is
+          as tall as its tallest cell needs. */}
+      {brief ? (
+        <TableCell className="py-2.5 text-sm leading-relaxed whitespace-normal text-pretty text-muted-foreground">
+          {blog.covers || <span className="text-xs">Not given</span>}
+        </TableCell>
+      ) : (
+        <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="machine cursor-default">{formatRelative(blog.created)}</span>
+            </TooltipTrigger>
+            {/* Relative time is what the operator thinks in; the exact stamp is one hover away. */}
+            <TooltipContent className="machine">{formatAbsolute(blog.created)}</TooltipContent>
+          </Tooltip>
+        </TableCell>
+      )}
       {admin ? (
         <TableCell>
           <Score score={blog.score ?? null} uploaded={blog.uploaded === true} />
@@ -364,6 +486,13 @@ function Row<T extends BlogTableRow>({
       {admin ? (
         <TableCell className="machine text-xs text-muted-foreground">
           {typeof blog.iterations === "number" ? blog.iterations : ""}
+        </TableCell>
+      ) : null}
+      {/* stopPropagation for the same reason the checkbox cell does it: this cell holds a control,
+          and pressing it must not also navigate to the blog. */}
+      {action !== undefined ? (
+        <TableCell className="py-2.5" onClick={(event) => event.stopPropagation()}>
+          {action}
         </TableCell>
       ) : null}
     </TableRow>
@@ -447,7 +576,7 @@ function BlogLabel({ label, uploaded }: { label: string | null; uploaded: boolea
   }
   return (
     <span
-      title={uploaded ? "Uploaded by hand — letters mark manual blogs" : "Written by the engine"}
+      title={uploaded ? "Uploaded by hand: letters mark manual blogs" : "Written by the engine"}
       className="machine cursor-default text-sm text-muted-foreground"
     >
       {label}
