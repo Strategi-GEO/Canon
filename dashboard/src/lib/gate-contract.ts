@@ -910,7 +910,14 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     // The stamp SATISFIES that guard rather than bypassing it, since published-without-a-send
     // becomes unreachable instead of merely tolerated. Best-effort and after record_publish, so
     // no bookkeeping failure can report a landed publish as a failed one.
-    fingerprint: "ae8923e81fdb98a5",
+    //
+    // Moved a THIRD time when the route began writing the CMS metadata. NO REFUSAL CHANGED, and
+    // that is the reconciliation rather than an excuse for the hash: the route now calls
+    // gate.assert_publishable itself before spending a model session, which duplicates a 409 arm
+    // it already had (publish_route_gate_refused_before_metadata records it), and appends the
+    // brand's accepted tags to its vocabulary after the push lands. The gate is called twice and
+    // waived nowhere. Nothing here decides who may publish that did not decide it before.
+    fingerprint: "fed52687240227a1",
     gates: ["publish"],
     what:
       "Pushes one shipped blog to the CMS as a draft, synchronously, because the operator is " +
@@ -955,6 +962,20 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
           "is on this page's wire, and the other three are exempt against the gate module " +
           "itself. A clause here would restate that decision in a second place and let the two " +
           "drift, which is the shape of this whole defect.",
+      },
+      {
+        id: "publish_route_gate_refused_before_metadata",
+        raises: "status_code=409, detail=str(refused))",
+        why:
+          "THE SAME REFUSAL AS THE ENTRY ABOVE, raised one call earlier, and deliberately not " +
+          "merged with it. The route gates BEFORE generating the CMS metadata so a blog the gate " +
+          "will refuse never costs a model session; build_for_publish then gates AGAIN on its " +
+          "own authority, because a caller allowed to skip that check is precisely the one `if` " +
+          "between an unvetted draft and a client that gate.py's own docstring refuses to " +
+          "permit. Two calls, two arms, one decision. The duplication is the price of never " +
+          "letting the gate become the caller's option, and it is exempt for the same reason " +
+          "the other arm is: PUBLISH_TOPIC_IS_DONE already carries the half of it that is on " +
+          "this page's wire.",
       },
       {
         id: "publish_route_payload",
