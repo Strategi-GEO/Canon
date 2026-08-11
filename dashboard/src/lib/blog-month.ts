@@ -44,3 +44,36 @@ export function inMonth(
 ): boolean {
   return month == null || monthOf(blog, latest) === month;
 }
+
+/**
+ * topic_slug -> the month that blog files under, for resolving something that is NOT a blog.
+ *
+ * A LinkedIn post and a Medium article are repurposes of a blog, so they have no roadmap row of
+ * their own and no month of their own: the roadmap planned the BLOG, and the post exists because
+ * that blog did. Their month is therefore the source blog's, always, and this index is how a
+ * caller holding posts rather than blogs asks for it.
+ */
+export function monthIndex(blogs: readonly BlogSummary[], latest: number | null) {
+  return new Map(blogs.map((blog) => [blog.topic_slug, monthOf(blog, latest)]));
+}
+
+/**
+ * Whether a repurposed post belongs to the month on screen, resolved through its SOURCE blog.
+ *
+ * A post whose source blog is not in the index falls to `latest`, exactly as an off-roadmap blog
+ * does. That is the honest answer rather than a defensive one: the blogs list is still loading, or
+ * the source was deleted, and in both cases hiding the post from every month there is would lose
+ * it entirely.
+ */
+export function postInMonth(
+  sourceTopicSlug: string,
+  index: ReadonlyMap<string, number | null>,
+  month: number | null | undefined,
+  latest: number | null,
+): boolean {
+  if (month == null) {
+    return true;
+  }
+  const resolved = index.has(sourceTopicSlug) ? index.get(sourceTopicSlug) : latest;
+  return (resolved ?? latest) === month;
+}

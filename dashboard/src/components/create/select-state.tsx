@@ -6,6 +6,7 @@ import Link from "next/link";
 import {
   ArrowRight,
   CircleDot,
+  FilePlus2,
   Map as MapIcon,
   Play,
   TriangleAlert,
@@ -42,6 +43,7 @@ export function SelectState({
   brandName,
   brandInstructions,
   brandHref,
+  newBlogHref,
   roadmapHref,
   resourcesHref,
   hasCanonicalFacts,
@@ -66,6 +68,8 @@ export function SelectState({
   brandInstructions: string;
   /** The brand overview, for checking facts and resources. The route owns this URL. */
   brandHref: string;
+  /** /create/new: writing a blog by hand, off the roadmap entirely. */
+  newBlogHref: string;
   /** The Content Roadmap tab, which owns getting and deleting the sheet this page reads. */
   roadmapHref: string;
   /** The Resources tab, where the fact base warning below sends an operator who has none. */
@@ -270,6 +274,7 @@ export function SelectState({
       <NoRoadmap
         brandName={brandName}
         brandHref={brandHref}
+        newBlogHref={newBlogHref}
         roadmapHref={roadmapHref}
       />
     );
@@ -309,6 +314,7 @@ export function SelectState({
       <NoRoadmap
         brandName={brandName}
         brandHref={brandHref}
+        newBlogHref={newBlogHref}
         roadmapHref={roadmapHref}
       />
     );
@@ -318,7 +324,7 @@ export function SelectState({
 
   return (
     <div className="w-full">
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <div className="mb-4">
         <div className="min-w-0">
           <h2 className="text-xl font-semibold tracking-tight text-foreground">
             Create blogs
@@ -328,21 +334,36 @@ export function SelectState({
             you want.
           </p>
         </div>
-        {/*
-          Uploading and generating a roadmap used to sit here. They live on the Content Roadmap
-          tab now and nowhere else, because getting a roadmap and picking topics out of one are
-          two jobs, and putting a destructive action (swapping the topic list) next to the table
-          an operator is mid-selection on was how the sheet changed under them.
 
-          Outline, not accent: Generate is this page's one accent action. This is a way out to
-          the list, not the thing to do here.
+        {/*
+          ONE ROW OF BUTTONS, BELOW THE HEADING, matching the Content Roadmap tab's own toolbar
+          so the two pages do not put their controls in different places. New blog used to sit a
+          row ABOVE this heading, rendered by the page rather than by this header, so the screen
+          opened with a button, then the title, then a second button on a third line. It is
+          passed in now (newBlogHref) and the page renders none of its own.
+
+          Uploading and generating a roadmap used to sit here too. They live on the Content
+          Roadmap tab now and nowhere else, because getting a roadmap and picking topics out of
+          one are two jobs, and putting a destructive action (swapping the topic list) next to
+          the table an operator is mid-selection on was how the sheet changed under them.
+
+          Outline, not accent: Generate is this page's one accent action. Neither of these is the
+          thing to do here; one is a way out to the list, the other a way round the sheet.
         */}
-        <Button size="sm" variant="outline" asChild>
-          <Link href={roadmapHref}>
-            View content roadmap
-            <ArrowRight data-icon="inline-end" aria-hidden />
-          </Link>
-        </Button>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="outline" asChild>
+            <Link href={newBlogHref}>
+              <FilePlus2 data-icon="inline-start" aria-hidden />
+              New blog
+            </Link>
+          </Button>
+          <Button size="sm" variant="outline" asChild>
+            <Link href={roadmapHref}>
+              View content roadmap
+              <ArrowRight data-icon="inline-end" aria-hidden />
+            </Link>
+          </Button>
+        </div>
       </div>
 
       {runsUnavailable ? (
@@ -597,11 +618,14 @@ function DuplicateWall({
 function NoRoadmap({
   brandName,
   brandHref,
+  newBlogHref,
   roadmapHref,
 }: {
   brandName: string;
   /** The brand overview. */
   brandHref: string;
+  /** /create/new, so the one screen a brand with no sheet ever sees still offers it. */
+  newBlogHref: string;
   /** The Content Roadmap tab: the one place a roadmap is uploaded or generated. */
   roadmapHref: string;
 }) {
@@ -624,12 +648,25 @@ function NoRoadmap({
           else, by the operator's instruction, and duplicating it here would put two ways to
           define a brand's topic list in two places that could disagree.
         */}
-        <Button size="sm" className="mt-4" asChild>
-          <Link href={roadmapHref}>
-            Go to Content Roadmap
-            <ArrowRight data-icon="inline-end" aria-hidden />
-          </Link>
-        </Button>
+        {/* BOTH DOORS. New blog is repeated here because this card is exactly the case the
+            page-level button existed for: a brand with no sheet never renders the header above,
+            and writing a blog by hand is what an operator with no sheet wants. Moving it into
+            that header without repeating it here would have deleted it from the one screen it
+            was put there to serve. */}
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          <Button size="sm" asChild>
+            <Link href={roadmapHref}>
+              Go to Content Roadmap
+              <ArrowRight data-icon="inline-end" aria-hidden />
+            </Link>
+          </Button>
+          <Button size="sm" variant="outline" asChild>
+            <Link href={newBlogHref}>
+              <FilePlus2 data-icon="inline-start" aria-hidden />
+              New blog
+            </Link>
+          </Button>
+        </div>
         <p className="mt-4 text-xs text-muted-foreground">
           <Link href={brandHref} className="underline underline-offset-2 hover:text-foreground">
             Open {brandName}

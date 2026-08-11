@@ -32,17 +32,19 @@ import {
 } from "@/lib/notifications";
 import { useNotifications } from "@/lib/notifications-context";
 import { useBlogQuestions } from "@/lib/use-blog-questions";
+import { useMonthFilter } from "@/lib/use-month-filter";
 import { useHotkey } from "@/lib/use-hotkey";
 import { cn } from "@/lib/utils";
 import { selectBlogs, STATE_FILTERS, type StateFilter } from "@/components/blogs/blogs-filter";
 import { BlogsTable, TRIGGER_ATTR } from "@/components/blogs/blogs-table";
+import { MonthPicker } from "@/components/blogs/month-picker";
 import { useLibraryUrl } from "@/components/blogs/library-url";
 import {
   countWaiting,
   waitingSignal,
   type WaitingSignal,
 } from "@/components/blogs/questions-state";
-import type { BlogSummary, RoadmapMonth } from "@/types";
+import type { BlogSummary } from "@/types";
 
 // Built FROM the admin tags, so an option and the tag it filters for carry the identical word.
 // Add a state to blogState and its filter option appears here labelled the same, with nothing to
@@ -131,44 +133,10 @@ function Library({
     }
   }, [legacyPreview, blogHref, router]);
 
-  // THE MONTH PICKER'S OPTIONS ARE THE ROADMAPS THAT EXIST, never a range derived from the blogs.
-  // A month is a roadmap plus the blogs written from it, and deleting the roadmap deletes those
-  // blogs, so the sheets ARE the month list and a month can never appear with nothing behind it.
-  const [months, setMonths] = React.useState<RoadmapMonth[] | null>(null);
-  const [month, setMonth] = React.useState<number | null>(null);
-
-  React.useEffect(() => {
-    const controller = new AbortController();
-    api.roadmapMonths(brandSlug, controller.signal).then(
-      (data) => setMonths(data.months),
-      // A brand with no roadmap is the ordinary empty state, not an error worth a banner: the
-      // picker simply does not render and every blog shows.
-      () => setMonths([]),
-    );
-    return () => controller.abort();
-  }, [brandSlug]);
-
-  // The newest month the brand holds, which is both the picker's default and where an
-  // off-roadmap blog files. Null until the months load, and for a brand with no roadmap at all.
-  const latestMonth = React.useMemo(
-    () => (months?.length ? Math.max(...months.map((m) => m.month)) : null),
-    [months],
-  );
-
-  // Default to the latest ONCE, and never again: re-applying it on every render would drag the
-  // operator back to this month the moment a poll refreshed the list under them.
-  React.useEffect(() => {
-    setMonth((current) => (current === null ? latestMonth : current));
-  }, [latestMonth]);
-
-  // A month the brand no longer has (its roadmap was deleted while this list was open) would
-  // filter every blog away and leave the operator on an empty tab with no way back.
-  React.useEffect(() => {
-    if (month !== null && months && months.length > 0
-        && !months.some((m) => m.month === month)) {
-      setMonth(latestMonth);
-    }
-  }, [month, months, latestMonth]);
+  // Shared with the LinkedIn and Medium tabs, because all three group by the month of the
+  // roadmap that planned the work and every rule about which month is on screen has to match.
+  const { months, month, setMonth, latestMonth, showPicker, label: monthLabel } =
+    useMonthFilter(brandSlug);
 
   // The engine is an external system, so this subscribes to it and writes state only from
   // the settled callbacks rather than synchronously inside the effect body.
@@ -382,14 +350,19 @@ function Library({
 
   return (
     <div className="mx-auto w-full max-w-6xl">
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+      {/* THE CONTROLS SIT BELOW THE HEADING, NOT BESIDE IT. They were in a justify-between with
+          the title, so a wide screen strung search, month, status, refresh and download along the
+          right of one line and a narrow one wrapped them into a ragged block that moved as the
+          window changed. Under the heading they start at the same left edge on every width, which
+          is also where the Create and Content Roadmap tabs put theirs. */}
+      <div className="mb-4">
         <div className="min-w-0">
           <h2 className="text-xl font-semibold tracking-tight text-foreground">Blogs</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             Everything the factory has written for {brandName}.
           </p>
         </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <div className="mt-3 flex flex-wrap items-center gap-2">
           <div className="relative">
             <Search
               className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
@@ -407,24 +380,8 @@ function Library({
           </div>
           {/* Only with TWO OR MORE months. One month is every blog there is, so a picker that
               cannot change anything is a control that only asks the operator a question. */}
-          {months && months.length > 1 ? (
-            <select
-              value={month ?? ""}
-              onChange={(event) => setMonth(Number(event.target.value))}
-              aria-label="Filter by roadmap month"
-              className={cn(
-                "h-8 rounded-lg border border-input bg-background px-2 text-xs",
-                "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-              )}
-            >
-              {/* Newest first: the operator is almost always looking at this month's work, and
-                  the default lands on the top entry rather than somewhere down the list. */}
-              {[...months].sort((a, b) => b.month - a.month).map((m) => (
-                <option key={m.month} value={m.month}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
+          {showPicker && months ? (
+            <MonthPicker months={months} month={month} onChange={setMonth} />
           ) : null}
           <select
             value={url.status}
@@ -481,9 +438,7 @@ function Library({
             brandName={brandName}
             // Only with a picker on screen. With one month there is nothing to name, and "no
             // blogs in Month 1" would suggest a month the operator could switch away from.
-            monthLabel={months && months.length > 1
-              ? months.find((m) => m.month === month)?.label ?? null
-              : null}
+            monthLabel={showPicker ? monthLabel : null}
             createHref={brandHref(orgSlug, brandSlug, "/create")}
           />
         ) : (

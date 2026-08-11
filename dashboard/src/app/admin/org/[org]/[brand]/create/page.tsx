@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { BookOpen, FilePlus2, PenLine } from "lucide-react";
+import { BookOpen, PenLine } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { BrandRoute } from "@/components/shell/brand-route";
@@ -33,19 +33,11 @@ export default function CreatePage() {
             />
           ) : (
             <>
-              {/* Off-roadmap create, always here regardless of roadmap or run state. It sits at
-                  the page level, not inside SelectState, because a brand with no roadmap skips
-                  SelectState's header entirely, and writing a blog by hand is exactly what an
-                  operator with no sheet wants. It routes to /create/new; the engine still refuses
-                  a submit during a live run, so nothing races the run this button ignores. */}
-              <div className="mb-4 flex justify-end">
-                <Button size="sm" variant="outline" asChild>
-                  <Link href={brandHref(org.slug, brand.slug, "/create/new")}>
-                    <FilePlus2 data-icon="inline-start" aria-hidden />
-                    New blog
-                  </Link>
-                </Button>
-              </div>
+              {/* Off-roadmap create MOVED INTO SelectState's own header, where it sits in one
+                  row with View content roadmap under the heading. It lived here because a brand
+                  with no roadmap skips that header entirely and writing a blog by hand is exactly
+                  what an operator with no sheet wants; SelectState's NoRoadmap card now carries
+                  its own copy, which is the case this page-level render existed to cover. */}
               {/* The Suspense boundary is not decoration, same as the blogs library's:
                   CreateForBrand reads ?retry= via useSearchParams (the failed blog's page
                   links here with its row pre-ticked), and Next bails a prerendered route out

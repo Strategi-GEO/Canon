@@ -26,9 +26,12 @@ import { blogLabels } from "@/lib/blog-label";
 import { adminFailedTag } from "@/lib/blog-score";
 import { channelLabel, channelTag, isRepurposable } from "@/lib/channel-state";
 import { useRuns } from "@/lib/runs-context";
+import { inMonth, monthIndex, postInMonth } from "@/lib/blog-month";
+import { useMonthFilter } from "@/lib/use-month-filter";
 import { formatCount, formatRelative } from "@/lib/format";
 import { sortBlogs, type SortDir } from "@/components/blogs/blogs-filter";
 import { SortableHead } from "@/components/blogs/blogs-table";
+import { MonthPicker } from "@/components/blogs/month-picker";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
 import { StateTagChip } from "@/components/shell/state-tag-chip";
 import type { BlogSummary, ChannelPost, ChannelPostState, RepurposeChannel } from "@/types";
@@ -83,7 +86,18 @@ export function ChannelLibrary(props: {
   const router = useRouter();
 
   const [blogs, setBlogs] = React.useState<BlogSummary[] | null>(null);
-  const [posts, setPosts] = React.useState<ChannelPost[]>([]);
+  /**
+   * NULL UNTIL THE LISTING LANDS, and the null is the whole point.
+   *
+   * This started as `[]`, which made "no posts exist" and "the posts have not arrived" the same
+   * value, and the two tabs are derived from exactly that difference: New is the blogs with NO
+   * post, so an empty map put EVERY blog in New. The render gate only waited on `blogs`, so both
+   * fetches raced and the common outcome was the whole library rendering under New and then
+   * jumping to Created a moment later, which reads as the engine losing the work and finding it
+   * again. A separate `loading` flag would answer the same question one variable further from
+   * the data it describes.
+   */
+  const [posts, setPosts] = React.useState<ChannelPost[] | null>(null);
   const [error, setError] = React.useState<ApiError | null>(null);
   const [refreshing, setRefreshing] = React.useState(false);
   const [selected, setSelected] = React.useState<ReadonlySet<string>>(new Set());
@@ -94,6 +108,13 @@ export function ChannelLibrary(props: {
   const [pending, setPending] = React.useState<ReadonlySet<string>>(new Set());
 
   const { runs } = useRuns();
+
+  // THE SAME HOOK THE BLOGS TAB USES, not a second implementation of the same idea. A LinkedIn
+  // post and a Medium article are repurposes of a blog, so they belong to the month that planned
+  // that blog, and an operator crossing from Blogs to here must find the same work under the same
+  // month. Which months exist, which is the default and what happens when one is deleted are all
+  // decided in lib/use-month-filter.ts, once.
+  const { months, month, setMonth, latestMonth, showPicker } = useMonthFilter(brandSlug);
 
   const reviewHref = React.useCallback(
     (topicSlug: string) =>
@@ -123,6 +144,12 @@ export function ChannelLibrary(props: {
         () => {
           // A missing listing is not a panel: the blogs load owns the error surface, and a
           // transient failure just leaves the Created tab as it was.
+          //
+          // IT MUST STILL SETTLE, because the render now waits on this state and a null that
+          // never resolves is a skeleton forever. Empty is the honest fallback: with no listing
+          // the app cannot know which blogs have posts, and showing them all as New is what it
+          // did before this state could be null at all.
+          setPosts((current) => current ?? []);
         },
       ),
     [brandSlug, channel],
@@ -158,18 +185,22 @@ export function ChannelLibrary(props: {
     if (finished) void loadPosts();
   }, [liveSlugs, loadPosts]);
 
+  // Settled posts, for everything that only cares WHAT they are rather than whether they have
+  // arrived. The gate below is the one reader of the null.
+  const loadedPosts = React.useMemo(() => posts ?? [], [posts]);
+
   const postBySlug = React.useMemo(() => {
     const m = new Map<string, ChannelPost>();
-    for (const post of posts) m.set(post.source_topic_slug, post);
+    for (const post of loadedPosts) m.set(post.source_topic_slug, post);
     return m;
-  }, [posts]);
+  }, [loadedPosts]);
 
   // Sheet order, like every other blog table: the pick list and the library name the same
   // articles by the same number, so they must not disagree about the order. See DEFAULTS in
   // library-url.ts.
   const rows = React.useMemo(
-    () => sortBlogs(blogs ?? [], "roadmap", "asc"),
-    [blogs],
+    () => sortBlogs((blogs ?? []).filter((b) => inMonth(b, month, latestMonth)), "roadmap", "asc"),
+    [blogs, month, latestMonth],
   );
 
   const isGenerating = React.useCallback(
@@ -280,6 +311,9 @@ export function ChannelLibrary(props: {
   // Opens on the source # ascending, like every other blog table. This tab's rows ARE blogs seen
   // through their posts, and an operator crossing from the library to here is looking for the
   // same article by the same number, so the two lists must not be in different orders.
+  // Which tab is open, held here only so the shared control row can hide Generate on Created.
+  const [tab, setTab] = React.useState("new");
+
   const [postSort, setPostSort] = React.useState<{ key: PostSortKey; dir: SortDir }>({
     key: "num",
     dir: "asc",
@@ -290,8 +324,20 @@ export function ChannelLibrary(props: {
       dir: key === prev.key && prev.dir === "desc" ? "asc" : "desc",
     }));
   }, []);
+  // A post has no roadmap row of its own, so its month is resolved through the blog it was
+  // repurposed FROM. The index is built over every blog rather than over `rows`, because `rows`
+  // is already month-filtered and a post must be able to find its source in any month.
+  const monthOfBlog = React.useMemo(
+    () => monthIndex(blogs ?? [], latestMonth),
+    [blogs, latestMonth],
+  );
+  const monthPosts = React.useMemo(
+    () => loadedPosts.filter((p) => postInMonth(p.source_topic_slug, monthOfBlog, month, latestMonth)),
+    [loadedPosts, monthOfBlog, month, latestMonth],
+  );
+
   const sortedPosts = React.useMemo(() => {
-    const ranked = [...posts].sort((a, b) => {
+    const ranked = [...monthPosts].sort((a, b) => {
       if (postSort.key === "num") {
         const [ka, na, sa] = labelRank(labels.get(a.source_topic_slug));
         const [kb, nb, sb] = labelRank(labels.get(b.source_topic_slug));
@@ -306,7 +352,7 @@ export function ChannelLibrary(props: {
       return a.updated_at.localeCompare(b.updated_at);
     });
     return postSort.dir === "desc" ? ranked.reverse() : ranked;
-  }, [posts, postSort, labels]);
+  }, [monthPosts, postSort, labels]);
   const selectableCount = selectableSlugs.length;
   const allSelected = selectableCount > 0 && selectableSlugs.every((s) => selected.has(s));
   const someSelected = !allSelected && selectableSlugs.some((s) => selected.has(s));
@@ -319,19 +365,9 @@ export function ChannelLibrary(props: {
   return (
     <TooltipProvider delayDuration={200}>
       <div className="mx-auto w-full max-w-5xl">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-xl font-semibold tracking-tight text-foreground">{title}</h2>
-            <p className="mt-1 text-sm text-muted-foreground">{blurb}</p>
-          </div>
-          <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={refreshing}>
-            <RotateCw
-              className={refreshing ? "animate-spin motion-reduce:animate-none" : undefined}
-              data-icon="inline-start"
-              aria-hidden
-            />
-            Refresh
-          </Button>
+        <div className="mb-4 min-w-0">
+          <h2 className="text-xl font-semibold tracking-tight text-foreground">{title}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{blurb}</p>
         </div>
 
         {error ? (
@@ -348,34 +384,99 @@ export function ChannelLibrary(props: {
               </Button>
             </CardContent>
           </Card>
-        ) : blogs === null ? (
+        ) : blogs === null || posts === null ? (
           <Skeleton className="h-72 w-full" />
         ) : (
-          <Tabs defaultValue="new">
-            <TabsList>
-              <TabsTrigger value="new">New</TabsTrigger>
-              <TabsTrigger value="created">Created{posts.length ? ` (${posts.length})` : ""}</TabsTrigger>
-            </TabsList>
+          /* CONTROLLED, and the reason is Generate. All three controls sit on the tabs row, but
+             Generate acts on the New tab's selection alone and would be a dead button over the
+             Created tab, so the row has to know which tab is open. Nothing else here reads it.
+             A plain comment rather than a braced JSX one: this is a ternary's expression slot,
+             not JSX children, and a braced comment there parses as an object literal. */
+          <Tabs value={tab} onValueChange={setTab} className="gap-4">
+            {/* NOTHING IS RIGHT-ALIGNED, matching Blogs, Create and Content Roadmap: every
+                control on every tab starts at the same left edge under the heading, so the eye
+                lands in one place whichever tab is open. The three used to be spread across three
+                horizontal levels, then briefly right-aligned across from the tabs; both put the
+                thing an operator wants somewhere they had to hunt for it. */}
+            {/* EVERY GAP IN THIS HEADER IS 16px: heading block, tab strip, control row, table.
+                They were 16, then 12, then 24, which is why the block read as drifting rather than
+                as a stack. The pb-[5px] is the underline: the line variant hangs its bar 5px BELOW
+                the trigger box, so without that padding the bar sits inside the gap and eats a
+                third of it, leaving the one boundary an operator looks at hardest as the tightest
+                on the page. */}
+            <div className="flex flex-col items-start gap-4">
+              {/* THE LINE VARIANT, matching blog-stage.tsx and instructions-viewer.tsx, which are
+                  the app's only other tab surfaces. This was the one place still wearing the
+                  filled pill, so the same control looked like two different controls depending on
+                  which page an operator was standing on. Underlined tabs also stop competing with
+                  the buttons beside them for the eye: a filled segmented block reads as heavier
+                  than the Generate button it sits above, which inverts the actual hierarchy. */}
+              <TabsList variant="line" className="mb-[5px]">
+                <TabsTrigger value="new" className="text-xs">
+                  New
+                </TabsTrigger>
+                <TabsTrigger value="created" className="text-xs">
+                  Created
+                  {/* A COUNT BADGE RATHER THAN PARENTHESES. "Created (10)" makes the number part
+                      of the label, so it reads at the same weight as the word and the tab grows a
+                      visible parenthesis nobody is meant to read. The count is THIS MONTH'S,
+                      matching the rows the tab renders: a total over every month would promise
+                      rows the operator then cannot find. */}
+                  {monthPosts.length ? (
+                    <span className="machine rounded-full bg-muted px-1.5 py-px text-[10px] leading-4 text-muted-foreground">
+                      {monthPosts.length}
+                    </span>
+                  ) : null}
+                </TabsTrigger>
+              </TabsList>
 
-            <TabsContent value="new" className="mt-4">
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Only with TWO OR MORE months, exactly as on the Blogs tab: one month is
+                    everything there is, so a picker that cannot change anything only asks a
+                    question. */}
+                {showPicker && months ? (
+                  <MonthPicker months={months} month={month} onChange={setMonth} />
+                ) : null}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void refresh()}
+                  disabled={refreshing}
+                >
+                  <RotateCw
+                    className={refreshing ? "animate-spin motion-reduce:animate-none" : undefined}
+                    data-icon="inline-start"
+                    aria-hidden
+                  />
+                  Refresh
+                </Button>
+                {/* New tab only. On Created there is nothing selected and nothing to generate, so
+                    the button would be permanently disabled, which reads as broken rather than as
+                    inapplicable. */}
+                {!HOSTED_READONLY && tab === "new" ? (
+                  <Button size="sm" onClick={() => void generate()} disabled={selected.size === 0}>
+                    <Play data-icon="inline-start" aria-hidden />
+                    Generate
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+
+            <TabsContent value="new">
               {startError ? (
                 <p className="mb-3 text-xs text-fail" role="alert">
                   {startError}
                 </p>
               ) : null}
 
+              {/* The count stays here, above the rows it counts. Generate moved up to the tabs
+                  row; this is the readout that tells the operator what pressing it will do. */}
               {!HOSTED_READONLY ? (
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <p className="machine text-xs text-muted-foreground">
-                    {selected.size > 0
-                      ? `${formatCount(selected.size)} selected`
-                      : `${formatCount(selectableCount)} ready to generate`}
-                  </p>
-                  <Button onClick={() => void generate()} disabled={selected.size === 0}>
-                    <Play data-icon="inline-start" aria-hidden />
-                    Generate
-                  </Button>
-                </div>
+                <p className="machine mb-3 text-xs text-muted-foreground">
+                  {selected.size > 0
+                    ? `${formatCount(selected.size)} selected`
+                    : `${formatCount(selectableCount)} ready to generate`}
+                </p>
               ) : null}
 
               {newRows.length === 0 ? (
@@ -463,8 +564,8 @@ export function ChannelLibrary(props: {
               )}
             </TabsContent>
 
-            <TabsContent value="created" className="mt-4">
-              {posts.length === 0 ? (
+            <TabsContent value="created">
+              {monthPosts.length === 0 ? (
                 <NoPosts brandName={brandName} label={label} />
               ) : (
                 <Card className="p-0">

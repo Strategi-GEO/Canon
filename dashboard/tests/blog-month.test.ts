@@ -15,7 +15,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { inMonth, monthOf } from "../src/lib/blog-month.ts";
+import { inMonth, monthIndex, monthOf, postInMonth } from "../src/lib/blog-month.ts";
 import type { BlogSummary } from "../src/types/index.ts";
 
 function blog(topic_slug: string, month: number | null | undefined): BlogSummary {
@@ -62,4 +62,32 @@ test("no month means EVERY month, not 'blogs with no month'", () => {
   const blogs = [blog("m1a", 1), blog("m2a", 2), blog("manual", null)];
   assert.equal(blogs.filter((b) => inMonth(b, null, 2)).length, 3);
   assert.equal(blogs.filter((b) => inMonth(b, undefined, 2)).length, 3);
+});
+
+test("a LinkedIn or Medium post files under its SOURCE blog's month", () => {
+  // A repurpose has no roadmap row of its own. The sheet planned the BLOG, and the post exists
+  // because that blog did, so the two must never sit in different months: an operator crossing
+  // from Blogs to LinkedIn is looking for the same work.
+  const index = monthIndex([blog("m1a", 1), blog("m2a", 2), blog("manual", null)], 2);
+
+  assert.equal(postInMonth("m1a", index, 1, 2), true);
+  assert.equal(postInMonth("m1a", index, 2, 2), false);
+  assert.equal(postInMonth("m2a", index, 2, 2), true);
+  assert.equal(postInMonth("m2a", index, 1, 2), false);
+  // Repurposed from an off-roadmap blog, which rides with the latest month, so its post does too.
+  assert.equal(postInMonth("manual", index, 2, 2), true);
+});
+
+test("a post whose source blog is missing falls to the latest month, never nowhere", () => {
+  // The blogs list is still loading, or the source was deleted. Filing the post under no month at
+  // all would hide it from every month there is, which loses it rather than classifying it.
+  const index = monthIndex([blog("m1a", 1)], 2);
+  assert.equal(postInMonth("gone", index, 2, 2), true);
+  assert.equal(postInMonth("gone", index, 1, 2), false);
+});
+
+test("no month means EVERY post, exactly as it means every blog", () => {
+  const index = monthIndex([blog("m1a", 1), blog("m2a", 2)], 2);
+  assert.equal(postInMonth("m1a", index, null, 2), true);
+  assert.equal(postInMonth("m2a", index, undefined, 2), true);
 });

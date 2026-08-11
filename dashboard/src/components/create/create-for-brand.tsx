@@ -359,6 +359,10 @@ export function CreateForBrand({
       brandSlug={brandSlug}
       brandName={brandName}
       brandHref={brandHref(orgSlug, brandSlug)}
+      // Off-roadmap create. It used to be rendered by the page itself, on a row above the
+      // heading; the header owns it now, so the URL comes from the same place every other one
+      // in this tree does.
+      newBlogHref={brandHref(orgSlug, brandSlug, "/create/new")}
       // The route owns every URL in this tree. SelectState links out to the Content Roadmap
       // tab rather than building the path itself, for the same reason it takes brandSlug as a
       // prop: a component that derives its own routes can point at the wrong brand.
