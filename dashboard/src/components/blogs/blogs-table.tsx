@@ -10,11 +10,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
 import { adminFailedTag, scoreClass } from "@/lib/blog-score";
 import { blogLabels } from "@/lib/blog-label";
-import { DeleteBlogDialog } from "@/components/blogs/delete-blog-dialog";
 import { formatAbsolute, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { SortDir, SortKey } from "@/components/blogs/blogs-filter";
@@ -63,8 +63,7 @@ export function BlogsTable<T extends BlogTableRow>({
   onOpen,
   stateOf,
   audience = "admin",
-  brandSlug,
-  onDeleted,
+  selection,
 }: {
   blogs: T[];
   /**
@@ -95,15 +94,34 @@ export function BlogsTable<T extends BlogTableRow>({
    */
   audience?: "admin" | "client";
   /**
-   * The brand these blogs belong to, and a callback to refetch after one is deleted. Present
-   * only on the admin library: passing both turns on the trailing delete column. The client
-   * portal never passes them, so its table has no delete control at all.
+   * ROW SELECTION, and passing it is what turns the leading checkbox column on.
+   *
+   * Present only on the admin library. It replaces the trailing per-row delete button, which was
+   * one act reachable one row at a time; the selection reaches four acts over any number of rows,
+   * and delete is one of them. The client portal passes nothing, so its table has no checkboxes
+   * and no controls at all, which is the same shape it had before.
+   *
+   * There is no per-row `selectable` predicate on purpose. EVERY row can be ticked, because
+   * eligibility is a property of the ACT and not of the selection: the same blog can be
+   * downloadable and unsendable at once, so a checkbox that tried to encode "can this be acted
+   * on" would have to pick one act to be about. The bulk bar computes an eligible subset per
+   * action and says what it will touch.
    */
-  brandSlug?: string;
-  onDeleted?: () => void;
+  selection?: {
+    selected: ReadonlySet<string>;
+    onToggle: (topicSlug: string) => void;
+    /** Ticks every rendered row, or clears them when they are all already ticked. */
+    onToggleAll: (topicSlugs: readonly string[]) => void;
+  };
 }) {
   const admin = audience === "admin";
-  const canDelete = admin && brandSlug !== undefined && onDeleted !== undefined;
+  const shownSlugs = blogs.map((blog) => blog.topic_slug);
+  const allSelected =
+    selection !== undefined && shownSlugs.length > 0 &&
+    shownSlugs.every((slug) => selection.selected.has(slug));
+  const someSelected =
+    selection !== undefined && !allSelected &&
+    shownSlugs.some((slug) => selection.selected.has(slug));
   // The source-grouped identifier for every row, computed over the WHOLE list so the running
   // counts are right: AI blogs number, uploaded blogs letter. Cheap enough to recompute per render
   // (a sort over the current page's blogs), so no memo.
@@ -112,6 +130,19 @@ export function BlogsTable<T extends BlogTableRow>({
     <Table>
       <TableHeader>
         <TableRow className="hover:bg-transparent">
+          {/* Select-all over the RENDERED rows, never over the brand: the filters above this table
+              are how an operator narrows a bulk act down, so ticking this must mean "everything I
+              can currently see" or the narrowing was for nothing. */}
+          {selection ? (
+            <TableHead className="w-10">
+              <Checkbox
+                checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                disabled={shownSlugs.length === 0}
+                onCheckedChange={() => selection.onToggleAll(shownSlugs)}
+                aria-label="Select all blogs"
+              />
+            </TableHead>
+          ) : null}
           {/* First, and sortable, because sheet order is the order the work is discussed in.
               Narrow: it holds two digits and the roadmap tops out well short of a third. */}
           <SortableHead
@@ -158,9 +189,6 @@ export function BlogsTable<T extends BlogTableRow>({
           {admin ? (
             <TableHead className="machine w-20 text-xs font-medium">Iterations</TableHead>
           ) : null}
-          {/* Actions column, header intentionally blank: a control column needs no label, and a
-              screen reader gets each button's own text instead. Width is left to the content. */}
-          {canDelete ? <TableHead /> : null}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -175,8 +203,8 @@ export function BlogsTable<T extends BlogTableRow>({
             active={blog.topic_slug === activeSlug}
             href={hrefFor(blog)}
             onOpen={onOpen}
-            brandSlug={canDelete ? brandSlug : undefined}
-            onDeleted={canDelete ? onDeleted : undefined}
+            selected={selection ? selection.selected.has(blog.topic_slug) : null}
+            onSelect={selection ? () => selection.onToggle(blog.topic_slug) : undefined}
           />
         ))}
       </TableBody>
@@ -193,8 +221,8 @@ function Row<T extends BlogTableRow>({
   active,
   href,
   onOpen,
-  brandSlug,
-  onDeleted,
+  selected,
+  onSelect,
 }: {
   blog: T;
   /** This blog's source-grouped identifier (number for AI, letter for uploaded), from the parent's
@@ -212,9 +240,9 @@ function Row<T extends BlogTableRow>({
   active: boolean;
   href: string;
   onOpen: (blog: T) => void;
-  /** Present only when this table's parent enabled deletion (admin library). */
-  brandSlug?: string;
-  onDeleted?: () => void;
+  /** Ticked, unticked, or null where this table has no selection at all (the client portal). */
+  selected: boolean | null;
+  onSelect?: () => void;
 }) {
   const admin = audience === "admin";
   return (
@@ -235,10 +263,22 @@ function Row<T extends BlogTableRow>({
       // tabindex below is untouched, so j and k still work.
       className="cursor-pointer"
     >
-      {/* No align-top here or on the delete cell at the end of the row. TableCell already centres,
-          and those two overrides were the only cells that opted out, so on a title that wrapped to
-          two lines the row number and the bin sat at the top while every other column sat in the
-          middle. The title cell sets the row height; nothing else should track its first line. */}
+      {/* The checkbox cell stops the row's own click, so ticking a row never also navigates to it.
+          Every other cell is a click target for opening the blog, which is the behaviour a list of
+          rows should have; this one cell is the exception because it is a control. */}
+      {selected !== null ? (
+        <TableCell className="py-2.5" onClick={(event) => event.stopPropagation()}>
+          <Checkbox
+            checked={selected}
+            onCheckedChange={() => onSelect?.()}
+            aria-label={`Select ${blog.topic}`}
+          />
+        </TableCell>
+      ) : null}
+      {/* No align-top here. TableCell already centres, and this was one of two cells that opted
+          out, so on a title that wrapped to two lines the row number sat at the top while every
+          other column sat in the middle. The title cell sets the row height; nothing else should
+          track its first line. */}
       <TableCell className="py-2.5">
         <BlogLabel label={label} uploaded={!!blog.uploaded} />
       </TableCell>
@@ -324,18 +364,6 @@ function Row<T extends BlogTableRow>({
       {admin ? (
         <TableCell className="machine text-xs text-muted-foreground">
           {typeof blog.iterations === "number" ? blog.iterations : ""}
-        </TableCell>
-      ) : null}
-      {brandSlug !== undefined && onDeleted !== undefined ? (
-        <TableCell className="py-2.5 text-right">
-          <div className="flex items-center justify-end gap-0.5">
-            <DeleteBlogDialog
-              brandSlug={brandSlug}
-              topicSlug={blog.topic_slug}
-              title={blog.topic}
-              onDeleted={onDeleted}
-            />
-          </div>
         </TableCell>
       ) : null}
     </TableRow>

@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Loader2, Play, RotateCw, Send, Sparkles } from "lucide-react";
+import { Download, Loader2, Play, RotateCw, Send, SendHorizontal, Sparkles, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -31,6 +31,7 @@ import { useMonthFilter } from "@/lib/use-month-filter";
 import { formatCount, formatRelative } from "@/lib/format";
 import { sortBlogs, type SortDir } from "@/components/blogs/blogs-filter";
 import { SortableHead } from "@/components/blogs/blogs-table";
+import { BulkBar, type BulkAction } from "@/components/blogs/bulk-bar";
 import { MonthPicker } from "@/components/blogs/month-picker";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
 import { StateTagChip } from "@/components/shell/state-tag-chip";
@@ -362,6 +363,125 @@ export function ChannelLibrary(props: {
     );
   }
 
+  /**
+   * THE CREATED TAB'S OWN SELECTION, and it is a SECOND one on purpose.
+   *
+   * `selected` above means "generate a post from these blogs"; this means "act on these posts".
+   * The two tabs hold different things (blogs with no post, and posts) and offer different acts,
+   * so one shared set would put a blog and a post in the same collection and make Generate and
+   * Delete argue about what a tick meant. They are cleared independently for the same reason.
+   */
+  const [postsTicked, setPostsTicked] = React.useState<ReadonlySet<string>>(new Set());
+  const visiblePostSlugs = React.useMemo(
+    () => sortedPosts.map((p) => p.source_topic_slug),
+    [sortedPosts],
+  );
+  // Narrowed to the visible rows by DERIVATION, never by pruning the stored set. Same reasoning as
+  // blogs-library's `selected`: the month filter has to bound what a bulk act reaches, and an
+  // effect that pruned instead would discard ticks the moment the operator glanced at another
+  // month, on top of rendering the stale set once first.
+  const postsPicked = React.useMemo(
+    () => new Set(visiblePostSlugs.filter((slug) => postsTicked.has(slug))),
+    [visiblePostSlugs, postsTicked],
+  );
+
+  function togglePost(slug: string) {
+    setPostsTicked((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(slug)) next.add(slug);
+      return next;
+    });
+  }
+  function toggleAllPosts() {
+    setPostsTicked((prev) => {
+      const on = visiblePostSlugs.every((s) => prev.has(s));
+      const next = new Set(prev);
+      for (const slug of visiblePostSlugs) {
+        if (on) next.delete(slug);
+        else next.add(slug);
+      }
+      return next;
+    });
+  }
+  const allPostsPicked =
+    visiblePostSlugs.length > 0 && visiblePostSlugs.every((s) => postsPicked.has(s));
+  const somePostsPicked =
+    !allPostsPicked && visiblePostSlugs.some((s) => postsPicked.has(s));
+
+  /**
+   * THREE ACTS, NOT FOUR, and the missing one is Post to CMS.
+   *
+   * The CMS is the brand's own website, and a LinkedIn post goes to LinkedIn: pushing the same
+   * article to the site twice is duplicate content, which is the thing the CMS gate exists to stop.
+   * Posting to the channel itself is not bulkable either, because neither LinkedIn nor Medium
+   * accepts a pre-filled body by URL, so PostToChannel copies the text and opens ONE composer.
+   * Eight of those is eight tabs and one clipboard. It stays on the review page, one post at a
+   * time, which is the only shape the platforms allow.
+   */
+  const pickedPosts = React.useMemo(
+    () => sortedPosts.filter((p) => postsPicked.has(p.source_topic_slug)),
+    [sortedPosts, postsPicked],
+  );
+  const postActions = React.useMemo<BulkAction[]>(() => {
+    const slugs = pickedPosts.map((p) => p.source_topic_slug);
+    // The same two states channel-review's own Send button mounts on. A sent post is already with
+    // the client, an approved one is waiting to be marked posted, and a posted one is done.
+    const sendable = pickedPosts
+      .filter((p) => p.state === "created" || p.state === "changes_requested")
+      .map((p) => p.source_topic_slug);
+    return [
+      {
+        key: "download",
+        label: "Download",
+        icon: Download,
+        eligible: slugs,
+        done: "Downloaded",
+        runAll: async (picked) => {
+          const blob = await api.channelDownload(brandSlug, channel, picked);
+          const href = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = href;
+          link.download = `${brandSlug}-${channel}.docx`;
+          link.click();
+          URL.revokeObjectURL(href);
+        },
+      },
+      {
+        key: "send",
+        label: "Send to client",
+        icon: SendHorizontal,
+        eligible: sendable,
+        skipped: "already with the client, approved, or posted",
+        done: "Sent",
+        confirm: {
+          title: `Send ${sendable.length} to ${brandName}?`,
+          body: `Each ${label} becomes visible in the client portal as ready to post, exactly as it reads now. Posts the client already has are not included.`,
+          action: "Send them",
+        },
+        runOne: (slug) => api.sendChannelPost(brandSlug, channel, slug),
+      },
+      {
+        key: "delete",
+        label: "Delete",
+        icon: Trash2,
+        eligible: slugs,
+        destructive: true,
+        done: "Deleted",
+        confirm: {
+          title: `Delete ${slugs.length} ${slugs.length === 1 ? label : `${label}s`}?`,
+          body: `The post and any comments on it go. THE BLOG IS UNTOUCHED: each one returns to the New tab, tickable again, keeping its draft and its own delivery state. This cannot be undone.`,
+          action: "Delete them",
+        },
+        runOne: (slug) => api.deleteChannelPost(brandSlug, channel, slug),
+      },
+    ];
+  }, [pickedPosts, brandSlug, brandName, channel, label]);
+
+  // ONLY THE CREATED TAB SWAPS ITS CONTROL ROW. The New tab's selection already has its answer in
+  // that row and it is Generate, so replacing month and refresh there would trade two useful
+  // controls for a button that is already present.
+  const picking = tab === "created" && postsPicked.size > 0;
+
   return (
     <TooltipProvider delayDuration={200}>
       <div className="mx-auto w-full max-w-5xl">
@@ -430,6 +550,17 @@ export function ChannelLibrary(props: {
                 </TabsTrigger>
               </TabsList>
 
+              {/* The selection replaces the controls, exactly as it does on the Blogs tab: ticking
+                  a post is a mode switch from narrowing the list to acting on a set. */}
+              {picking ? (
+                <BulkBar
+                  count={postsPicked.size}
+                  noun={label}
+                  actions={postActions}
+                  onClear={() => setPostsTicked(new Set())}
+                  onDone={() => void refresh()}
+                />
+              ) : (
               <div className="flex flex-wrap items-center gap-2">
                 {/* Only with TWO OR MORE months, exactly as on the Blogs tab: one month is
                     everything there is, so a picker that cannot change anything only asks a
@@ -460,6 +591,7 @@ export function ChannelLibrary(props: {
                   </Button>
                 ) : null}
               </div>
+              )}
             </div>
 
             <TabsContent value="new">
@@ -572,6 +704,20 @@ export function ChannelLibrary(props: {
                   <Table>
                     <TableHeader>
                       <TableRow className="hover:bg-transparent">
+                        {/* Select-all over the RENDERED posts, so the month filter above is how an
+                            operator narrows a bulk act down. */}
+                        {!HOSTED_READONLY ? (
+                          <TableHead className="w-10">
+                            <Checkbox
+                              checked={
+                                allPostsPicked ? true : somePostsPicked ? "indeterminate" : false
+                              }
+                              disabled={visiblePostSlugs.length === 0}
+                              onCheckedChange={() => toggleAllPosts()}
+                              aria-label={`Select all ${label}s`}
+                            />
+                          </TableHead>
+                        ) : null}
                         <SortableHead
                           label="#"
                           column="num"
@@ -621,6 +767,16 @@ export function ChannelLibrary(props: {
                             onClick={() => router.push(reviewHref(post.source_topic_slug))}
                             className="cursor-pointer"
                           >
+                            {/* stopPropagation so ticking a row never also opens it. */}
+                            {!HOSTED_READONLY ? (
+                              <TableCell onClick={(event) => event.stopPropagation()}>
+                                <Checkbox
+                                  checked={postsPicked.has(post.source_topic_slug)}
+                                  onCheckedChange={() => togglePost(post.source_topic_slug)}
+                                  aria-label={`Select ${post.source_topic}`}
+                                />
+                              </TableCell>
+                            ) : null}
                             <TableCell
                               className="machine text-xs text-muted-foreground"
                               title={source?.uploaded ? "Uploaded by hand — letters mark manual blogs" : "Written by the engine"}

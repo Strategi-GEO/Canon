@@ -6,12 +6,14 @@ import { useRouter } from "next/navigation";
 import {
   Download,
   FileText,
+  Globe,
   MessageCircleQuestion,
   RotateCw,
   Search,
+  SendHorizontal,
+  Trash2,
   TriangleAlert,
 } from "lucide-react";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -21,7 +23,8 @@ import { ApiError, api } from "@/lib/api";
 import { brandHref } from "@/lib/orgs-context";
 import { HOSTED_READONLY } from "@/lib/hosted";
 import { inMonth } from "@/lib/blog-month";
-import { adminTag, blogState } from "@/lib/blog-state";
+import { adminCan, adminTag, blogState } from "@/lib/blog-state";
+import { adminGateAllows, type GateForm, type GateInput } from "@/lib/gate-contract";
 import { formatCount } from "@/lib/format";
 import {
   loadObservedReview,
@@ -37,6 +40,7 @@ import { useHotkey } from "@/lib/use-hotkey";
 import { cn } from "@/lib/utils";
 import { selectBlogs, STATE_FILTERS, type StateFilter } from "@/components/blogs/blogs-filter";
 import { BlogsTable, TRIGGER_ATTR } from "@/components/blogs/blogs-table";
+import { BulkBar, type BulkAction } from "@/components/blogs/bulk-bar";
 import { MonthPicker } from "@/components/blogs/month-picker";
 import { useLibraryUrl } from "@/components/blogs/library-url";
 import {
@@ -276,31 +280,180 @@ function Library({
     setRefreshing(false);
   }
 
-  // Every blog for this brand as one .docx, a "Blog N" cover page before each article. Engine
-  // work (Python builds the document), so the button is desktop-only, exactly like Settings.
-  const [downloading, setDownloading] = React.useState(false);
-  async function downloadAll() {
-    setDownloading(true);
-    try {
-      const blob = await api.blogsDownloadAll(brandSlug);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${brandSlug}-blogs.docx`;
-      link.click();
-      URL.revokeObjectURL(url);
-    } catch (cause) {
-      const message = cause instanceof ApiError ? cause.message : String(cause);
-      toast.error("Could not download the blogs", { description: message });
-    } finally {
-      setDownloading(false);
-    }
-  }
-
   const shown = React.useMemo(
     () => selectBlogs(blogs ?? [], url.query, url.status, url.sortKey, url.sortDir,
                       month, latestMonth),
     [blogs, url.query, url.status, url.sortKey, url.sortDir, month, latestMonth],
+  );
+
+  /**
+   * THE TICKED ROWS, and everything the bulk bar acts on.
+   *
+   * Kept as slugs rather than as blogs, because a poll replaces every BlogSummary object while a
+   * selection has to survive it: identity here is the slug, exactly as it is for the keyboard's
+   * `picked` above and for `activeSlug`.
+   *
+   * `selected` is `ticked` NARROWED TO THE VISIBLE ROWS, derived and never stored. A bar reading
+   * "3 selected" over a table showing none of them is a Delete aimed at rows the operator cannot
+   * see, so the filters have to bound the selection. Doing it as a DERIVATION rather than as an
+   * effect that prunes `ticked` matters twice over: an effect renders once with the stale set
+   * before correcting itself, and pruning is destructive, so glancing at another month and coming
+   * back would silently discard the ticks. Here the ticks survive out of sight and simply do not
+   * count while they are.
+   */
+  const [ticked, setTicked] = React.useState<ReadonlySet<string>>(new Set());
+  const selected = React.useMemo(
+    () => new Set(shown.map((blog) => blog.topic_slug).filter((slug) => ticked.has(slug))),
+    [shown, ticked],
+  );
+
+  const toggle = React.useCallback((topicSlug: string) => {
+    setTicked((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(topicSlug)) {
+        next.add(topicSlug);
+      }
+      return next;
+    });
+  }, []);
+  // Select-all reaches ONLY the rows it was rendered over, in both directions, so it can neither
+  // tick nor clear a row behind a filter. Anything else would make one checkbox mean two things.
+  const toggleAll = React.useCallback((topicSlugs: readonly string[]) => {
+    setTicked((prev) => {
+      const on = topicSlugs.every((slug) => prev.has(slug));
+      const next = new Set(prev);
+      for (const slug of topicSlugs) {
+        if (on) next.delete(slug);
+        else next.add(slug);
+      }
+      return next;
+    });
+  }, []);
+  const clearSelection = React.useCallback(() => setTicked(new Set()), []);
+
+  /**
+   * WHAT THE FOUR BULK ACTS WILL ACTUALLY TOUCH, decided here because only this page holds the
+   * facts each gate reads.
+   *
+   * Send and Post to CMS run through `adminCan` AND `adminGateAllows`, the same pair blog-stage
+   * gates its own two buttons on, so a row the bar offers to send is a row the stage page would
+   * also send. Restating either rule here is how the two screens start disagreeing about one
+   * record, which is the defect gate-contract.ts exists to prevent.
+   *
+   * The question form is real rather than assumed: `byTopic` is already read for the waiting
+   * chips, so each blog's gate input carries its own form, and a topic whose read has not landed
+   * degrades to "unread" and FAILS CLOSED, dropping out of the eligible set rather than being
+   * offered on a guess.
+   *
+   * `applying` is deliberately OMITTED, not passed as "unread". See GateInput: omitting it asks a
+   * question about the RECORD, which is what a bulk bar is asking, and the two transient clauses
+   * over mid-flight applies describe a moment this list is not looking at. Passing "unread" would
+   * fail closed on every row and offer nothing at all.
+   */
+  const gateOf = React.useCallback(
+    (blog: BlogSummary): GateInput => {
+      const entry = byTopic.get(blog.topic_slug);
+      const form: GateForm =
+        entry === undefined || entry.error !== null
+          ? "unread"
+          : entry.payload === null
+            ? "absent"
+            : { stale: entry.payload.stale, answered: entry.payload.answered };
+      return { record: blog, form };
+    },
+    [byTopic],
+  );
+
+  const selectedBlogs = React.useMemo(
+    () => shown.filter((blog) => selected.has(blog.topic_slug)),
+    [shown, selected],
+  );
+
+  const eligible = React.useMemo(() => {
+    const pick = (test: (blog: BlogSummary) => boolean) =>
+      selectedBlogs.filter(test).map((blog) => blog.topic_slug);
+    return {
+      // A blog still generating has no committed draft for the engine to put in the document. It
+      // is the ONE state where that is knowable from the wire; past it, the engine's own query is
+      // the authority and a row with no body simply is not in the .docx.
+      download: pick((blog) => blogState(blog) !== "generating"),
+      send: pick(
+        (blog) => adminCan(blogState(blog), "send") && adminGateAllows("send", gateOf(blog)),
+      ),
+      publish: pick(
+        (blog) => adminCan(blogState(blog), "publish") && adminGateAllows("publish", gateOf(blog)),
+      ),
+      // Everything. The engine refuses a delete while a run for this brand is live, and that is a
+      // 409 with a sentence on it rather than a fact this list holds.
+      delete: selectedBlogs.map((blog) => blog.topic_slug),
+    };
+  }, [selectedBlogs, gateOf]);
+
+  const bulkActions = React.useMemo<BulkAction[]>(
+    () => [
+      {
+        key: "download",
+        label: "Download",
+        icon: Download,
+        eligible: eligible.download,
+        skipped: "still being written",
+        done: "Downloaded",
+        // ONE request, not one per blog: the engine bundles them into a single .docx and fanning
+        // this out would hand the operator eight separate documents.
+        runAll: async (slugs) => {
+          const blob = await api.blogsDownloadAll(brandSlug, slugs);
+          const href = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = href;
+          link.download = `${brandSlug}-blogs.docx`;
+          link.click();
+          URL.revokeObjectURL(href);
+        },
+      },
+      {
+        key: "send",
+        label: "Send to client",
+        icon: SendHorizontal,
+        eligible: eligible.send,
+        skipped: "already with the client, or holding an open question",
+        done: "Sent",
+        confirm: {
+          title: `Send ${eligible.send.length} to ${brandName}?`,
+          body: "Each one becomes visible in the client portal for review, exactly as it reads now. Blogs the client already has, and blogs holding an open question, are not included.",
+          action: "Send them",
+        },
+        runOne: (slug) => api.sendBlogToClient(brandSlug, slug),
+      },
+      {
+        key: "publish",
+        label: "Post to CMS",
+        icon: Globe,
+        eligible: eligible.publish,
+        skipped: "not in a state the CMS door accepts",
+        done: "Posted to the CMS",
+        confirm: {
+          title: `Post ${eligible.publish.length} to the CMS?`,
+          body: "Each one is pushed to the brand's site with its own excerpt, SEO title, description, category and tags. A blog already posted is updated in place.",
+          action: "Post them",
+        },
+        runOne: (slug) => api.publishBlog(brandSlug, slug),
+      },
+      {
+        key: "delete",
+        label: "Delete",
+        icon: Trash2,
+        eligible: eligible.delete,
+        destructive: true,
+        done: "Deleted",
+        confirm: {
+          title: `Delete ${eligible.delete.length} ${eligible.delete.length === 1 ? "blog" : "blogs"}?`,
+          body: "The draft, its evaluation, its comments and its scratch files all go, and the roadmap row frees up so the topic can be written again. This cannot be undone.",
+          action: "Delete them",
+        },
+        runOne: (slug) => api.deleteBlog(brandSlug, slug),
+      },
+    ],
+    [eligible, brandSlug, brandName],
   );
 
   // The keyboard's row. A filter can hide whatever was picked, and a row that is not rendered
@@ -342,10 +495,8 @@ function Library({
   useHotkey("/", () => searchRef.current?.focus());
 
   // The month on screen is the whole list as far as this page's counts and empty state are
-  // concerned. `anyBlogs` is the brand-wide question, and only Download all asks it: that button
-  // bundles every blog the brand has, so a month with nothing in it must not hide it.
+  // concerned.
   const total = monthBlogs.length;
-  const anyBlogs = (blogs?.length ?? 0) > 0;
   const filtering = url.query.trim() !== "" || url.status !== "all";
 
   return (
@@ -362,6 +513,22 @@ function Library({
             Everything the factory has written for {brandName}.
           </p>
         </div>
+        {/* THE SELECTION REPLACES THE CONTROLS, rather than sitting beside them. Ticking a row is
+            a mode switch: the operator has stopped narrowing the list and started acting on a set,
+            and leaving search, month, status and refresh on screen under four bulk acts makes them
+            re-read the whole row to find the two controls that now matter. Clear puts it all back,
+            so nothing is lost and the filters are one click away. */}
+        {selected.size > 0 ? (
+          <div className="mt-3">
+            <BulkBar
+              count={selected.size}
+              noun="blog"
+              actions={bulkActions}
+              onClear={clearSelection}
+              onDone={() => void refresh()}
+            />
+          </div>
+        ) : (
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <div className="relative">
             <Search
@@ -406,24 +573,8 @@ function Library({
             />
             Refresh
           </Button>
-          {/* Desktop-only (the engine builds the .docx) and only when there is something to
-              bundle. Downloads ALL blogs, ignoring the search and status filters above. */}
-          {!HOSTED_READONLY && anyBlogs ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void downloadAll()}
-              disabled={downloading}
-            >
-              <Download
-                className={cn(downloading && "animate-pulse motion-reduce:animate-none")}
-                data-icon="inline-start"
-                aria-hidden
-              />
-              Download all
-            </Button>
-          ) : null}
         </div>
+        )}
       </div>
 
       <WaitingOnYou signals={waiting} />
@@ -462,8 +613,14 @@ function Library({
                     setPicked(blog.topic_slug);
                     router.push(blogHref(blog.topic_slug));
                   }}
-                  brandSlug={HOSTED_READONLY ? undefined : brandSlug}
-                  onDeleted={HOSTED_READONLY ? undefined : () => void refresh()}
+                  // No checkboxes on the hosted mirror: every act the bar offers is a write, and
+                  // this build refuses all of them, so a selection there could only ever lead to
+                  // four buttons that answer 501.
+                  selection={
+                    HOSTED_READONLY
+                      ? undefined
+                      : { selected, onToggle: toggle, onToggleAll: toggleAll }
+                  }
                 />
               )}
             </Card>

@@ -41,13 +41,13 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
                                StreamingResponse)
 from pydantic import BaseModel
 
-from . import analysis_gen, auth, blog_edit, blog_upload, client_answers, db, describe, docx_export, facts_gen, ledger, portal_login, report_gen, repurpose, roadmap, roadmap_gen, runner, sync
+from . import analysis_gen, auth, blog_edit, blog_upload, client_answers, db, describe, docx_export, facts_gen, ledger, notify, portal_login, report_gen, repurpose, roadmap, roadmap_gen, runner, sync
 # Aliased: many channel routes take a `channel` path param that would shadow the bare module.
 from . import channel as channel_mod
 # Aliased for the same reason clients is: "questions" is the natural name for the list of
@@ -267,6 +267,23 @@ async def _client_answers_pickup():
         client_answers.run_forever(
             dispatch,
             lambda slug, topic_slug: topic_slug in _live_run_slugs(slug)))
+    _STARTUP_TASKS.add(task)
+    task.add_done_callback(_STARTUP_TASKS.discard)
+
+
+@app.on_event("startup")
+async def _admin_email_notifications():
+    """Poll for the things a CLIENT did and mail the operator about them.
+
+    Separate from the pickup sweep above and deliberately NOT conditional on it: that one is off
+    by default because it spends this machine's quota, while this one only reads and sends mail.
+    The two answer different questions about the same event, and an operator who has not enabled
+    automatic pickup is precisely the operator who needs telling that a rerun is owed.
+
+    server/notify.py turns itself off when the machine has no RESEND_API_KEY, so this is a no-op
+    on every machine that has not configured one.
+    """
+    task = asyncio.create_task(notify.run_forever())
     _STARTUP_TASKS.add(task)
     task.add_done_callback(_STARTUP_TASKS.discard)
 
@@ -2159,14 +2176,25 @@ async def api_blogs(slug: str, user: auth.Identity = Depends(auth.require_user))
 
 
 @app.get("/api/clients/{slug}/blogs/download-all")
-async def api_blogs_download_all(slug: str, user: auth.Identity = Depends(auth.require_user)):
+async def api_blogs_download_all(slug: str,
+                                 topics: list[str] | None = Query(None),
+                                 user: auth.Identity = Depends(auth.require_user)):
     """Every blog this brand has, as ONE .docx: a cover page reading "Blog N" with the article's
     title beneath, then the article, for each blog. Reads the latest committed version body per
     live topic, the SAME body the library shows, ordered by roadmap position so "Blog 1" is the
     first row of the content plan. Engine-only, like the report and analysis PDFs.
 
+    `topics` NARROWS IT TO A SELECTION and changes nothing else: same query, same roadmap
+    ordering, same cover pages, filtered. The library's bulk bar bundles what the operator ticked.
+    The cover numbers stay SEQUENTIAL OVER THE DOCUMENT, so a subset reads Blog 1, Blog 2, Blog 3
+    rather than carrying the gaps of what was left out. That is the cover page doing its own job:
+    the number orients a reader inside THIS document, and it has never matched the library's "#"
+    column anyway, which counts engine-written blogs in creation order while this orders by the
+    content plan. Omitted (the whole brand) is the original behaviour, byte for byte.
+
     Declared before the /blogs/{topic}/... routes so "download-all" is never read as a topic."""
     _client_or_404(slug, user)
+    wanted = {t for t in (topics or []) if t}
     cid = db.client_id(slug)
     rows = db.q(
         """select t.slug, t.title as topic_title,
@@ -2179,8 +2207,13 @@ async def api_blogs_download_all(slug: str, user: auth.Identity = Depends(auth.r
             where t.client_id = %s and t.deleted_at is null
               and v.body is not null and length(btrim(v.body)) > 0""",
         (cid,)) if cid else []
+    if wanted:
+        rows = [row for row in rows if row[0] in wanted]
     if not rows:
-        raise HTTPException(status_code=404, detail=f"no blogs to download for {slug!r}")
+        raise HTTPException(
+            status_code=404,
+            detail=(f"none of the {len(wanted)} selected blogs has a draft to download"
+                    if wanted else f"no blogs to download for {slug!r}"))
 
     # Title and order mirror the library's own precedence: an operator rename (topics.title) wins
     # over the ledger's operator topic text, which beats a writer H1, and roadmap position orders
@@ -3654,6 +3687,38 @@ async def api_channel_posts(slug: str, channel: str,
     return {"posts": await asyncio.to_thread(channel_mod.list_posts, slug, ch)}
 
 
+@app.get("/api/clients/{slug}/channel/{channel}/download")
+async def api_channel_download(slug: str, channel: str,
+                               topics: list[str] | None = Query(None),
+                               user: auth.Identity = Depends(auth.require_user)):
+    """The named posts for one channel as ONE .docx, a cover page per piece: the Created tab's
+    bulk download. `topics` are SOURCE BLOG slugs, the same key everything else on this track uses.
+
+    Declared before /channel/{channel}/{topic} so "download" is never read as a topic slug. That
+    ordering is the whole guard: `_channel_topic_guard` would accept "download" as a well-formed
+    slug and this would 404 as an ungenerated post, which reads like the operator's own selection
+    was wrong.
+
+    Omitting `topics` bundles nothing and 404s rather than bundling the brand, deliberately: the
+    blogs export has a whole-brand meaning because a brand HAS a blog library, while a channel
+    download only ever comes from a selection, and a bare URL that dumps every LinkedIn post is a
+    thing nobody asked for that somebody would eventually rely on."""
+    _client_or_404(slug, user)
+    ch = _channel_or_400(channel)
+    wanted = [t for t in (topics or []) if t]
+    pieces = await asyncio.to_thread(channel_mod.bodies, slug, ch, wanted)
+    if not pieces:
+        raise HTTPException(
+            status_code=404,
+            detail=(f"none of the {len(wanted)} selected posts has text to download"
+                    if wanted else "name the posts to download"))
+    label = "LinkedIn post" if ch == "linkedin" else "Medium article"
+    data = await asyncio.to_thread(docx_export.build_docx, pieces, label)
+    return Response(
+        content=data, media_type=docx_export.CONTENT_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{slug}-{ch}.docx"'})
+
+
 @app.get("/api/clients/{slug}/channel/{channel}/{topic}")
 async def api_channel_post(slug: str, channel: str, topic: str,
                            user: auth.Identity = Depends(auth.require_user)):
@@ -3810,6 +3875,25 @@ async def api_mark_channel_posted(slug: str, channel: str, topic: str,
                             detail="this post is not ready to mark posted: the client must "
                                    "approve it first, and it must not already be posted")
     return state
+
+
+@app.delete("/api/clients/{slug}/channel/{channel}/{topic}", status_code=204)
+async def api_delete_channel_post(slug: str, channel: str, topic: str,
+                                  user: auth.Identity = Depends(auth.require_admin)):
+    """Remove one channel post and its scratch dir. THE SOURCE BLOG IS UNTOUCHED: the blog returns
+    to the New tab, tickable again, keeping its draft and everything on its own track.
+
+    Refused while a generation for this exact (blog, channel) is live, for the reason every other
+    write on this track is: the engine is writing that post.md right now and a delete would race
+    the commit that follows it. Idempotent otherwise, a 204 whether or not a post was there,
+    because a bulk delete of eight posts must not fail on the one somebody already removed."""
+    ch = _channel_topic_guard(slug, topic, channel, user)
+    if repurpose.live_run_exists(slug, topic, ch):
+        raise HTTPException(status_code=409,
+                            detail=f"a {ch} generation for this blog is live; delete once it "
+                                   f"finishes so the engine's own write is not raced")
+    await asyncio.to_thread(channel_mod.delete_post, slug, topic, ch)
+    return None
 
 
 # The CMS auto-repurpose: a successful CMS publish fires a LinkedIn and a Medium variation from

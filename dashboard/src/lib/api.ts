@@ -200,6 +200,25 @@ export async function request<T>(
 }
 
 /**
+ * `?topics=a&topics=b` for the two bulk downloads, or "" for an empty or absent list.
+ *
+ * REPEATED KEYS, never one comma-joined value, because a topic slug is operator-shaped: it comes
+ * from a CSV cell by way of runner.slugify, and building a delimiter into the wire is how one
+ * unusual title takes the download with it. FastAPI's `list[str] | None = Query(None)` reads this
+ * form natively, and URLSearchParams does the escaping.
+ */
+function topicsQuery(topics?: readonly string[]): string {
+  const params = new URLSearchParams();
+  for (const topic of topics ?? []) {
+    if (topic) {
+      params.append("topics", topic);
+    }
+  }
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+/**
  * Binary bodies (resource previews and downloads), authenticated like every other request.
  * The error path still reads text: the engine's refusals are JSON or plain prose, and a
  * refusal wrapped in a Blob would be a reason nobody can render.
@@ -936,11 +955,49 @@ export const api = {
     requestBlob(`/api/clients/${slug}/analysis/${month}/pdf`, signal),
 
   /**
-   * Every blog for this brand bundled into ONE .docx, a "Blog N" cover page before each article,
-   * as a download blob. Needs the live engine (Python builds the document).
+   * Blogs for this brand bundled into ONE .docx, a "Blog N" cover page before each article, as a
+   * download blob. Needs the live engine (Python builds the document).
+   *
+   * `topics` NARROWS IT TO A SELECTION; omitting it bundles the whole brand, which is the older
+   * and still-supported call.
+   *
+   * AN EMPTY ARRAY BUNDLES THE WHOLE BRAND, and that is a sharp edge worth naming rather than
+   * hiding. It sends no `topics` at all, so the engine cannot tell "they asked for nothing" from
+   * "they asked for everything" and answers with the library. Nothing here can fix that: the
+   * distinction was lost at the query string. What guards it is the CALLER, and the guard is real
+   * rather than assumed: BulkBar disables an action whose eligible set is empty and its `fire`
+   * returns before the request. Any new caller owes the same check.
    */
-  blogsDownloadAll: (slug: string, signal?: AbortSignal) =>
-    requestBlob(`/api/clients/${slug}/blogs/download-all`, signal),
+  blogsDownloadAll: (slug: string, topics?: readonly string[], signal?: AbortSignal) =>
+    requestBlob(
+      `/api/clients/${slug}/blogs/download-all${topicsQuery(topics)}`,
+      signal,
+    ),
+
+  /**
+   * The named channel posts as ONE .docx, a cover page per piece. `topics` are SOURCE BLOG slugs,
+   * the same key every other channel route takes. Unlike the blogs export there is no whole-brand
+   * form: a channel download only ever comes from a selection, so an empty list 404s rather than
+   * quietly meaning "all of them".
+   */
+  channelDownload: (
+    slug: string,
+    channel: RepurposeChannel,
+    topics: readonly string[],
+    signal?: AbortSignal,
+  ) => requestBlob(`/api/clients/${slug}/channel/${channel}/download${topicsQuery(topics)}`, signal),
+
+  /**
+   * Remove one channel post and its scratch dir. THE SOURCE BLOG IS UNTOUCHED: it returns to the
+   * New tab, tickable again, keeping its draft and its own delivery state. 409 while a generation
+   * for this exact (blog, channel) is live. Idempotent 204 on an unknown or already-deleted post,
+   * so a bulk delete never fails on the one somebody removed a moment earlier.
+   */
+  deleteChannelPost: (slug: string, channel: RepurposeChannel, topicSlug: string) =>
+    request<void>(
+      `/api/clients/${slug}/channel/${channel}/${encodeURIComponent(topicSlug)}`,
+      { method: "DELETE" },
+    ),
 
   /**
    * The running desktop app's version. Engine-only, so the Settings panel that reads it is hidden

@@ -223,8 +223,8 @@ def _markdown_blocks(markdown: str, doc: _Doc) -> list[str]:
     return blocks
 
 
-def _cover(number: int, title: str, doc: _Doc, *, page_break_before: bool) -> str:
-    parts = [_para(_run(f"Blog {number}", bold=True, sz=_COVER_SZ),
+def _cover(number: int, title: str, doc: _Doc, *, label: str, page_break_before: bool) -> str:
+    parts = [_para(_run(f"{label} {number}", bold=True, sz=_COVER_SZ),
                    align="center", before=2400, page_break_before=page_break_before)]
     if title and title.strip():
         parts.append(_para(_inline(title.strip(), doc, sz=_COVER_SUBTITLE_SZ),
@@ -268,12 +268,18 @@ def _document_rels(rels: list[tuple[str, str]]) -> str:
             f'{items}</Relationships>')
 
 
-def build_docx(blogs: list[tuple[str, str]]) -> bytes:
-    """(title, markdown) pairs -> one .docx: a cover page per blog, then its article."""
+def build_docx(blogs: list[tuple[str, str]], label: str = "Blog") -> bytes:
+    """(title, markdown) pairs -> one .docx: a cover page per piece, then its article.
+
+    `label` is the word on each cover, "Blog 1" by default and "LinkedIn post 1" or
+    "Medium article 1" when the channel tabs bundle their own. It is a parameter rather than a
+    second builder because a LinkedIn post IS markdown with a title, so everything below this
+    line was already right for it and only the cover said otherwise."""
     doc = _Doc()
     body: list[str] = []
     for index, (title, markdown) in enumerate(blogs):
-        body.append(_cover(index + 1, title or "", doc, page_break_before=index > 0))
+        body.append(_cover(index + 1, title or "", doc,
+                           label=label, page_break_before=index > 0))
         body.extend(_markdown_blocks(markdown or "", doc))
 
     document_xml = (

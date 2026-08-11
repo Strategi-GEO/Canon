@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import uuid
 
 from . import blog_edit, db, repurpose, runner
@@ -169,6 +170,53 @@ def channel_states(client_slug, channel):
     """{source_topic_slug: state} for every blog that has a <channel> post, so the New tab can
     tag each blog Created / Posted and refuse to reselect it. One query, two folds per row."""
     return {p["source_topic_slug"]: p["state"] for p in list_posts(client_slug, channel)}
+
+
+def bodies(client_slug, channel, source_topic_slugs):
+    """[(title, body)] for the named posts, in the order the caller asked for, skipping any that
+    do not exist or carry no text. Feeds docx_export.build_docx for the Created tab's bulk
+    download, which is the one reader that wants many bodies and none of the delivery state.
+
+    ONE QUERY over the whole selection rather than get_post per slug: get_post runs two extra
+    folds per row (pending comments, change round) for facts a document does not carry, and a
+    download of a dozen posts would run three dozen queries to throw all of it away."""
+    cid = db.client_id(client_slug)
+    slugs = [s for s in source_topic_slugs if s]
+    if cid is None or not _channel_ok(channel) or not slugs:
+        return []
+    rows = db.q(
+        """select t.slug, coalesce(nullif(btrim(t.title), ''), t.slug), cp.body
+             from channel_posts cp
+             join topics t on t.id = cp.source_topic_id
+            where cp.client_id = %s and cp.channel = %s and t.deleted_at is null
+              and t.slug = any(%s)""",
+        (cid, channel, slugs))
+    found = {slug: (title, body) for slug, title, body in rows if body and body.strip()}
+    return [found[slug] for slug in slugs if slug in found]
+
+
+def delete_post(client_slug, source_topic_slug, channel):
+    """Remove one channel post: the record and the generation's scratch dir, nothing else.
+
+    THE SOURCE BLOG IS UNTOUCHED, which is the whole shape of this act. A channel post is a
+    repurpose ON ITS OWN TRACK (see the module docstring), so deleting one puts its blog back in
+    the New tab with the Generate box tickable again, and the blog itself keeps its draft, its
+    score, its ledger row and its own delivery state. Deleting the row cascades to
+    channel_post_comments on the FK, so no client suggestion outlives the post it was filed on.
+
+    The scratch dir goes for the reason api_delete_blog's does: post.md would otherwise sit ahead
+    of an absent record, and repurpose.listing reads that file directly, so the legacy artifact
+    route would keep reporting a post the Created tab no longer has.
+
+    Idempotent, and returns whether anything was there: an unknown blog, an unknown channel or an
+    already-deleted post is False and never an error."""
+    pid = post_id(client_slug, source_topic_slug, channel)
+    if pid is not None:
+        db.q("delete from channel_posts where id = %s", (pid,), fetch="none")
+    art_dir = repurpose.repurpose_dir(client_slug, source_topic_slug, channel)
+    if art_dir.is_dir():
+        shutil.rmtree(art_dir, ignore_errors=True)
+    return pid is not None
 
 
 def commit_post(client_slug, source_topic_slug, channel, body):
