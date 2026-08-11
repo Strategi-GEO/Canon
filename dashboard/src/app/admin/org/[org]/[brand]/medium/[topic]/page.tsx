@@ -13,13 +13,18 @@ export default function MediumReviewPage() {
   return (
     <BrandRoute>
       {({ org, brand }) => (
-        <ChannelReview
-          key={`${brand.slug}:${topicSlug}`}
-          orgSlug={org.slug}
-          brandSlug={brand.slug}
-          channel="medium"
-          topicSlug={topicSlug}
-        />
+        // max-w-5xl, the same shell blogs/[topic] uses. The width is set HERE rather than inside
+        // ChannelReview so all three review pages read their page width from their own route, and
+        // a change to one is visibly a change to one.
+        <div className="mx-auto w-full max-w-5xl">
+          <ChannelReview
+            key={`${brand.slug}:${topicSlug}`}
+            orgSlug={org.slug}
+            brandSlug={brand.slug}
+            channel="medium"
+            topicSlug={topicSlug}
+          />
+        </div>
       )}
     </BrandRoute>
   );

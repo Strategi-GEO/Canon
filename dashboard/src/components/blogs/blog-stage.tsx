@@ -6,8 +6,6 @@ import {
   ArrowLeft,
   Check,
   CheckCheck,
-  Copy,
-  Download,
   FileUp,
   Globe,
   Laptop,
@@ -31,6 +29,7 @@ import { BELOW_BAR_FLOOR, SHIP_BAR, adminFailedTag, scoreClass, scoreTone } from
 import { blogLabels } from "@/lib/blog-label";
 import { AnswerQuestions } from "@/components/blogs/answer-questions";
 import { BlogEditor } from "@/components/blogs/blog-editor";
+import { MarkdownActions } from "@/components/blogs/markdown-actions";
 import { MarkdownView } from "@/components/blogs/markdown-view";
 import { PublishAction } from "@/components/blogs/publish-action";
 import { SendToClient } from "@/components/blogs/send-to-client";
@@ -1033,7 +1032,11 @@ function StageBody({
                   article, and offering them beside an unsaved draft exports stale text
                   the operator just rewrote. */}
               {editorDraft !== null && tab === "blog.md" ? null : (
-                <Artifacts raw={raw} tab={tab} topicSlug={topicSlug} />
+                <MarkdownActions
+                  raw={raw}
+                  filename={tab === "blog.md" ? `${topicSlug}.md` : `${topicSlug}-${tab}`}
+                  what={tab}
+                />
               )}
             </div>
           </div>
@@ -1633,76 +1636,6 @@ function Meta({ text }: { text: string | null }) {
         <TooltipContent>Distinct external URLs cited in blog.md.</TooltipContent>
       </Tooltip>
     </>
-  );
-}
-
-/**
- * Copy and download the open tab's raw markdown. An operator's next move is pasting this
- * into a CMS, so both are one click and both say so afterwards.
- */
-function Artifacts({
-  raw,
-  tab,
-  topicSlug,
-}: {
-  raw: string | null;
-  tab: OutputFile;
-  topicSlug: string;
-}) {
-  const [copied, setCopied] = React.useState(false);
-
-  React.useEffect(() => {
-    if (!copied) {
-      return;
-    }
-    const timer = window.setTimeout(() => setCopied(false), 1600);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-
-  async function copy() {
-    if (raw === null) {
-      return;
-    }
-    try {
-      // The raw markdown, never the rendered HTML: the operator is pasting into a CMS.
-      await navigator.clipboard.writeText(raw);
-      setCopied(true);
-      toast.success(`Copied ${tab}`, { description: "Raw markdown is on the clipboard." });
-    } catch (cause) {
-      toast.error("Could not copy", { description: String(cause) });
-    }
-  }
-
-  function download() {
-    if (raw === null) {
-      return;
-    }
-    const filename = tab === "blog.md" ? `${topicSlug}.md` : `${topicSlug}-${tab}`;
-    const url = URL.createObjectURL(new Blob([raw], { type: "text/markdown;charset=utf-8" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    link.click();
-    URL.revokeObjectURL(url);
-    toast.success("Downloaded", { description: filename });
-  }
-
-  return (
-    <div className="flex items-center gap-1.5">
-      <Button size="sm" variant="outline" onClick={() => void copy()} disabled={raw === null}>
-        {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
-        {copied ? "Copied" : "Copy markdown"}
-      </Button>
-      <Button
-        size="icon-sm"
-        variant="outline"
-        onClick={download}
-        disabled={raw === null}
-        aria-label={`Download ${tab}`}
-      >
-        <Download aria-hidden />
-      </Button>
-    </div>
   );
 }
 
