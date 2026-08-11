@@ -18,6 +18,8 @@ from .. import clients as clients_mod
 from .. import ledger, runner
 from . import client as cms_client
 from . import gate
+from . import meta_gen
+from . import payload as payload_mod
 from . import record
 from .payload import PayloadError
 
@@ -103,9 +105,27 @@ async def api_publish_blog(slug: str, topic_slug: str, request: Request):
     except blog_edit.EditError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
+    # THE GATE RUNS FIRST AND FOR FREE, so a blog the CMS will refuse never costs a model call.
+    # assert_publishable raises before any token is spent; only a draft that will actually be
+    # sent earns its editorial metadata.
+    try:
+        blog_md = gate.assert_publishable(runner, slug, topic_slug)
+    except gate.PublishRefused as refused:
+        raise HTTPException(status_code=409, detail=str(refused))
+
+    # The five editorial fields, written from the finished draft. {} on every failure path, and
+    # {} is ordinary: build_for_publish falls back to the derived excerpt, H1 title, TL;DR
+    # description, industry category and brand tag it has always produced, so a slow, absent or
+    # refusing model costs this push its polish and never the push.
+    meta = await meta_gen.generate(
+        slug, blog_md,
+        title_max=payload_mod.META_TITLE_MAX,
+        desc_max=payload_mod.META_DESCRIPTION_MAX,
+    )
+
     try:
         payload = gate.build_for_publish(
-            runner, ledger, slug, topic_slug, client=clients_mod.read_client(slug)
+            runner, ledger, slug, topic_slug, client=clients_mod.read_client(slug), meta=meta
         )
     except gate.PublishRefused as refused:
         # 409, not 403: the blog exists and the operator may push it, just not in
@@ -145,6 +165,14 @@ async def api_publish_blog(slug: str, topic_slug: str, request: Request):
         "CMS push ok for %s/%s: post %s",
         slug, topic_slug, result.get("post_id"),
     )
+
+    # THE TAG VOCABULARY GROWS ONLY ON A PUSH THE CMS ACCEPTED, which is why this sits after the
+    # error arm and not beside the generate call. category_name and tags are get-or-create with
+    # no read endpoint, so this file is the engine's only record of what that CMS actually holds;
+    # remembering a tag from a push that 4xx'd would teach the next run to reuse a tag nobody
+    # ever created. It cannot raise (see meta_gen.remember_tags): the article is already in the
+    # CMS by this line.
+    meta_gen.remember_tags(slug, payload.get("tags") or [])
 
     # AFTER the push and never before it. The stamp records something that happened, so
     # writing it first would leave a publish date on an article the CMS then refused. It

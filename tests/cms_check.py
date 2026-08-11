@@ -711,6 +711,131 @@ async def run_http_checks():
     )
 
 
+# ---------------------------------------------------------------------------
+# The five WRITTEN editorial fields, and the deterministic guards over them.
+#
+# payload.py stays pure: the model runs in cms/meta_gen.py, before it, and hands its result in as
+# an argument. What is pinned here is that the payload VALIDATES that argument rather than
+# trusting it, and that every rejection falls back to the derived field instead of failing the
+# push. The generation itself is not tested here and cannot be: it is a model call, and this file
+# spawns nothing and calls no model.
+# ---------------------------------------------------------------------------
+from server.cms import meta_gen  # noqa: E402
+
+DRAFT = """# Corporate Gifting Suppliers in Bangalore: A Buyer's Guide
+
+**TL;DR:** Bengaluru has many gifting vendors and few manufacturers. This guide explains the
+difference (Acme, 2026).
+
+## What changes
+
+Some prose about sourcing.
+
+## Sources and References
+
+- Example, "A source," 2026. https://example.com/a
+"""
+
+WRITTEN = {
+    "excerpt": "Most Bengaluru corporate gifting vendors do not make anything. Here is how to "
+               "tell a real manufacturer from a reseller, and why it changes your price and "
+               "timeline.",
+    "seo_title": "Corporate Gifting Suppliers in Bangalore: A Buyer's Guide",
+    "seo_description": "How to tell a real manufacturer from a reseller when sourcing corporate "
+                       "gifts and branded apparel in Bangalore, and what to verify before you "
+                       "order.",
+    "category": "Buyer's Guides",
+    "tags": ["Corporate Gifting", "Bengaluru", "Bulk Ordering", "Procurement", "Branded Apparel"],
+}
+
+built = payload.build_payload(
+    "acme", "corporate-gifting-suppliers", DRAFT,
+    industry="hospitality", brand_name="Acme Gifting", meta=WRITTEN,
+)
+
+check("the written excerpt is sent, not the TL;DR",
+      built["excerpt"] == WRITTEN["excerpt"], built.get("excerpt", "")[:60])
+check("the written SEO title is sent whole when it fits",
+      built["meta_title"] == WRITTEN["seo_title"], built.get("meta_title"))
+check("the SEO title is within the limit",
+      len(built["meta_title"]) <= payload.META_TITLE_MAX, str(len(built["meta_title"])))
+check("the written SEO description is sent",
+      built["meta_description"] == WRITTEN["seo_description"], built.get("meta_description"))
+check("the SEO description is within the CMS hard limit",
+      len(built["meta_description"]) <= payload.META_DESCRIPTION_MAX,
+      str(len(built["meta_description"])))
+check("the per-piece category replaces the client's industry",
+      built["category_name"] == "Buyer's Guides", built.get("category_name"))
+check("the brand tag is KEPT and leads, with the topic tags behind it",
+      built["tags"] == ["Acme Gifting"] + WRITTEN["tags"], str(built.get("tags")))
+
+# An over-length written title and description are CUT here, not trusted. The model is told the
+# limit and mostly obeys it; "mostly" is not something to publish against.
+long_meta = dict(WRITTEN,
+                 seo_title="Corporate Gifting And Branded Apparel Suppliers Across Bengaluru "
+                           "For Procurement Teams",
+                 seo_description="How to tell a real manufacturer from a reseller when sourcing "
+                                 "corporate gifts and branded apparel anywhere in Bangalore, "
+                                 "what to verify before you order, and which questions expose a "
+                                 "middleman on the first call.")
+cut = payload.build_payload("acme", "t", DRAFT, brand_name="Acme Gifting", meta=long_meta)
+check("an over-length written title is cut to the limit",
+      len(cut["meta_title"]) <= payload.META_TITLE_MAX, str(len(cut["meta_title"])))
+check("the cut title does not end mid-word",
+      long_meta["seo_title"].startswith(cut["meta_title"].rstrip("…")), cut["meta_title"])
+check("an over-length written description is cut to the CMS hard limit",
+      len(cut["meta_description"]) <= payload.META_DESCRIPTION_MAX,
+      str(len(cut["meta_description"])))
+
+# Every field is optional and independent: a rejected one falls back, the rest still ship.
+partial = payload.build_payload("acme", "t", DRAFT, industry="hospitality",
+                                brand_name="Acme Gifting", meta={"category": "Buyer's Guides"})
+check("a meta carrying only a category still gets the derived excerpt",
+      partial["excerpt"].startswith("Bengaluru has many gifting vendors"), partial.get("excerpt"))
+# The H1 here is 57 characters, already inside META_TITLE_MAX, so the derived title is the H1
+# whole: meta_title_from splits on the colon only when it has to.
+check("and the derived SEO title",
+      partial["meta_title"] == "Corporate Gifting Suppliers in Bangalore: A Buyer's Guide",
+      partial.get("meta_title"))
+
+none_meta = payload.build_payload("acme", "t", DRAFT, industry="hospitality",
+                                  brand_name="Acme Gifting", meta={})
+check("an EMPTY meta reproduces the old derived behaviour exactly",
+      none_meta["category_name"] == "Hospitality" and none_meta["tags"] == ["Acme Gifting"],
+      f"{none_meta.get('category_name')} {none_meta.get('tags')}")
+
+# The house screen, which is what stands between a model and a client's CMS.
+check("a superlative is rejected before it reaches the payload",
+      meta_gen.house_violation("The best corporate gifting suppliers") is not None)
+check("an ordinary editorial phrase passes",
+      meta_gen.house_violation("Corporate gifting suppliers in Bangalore") is None)
+screened = meta_gen.clean({
+    "seo_title": "The Best Gifting Suppliers in Bangalore",
+    "seo_description": "How to tell a manufacturer from a reseller before you order.",
+    "category": "Buyer's Guides",
+    "tags": ["Corporate Gifting", "Bengaluru"],
+})
+check("clean() drops ONLY the offending field, never the whole reply",
+      "seo_title" not in screened and screened.get("seo_description") and screened.get("category"),
+      str(sorted(screened)))
+
+# get-or-create pollution: a near-duplicate snaps to the casing the brand already uses.
+check("a tag matching the brand's vocabulary snaps to the existing casing",
+      meta_gen.normalise_tags(["bengaluru", "BULK ORDERING"], ["Bengaluru", "Bulk Ordering"])
+      == ["Bengaluru", "Bulk Ordering"])
+check("tags are capped so a keyword dump cannot become a taxonomy",
+      len(meta_gen.normalise_tags([f"Tag {i}" for i in range(20)])) == meta_gen.MAX_TAGS)
+
+# An em dash is substituted rather than rejected: it is a house rule the model is told and
+# sometimes forgets, and swapping punctuation invents no words.
+dashed = meta_gen.clean({"excerpt": "Vendors do not make anything — resellers rarely say so."})
+check("an em dash in written copy is substituted, not shipped",
+      "—" not in dashed.get("excerpt", "x—x"), dashed.get("excerpt"))
+
+check("a reply that is not JSON at all is simply no metadata",
+      meta_gen.parse_reply("I could not do that") is None)
+
+
 asyncio.run(run_http_checks())
 
 

@@ -524,8 +524,22 @@ def _clean_queries(prompts):
     return queries
 
 
+def _fit_title(text):
+    """Hold a written SEO title to META_TITLE_MAX, cutting at a word boundary.
+
+    Shares _drop_dangling_words with meta_title_from so a clipped written title and a clipped
+    derived one never end differently, and never leaves a title shorter than META_TITLE_MIN:
+    below that the cut has destroyed it rather than shortened it.
+    """
+    text = (text or "").strip()
+    if len(text) <= META_TITLE_MAX:
+        return text
+    clipped = _drop_dangling_words(text[:META_TITLE_MAX].rsplit(" ", 1)[0])
+    return clipped if len(clipped) >= META_TITLE_MIN else text[:META_TITLE_MAX].strip()
+
+
 def build_payload(client_slug, topic_slug, blog_md, prompts=None, industry=None,
-                  brand_name=None, cms_client=None):
+                  brand_name=None, cms_client=None, meta=None):
     """The full ingest body for one finished blog.
 
     Optional fields are omitted when empty rather than sent as null: the schema is
@@ -533,7 +547,17 @@ def build_payload(client_slug, topic_slug, blog_md, prompts=None, industry=None,
 
     `industry` and `brand_name` are PASSED IN, not read from gates.json here, so this module
     stays pure and a test can build any client's payload without a clients/ tree on disk.
+
+    `meta` IS THE SAME KIND OF ARGUMENT, and it is what keeps this module pure while the
+    operator's editorial fields get written by a model. cms/meta_gen.py runs BEFORE this and
+    hands the result in; nothing here calls a model, reads a file or touches the network, so the
+    same draft and the same meta still build the same body. Every key in it is OPTIONAL and
+    every one is validated here rather than trusted: lengths are enforced against the same
+    constants the derived path uses, so there is one implementation of each limit. An absent or
+    rejected key falls back to the derived value exactly as before, which is why a model that is
+    slow, missing or wrong costs a push its editorial polish and never the push itself.
     """
+    meta = meta or {}
     title, body = split_title(blog_md)
     # BOTH are spec-required non-empty strings, so both are checked. The body was guarded
     # and the title was not, which left one real gap: _H1_RE's `(.+?)` matches a space, so
@@ -561,11 +585,20 @@ def build_payload(client_slug, topic_slug, blog_md, prompts=None, industry=None,
         "author_name": AUTHOR_NAME,
     }
 
-    meta_title = meta_title_from(title)
+    # The WRITTEN title when there is one, else the H1-derived one. Both go through a cut to
+    # META_TITLE_MAX: the model is told the limit and mostly obeys it, and "mostly" is not a
+    # guarantee anyone should publish against.
+    meta_title = _fit_title(meta.get("seo_title")) or meta_title_from(title)
     if meta_title:
         payload["meta_title"] = meta_title
 
-    category = category_for(industry)
+    # A PER-PIECE category when one was written, else the client's industry.
+    #
+    # The industry fallback is not a lesser version of the same thing, it is a different claim:
+    # it says what the CLIENT is, where a written category says what the PIECE is. Both are
+    # get-or-create at the CMS, which is why the written one is screened for house violations and
+    # capped in length upstream rather than sent through raw.
+    category = (meta.get("category") or "").strip() or category_for(industry)
     if category:
         payload["category_name"] = category
 
@@ -581,8 +614,19 @@ def build_payload(client_slug, topic_slug, blog_md, prompts=None, industry=None,
     # jargon, entity_names holds legal entities like "ALPL 3 LLP", and a model would emit
     # "Microbreweries" one run and "Microbrewery" the next, which get-or-create turns into
     # two permanent tags nobody chose.
+    # THE BRAND TAG IS KEPT AND THE TOPIC TAGS JOIN IT, rather than replacing it. It is the only
+    # thing separating two brands' drafts inside one multi-brand org's CMS, and that job does not
+    # go away because the piece now carries its own subjects. Brand first, so the shared tag reads
+    # as the constant it is; the written ones are already normalised and deduped by meta_gen.
+    tags = []
     if brand_name and brand_name.strip():
-        payload["tags"] = [brand_name.strip()]
+        tags.append(brand_name.strip())
+    for tag in meta.get("tags") or []:
+        tag = str(tag).strip()
+        if tag and tag.lower() not in {t.lower() for t in tags}:
+            tags.append(tag)
+    if tags:
+        payload["tags"] = tags
 
     # The topic slug is already the engine's own lowercase-hyphen identifier, so it
     # matches the CMS pattern by construction. Send it only when it really does:
@@ -590,14 +634,24 @@ def build_payload(client_slug, topic_slug, blog_md, prompts=None, industry=None,
     if SLUG_RE.match(topic_slug or ""):
         payload["suggested_slug"] = topic_slug
 
-    excerpt = extract_excerpt(body)
+    # The WRITTEN excerpt when there is one, else the TL;DR. The TL;DR is a fine excerpt and is
+    # already vetted, but it is written to open an ARTICLE, so it can run long and can carry an
+    # inline citation a card has no use for.
+    excerpt = (meta.get("excerpt") or "").strip() or extract_excerpt(body)
     if excerpt:
         payload["excerpt"] = excerpt
-        # Derived from the excerpt, which is itself the TL;DR: the description therefore
-        # inherits every gate and the evaluator pass the TL;DR already survived.
-        meta_description = meta_description_from(excerpt)
-        if meta_description:
-            payload["meta_description"] = meta_description
+
+    # The description is NOT derived from whichever excerpt won, and the order matters: a written
+    # description is its own field with its own job, so it is preferred outright and only falls
+    # back to summarising the excerpt. Either way it goes through _fit_description, so the CMS's
+    # hard 160 holds whoever wrote it.
+    written_description = (meta.get("seo_description") or "").strip()
+    meta_description = (
+        _fit_description(_strip_trailing_citation(written_description))
+        if written_description else (meta_description_from(excerpt) if excerpt else None)
+    )
+    if meta_description:
+        payload["meta_description"] = meta_description
 
     citations = extract_citations(body)
     if citations:
