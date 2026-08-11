@@ -255,7 +255,12 @@ function Row<T extends BlogTableRow>({
             // The row handler would otherwise fire too and navigate a second time.
             event.stopPropagation();
           }}
-          className="block min-h-8 w-full rounded-sm text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          // FLEX COLUMN, CENTRED, not `block`. min-h-8 keeps the link a 32px target, but under
+          // `block` the text rendered at the TOP of that box and the spare height fell below it,
+          // so the title sat ~6px above the row number, the date and the status pill, which all
+          // centre through the table's own align-middle. items-start keeps the waiting chip at
+          // its own width instead of stretching to the column.
+          className="flex min-h-8 w-full flex-col justify-center items-start rounded-sm text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         >
           {/* TITLE ONLY. The slug used to print under every title and it cost two lines a row for
               a value that is the title lowercased with hyphens, so it read as the same sentence
