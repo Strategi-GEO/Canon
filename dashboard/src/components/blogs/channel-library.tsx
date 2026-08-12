@@ -17,7 +17,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { toast } from "sonner";
 import { ApiError, api } from "@/lib/api";
 import { brandHref } from "@/lib/orgs-context";
 import { HOSTED_READONLY } from "@/lib/hosted";
@@ -50,6 +51,17 @@ const POST_STATE_ORDER: ChannelPostState[] = [
   "approved",
   "posted",
 ];
+
+/** Hand a built .docx to the browser. Both channel downloads land here, the bulk bar's and
+ *  Download all, so the two cannot drift into producing differently named files. */
+function saveDocx(blob: Blob, filename: string) {
+  const href = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(href);
+}
 
 /**
  * The "#" column carries the source blog's grouped identifier: numbers for engine-written,
@@ -437,13 +449,10 @@ export function ChannelLibrary(props: {
         eligible: slugs,
         done: "Downloaded",
         runAll: async (picked) => {
-          const blob = await api.channelDownload(brandSlug, channel, picked);
-          const href = URL.createObjectURL(blob);
-          const link = document.createElement("a");
-          link.href = href;
-          link.download = `${brandSlug}-${channel}.docx`;
-          link.click();
-          URL.revokeObjectURL(href);
+          saveDocx(
+            await api.channelDownload(brandSlug, channel, picked),
+            `${brandSlug}-${channel}.docx`,
+          );
         },
       },
       {
@@ -476,6 +485,42 @@ export function ChannelLibrary(props: {
       },
     ];
   }, [pickedPosts, brandSlug, brandName, channel, label]);
+
+  /**
+   * DOWNLOAD ALL: every post the Created tab is showing, in one .docx, with nothing ticked.
+   *
+   * "ALL" MEANS THE RENDERED MONTH AND NOT THE BRAND, and the month picker sitting two buttons to
+   * the left is the whole reason. The Created count badge already reads that way and says why: a
+   * total over every month promises rows the operator then cannot find. Where a brand has one
+   * month there is no picker and the two readings are the same set, which is most brands today.
+   * The tooltip states the count before the press either way, so the scope is never inferred.
+   *
+   * It sends the visible slugs in the order the table renders them, and server/channel.py bodies()
+   * returns bodies in the order it was asked for, so the cover pages run down the document in the
+   * order the operator was just looking at.
+   *
+   * The empty case is guarded HERE as well as by the disabled button, because an empty list is the
+   * one input this route reads as a different question: topicsQuery drops it, the engine sees no
+   * `topics` at all, and it answers "name the posts to download" rather than sending nothing.
+   */
+  const [downloadingAll, setDownloadingAll] = React.useState(false);
+  async function downloadAll() {
+    if (downloadingAll || visiblePostSlugs.length === 0) return;
+    setDownloadingAll(true);
+    try {
+      saveDocx(
+        await api.channelDownload(brandSlug, channel, visiblePostSlugs),
+        `${brandSlug}-${channel}.docx`,
+      );
+      toast.success(`Downloaded ${formatCount(visiblePostSlugs.length)}`);
+    } catch (cause) {
+      toast.error(`Could not download ${label}s`, {
+        description: cause instanceof ApiError ? cause.message : String(cause),
+      });
+    } finally {
+      setDownloadingAll(false);
+    }
+  }
 
   // ONLY THE CREATED TAB SWAPS ITS CONTROL ROW. The New tab's selection already has its answer in
   // that row and it is Generate, so replacing month and refresh there would trade two useful
@@ -581,6 +626,50 @@ export function ChannelLibrary(props: {
                   />
                   Refresh
                 </Button>
+                {/* CREATED TAB ONLY, for the mirror of Generate's reason below: the New tab holds
+                    blogs that have no post yet, so there is nothing there to put in a document.
+                    It is the no-selection door to the same bundle the bulk bar's Download builds,
+                    which is the common case: an operator wanting the month rarely wants to tick
+                    twelve rows first. */}
+                {/* HOSTED_READONLY hides it for the reason lib/hosted.ts gives: PYTHON builds the
+                    document, and the hosted build has no engine behind it, so the button would be
+                    a press that can only fail. */}
+                {!HOSTED_READONLY && tab === "created" ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      {/* The span is what makes the tooltip reachable when the button is disabled:
+                          a disabled button fires no pointer events, so the trigger has to sit on
+                          something that does, or the one state most needing an explanation is the
+                          one that cannot give it. */}
+                      <span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void downloadAll()}
+                          disabled={downloadingAll || visiblePostSlugs.length === 0}
+                        >
+                          {downloadingAll ? (
+                            <Loader2
+                              className="animate-spin motion-reduce:animate-none"
+                              data-icon="inline-start"
+                              aria-hidden
+                            />
+                          ) : (
+                            <Download data-icon="inline-start" aria-hidden />
+                          )}
+                          Download all
+                        </Button>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {visiblePostSlugs.length === 0
+                        ? `No ${label}s to download`
+                        : `${formatCount(visiblePostSlugs.length)} ${
+                            visiblePostSlugs.length === 1 ? label : `${label}s`
+                          } as one .docx`}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : null}
                 {/* New tab only. On Created there is nothing selected and nothing to generate, so
                     the button would be permanently disabled, which reads as broken rather than as
                     inapplicable. */}
