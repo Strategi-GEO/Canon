@@ -733,7 +733,9 @@ export function ChannelLibrary(props: {
                         const generating = isGenerating(blog.topic_slug);
                         const selectable = isSelectable(blog);
                         return (
-                          <TableRow key={blog.topic_slug}>
+                          // Same row height as the Created tab and as the blogs table: the New tab
+                          // lists the same articles, so it cannot be the one that reads shorter.
+                          <TableRow key={blog.topic_slug} className="[&>td]:py-2.5">
                             {!HOSTED_READONLY ? (
                               <TableCell>
                                 <Checkbox
@@ -751,7 +753,10 @@ export function ChannelLibrary(props: {
                               {labels.get(blog.topic_slug) ?? "-"}
                             </TableCell>
                             <TableCell className="max-w-0">
-                              <span className="flex items-center gap-2">
+                              {/* min-h-8 for the same reason the Created tab's link carries it: it
+                                  is what makes the row 52px rather than 36px. There is no link
+                                  here because a blog with no post has nothing to open. */}
+                              <span className="flex min-h-8 items-center gap-2">
                                 <span className="truncate text-sm font-medium text-foreground">
                                   {blog.topic}
                                 </span>
@@ -854,7 +859,12 @@ export function ChannelLibrary(props: {
                             // row: the pointer gets the row, a screen reader and middle-click
                             // get the real link in the Post cell.
                             onClick={() => router.push(reviewHref(post.source_topic_slug))}
-                            className="cursor-pointer"
+                            // THE SAME ROW HEIGHT AS THE BLOGS TABLE, and it takes both halves:
+                            // py-2.5 on every cell and the min-h-8 target on the title link below.
+                            // TableCell's own p-2 with a bare link made these rows 36px against
+                            // the blogs table's 52px, so the same list of the same articles
+                            // changed shape depending on which tab an operator was standing on.
+                            className="cursor-pointer [&>td]:py-2.5"
                           >
                             {/* stopPropagation so ticking a row never also opens it. */}
                             {!HOSTED_READONLY ? (
@@ -879,7 +889,11 @@ export function ChannelLibrary(props: {
                                   // The row handler would otherwise fire too and navigate twice.
                                   event.stopPropagation();
                                 }}
-                                className="block w-full rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                                // Flex column, centred, matching blogs-table's title link exactly:
+                                // min-h-8 is the 32px target, and under `block` the text renders at
+                                // the TOP of that box with the spare height below it, which is the
+                                // drift that put a title several px above the row number beside it.
+                                className="flex min-h-8 w-full flex-col justify-center rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                               >
                                 <span className="block truncate text-sm font-medium text-foreground">
                                   {post.source_topic}

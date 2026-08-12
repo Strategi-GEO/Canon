@@ -343,8 +343,30 @@ export function ChannelReview(props: {
           </div>
         ) : post ? (
           <>
-            <Card className="mt-4">
-              <CardContent className="p-6">
+            {/* THE SAME CARD SHAPE THE BLOG STAGE USES: a bordered header strip over the document,
+                then the document. gap-0 overflow-hidden p-0 are what let the strip sit flush inside
+                the card's own border instead of floating in padding. */}
+            <Card className="mt-4 gap-0 overflow-hidden p-0">
+              {/* TAKING THE MARKDOWN AWAY BELONGS TO THE DOCUMENT, NOT TO THE RECORD, which is the
+                  split blog-stage already draws and this page did not: Send and Mark posted act on
+                  where the piece IS, so they stay in the bench above, while Copy markdown and
+                  Download act on the text right here and now sit on it. They were in the bench, so
+                  the text card carried no controls at all and an operator reading the post had to
+                  look back up the page for the two acts about the thing they were looking at.
+
+                  NOTHING SITS ON THE LEFT because there is nothing to put there. The blog stage
+                  spends that side on Blog / Eval / Dossier; a channel post is ONE document, and the
+                  label and its tag are already stated in the header above. */}
+              <div className="flex flex-wrap items-center justify-end gap-2 border-b px-4 py-2">
+                <div className="flex items-center gap-1.5">
+                  <MarkdownActions
+                    raw={post.content ?? null}
+                    filename={`${topicSlug}-${channel}.md`}
+                    what={label}
+                  />
+                </div>
+              </div>
+              <CardContent className="px-4 py-6 sm:px-6">
                 <CommentableArticle
                   source={post.content ?? ""}
                   comments={comments}
