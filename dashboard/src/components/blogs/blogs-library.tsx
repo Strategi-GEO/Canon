@@ -46,6 +46,7 @@ import { BlogsTable, TRIGGER_ATTR } from "@/components/blogs/blogs-table";
 import { BulkBar, type BulkAction } from "@/components/blogs/bulk-bar";
 import { CreateForBrand } from "@/components/create/create-for-brand";
 import { MonthPicker } from "@/components/blogs/month-picker";
+import { QueueTable } from "@/components/blogs/queue-table";
 import { useLibraryUrl } from "@/components/blogs/library-url";
 import {
   countWaiting,
@@ -662,6 +663,10 @@ function Library({
             queueing={anyRunLive}
           />
         ) : null}
+        {/* UNDER the pick list, because the reading order is "what could I start" then "what is
+            already going". It renders nothing at all when the engine is idle, so an operator with
+            no runs sees the table they came for and no empty shell below it. */}
+        <QueueTable brandSlug={brandSlug} onChanged={() => void refresh()} />
       </TabsContent>
 
       {!error && blogs !== null ? (

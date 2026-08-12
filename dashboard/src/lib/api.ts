@@ -988,6 +988,23 @@ export const api = {
   ) => requestBlob(`/api/clients/${slug}/channel/${channel}/download${topicsQuery(topics)}`, signal),
 
   /**
+   * Stop ONE topic: cancel it if a session is live, withdraw it if it is only queued.
+   *
+   * The answer says WHICH happened, and the caller needs it: cancelling a live session throws away
+   * real work, so the queue table warns before pressing, while withdrawing a queued topic costs
+   * nothing. Only the engine can tell the two apart at the moment of the press, so this returns
+   * the fact rather than the browser guessing from a poll that may be a second stale.
+   *
+   * 404 when the brand has no such topic running or queued. The brand-wide stop
+   * (DELETE .../runs) is unchanged and is still the right press for a whole batch.
+   */
+  stopTopic: (slug: string, topicSlug: string) =>
+    request<{ client: string; topic_slug: string; stopped: "running" | "queued" }>(
+      `/api/clients/${slug}/runs/topics/${encodeURIComponent(topicSlug)}`,
+      { method: "DELETE" },
+    ),
+
+  /**
    * Remove one channel post and its scratch dir. THE SOURCE BLOG IS UNTOUCHED: it returns to the
    * New tab, tickable again, keeping its draft and its own delivery state. 409 while a generation
    * for this exact (blog, channel) is live. Idempotent 204 on an unknown or already-deleted post,
