@@ -20,6 +20,9 @@ import { useHotkey, useModLabel } from "@/lib/use-hotkey";
 import { formatCount } from "@/lib/format";
 import { ENGINE_SLOTS } from "@/lib/sessions";
 import { RoadmapTable } from "@/components/create/roadmap-table";
+import { BlogsTable } from "@/components/blogs/blogs-table";
+import { UploadBlog } from "@/components/blogs/upload-blog";
+import type { WaitingSignal } from "@/components/blogs/questions-state";
 import { NoFactBaseDialog } from "@/components/create/no-fact-base-dialog";
 import { SessionInstructionsDialog } from "@/components/create/session-instructions-dialog";
 import { EngineErrorNote, detailText } from "@/components/create/engine-error";
@@ -32,6 +35,10 @@ import type {
   IncompleteRow,
   RoadmapResponse,
 } from "@/types";
+
+/** A topic with no article has no evaluator and so no question. Module level, so the table gets
+ *  one stable reference rather than a new Map on every render. */
+const NO_WAITING: ReadonlyMap<string, WaitingSignal> = new Map();
 
 /**
  * Picking topics for ONE brand. Every input arrives as a prop: this component never reads the
@@ -58,6 +65,8 @@ export function SelectState({
   runsUnavailable,
   liveRunId,
   preselectSlugs,
+  embedded = false,
+  queueing = false,
   onUploaded,
   onWatch,
   onStarted,
@@ -99,6 +108,18 @@ export function SelectState({
   liveRunId: string | null;
   /** Topics arriving from a retry, ticked on mount so retrying stays one click. */
   preselectSlugs?: readonly string[];
+  /**
+   * Rendered as the merged Blogs page's New TAB rather than as a page of its own.
+   *
+   * It drops this component's heading and its two header buttons, because the tab strip above it
+   * already says where the operator is and the page owns those controls now. Everything else is
+   * unchanged: the same selection, the same Generate, the same fact-base and session dialogs, and
+   * the same duplicate and incomplete handling, which is the whole reason this is a flag rather
+   * than a second implementation of picking topics.
+   */
+  embedded?: boolean;
+  /** "Add to queue" instead of "Generate": some blog run is live, so this one will wait. */
+  queueing?: boolean;
   /** An article was uploaded against one row: the caller refetches the roadmap and the blogs. */
   onUploaded: () => void;
   onWatch: () => void;
@@ -136,6 +157,53 @@ export function SelectState({
     (row: (typeof rows)[number]) => isSelectable(resolveRowState(row, facts)),
     [facts],
   );
+
+  /**
+   * THE ROWS THE NEW TAB SHOWS: the ones with no article behind them.
+   *
+   * A topic that has been written lives on another tab now, by the partition in lib/blog-tabs.ts:
+   * a scored draft is Internal review, and anything the client can see is Client review. So
+   * `generated`, `needs_review`, `failed` and `below_bar` all leave this list, and what remains is
+   * a topic nothing has written (`ready`), one the sheet cannot write (`incomplete`), and one a
+   * run owns right now (`in_progress`).
+   *
+   * RETRY THEREFORE MOVES with those rows. `failed` and `below_bar` used to be selectable HERE so
+   * a near miss could be re-run from the pick list, and they are not on this tab any more, so the
+   * bulk bar on Internal review carries Retry instead. Leaving them here as well would put one
+   * blog on two tabs, which is exactly what the partition exists to prevent.
+   *
+   * Unembedded (the standalone Create page, still reachable until the redirect lands) keeps every
+   * row, so nothing about that surface changes while both exist.
+   */
+  const shownRows = React.useMemo(() => {
+    if (!embedded) {
+      return rows;
+    }
+    return rows.filter((row) => {
+      // A RETRY IS AN EXPLICIT REQUEST FOR THIS ROW, so it is admitted whatever its state.
+      // Without this the blog stage's own "Retry this topic" link breaks under the merge: it
+      // arrives at ?tab=new&retry=<slug> to pre-tick a row that the filter below has just moved
+      // to Internal review, and the operator lands on a tab that does not contain their blog.
+      if (preselectSlugs?.includes(row.topic_slug)) {
+        return true;
+      }
+      const state = resolveRowState(row, facts);
+      return state === "ready" || state === "incomplete" || state === "in_progress";
+    });
+  }, [embedded, rows, facts, preselectSlugs]);
+
+  /**
+   * BlogsTable keys its selection by SLUG and this component keys its by row INDEX, because the
+   * engine's generate body names rows by index and the parser leaves gaps in them. One map each
+   * way, built over the rows actually on screen.
+   */
+  const indexOfSlug = React.useMemo(() => {
+    const map = new Map<string, number>();
+    for (const row of shownRows) {
+      map.set(row.topic_slug, row.index);
+    }
+    return map;
+  }, [shownRows]);
 
   // A retry arrives already ticked. The parent remounts this on retry, so the initialiser is
   // the whole mechanism: no effect that would fight the operator's own clicks afterwards.
@@ -324,6 +392,10 @@ export function SelectState({
 
   return (
     <div className="w-full">
+      {/* THE TAB STRIP IS THE HEADING when this is the New tab. The page above owns the title,
+          the month picker and the search box, so a second heading here would be the same screen
+          announcing itself twice. */}
+      {embedded ? null : (
       <div className="mb-4">
         <div className="min-w-0">
           <h2 className="text-xl font-semibold tracking-tight text-foreground">
@@ -365,6 +437,7 @@ export function SelectState({
           </Button>
         </div>
       </div>
+      )}
 
       {runsUnavailable ? (
         <Card className="mb-4 border-review/25 bg-review-bg">
@@ -439,10 +512,86 @@ export function SelectState({
           </ul>
         ) : null}
 
-        {rows.length === 0 ? (
+        {shownRows.length === 0 ? (
           <p className="px-4 py-10 text-center text-sm text-muted-foreground">
-            This roadmap parsed with no rows in it. Upload a sheet with topics in it.
+            {rows.length === 0
+              ? "This roadmap parsed with no rows in it. Upload a sheet with topics in it."
+              : "Every topic on this month's roadmap has been written. They are on the other tabs."}
           </p>
+        ) : embedded ? (
+          /* THE SAME TABLE THE OTHER THREE TABS RENDER, in its brief column set. See
+             blogs-table.tsx: the scope column, the shift-click range and the per-row upload all
+             moved there so this tab could use it without losing anything. */
+          <BlogsTable
+            blogs={shownRows.map((row) => ({
+              topic: row.topic,
+              topic_slug: row.topic_slug,
+              // A topic nothing has written has no creation stamp, and `brief` renders the scope
+              // column in that slot rather than this value, so it is never read.
+              created: "",
+              roadmap_index: row.index,
+              covers: row.covers,
+            }))}
+            columns="brief"
+            waiting={NO_WAITING}
+            // Every row here is a topic with no article, which is the one state blogState can
+            // never derive. See blog-state.ts: the New tab supplies it for rows it invents.
+            stateOf={() => "not_generated"}
+            sortKey="roadmap"
+            sortDir="asc"
+            activeSlug={null}
+            onSort={() => {}}
+            hrefFor={() => roadmapHref}
+            // Nothing to open: there is no article yet. The row's own controls are its checkbox
+            // and its upload button.
+            onOpen={() => {}}
+            selection={{
+              selected: new Set(
+                shownRows.filter((r) => selected.has(r.index)).map((r) => r.topic_slug),
+              ),
+              onToggle: (slug) => {
+                const index = indexOfSlug.get(slug);
+                if (index !== undefined) toggle(index, false);
+              },
+              onToggleAll: (slugs) => {
+                const reachable = shownRows.filter(
+                  (r) => slugs.includes(r.topic_slug) && eligible(r),
+                );
+                const on = reachable.every((r) => selected.has(r.index));
+                setSelected((prev) => {
+                  const next = new Set(prev);
+                  for (const row of reachable) {
+                    if (on) next.delete(row.index);
+                    else next.add(row.index);
+                  }
+                  return next;
+                });
+              },
+              onSelectRange: (slugs) => {
+                // A range never picks up a locked row: dragging across the table must not select
+                // what a direct click is forbidden to select.
+                setSelected((prev) => {
+                  const next = new Set(prev);
+                  for (const slug of slugs) {
+                    const row = shownRows.find((r) => r.topic_slug === slug);
+                    if (row && eligible(row)) next.add(row.index);
+                  }
+                  return next;
+                });
+              },
+            }}
+            rowAction={(blog) => {
+              const row = shownRows.find((r) => r.topic_slug === blog.topic_slug);
+              return row ? (
+                <UploadBlog
+                  brandSlug={brandSlug}
+                  row={row}
+                  state={resolveRowState(row, facts)}
+                  onUploaded={onUploaded}
+                />
+              ) : null;
+            }}
+          />
         ) : (
           <RoadmapTable
             rows={rows}
@@ -491,7 +640,13 @@ export function SelectState({
               title={canGenerate ? `${modLabel} Enter` : undefined}
             >
               <Play aria-hidden data-icon="inline-start" />
-              {submitting ? "Starting" : "Generate"}
+              {/* "ADD TO QUEUE" WHEN A BLOG RUN IS ALREADY LIVE, because that is what pressing it
+                  does: TOPIC_SEMAPHORE admits GEO_CONCURRENCY blogs REPO-WIDE, and register_run
+                  starts every run queued regardless, so with something already running this work
+                  waits behind it however many slots are free for this brand. The word is the only
+                  thing that changes; the act is the identical POST. Saying "Generate" over a press
+                  that starts nothing for twenty minutes is the lie worth removing. */}
+              {submitting ? "Starting" : queueing ? "Add to queue" : "Generate"}
             </Button>
           </div>
         </CardContent>

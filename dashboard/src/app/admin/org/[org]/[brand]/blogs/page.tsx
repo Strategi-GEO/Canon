@@ -17,6 +17,12 @@ export default function BlogsPage() {
             orgSlug={org.slug}
             brandSlug={brand.slug}
             brandName={brand.name}
+            // Straight off the client record this route already resolved, for the New tab: the
+            // create flow needs all three and /api/clients carries them on every brand, so this
+            // costs no fetch. custom_instructions is absent on the hosted read, coalesced to "".
+            brandInstructions={brand.custom_instructions ?? ""}
+            hasCanonicalFacts={brand.has_canonical_facts}
+            resourceCount={brand.resource_count}
           />
         </div>
       )}

@@ -8,7 +8,6 @@ import {
   FolderOpen,
   LayoutDashboard,
   Map as MapIcon,
-  PenLine,
   Recycle,
   Settings,
   Telescope,
@@ -32,10 +31,13 @@ export type NavItem = {
  */
 export const BRAND_NAV: NavItem[] = [
   { section: "", label: "Overview", icon: LayoutDashboard },
-  // Before Create Blogs, because it comes before it: the roadmap is the input Create Blogs
-  // picks from, and with no roadmap that page has nothing to offer but a link back to here.
+  // Before Blogs, because it comes before it: the roadmap is the input the New tab picks from,
+  // and with no roadmap that tab has nothing to offer but a link back to here.
   { section: "/roadmap", label: "Content Roadmap", icon: MapIcon },
-  { section: "/create", label: "Create Blogs", icon: PenLine },
+  // ONE ENTRY, NOT TWO. Create Blogs was its own section and is now the Blogs page's New tab:
+  // picking a topic and reading what came of it were two nav rows describing one pipeline, and an
+  // operator moved between them constantly. /create still resolves, as a redirect to ?tab=new,
+  // because nine places link to it and one of those links carries a retry.
   { section: "/blogs", label: "Blogs", icon: FileText },
   // Distribution channels for POSTED blogs (the `published` state). Each shows the Blogs table
   // filtered to blogs already pushed out, so they sit right after Blogs and before Repurpose.

@@ -1,122 +1,48 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
-import { BookOpen, PenLine } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { BrandRoute } from "@/components/shell/brand-route";
-import { CreateForBrand } from "@/components/create/create-for-brand";
-import { HOSTED_READONLY } from "@/lib/hosted";
-import { brandHref } from "@/lib/orgs-context";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { Skeleton } from "@/components/ui/skeleton";
 
 /**
- * The ONLY place a blog starts, and it is reachable only from inside a brand.
+ * /create IS NOW /blogs?tab=new, and this is the redirect that keeps every old link working.
  *
- * There is no global create page on purpose: a blog needs canonical facts and a roadmap to be
- * written at all, and every one of those belongs to exactly one brand. A global create page
- * would have to ask which brand first, which is this page.
+ * Creating a blog and reading the blogs it produced were two tabs describing one pipeline, and
+ * they are one page with four subtabs now. This route stays because nine places link to it: the
+ * brand overview, the brand card, the roadmap panel, the sessions indicator, the session card,
+ * two /create children, the blogs empty state, and the blog stage's own Retry.
+ *
+ * THE QUERY STRING IS CARRIED THROUGH, and that is the whole reason this is a component rather
+ * than a redirect in next.config. `?retry=<slug>` is how a failed blog's page sends its topic back
+ * pre-ticked, and dropping it would turn every retry into an unfiltered list the operator has to
+ * search. SelectState admits a retried row whatever its state, so the row is on the New tab
+ * waiting even though the partition would otherwise have filed it under Internal review.
+ *
+ * REPLACE, not push, so Back goes where the operator came from rather than bouncing through here.
  */
-export default function CreatePage() {
-  return (
-    <BrandRoute>
-      {({ org, brand }) => (
-        <div className="mx-auto w-full max-w-5xl">
-          {/* The whole create surface needs the live engine: picking rows exists to POST
-              /generate, and the live view is an SSE stream from the engine's status files.
-              The hosted build renders the honest state instead of a form that can only be
-              refused, and points at the read views that do work here. */}
-          {HOSTED_READONLY ? (
-            <HostedReadOnly
-              blogsHref={brandHref(org.slug, brand.slug, "/blogs")}
-              roadmapHref={brandHref(org.slug, brand.slug, "/roadmap")}
-            />
-          ) : (
-            <>
-              {/* Off-roadmap create MOVED INTO SelectState's own header, where it sits in one
-                  row with View content roadmap under the heading. It lived here because a brand
-                  with no roadmap skips that header entirely and writing a blog by hand is exactly
-                  what an operator with no sheet wants; SelectState's NoRoadmap card now carries
-                  its own copy, which is the case this page-level render existed to cover. */}
-              {/* The Suspense boundary is not decoration, same as the blogs library's:
-                  CreateForBrand reads ?retry= via useSearchParams (the failed blog's page
-                  links here with its row pre-ticked), and Next bails a prerendered route out
-                  to the client up to the nearest boundary. Keyed by brand, so switching brand
-                  remounts rather than leaking one brand's selection or run into another's. */}
-              <React.Suspense fallback={null}>
-              <CreateForBrand
-                key={brand.slug}
-                orgSlug={org.slug}
-                brandSlug={brand.slug}
-                brandName={brand.name}
-                // Straight off the client record this route already resolved. Generate warns when a
-                // brand has neither, and the answer is on the brand the route located rather than
-                // behind a fetch of its own. custom_instructions is absent on the hosted read, so
-                // it is coalesced to "" there; the whole create surface is engine-only anyway.
-                brandInstructions={brand.custom_instructions ?? ""}
-                hasCanonicalFacts={brand.has_canonical_facts}
-                resourceCount={brand.resource_count}
-              />
-              </React.Suspense>
-              <LocalEngineNote />
-            </>
-          )}
-        </div>
-      )}
-    </BrandRoute>
-  );
-}
+export default function CreateRedirectPage() {
+  const params = useParams<{ org: string; brand: string }>();
+  const search = useSearchParams();
+  const router = useRouter();
 
-/** What the hosted, engine-less deployment says where the create flow would be. */
-function HostedReadOnly({
-  blogsHref,
-  roadmapHref,
-}: {
-  blogsHref: string;
-  roadmapHref: string;
-}) {
-  return (
-    <Card className="mx-auto mt-8 max-w-xl">
-      <CardContent className="py-14 text-center">
-        <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-muted">
-          <PenLine className="size-5 text-muted-foreground" aria-hidden />
-        </div>
-        <p className="mt-3 text-sm font-medium text-foreground">
-          Blogs are generated from the operator dashboard
-        </p>
-        <p className="mx-auto mt-2 max-w-md text-xs leading-relaxed text-muted-foreground">
-          This dashboard is the read-only view of the factory&apos;s record. Generating a blog
-          runs research and writing sessions on the engine, which this deployment does not
-          have, so topics are picked and runs are watched where the engine runs. Everything
-          already written is here.
-        </p>
-        <div className="mt-6 flex justify-center gap-2">
-          <Button size="sm" asChild>
-            <Link href={blogsHref}>
-              <BookOpen data-icon="inline-start" aria-hidden />
-              View blogs
-            </Link>
-          </Button>
-          <Button size="sm" variant="outline" asChild>
-            <Link href={roadmapHref}>View roadmap</Link>
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
+  const org = encodeURIComponent(params.org);
+  const brand = encodeURIComponent(params.brand);
+  const rest = search.toString();
+  const href = `/admin/org/${org}/${brand}/blogs?tab=new${rest ? `&${rest}` : ""}`;
 
-/**
- * Said once, quietly, near the live view. The run lives in the local uvicorn process and
- * every status line is written to status.jsonl on disk as it happens, so this tab holds
- * nothing but a read only SSE connection. Operators do not know that, and one who believes a
- * refresh kills a 40 minute run will sit and guard a tab that needs no guarding.
- */
-function LocalEngineNote() {
+  React.useEffect(() => {
+    router.replace(href);
+  }, [router, href]);
+
+  // A skeleton rather than nothing: this renders for one frame, and a blank page in that frame
+  // reads as a route that failed to load.
   return (
-    <p className="mt-6 text-center text-xs text-muted-foreground">
-      This runs on the local engine, so you can close this tab and come back. Nothing here
-      cancels a run.
-    </p>
+    <div className="mx-auto w-full max-w-6xl">
+      <Skeleton className="h-9 w-56" />
+      <Skeleton className="mt-4 h-80 w-full" />
+      <span className="sr-only" role="status">
+        Opening blogs
+      </span>
+    </div>
   );
 }

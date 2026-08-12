@@ -63,6 +63,8 @@ export function CreateForBrand({
   brandInstructions,
   hasCanonicalFacts,
   resourceCount,
+  embedded = false,
+  queueing = false,
 }: {
   orgSlug: string;
   brandSlug: string;
@@ -76,6 +78,10 @@ export function CreateForBrand({
    */
   hasCanonicalFacts: boolean;
   resourceCount: number;
+  /** Rendered as the Blogs page's New tab rather than as a page. See SelectState's own prop. */
+  embedded?: boolean;
+  /** A blog run is already live anywhere, so this submit will queue. Relabels Generate. */
+  queueing?: boolean;
 }) {
   const [roadmap, setRoadmap] = React.useState<RoadmapResponse | null>(null);
   const [roadmapError, setRoadmapError] = React.useState<ApiError | null>(null);
@@ -389,6 +395,8 @@ export function CreateForBrand({
       runsUnavailable={runsError !== null}
       liveRunId={run && !finished ? run.runId : null}
       preselectSlugs={retry?.slugs}
+      embedded={embedded}
+      queueing={queueing}
       // An uploaded article changes BOTH reads this view folds together: the roadmap row gains
       // a ledger entry and turns green, and the blogs list gains a done blog. Refetching only
       // one would leave a row an operator could tick to generate over an article they just

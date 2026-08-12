@@ -9,6 +9,7 @@ import {
   type SortKey,
   type StateFilter,
 } from "@/components/blogs/blogs-filter";
+import { BLOG_TABS, type BlogTab } from "@/lib/blog-tabs";
 
 /**
  * The library's view state lives in the URL, not in useState: an operator sets a filter
@@ -39,9 +40,19 @@ export const DEFAULTS = {
   status: "all" as StateFilter,
   sort: "roadmap" as SortKey,
   dir: "asc" as SortDir,
+  /**
+   * WHICH SUBTAB IS OPEN, and it is in the URL rather than in state for the reason every other
+   * param here is: /create used to be a page an operator could link a teammate to, and it now
+   * redirects to ?tab=new. A tab kept in component state would drop that link on the floor, and
+   * would also mean Back out of a blog returned to whichever tab is the default rather than the
+   * one they left.
+   */
+  tab: "internal" as BlogTab,
 };
 
-const PARAM = { q: "q", status: "status", sort: "sort", dir: "dir", blog: "blog" } as const;
+const PARAM = {
+  q: "q", status: "status", sort: "sort", dir: "dir", blog: "blog", tab: "tab",
+} as const;
 
 /** An unrecognised value in a hand-edited URL falls back rather than rendering an empty list
  *  the operator cannot explain. */
@@ -51,6 +62,7 @@ function one<T extends string>(raw: string | null, allowed: readonly T[], fallba
 
 export type LibraryUrl = {
   query: string;
+  tab: BlogTab;
   status: StateFilter;
   sortKey: SortKey;
   sortDir: SortDir;
@@ -64,6 +76,7 @@ export type LibraryUrl = {
    *  the second write starts from a snapshot that never saw the first. */
   clearFilters: () => void;
   setSort: (key: SortKey) => void;
+  setTab: (tab: BlogTab) => void;
 };
 
 export function useLibraryUrl(): LibraryUrl {
@@ -76,6 +89,7 @@ export function useLibraryUrl(): LibraryUrl {
   const sortKey = one(params.get(PARAM.sort), SORT_KEYS, DEFAULTS.sort);
   const sortDir = one(params.get(PARAM.dir), ["asc", "desc"] as const, DEFAULTS.dir);
   const previewSlug = params.get(PARAM.blog);
+  const tab = one(params.get(PARAM.tab), BLOG_TABS, DEFAULTS.tab);
 
   const write = React.useCallback(
     (mutate: (next: URLSearchParams) => void, method: "push" | "replace") => {
@@ -127,6 +141,7 @@ export function useLibraryUrl(): LibraryUrl {
 
   return {
     query,
+    tab,
     status,
     sortKey,
     sortDir,
@@ -142,5 +157,12 @@ export function useLibraryUrl(): LibraryUrl {
       [write],
     ),
     setSort,
+    // PUSH, not replace, and it is the one control here that gets a history entry. The filters
+    // narrow one list and Back through each keystroke would be useless; a tab is a place, and an
+    // operator who lands on Published from a link expects Back to leave it.
+    setTab: React.useCallback(
+      (value: BlogTab) => set(PARAM.tab, value, DEFAULTS.tab, "push"),
+      [set],
+    ),
   };
 }

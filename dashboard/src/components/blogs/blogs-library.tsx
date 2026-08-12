@@ -18,12 +18,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError, api } from "@/lib/api";
 import { brandHref } from "@/lib/orgs-context";
 import { HOSTED_READONLY } from "@/lib/hosted";
 import { inMonth } from "@/lib/blog-month";
-import { adminCan, adminTag, blogState } from "@/lib/blog-state";
+import { adminCan, blogState } from "@/lib/blog-state";
+import { BLOG_TABS, BLOG_TAB_LABELS, blogTab, type BlogTab } from "@/lib/blog-tabs";
 import { adminGateAllows, type GateForm, type GateInput } from "@/lib/gate-contract";
 import { formatCount } from "@/lib/format";
 import {
@@ -34,13 +36,15 @@ import {
   type ReviewSighting,
 } from "@/lib/notifications";
 import { useNotifications } from "@/lib/notifications-context";
+import { useRuns } from "@/lib/runs-context";
 import { useBlogQuestions } from "@/lib/use-blog-questions";
 import { useMonthFilter } from "@/lib/use-month-filter";
 import { useHotkey } from "@/lib/use-hotkey";
 import { cn } from "@/lib/utils";
-import { selectBlogs, STATE_FILTERS, type StateFilter } from "@/components/blogs/blogs-filter";
+import { selectBlogs } from "@/components/blogs/blogs-filter";
 import { BlogsTable, TRIGGER_ATTR } from "@/components/blogs/blogs-table";
 import { BulkBar, type BulkAction } from "@/components/blogs/bulk-bar";
+import { CreateForBrand } from "@/components/create/create-for-brand";
 import { MonthPicker } from "@/components/blogs/month-picker";
 import { useLibraryUrl } from "@/components/blogs/library-url";
 import {
@@ -50,13 +54,11 @@ import {
 } from "@/components/blogs/questions-state";
 import type { BlogSummary } from "@/types";
 
-// Built FROM the admin tags, so an option and the tag it filters for carry the identical word.
-// Add a state to blogState and its filter option appears here labelled the same, with nothing to
-// keep in sync by hand: that drift is exactly what this derives its way out of.
-const FILTERS: { value: StateFilter; label: string }[] = STATE_FILTERS.map((value) => ({
-  value,
-  label: value === "all" ? "All statuses" : adminTag(value).label,
-}));
+// THE STATUS DROPDOWN IS GONE and the FILTERS list with it. The four subtabs partition every
+// blog by exactly the fact that dropdown selected, so keeping both would be two controls that can
+// disagree: choosing "Approved" while standing in Internal review shows an empty table with
+// nothing on screen explaining why. selectBlogs still takes a status argument for the callers
+// that have one; this page pins it to "all".
 
 /**
  * One BRAND's blogs. The brand arrives as a prop and is never read from a context or the URL:
@@ -76,6 +78,15 @@ export function BlogsLibrary(props: {
   orgSlug: string;
   brandSlug: string;
   brandName: string;
+  /**
+   * Three facts off the CLIENT RECORD the route already resolved, threaded through for the New
+   * tab alone: they are what the create flow needs and what it used to receive from its own page.
+   * They ride as props rather than being fetched here for the same reason they always did, which
+   * is that /api/clients carries all three on every brand and a second read could disagree.
+   */
+  brandInstructions: string;
+  hasCanonicalFacts: boolean;
+  resourceCount: number;
 }) {
   return (
     // One provider for the whole library. Radix requires it above every Tooltip, and context
@@ -105,10 +116,16 @@ function Library({
   orgSlug,
   brandSlug,
   brandName,
+  brandInstructions,
+  hasCanonicalFacts,
+  resourceCount,
 }: {
   orgSlug: string;
   brandSlug: string;
   brandName: string;
+  brandInstructions: string;
+  hasCanonicalFacts: boolean;
+  resourceCount: number;
 }) {
   const router = useRouter();
   const [blogs, setBlogs] = React.useState<BlogSummary[] | null>(null);
@@ -225,6 +242,7 @@ function Library({
    * answered" for every topic, and the real answer landing a moment later then reads as the
    * client having just answered twelve of them.
    */
+  const { runs } = useRuns();
   const { log, notify } = useNotifications();
   const observedRef = React.useRef<{ brand: string; seen: ReadonlyMap<string, ReviewSighting> }>({
     brand: brandSlug,
@@ -280,10 +298,36 @@ function Library({
     setRefreshing(false);
   }
 
+  /**
+   * EVERY BLOG THE MONTH HOLDS, SPLIT BY TAB. See lib/blog-tabs.ts for the rules; this only
+   * counts them, so each tab can carry its own number without four passes over the list.
+   *
+   * A blog that files under `new` is NOT here as a row: New renders ROADMAP rows, and a topic with
+   * no scored draft is represented there by its sheet row rather than by the empty record the
+   * engine may or may not hold for it. The count is still taken, because it is what tells an
+   * operator whether the tab is worth opening.
+   */
+  const byTab = React.useMemo(() => {
+    const out: Record<BlogTab, BlogSummary[]> =
+      { new: [], internal: [], client: [], published: [] };
+    for (const blog of monthBlogs) {
+      out[blogTab(blog)].push(blog);
+    }
+    return out;
+  }, [monthBlogs]);
+
+  /**
+   * The rows on screen: the OPEN TAB's blogs, then the search box and the sort.
+   *
+   * selectBlogs still owns the search and the sort, and its status argument is pinned to "all"
+   * because the tabs ARE the status filter now. Keeping both would be two controls that can
+   * disagree: picking "Approved" while standing in Internal review shows nothing, with nothing on
+   * screen saying why.
+   */
   const shown = React.useMemo(
-    () => selectBlogs(blogs ?? [], url.query, url.status, url.sortKey, url.sortDir,
-                      month, latestMonth),
-    [blogs, url.query, url.status, url.sortKey, url.sortDir, month, latestMonth],
+    () =>
+      selectBlogs(byTab[url.tab], url.query, "all", url.sortKey, url.sortDir, month, latestMonth),
+    [byTab, url.tab, url.query, url.sortKey, url.sortDir, month, latestMonth],
   );
 
   /**
@@ -328,6 +372,11 @@ function Library({
       }
       return next;
     });
+  }, []);
+  // Shift-click: the table computed the span from its own on-screen order, so this only has to
+  // add it. Additive rather than toggling, which is what a drag across a list means everywhere.
+  const selectRange = React.useCallback((topicSlugs: readonly string[]) => {
+    setTicked((prev) => new Set([...prev, ...topicSlugs]));
   }, []);
   const clearSelection = React.useCallback(() => setTicked(new Set()), []);
 
@@ -499,8 +548,20 @@ function Library({
   const total = monthBlogs.length;
   const filtering = url.query.trim() !== "" || url.status !== "all";
 
+  /**
+   * IS ANY BLOG RUN LIVE, ANYWHERE. Not just this brand's: TOPIC_SEMAPHORE admits GEO_CONCURRENCY
+   * blogs REPO-WIDE, so another brand's run is a real reason this one waits. Repurpose runs are
+   * excluded because they take the same slot but are not blogs, and a Generate relabelled by a
+   * LinkedIn rewrite would be describing the wrong queue.
+   */
+  const anyRunLive = runs.some((run) => run.kind !== "repurpose" && run.live);
+
   return (
     <div className="mx-auto w-full max-w-6xl">
+      {/* CONTROLLED FROM THE URL, so /create's redirect can land on ?tab=new and a link to a tab
+          is a link to a tab. See library-url.ts: every other view control on this page already
+          lives there, and a tab kept in state would be the one thing a shared URL forgot. */}
+      <Tabs value={url.tab} onValueChange={(next) => url.setTab(next as BlogTab)}>
       {/* THE CONTROLS SIT BELOW THE HEADING, NOT BESIDE IT. They were in a justify-between with
           the title, so a wide screen strung search, month, status, refresh and download along the
           right of one line and a narrow one wrapped them into a ragged block that moved as the
@@ -510,8 +571,26 @@ function Library({
         <div className="min-w-0">
           <h2 className="text-xl font-semibold tracking-tight text-foreground">Blogs</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Everything the factory has written for {brandName}.
+            Every blog for {brandName}, from the roadmap row to the published article.
           </p>
+        </div>
+
+        {/* THE TAB STRIP AND THE MONTH, ON ONE ROW, the month right-aligned. The month is the only
+            control here that applies to all four tabs at once, so it belongs beside the tabs
+            rather than in the row below, which changes with the selection. */}
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <TabsList variant="line" className="mb-[5px]">
+            {BLOG_TABS.map((tab) => (
+              <TabsTrigger key={tab} value={tab} className="text-xs">
+                {BLOG_TAB_LABELS[tab]}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          {/* Only with TWO OR MORE months. One month is every blog there is, so a picker that
+              cannot change anything is a control that only asks the operator a question. */}
+          {showPicker && months ? (
+            <MonthPicker months={months} month={month} onChange={setMonth} />
+          ) : null}
         </div>
         {/* THE SELECTION REPLACES THE CONTROLS, rather than sitting beside them. Ticking a row is
             a mode switch: the operator has stopped narrowing the list and started acting on a set,
@@ -545,26 +624,6 @@ function Library({
               className="h-8 w-52 pl-8 text-xs"
             />
           </div>
-          {/* Only with TWO OR MORE months. One month is every blog there is, so a picker that
-              cannot change anything is a control that only asks the operator a question. */}
-          {showPicker && months ? (
-            <MonthPicker months={months} month={month} onChange={setMonth} />
-          ) : null}
-          <select
-            value={url.status}
-            onChange={(event) => url.setStatus(event.target.value as StateFilter)}
-            aria-label="Filter by status"
-            className={cn(
-              "h-8 rounded-lg border border-input bg-background px-2 text-xs",
-              "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-            )}
-          >
-            {FILTERS.map((item) => (
-              <option key={item.value} value={item.value}>
-                {item.label}
-              </option>
-            ))}
-          </select>
           <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={refreshing}>
             <RotateCw
               className={cn(refreshing && "animate-spin motion-reduce:animate-none")}
@@ -577,11 +636,33 @@ function Library({
         )}
       </div>
 
+      {/* Above the panels, because a held blog is held whichever tab is open and the operator
+          should not have to find the right one to learn that. */}
       <WaitingOnYou signals={waiting} />
 
       {error ? <EngineError error={error} onRetry={() => void refresh()} /> : null}
 
       {!error && blogs === null ? <Skeleton className="h-80 w-full" /> : null}
+
+      {/* NEW IS THE OLD CREATE PAGE, embedded. It renders roadmap rows rather than blogs, so it
+          owns its own fetch, its own selection and its own Generate: everything this file does
+          below is about articles that exist. See select-state.tsx's `embedded` prop for what the
+          flag actually changes, which is the heading and nothing else. */}
+      <TabsContent value="new">
+        {!error ? (
+          <CreateForBrand
+            key={brandSlug}
+            orgSlug={orgSlug}
+            brandSlug={brandSlug}
+            brandName={brandName}
+            brandInstructions={brandInstructions}
+            hasCanonicalFacts={hasCanonicalFacts}
+            resourceCount={resourceCount}
+            embedded
+            queueing={anyRunLive}
+          />
+        ) : null}
+      </TabsContent>
 
       {!error && blogs !== null ? (
         total === 0 ? (
@@ -590,10 +671,10 @@ function Library({
             // Only with a picker on screen. With one month there is nothing to name, and "no
             // blogs in Month 1" would suggest a month the operator could switch away from.
             monthLabel={showPicker ? monthLabel : null}
-            createHref={brandHref(orgSlug, brandSlug, "/create")}
+            createHref={brandHref(orgSlug, brandSlug, "/blogs?tab=new")}
           />
         ) : (
-          <>
+          <TabsContent value={url.tab}>
             <Card className="overflow-hidden p-0">
               {shown.length === 0 ? (
                 <NoMatches onClear={url.clearFilters} />
@@ -616,10 +697,23 @@ function Library({
                   // No checkboxes on the hosted mirror: every act the bar offers is a write, and
                   // this build refuses all of them, so a selection there could only ever lead to
                   // four buttons that answer 501.
+                  // NO CHECKBOXES ON PUBLISHED, by instruction, and it is the right shape: the
+                  // article is live on the brand's site, so Send and Post to CMS are spent and a
+                  // bulk Delete over things a reader can currently open is not an act to make one
+                  // click away. Editing or unpublishing one is still reachable from its own page.
+                  //
+                  // None on the hosted mirror either: every act the bar offers is a write, and
+                  // that build refuses all of them, so a selection could only lead to buttons
+                  // that answer 501.
                   selection={
-                    HOSTED_READONLY
+                    HOSTED_READONLY || url.tab === "published"
                       ? undefined
-                      : { selected, onToggle: toggle, onToggleAll: toggleAll }
+                      : {
+                          selected,
+                          onToggle: toggle,
+                          onToggleAll: toggleAll,
+                          onSelectRange: selectRange,
+                        }
                   }
                 />
               )}
@@ -662,10 +756,10 @@ function Library({
                 well, not that the claim it asks about is true.
               </p>
             ) : null}
-          </>
+          </TabsContent>
         )
       ) : null}
-
+      </Tabs>
     </div>
   );
 }
