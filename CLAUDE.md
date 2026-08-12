@@ -840,6 +840,37 @@ The operator can stop a brand from the session view, behind a confirm. `DELETE
 /api/clients/<slug>/runs` stops EVERY live run for that brand at once, because a run-scoped
 stop would make the operator press it five times while the queue raced them.
 
+**THERE IS ALSO A PER-TOPIC STOP, AND IT DOES NOT WEAKEN THE SENTENCE ABOVE.** `DELETE
+/api/clients/<slug>/runs/topics/<topic>` ends ONE topic. The brand-wide stop is unchanged and is
+still the right press when a whole batch is wrong; what changed is that the queue table lists
+topics ONE PER ROW, so its row control has to reach one row, and reaching it through the
+brand-wide stop would take four other blogs down with it. The rejected thing was RUN scoping the
+brand button, which buys the operator nothing and races their own queue. A row's own control is
+not that.
+
+**IT IS TWO MECHANISMS BECAUSE A RUNNING TOPIC AND A QUEUED ONE ARE NOT THE SAME OBJECT.** A
+running topic holds a slot, so `runner._SLOTS` has its task and cancelling it is the act
+`_sweep_slots` already performs on a wedged one; its own `finally` gives the slot back. A QUEUED
+topic has NO TASK: it is a coroutine inside its batch's task parked on `TOPIC_SEMAPHORE.acquire()`,
+and cancelling the batch would kill every sibling in it. So the queue carries a withdrawal set and
+`topic_slot` consults it **on BOTH sides of the acquire**. The second check is not redundant: a
+topic can be admitted between the operator's press and the acquire returning, and a guard that
+only looked before would let a withdrawn topic run while the table showed it gone. A withdrawal is
+CONSUMED when it fires, so it cannot silently kill the next legitimate run of the same topic.
+
+`stop_topic` answers which of the two happened, because the operator's act differs: cancelling a
+live session throws away real work and the dashboard warns first, while withdrawing a queued one
+costs nothing and needs no warning. Only the engine can tell them apart at the moment of the
+press, and a browser deciding for itself would be racing the queue it is describing. A topic no
+LIVE RUN NAMES is neither, and the route answers 404 rather than reporting work it did not do:
+the semaphore cannot enumerate its waiters, so the run registry is what says "queued", which is
+the same source `/api/queue` and the dashboard's poll already read.
+
+A topic withdrawn before it started writes the terminal line `stopped`, for the reason the
+brand-wide stop uses that word: nothing failed, a person decided. It is the cheapest stop there
+is, because the engine had spent nothing on it. `tests/stop_topic_check.py` pins all four arms
+including the race.
+
 **`stopped` MEANS the operator ended the run before the loop finished, so no score describes the
 blog, and it means nothing else.** It is not a failure: `failed` says the engine could not produce the blog, and
 conflating the two lies in the status tiles about work the engine did fine. It is not a

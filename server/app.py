@@ -3205,6 +3205,36 @@ def _delete_blog(slug: str, topic_slug: str) -> None:
         shutil.rmtree(tdir, ignore_errors=True)
 
 
+@app.delete("/api/clients/{slug}/runs/topics/{topic}")
+async def api_stop_topic(slug: str, topic: str,
+                         user: auth.Identity = Depends(auth.require_admin)):
+    """Stop ONE topic: cancel it if it is running, withdraw it if it is only queued.
+
+    THE BRAND-WIDE STOP STAYS AND IS STILL THE RIGHT DEFAULT. DELETE /runs ends everything for a
+    brand in one press, which is what an operator wants when a whole batch is wrong, and the
+    contract's reason for it holds: run-scoping THAT button would make them press it five times
+    while the queue raced them. This is a different act with a different scope. The queue table
+    lists topics one per row, so its per-row control has to reach one row, and reaching it through
+    a brand-wide stop would take four other blogs down with it.
+
+    It answers with WHICH of the two happened, because the operator's own act differs: cancelling a
+    running session throws away real work and the dashboard warns before it, while withdrawing a
+    queued one costs nothing and needs no warning. The engine is the only thing that can tell them
+    apart at the moment of the press, and a browser that decided for itself would be racing the
+    queue it is describing.
+
+    404 when the brand has no such topic in flight, rather than a cheerful 200 over nothing done:
+    a row that has already finished, or one that was never queued, is not a thing to stop.
+    """
+    _client_or_404(slug, user)
+    if runner.slugify(topic) != topic:
+        raise HTTPException(status_code=404, detail="not found")
+    stopped = await asyncio.to_thread(runner.stop_topic, slug, topic)
+    if stopped is None:
+        raise HTTPException(status_code=404, detail="no live or queued run for this topic")
+    return {"client": slug, "topic_slug": topic, "stopped": stopped}
+
+
 @app.get("/api/pending-reruns")
 async def api_pending_reruns(user: auth.Identity = Depends(auth.require_admin)):
     """Every topic sitting on an answered current form at needs_review: the rerun queue.

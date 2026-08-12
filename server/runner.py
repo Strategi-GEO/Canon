@@ -192,6 +192,89 @@ def _release_slot(slot):
     return True
 
 
+# ---------------------------------------------------------------------------
+# Stopping ONE topic, which is a different act from stopping a brand.
+#
+# stop_client is the operator ending a whole brand's work and it stays exactly as it is. This is
+# the queue table's per-row control, and the two halves it needs are genuinely different
+# mechanisms, which is why one set and one lookup rather than one function:
+#
+#   RUNNING. The topic holds a slot, so _SLOTS has its task and cancelling it is the same act the
+#   watchdog already performs on a wedged one. The slot's own finally releases it.
+#
+#   QUEUED. There is NO task to cancel. A queued topic is a coroutine inside its batch's task,
+#   parked on TOPIC_SEMAPHORE.acquire(), and nothing holds a handle to it: cancelling the batch
+#   would take every other topic in it down too. So the queue instead carries a set of topics that
+#   have been withdrawn, and topic_slot checks it on both sides of the acquire.
+#
+# BOTH SIDES, and the second one is the race that matters: a topic can be admitted between the
+# operator's press and this check, and a withdrawal that only looked before the acquire would let
+# it run anyway while the table showed it gone.
+_CANCELLED_TOPICS = set()
+
+
+class TopicWithdrawn(Exception):
+    """Raised inside topic_slot when the operator removed this topic from the queue before it
+    started. The caller's own handler writes the terminal line; nothing here does, because the
+    caller knows which kind of work it was."""
+
+
+def withdraw_topic(client_slug, topic_slug):
+    """Take one topic out of the queue before it starts. Idempotent, and a no-op on a topic that
+    is not queued: the caller checks running-ness first (see stop_topic)."""
+    _CANCELLED_TOPICS.add((client_slug, topic_slug))
+
+
+def clear_withdrawal(client_slug, topic_slug):
+    """Forget a withdrawal, so the same topic can be queued again later. Called by topic_slot when
+    it acts on one, and by the API when a topic is re-submitted."""
+    _CANCELLED_TOPICS.discard((client_slug, topic_slug))
+
+
+def find_slot(client_slug, topic_slug):
+    """The live slot this topic holds, or None when it is queued, finished, or not ours."""
+    for slot in _SLOTS.values():
+        if slot["client"] == client_slug and slot["topic_slug"] == topic_slug:
+            return slot
+    return None
+
+
+def stop_topic(client_slug, topic_slug):
+    """Stop ONE topic, whether it is running or merely queued.
+
+    Returns "running" when a live session was cancelled, "queued" when a topic that had not started
+    was withdrawn, or None when this brand has no such topic in flight at all, which the route
+    turns into a 404 rather than pretending to have done something.
+
+    SYNCHRONOUS, for the reason stop_client is: task.cancel() only SCHEDULES the CancelledError, so
+    every record here is already correct by the time any of it is delivered, and there is no await
+    at which a finally could fire against a half-updated view.
+    """
+    slot = find_slot(client_slug, topic_slug)
+    if slot is not None:
+        task = slot.get("task")
+        if task is not None and not task.done():
+            task.cancel()
+        return "running"
+
+    # NOT HOLDING A SLOT, so it is either queued behind one or not here at all, and those two want
+    # opposite answers: one is a withdrawal, the other is a 404. THE SEMAPHORE CANNOT TELL THEM
+    # APART, because a waiter on it is an anonymous future with no topic attached, so the RUN
+    # REGISTRY answers instead: a queued topic is one named by a run that is still live. That is
+    # the same source /api/queue and the dashboard's own poll read, so the three cannot disagree
+    # about whether a topic is in flight.
+    queued = any(
+        run.get("client") == client_slug
+        and run.get("live")
+        and any(t.get("topic_slug") == topic_slug for t in run.get("topics", []))
+        for run in RUNS.values()
+    )
+    if not queued:
+        return None
+    withdraw_topic(client_slug, topic_slug)
+    return "queued"
+
+
 @asynccontextmanager
 async def topic_slot(client_slug, topic_slug, out_dir):
     """ONE BLOG'S PLACE IN THE ONE QUEUE. Every door goes through here.
@@ -206,7 +289,20 @@ async def topic_slot(client_slug, topic_slug, out_dir):
     """
     global _SLOT_SEQ
     waiting_since = time.time()
+    # BEFORE the acquire, so a topic withdrawn while the queue was long never takes a slot at all
+    # and never delays the one behind it.
+    if (client_slug, topic_slug) in _CANCELLED_TOPICS:
+        clear_withdrawal(client_slug, topic_slug)
+        raise TopicWithdrawn(topic_slug)
     await TOPIC_SEMAPHORE.acquire()
+    # AND AFTER IT, because the acquire is where this coroutine was suspended and the operator's
+    # press could have landed at any point during it. Without this second check a topic withdrawn
+    # a moment before its slot freed would start anyway, with the table already showing it gone.
+    # The slot is handed straight back rather than held for the raise.
+    if (client_slug, topic_slug) in _CANCELLED_TOPICS:
+        clear_withdrawal(client_slug, topic_slug)
+        TOPIC_SEMAPHORE.release()
+        raise TopicWithdrawn(topic_slug)
     _SLOT_SEQ += 1
     slot = {
         "token": _SLOT_SEQ,
@@ -3583,6 +3679,25 @@ async def run_batch(client_slug, rows, *, on_topic_done=None, run_id=None):
                 mark_running(run_id)
                 result = await run_topic(client_slug, row,
                                          precheck_error=facts_error)
+        except TopicWithdrawn:
+            # THE OPERATOR TOOK THIS TOPIC OUT OF THE QUEUE BEFORE IT STARTED. No session opened,
+            # no artifact exists, and nothing was judged, so there is nothing to keep and nothing
+            # to report a score for. It still needs a terminal line: a topic with none hangs its
+            # SSE stream forever, which is the same reason a stop writes one.
+            #
+            # `stopped`, not `failed`, and for the identical reason the brand-wide stop uses that
+            # word: nothing failed, a person decided. It is the cheapest possible stop, because the
+            # engine had not spent anything on it yet.
+            out_dir = output_dir(client_slug, topic_slug)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            # The baseline is TAKEN NOW because no session ran: whatever is on disk belongs to an
+            # earlier attempt, and the guard's job here is exactly to leave that earlier verdict
+            # alone. A topic withdrawn after a previous run shipped keeps its `done` line.
+            _stop_line_if_unterminated(
+                client_slug, topic_slug, out_dir,
+                _status_baseline(out_dir),
+                "removed from the queue before it started")
+            return None
         except asyncio.CancelledError:
             # THE LEDGER ENTRY FOR A BLOG THAT SHIPPED ANYWAY. _notify's shield covers the window
             # from this await onward; this arm covers the window one await EARLIER, which was
