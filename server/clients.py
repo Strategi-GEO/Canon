@@ -416,6 +416,61 @@ def _org_row_exists(org_slug):
     return bool(db.q("select 1 from orgs where slug = %s", (org_slug,), fetch="val"))
 
 
+def effective_org_slug(client_slug):
+    """The org slug the PORTAL resolves this brand under, or None if it cannot see it.
+
+    Read from `org_membership` rather than computed here, because that view is what the
+    portal itself reads and its rule (COALESCE(orgs.slug, clients.slug)) must not be
+    restated in a second place that can drift from it.
+    """
+    return db.q("select org_slug from org_membership where client_slug = %s",
+                (client_slug,), fetch="val")
+
+
+def _carry_org_grants(client_slug, old_org_slug, new_org_slug):
+    """Move a brand's client login with it when its org changes.
+
+    THE LOCKOUT THIS EXISTS FOR. `org_members` grants an ORG SLUG, and `org_membership`
+    derives that slug as COALESCE(orgs.slug, clients.slug), so a brand with no org of its
+    own answers to its own slug. Point its org_id at a real org and the derived slug
+    changes under a grant that still names the old one, orgsForUser keeps no row, and the
+    client's own login lands on "No organisation is linked to this account yet" with no
+    way back. That is exactly what happened to blr-brewing when it moved into
+    bangalore-brewing-co: the account was live, the password was right, and the portal had
+    nothing to show it. Nothing in the write path noticed, because moving a brand rewrites
+    ONE column and this table is not it.
+
+    IT CARRIES ONLY WHERE CARRYING WIDENS NOTHING, which is the whole safety argument. The
+    grant is per ORG, so handing someone the destination org hands them every brand in it.
+    Where the destination holds THIS BRAND ALONE, the grantee could already see everything
+    that grant reaches and the carry is a no-op in access terms. That covers both lockout
+    directions: a self-org brand joining an org of its own, and a brand leaving an org to
+    stand on its own again, which is a one-brand destination by definition.
+
+    WHERE THE DESTINATION ALREADY HOLDS OTHER BRANDS IT REFUSES, and the refusal is not a
+    gap. An org with brands has its own login, and that login already sees the arriving
+    brand through the same view, so there is nothing to repair; carrying would instead hand
+    the departing org's members every OTHER brand in the destination, which is the one
+    thing a grant migration must never do on its own authority.
+
+    The old grant is deleted only once it is DEAD, meaning no brand answers to that slug
+    any more. A slug the departing org still uses is a live grant for the brands that
+    stayed, and dropping it would lock those out to fix this one.
+    """
+    if not old_org_slug or not new_org_slug or old_org_slug == new_org_slug:
+        return
+    if db.q("""select 1 from org_membership where org_slug = %s and client_slug <> %s limit 1""",
+            (new_org_slug, client_slug), fetch="val"):
+        return
+    db.q("""insert into org_members (org_slug, user_id, role)
+            select %s, user_id, role from org_members where org_slug = %s
+            on conflict (org_slug, user_id) do nothing""",
+         (new_org_slug, old_org_slug), fetch="none")
+    if not db.q("select 1 from org_membership where org_slug = %s limit 1",
+                (old_org_slug,), fetch="val"):
+        db.q("delete from org_members where org_slug = %s", (old_org_slug,), fetch="none")
+
+
 def _refuse_self_org_collision(client_slug):
     """The same invariant from the other side: a brand may not BECOME a self-org
     brand whose slug an orgs row already owns.
@@ -625,6 +680,10 @@ def update_client(slug, description=None, name=None, organisation_name=None,
     if cms_client is not None:
         sets.append("cms_client = %s")
         params.append(slugify_client(cms_client))
+    # READ BEFORE THE WRITE, because the answer is derived from the column being written and
+    # is unrecoverable afterwards: once org_id moves, nothing on the record still says which
+    # slug the portal was resolving this brand under a moment ago.
+    org_slug_before = effective_org_slug(slug) if organisation_name is not None else None
     if organisation_name is not None:
         # Moving a brand between orgs rewrites ONE column and renames NO slug. Blank
         # clears back to its own single-brand org, which is what a null org_id means.
@@ -643,6 +702,11 @@ def update_client(slug, description=None, name=None, organisation_name=None,
     if sets:
         db.q(f"update clients set {', '.join(sets)} where id = %s",
              (*params, cid), fetch="none")
+        # The brand's client login follows the brand. AFTER the update, so the destination
+        # slug and its brand list are read from the state that now exists rather than the
+        # one being replaced.
+        if org_slug_before is not None:
+            _carry_org_grants(slug, org_slug_before, effective_org_slug(slug))
         # Scratch tracks the record: the next agent run reads gates.json from disk, and it
         # must say what was just recorded.
         sync.materialize_client(slug)
