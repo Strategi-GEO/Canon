@@ -14,7 +14,16 @@
  * a test can reach it.
  */
 
-import type { BlogSummary } from "@/types";
+/**
+ * ANY ROW THAT KNOWS ITS MONTH, which is deliberately structural rather than BlogSummary.
+ *
+ * The admin's summary and the portal's card are two different wire shapes carrying the same
+ * answer to the same question, and the client's Blogs tab groups by month for the same reason the
+ * admin's does. Typing these helpers to one of the two shapes would have forced the other to cast
+ * or to keep a second copy of the rules below, and a second copy of "a null month files under the
+ * latest" is exactly the drift this file exists to prevent.
+ */
+type Monthly = { month?: number | null };
 
 /**
  * The month a blog files under for the Blogs tab's picker.
@@ -27,7 +36,7 @@ import type { BlogSummary } from "@/types";
  * `latest` is null only for a brand with no roadmap at all, where there is no picker and every
  * blog shows regardless.
  */
-export function monthOf(blog: BlogSummary, latest: number | null): number | null {
+export function monthOf(blog: Monthly, latest: number | null): number | null {
   return blog.month ?? latest;
 }
 
@@ -38,7 +47,7 @@ export function monthOf(blog: BlogSummary, latest: number | null): number | null
  * a caller with no picker (the client portal, anything predating this) keeps seeing everything.
  */
 export function inMonth(
-  blog: BlogSummary,
+  blog: Monthly,
   month: number | null | undefined,
   latest: number | null,
 ): boolean {
@@ -53,7 +62,10 @@ export function inMonth(
  * that blog did. Their month is therefore the source blog's, always, and this index is how a
  * caller holding posts rather than blogs asks for it.
  */
-export function monthIndex(blogs: readonly BlogSummary[], latest: number | null) {
+export function monthIndex(
+  blogs: readonly (Monthly & { topic_slug: string })[],
+  latest: number | null,
+) {
   return new Map(blogs.map((blog) => [blog.topic_slug, monthOf(blog, latest)]));
 }
 

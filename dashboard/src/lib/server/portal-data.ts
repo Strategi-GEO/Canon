@@ -296,6 +296,13 @@ export type PortalBlogCard = {
   created: string;
   /** The blog's row on the roadmap (0-based), or null when its row is gone from the sheet. */
   roadmap_index: number | null;
+  /**
+   * The month whose roadmap planned it. NULL IS NOT "no month": it is an article written
+   * off-roadmap, and lib/blog-month.ts files those under the LATEST month, because generation is
+   * locked to the latest month so an off-roadmap article was necessarily made while it was
+   * current. Filing it nowhere would hide it from every month there is.
+   */
+  month: number | null;
   /** has_questions only: the size of the OPEN form. Null once it is answered. */
   question_count: number | null;
   word_count: number | null;
@@ -515,6 +522,8 @@ type TopicFold = {
   created: string;
   /** The blog's roadmap row (0-based), or null when no sheet row carries its slug. */
   roadmapIndex: number | null;
+  /** The month whose sheet planned it, or null for an off-roadmap article. */
+  month: number | null;
   shippedVersion: VersionRow | null;
   sentVersion: VersionRow | null;
   ledger: LedgerRow | null;
@@ -554,12 +563,14 @@ type BrandData = {
   replies: ReplyParentRow[];
   events: EventRow[];
   comments: CommentRow[];
-  /** Sheet rows keyed later by topic_slug, so a card can carry its roadmap number. */
-  roadmapRows: { topic_slug: string | null; row_index: number }[];
+  /** Sheet rows keyed later by topic_slug, so a card can carry its roadmap number and month. */
+  roadmapRows: { topic_slug: string | null; row_index: number; sheet_id: string }[];
+  /** The brand's roadmap sheets, id -> month, which is where a row's month lives. */
+  sheets: { id: string; month: number }[];
 };
 
 async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
-  const [topics, versions, ledger, notes, children, replies, events, comments, roadmapRows] =
+  const [topics, versions, ledger, notes, children, replies, events, comments, roadmapRows, sheets] =
     await Promise.all([
     pg<TopicRow[]>(
       token,
@@ -682,14 +693,25 @@ async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
       `blog_comments?select=id,topic_id,selected_text,instruction,state,created_at` +
         `&client_id=eq.${clientId}&author=eq.client&parent_id=is.null&order=created_at.asc,id.asc`,
     ),
-    // The sheet rows, for the # column the library table shares with the admin's. Slug and
-    // index only: the plan itself stays on the roadmap surface.
-    pg<{ topic_slug: string | null; row_index: number }[]>(
+    // The sheet rows, for the # column the library table shares with the admin's, and for the
+    // month each article files under. The plan itself stays on the roadmap surface; sheet_id is
+    // here because a topic carries no month of its own, so the row that asked for it is the only
+    // thing that knows (see monthBySlug below).
+    pg<{ topic_slug: string | null; row_index: number; sheet_id: string }[]>(
       token,
-      `roadmap_rows?select=topic_slug,row_index&client_id=eq.${clientId}&order=row_index.asc`,
+      `roadmap_rows?select=topic_slug,row_index,sheet_id&client_id=eq.${clientId}&order=row_index.asc`,
+    ),
+    // id -> month for the rows above. Two reads rather than an embed: PostgREST resource
+    // embedding needs a declared FK relationship the granted client role can traverse, and this
+    // pair is two small indexed reads on data the roadmap tab already lets a client see.
+    pg<{ id: string; month: number }[]>(
+      token,
+      `roadmap_sheets?select=id,month&client_id=eq.${clientId}`,
     ),
   ]);
-  return { topics, versions, ledger, notes, children, replies, events, comments, roadmapRows };
+  return {
+    topics, versions, ledger, notes, children, replies, events, comments, roadmapRows, sheets,
+  };
 }
 
 /**
@@ -737,9 +759,20 @@ function foldTopics(data: BrandData): TopicFold[] {
   // The blog's row on the sheet, keyed by topic slug: same 0-based index the admin table
   // renders + 1. Last write wins across sheets, matching the ledger's own rule below.
   const rowIndexBySlug = new Map<string, number>();
+  // AND THE MONTH THAT PLANNED IT, from the same rows. A topic carries no month column: the
+  // engine derives it from the sheet whose row asked for the topic, which is sound only because
+  // deleting a month's roadmap deletes that month's blogs with it, so a blog can never outlive
+  // the row that answers this. Same derivation the admin side already ships (lib/blog-month.ts),
+  // read from the same two tables, so the two surfaces cannot file one article under two months.
+  const monthBySlug = new Map<string, number>();
+  const monthBySheet = new Map(data.sheets.map((sheet) => [sheet.id, sheet.month]));
   for (const row of data.roadmapRows) {
     if (row.topic_slug !== null && row.topic_slug !== "") {
       rowIndexBySlug.set(row.topic_slug, row.row_index);
+      const month = monthBySheet.get(row.sheet_id);
+      if (month !== undefined) {
+        monthBySlug.set(row.topic_slug, month);
+      }
     }
   }
 
@@ -1026,6 +1059,7 @@ function foldTopics(data: BrandData): TopicFold[] {
       latest: latestVersion,
       created: (earliest.get(topic.id) ?? latestVersion).committed_at,
       roadmapIndex: rowIndexBySlug.get(topic.slug) ?? null,
+      month: monthBySlug.get(topic.slug) ?? null,
       shippedVersion,
       sentVersion,
       ledger: entry,
@@ -1104,6 +1138,7 @@ function cardOf(
     date,
     created: fold.created,
     roadmap_index: fold.roadmapIndex,
+    month: fold.month,
     // THE OPEN FORM'S SIZE, so it stays null once the form is answered. ActionCard is the only
     // card that renders it and its sentence is "N questions from our editorial review", which is
     // a demand; an answered form makes no demand, and its card is a FrozenRow that reads the
@@ -1554,8 +1589,14 @@ export async function buildChannelPosts(
     brand: brand.client_slug,
     brand_name: brand.client_name,
     channel,
-    ready: cards.filter((c) => c.posted === null),
-    posted: cards.filter((c) => c.posted !== null),
+    // SPLIT ON WHO OWES THE NEXT ACT, not on whether the post is live yet. The read is already
+    // narrowed to posts sent to this client, so `sent` and `changes_requested` are the two states
+    // in which the client still has something to do, and the other two are done from where they
+    // stand. Testing posted_at alone left a post the client had personally approved sitting under
+    // "Ready to post", asking them for an act they had already performed, and left a post the team
+    // had marked live in the same place.
+    ready: cards.filter((c) => c.state === "sent" || c.state === "changes_requested"),
+    approved: cards.filter((c) => c.state === "approved" || c.state === "posted"),
   };
 }
 

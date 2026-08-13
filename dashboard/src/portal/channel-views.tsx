@@ -2,8 +2,8 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { ArrowLeft, ArrowRight, Check, Loader2 } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { ArrowLeft, Check, Loader2 } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,18 +19,21 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { BlogsTable } from "@/components/blogs/blogs-table";
 import { StateTagChip } from "@/components/shell/state-tag-chip";
 import { PostToChannel } from "@/components/blogs/post-to-channel";
 import { channelTag } from "@/lib/channel-state";
-import { formatRelative } from "@/lib/format";
 import { ApiError, api, detailText } from "@/portal/api";
 import { CommentedArticle } from "@/portal/comments-rail";
+import { usePortal } from "@/portal/portal-context";
+import { TabCount } from "@/portal/views";
 import type {
   PortalChannelDetail,
   PortalChannelList,
   PortalChannelPost,
   SuggestBody,
 } from "@/portal/types";
+import type { SortDir, SortKey } from "@/components/blogs/blogs-filter";
 import type { RepurposeChannel } from "@/types";
 
 /**
@@ -108,33 +111,43 @@ export function ChannelLibraryView({
     <div className="mx-auto w-full max-w-3xl">
       <h1 className="text-xl font-semibold tracking-tight">{name}</h1>
       <p className="mt-1 text-sm text-muted-foreground">
-        {name} posts {list.brand_name} has prepared for you, ready to post or already posted.
+        {name} posts {list.brand_name} has prepared for you, waiting on you or already approved.
       </p>
 
-      <Tabs defaultValue={list.ready.length === 0 && list.posted.length > 0 ? "posted" : "ready"}>
-        <TabsList className="mt-4">
-          <TabsTrigger value="ready">
-            Ready to post{list.ready.length ? ` (${list.ready.length})` : ""}
+      {/* THE BLOGS TAB'S OWN TAB SHAPE, not a second one. The line variant with a count chip is
+          what the client's Blogs tab wears, and this wore the filled pill with the count in
+          parentheses, so the same control looked like two different controls depending on which
+          sidebar entry the client had clicked. TabCount is imported from the blogs views rather
+          than reimplemented, which is the whole point: one component, one look, one place to
+          change it. */}
+      <Tabs
+        defaultValue={list.ready.length === 0 && list.approved.length > 0 ? "approved" : "ready"}
+        className="mt-4 gap-6"
+      >
+        <TabsList variant="line" className="w-full justify-start gap-4">
+          <TabsTrigger value="ready" className="flex-none">
+            Ready to post
+            {/* Amber, because every row in this tab is waiting on the client. */}
+            <TabCount n={list.ready.length} tone={list.ready.length > 0 ? "review" : "default"} />
           </TabsTrigger>
-          <TabsTrigger value="posted">
-            Posted{list.posted.length ? ` (${list.posted.length})` : ""}
+          <TabsTrigger value="approved" className="flex-none">
+            Approved
+            <TabCount n={list.approved.length} />
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="ready" className="mt-4">
+        <TabsContent value="ready">
           <PostList
             posts={list.ready}
-            channel={channel}
             detailHref={detailHref}
             empty={`Nothing ready to post yet. A ${name} post appears here once our team sends it to you.`}
           />
         </TabsContent>
-        <TabsContent value="posted" className="mt-4">
+        <TabsContent value="approved">
           <PostList
-            posts={list.posted}
-            channel={channel}
+            posts={list.approved}
             detailHref={detailHref}
-            empty="No posts marked posted yet."
+            empty={`Posts you approve collect here, including the ones already live on ${name}.`}
           />
         </TabsContent>
       </Tabs>
@@ -142,17 +155,67 @@ export function ChannelLibraryView({
   );
 }
 
+/**
+ * THE BLOGS TABLE, NOT A CARD LIST. Same component, same columns, same row rhythm, same keyboard
+ * behaviour as the client's Blogs tab, so a person moving between the two sidebar entries is
+ * reading one interface. This was a hand-built list of Cards: a title, a relative stamp and a
+ * Review button, which answered the same questions the table already answers and answered them in
+ * a different shape, at a different height, sorted a different way.
+ *
+ * TWO THINGS THE TABLE NEEDED, AND ONLY TWO. `tagOf`, because a channel post's lifecycle is its
+ * own vocabulary and BlogStateTag cannot speak it; and the "#" resolved from the client's own blog
+ * cards, because a post has no roadmap row of its own. Its number is its SOURCE BLOG's, which is
+ * the same rule the admin's channel table follows, so "post 3" and "blog 3" are one thing on both
+ * sides of the wire.
+ */
 function PostList({
   posts,
-  channel,
   detailHref,
   empty,
 }: {
   posts: PortalChannelPost[];
-  channel: RepurposeChannel;
   detailHref: (topic: string) => string;
   empty: string;
 }) {
+  const router = useRouter();
+  const { blogs } = usePortal();
+  const [sort, setSort] = React.useState<{ key: SortKey; dir: SortDir }>({
+    key: "roadmap",
+    dir: "asc",
+  });
+
+  // topic_slug -> the source blog's roadmap row, from the cards the portal already holds. A post
+  // whose blog is not in that list keeps a blank cell rather than posing as row one.
+  const indexBySlug = React.useMemo(
+    () => new Map(blogs.map((card) => [card.topic_slug, card.roadmap_index])),
+    [blogs],
+  );
+
+  const rows = React.useMemo(() => {
+    const mapped = posts.map((post) => ({
+      ...post,
+      // The table's row shape is the admin's: `topic` is the title's wire name there.
+      topic: post.title,
+      roadmap_index: indexBySlug.get(post.topic_slug) ?? null,
+      // The client is never told how a change is being applied, only that some are outstanding,
+      // which is exactly what the shared tag renders from this field.
+      comments_pending: post.comments_pending,
+    }));
+    const compare = (a: (typeof mapped)[number], b: (typeof mapped)[number]): number => {
+      switch (sort.key) {
+        case "roadmap":
+          return (a.roadmap_index ?? Infinity) - (b.roadmap_index ?? Infinity);
+        case "topic":
+          return a.topic.localeCompare(b.topic);
+        case "status":
+          return a.state.localeCompare(b.state);
+        default:
+          return a.created.localeCompare(b.created);
+      }
+    };
+    return [...mapped].sort((a, b) => (sort.dir === "asc" ? compare(a, b) : -compare(a, b)));
+  }, [posts, indexBySlug, sort]);
+
   if (posts.length === 0) {
     return (
       <Card>
@@ -160,38 +223,37 @@ function PostList({
       </Card>
     );
   }
+
   return (
-    <ul className="space-y-2">
-      {posts.map((post) => (
-        <li key={`${post.channel}:${post.topic_slug}`}>
-          <Card className="p-0">
-            <CardContent className="flex items-center justify-between gap-4 p-4">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-foreground">{post.title}</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  {post.posted
-                    ? `Posted ${formatRelative(post.posted)}`
-                    : post.sent
-                      ? `Sent ${formatRelative(post.sent)}`
-                      : null}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <StateTagChip tag={channelTag(post.state, "client")} />
-                <Button size="sm" variant="outline" asChild>
-                  <Link href={detailHref(post.topic_slug)}>
-                    {channel === "linkedin" ? "Review" : "Review"}
-                    <ArrowRight data-icon="inline-end" aria-hidden />
-                  </Link>
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </li>
-      ))}
-    </ul>
+    <Card className="overflow-hidden p-0">
+      <BlogsTable
+        blogs={rows}
+        // No questions on this track: a channel post has no evaluator form, so nothing here ever
+        // waits on an answer and the chip never renders.
+        waiting={EMPTY_WAITING}
+        // Never reaches the screen: tagOf below supersedes it. The tag is the channel vocabulary.
+        stateOf={() => "client_review"}
+        tagOf={(row) => channelTag(row.state, "client")}
+        audience="client"
+        sortKey={sort.key}
+        sortDir={sort.dir}
+        activeSlug={null}
+        onSort={(key) =>
+          setSort((cur) =>
+            cur.key === key
+              ? { key, dir: cur.dir === "asc" ? "desc" : "asc" }
+              : { key, dir: key === "roadmap" || key === "topic" ? "asc" : "desc" },
+          )
+        }
+        hrefFor={(row) => detailHref(row.topic_slug)}
+        onOpen={(row) => router.push(detailHref(row.topic_slug))}
+      />
+    </Card>
   );
 }
+
+/** Hoisted so its identity is stable: a fresh Map every render would defeat the table's memos. */
+const EMPTY_WAITING = new Map<string, never>();
 
 // ---------------------------------------------------------------------------
 // The detail: review, request a change, approve, and the Post button

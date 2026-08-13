@@ -67,6 +67,9 @@ export type PortalBlogCard = {
   created: string;
   /** The blog's row on the roadmap (0-based), or null when its row is gone from the sheet. */
   roadmap_index: number | null;
+  /** The month whose roadmap planned it. Null means off-roadmap, which lib/blog-month.ts files
+   *  under the LATEST month rather than under none. */
+  month: number | null;
   question_count: number | null;
   word_count: number | null;
   /**
@@ -220,9 +223,20 @@ export type PortalChannelList = {
   brand: string;
   brand_name: string;
   channel: string;
-  /** Not yet posted: sent, in a change round, or approved. */
+  /**
+   * THE SPLIT IS WHO OWES THE NEXT ACT, not whether the post is live yet.
+   *
+   * `ready` is what the CLIENT owes something on: sent, and a change round they can still add to
+   * or approve out of. `approved` is everything they are done with, which is an approved post
+   * waiting for our team AND one already live on the channel, because both read the same way to
+   * the person who approved it: my part is finished.
+   *
+   * Approval used to leave a post in `ready`, since the grouping tested posted_at alone, so a post
+   * the client had personally approved kept sitting under "Ready to post" asking them for an act
+   * they had already performed.
+   */
   ready: PortalChannelPost[];
-  posted: PortalChannelPost[];
+  approved: PortalChannelPost[];
 };
 
 export type PortalChannelDetail = {

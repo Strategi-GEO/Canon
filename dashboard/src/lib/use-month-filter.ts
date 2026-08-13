@@ -32,7 +32,22 @@ export type MonthFilter = {
   label: string | null;
 };
 
-export function useMonthFilter(brandSlug: string): MonthFilter {
+/**
+ * WHO FETCHES THE MONTHS IS A PARAMETER, and the CLIENT PORTAL is why.
+ *
+ * The rules below (which month is the default, that it is applied once, what happens when the one
+ * on screen stops existing) are identical on both surfaces, and the portal's Blogs tab groups by
+ * month exactly as the admin's three tabs do. What differs is only the door: the admin reads the
+ * engine through lib/api, while the portal is engine-less and reads its own same-origin route with
+ * the caller's JWT. Hardcoding lib/api here would have forced the portal to keep a second copy of
+ * every rule in this file, which is the drift the file was written to prevent. The default keeps
+ * every existing caller unchanged.
+ */
+export function useMonthFilter(
+  brandSlug: string,
+  fetchMonths: (slug: string, signal?: AbortSignal) => Promise<{ months: RoadmapMonth[] }> =
+    api.roadmapMonths,
+): MonthFilter {
   const [months, setMonths] = React.useState<RoadmapMonth[] | null>(null);
   const [month, setMonth] = React.useState<number | null>(null);
 
@@ -42,13 +57,17 @@ export function useMonthFilter(brandSlug: string): MonthFilter {
     // filter every row away under a number that brand has never had.
     setMonths(null);
     setMonth(null);
-    api.roadmapMonths(brandSlug, controller.signal).then(
+    fetchMonths(brandSlug, controller.signal).then(
       (data) => setMonths(data.months),
       // A brand with no roadmap is the ordinary empty state, not an error worth a banner: the
       // picker simply does not render and everything shows.
       () => setMonths([]),
     );
     return () => controller.abort();
+    // fetchMonths is deliberately NOT a dependency. Every caller passes a stable module-level
+    // function, and an inline arrow would otherwise refetch the month list on every render of the
+    // page that owns it, which is a poll nobody asked for rather than a correctness fix.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [brandSlug]);
 
   const latestMonth = React.useMemo(

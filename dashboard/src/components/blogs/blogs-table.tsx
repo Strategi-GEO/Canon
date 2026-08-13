@@ -14,13 +14,14 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
+import { StateTagChip } from "@/components/shell/state-tag-chip";
 import { adminFailedTag, scoreClass } from "@/lib/blog-score";
 import { blogLabels } from "@/lib/blog-label";
 import { formatAbsolute, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { SortDir, SortKey } from "@/components/blogs/blogs-filter";
 import type { WaitingSignal } from "@/components/blogs/questions-state";
-import type { BlogState } from "@/lib/blog-state";
+import type { BlogState, StateTag } from "@/lib/blog-state";
 
 /**
  * The attribute the library's keyboard moves real focus through: j and k find the active
@@ -72,6 +73,7 @@ export function BlogsTable<T extends BlogTableRow>({
   hrefFor,
   onOpen,
   stateOf,
+  tagOf,
   audience = "admin",
   selection,
   columns = "full",
@@ -99,6 +101,21 @@ export function BlogsTable<T extends BlogTableRow>({
    * the function keeps the derivation beside the data that feeds it.
    */
   stateOf: (blog: T) => BlogState;
+  /**
+   * THE STATUS CELL'S TAG, for rows whose state is NOT a BlogState.
+   *
+   * A CHANNEL POST IS THE CASE, and it is why this exists rather than a second table. Its
+   * lifecycle is its own (lib/channel-state.ts: no score, no questions, no failure verdict), so
+   * `stateOf` cannot describe it and BlogStateTag cannot render it. Everything else a row needs,
+   * the number, the title link, the created stamp, the sort, the row rhythm, is identical, and the
+   * client's LinkedIn and Medium tabs had a hand-built card list precisely because of this one
+   * cell. Passing the finished tag keeps the vocabulary with the data that owns it.
+   *
+   * Absent is the ordinary case: the tag comes from `stateOf` exactly as it always did. Where this
+   * IS passed, `stateOf`'s answer no longer reaches the screen, so a channel caller may return
+   * anything from it.
+   */
+  tagOf?: (blog: T) => StateTag;
   /**
    * Which library this table is standing in. The client's never renders Score or Iterations,
    * because those never cross the portal wire, and its tags and chips speak the client
@@ -288,6 +305,7 @@ export function BlogsTable<T extends BlogTableRow>({
             blog={blog}
             label={labels.get(blog.topic_slug) ?? null}
             state={stateOf(blog)}
+            tag={tagOf ? tagOf(blog) : null}
             audience={audience}
             waiting={waiting.get(blog.topic_slug) ?? null}
             active={blog.topic_slug === activeSlug}
@@ -315,6 +333,7 @@ function Row<T extends BlogTableRow>({
   blog,
   label,
   state,
+  tag,
   audience,
   waiting,
   active,
@@ -337,6 +356,8 @@ function Row<T extends BlogTableRow>({
    * divergence is what put a green score on one screen and a plain one on the other.
    */
   state: BlogState;
+  /** A ready-made status tag from the caller, superseding `state`. Null is the ordinary case. */
+  tag: StateTag | null;
   audience: "admin" | "client";
   waiting: WaitingSignal | null;
   active: boolean;
@@ -476,12 +497,16 @@ function Row<T extends BlogTableRow>({
           refusal to guess the fallback existed for: what it must never do is alias onto
           `running` and report a finished blog as in flight, and it does not. */}
       <TableCell>
-        <BlogStateTag
-          state={state}
-          audience={audience}
-          commentsPending={blog.comments_pending}
-          failedTag={adminFailedTag(blog.score ?? null)}
-        />
+        {tag !== null ? (
+          <StateTagChip tag={tag} />
+        ) : (
+          <BlogStateTag
+            state={state}
+            audience={audience}
+            commentsPending={blog.comments_pending}
+            failedTag={adminFailedTag(blog.score ?? null)}
+          />
+        )}
       </TableCell>
       {admin ? (
         <TableCell className="machine text-xs text-muted-foreground">

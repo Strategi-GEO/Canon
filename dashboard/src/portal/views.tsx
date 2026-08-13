@@ -35,6 +35,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BlogStateTag } from "@/components/shell/blog-state-tag";
 import { BlogsTable } from "@/components/blogs/blogs-table";
+import { MonthPicker } from "@/components/blogs/month-picker";
 import { BrandHeader, StatRow } from "@/components/shell/brand-overview";
 import { ReadOnlyText } from "@/components/clients/editable-text";
 import {
@@ -43,6 +44,8 @@ import {
   PreviewList,
 } from "@/components/clients/roadmap-panel";
 import { clientCan, clientCanSee } from "@/lib/blog-state";
+import { inMonth } from "@/lib/blog-month";
+import { useMonthFilter } from "@/lib/use-month-filter";
 import { ApiError, api, detailText, isStaleVersion } from "@/portal/api";
 import { formatDate, formatRelative, readingTime } from "@/portal/format";
 import { blogHref, brandHref } from "@/portal/nav";
@@ -432,8 +435,9 @@ function isBlogTab(value: string | null): value is BlogTab {
   return value !== null && (BLOG_TABS as readonly string[]).includes(value);
 }
 
-/** A small count beside a tab label. Absent at zero: a tab that wants nothing says nothing. */
-function TabCount({ n, tone = "default" }: { n: number; tone?: "default" | "review" }) {
+/** A small count beside a tab label. Absent at zero: a tab that wants nothing says nothing.
+ *  Exported so the LinkedIn and Medium tabs wear the same one rather than parentheses. */
+export function TabCount({ n, tone = "default" }: { n: number; tone?: "default" | "review" }) {
   if (n === 0) {
     return null;
   }
@@ -466,6 +470,13 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
+  // The same hook the admin's three tabs use, pointed at the portal's own months route. ABOVE
+  // every early return below, because a hook that runs only on the happy path is a hook that
+  // changes React's call order between renders.
+  const { months, month, setMonth, latestMonth, showPicker } = useMonthFilter(
+    brandSlug,
+    api.roadmapMonths,
+  );
 
   if (error !== null) {
     return <ErrorCard message="Could not load the blogs" detail={detailText(error)} onRetry={refresh} />;
@@ -492,11 +503,17 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
     return <BrandUnavailable />;
   }
 
-  const mine = blogs.filter((blog) => blog.brand === brandSlug && blog.org === org);
+  const everything = blogs.filter((blog) => blog.brand === brandSlug && blog.org === org);
+  // THE MONTH NARROWS THE TABS, NOT THE EMPTY STATE. `everything` decides whether this brand has
+  // any articles at all, so a month holding none still renders the tab bar and its own empty tab,
+  // with the picker right there to move off it. Testing the FILTERED list here instead would
+  // replace the whole page with "Nothing here yet" and take the picker away with it, stranding
+  // the client on a month they cannot leave.
+  const mine = everything.filter((blog) => inMonth(blog, month, latestMonth));
 
   // A brand with nothing at all skips the tab bar entirely: three empty tabs read as broken,
   // where one honest "nothing yet" reads as new.
-  if (mine.length === 0) {
+  if (everything.length === 0) {
     return (
       <div className="mx-auto max-w-md rounded-xl border bg-card p-8 text-center">
         <Inbox className="mx-auto size-6 text-muted-foreground" aria-hidden />
@@ -546,7 +563,13 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
       </div>
 
       <Tabs value={active} onValueChange={setTab} className="gap-6">
-      <TabsList variant="line" className="w-full justify-start gap-4">
+      {/* THE PICKER SHARES THE TAB ROW AND SITS AT ITS RIGHT END, matching the admin's Blogs tab.
+          The tab strip keeps `w-full` so the underline still spans the row; ml-auto is what pushes
+          the picker to the far edge without a wrapper that would break that. Rendered only with
+          TWO OR MORE months, exactly as the admin's is: one month is everything there is, so a
+          control that cannot change anything would only ask the client a question. */}
+      <div className="flex w-full flex-wrap items-center gap-3">
+      <TabsList variant="line" className="w-auto justify-start gap-4">
         <TabsTrigger value="needs-answers" className="flex-none">
           Needs answers
           {/* Amber only where open questions are actually waiting on the client; articles
@@ -562,6 +585,12 @@ export function BlogsLibrary({ org, brand: brandSlug }: { org: string; brand: st
           <TabCount n={doneCount} />
         </TabsTrigger>
       </TabsList>
+        {showPicker && months ? (
+          <div className="ml-auto">
+            <MonthPicker months={months} month={month} onChange={setMonth} />
+          </div>
+        ) : null}
+      </div>
 
       {/* Each tab is the ADMIN's own BlogsTable (audience="client"): #, Title, Created,
           Status, and never Score or Iterations, which the portal wire does not even carry.
