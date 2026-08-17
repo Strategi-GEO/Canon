@@ -34,6 +34,7 @@ import { ScoreTrail, StageMarks } from "@/components/create/topic-progress";
 import { useNow } from "@/components/create/use-now";
 import { topicKey, useQueueStreams, type TopicRun } from "@/components/create/use-run-stream";
 import { isLive } from "@/lib/sessions";
+import { titleFromSlug } from "@/lib/blog-label";
 
 /** Where a topic sits. Derived from ITS OWN frames, never from the run that carries it. */
 type Phase = "running" | "queued" | "finished";
@@ -343,9 +344,23 @@ export function QueueTable({
                       {row.label ?? "-"}
                     </TableCell>
                     <TableCell className="max-w-0 py-2.5">
-                      <span className="block truncate text-sm text-foreground">
-                        {row.topicSlug}
-                      </span>
+                      {/* THE TITLE, READ BACK OUT OF THE SLUG, because the run wire carries no
+                          other. RunTopic is index, slug and offset; StatusEvent adds stage and
+                          score and no title either; and this table spans BRANDS, so the one
+                          listing that does know a title is the wrong brand's for most rows. A
+                          de-hyphenated slug is the same fallback the channel review page uses and
+                          it reads as the sentence the title was made from. Word case past the
+                          first letter is deliberately left alone: the slug threw away which words
+                          were capitalised, and title-casing them all asserts a title nobody
+                          wrote. The slug itself is one hover away. */}
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="block cursor-default truncate text-sm text-foreground">
+                            {titleFromSlug(row.topicSlug)}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent className="machine">{row.topicSlug}</TooltipContent>
+                      </Tooltip>
                     </TableCell>
                     <TableCell className="py-2.5 text-xs text-muted-foreground">
                       {brandNames.get(row.brandSlug) ?? row.brandSlug}
@@ -559,7 +574,7 @@ function QueueRowDetail({ row, now }: { row: QueueRow; now: Date | null }) {
   const end = settled && topic.endedAt !== null ? new Date(topic.endedAt) : now;
 
   return (
-    <div className="max-w-3xl">
+    <div>
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <p className="machine flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
           {/* The two clocks TopicProgress carries, for the reason it gives: total elapsed answers

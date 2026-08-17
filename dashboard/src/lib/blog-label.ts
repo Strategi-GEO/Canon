@@ -51,3 +51,20 @@ export function blogLabels(blogs: LabelFacts[]): Map<string, string | null> {
   }
   return labels;
 }
+
+/**
+ * A slug read back as the sentence it was made from: "cafes-in-connaught-place" -> "Cafes in
+ * connaught place".
+ *
+ * ONLY EVER A FALLBACK, and it is worth saying why it exists at all rather than just printing the
+ * slug. This page knows the blog's real title from two places, the post's own `source_topic` and
+ * the brand's blog listing, and both are reads that land a moment after the page does. What used
+ * to fill that moment was the raw slug, hyphens and all, which reads as a broken record rather
+ * than as a title still arriving. Word case is deliberately left alone past the first letter: a
+ * slug has thrown away which words were capitalised, and title-casing every one of them invents
+ * "Cafes In Connaught Place" and asserts a title nobody wrote.
+ */
+export function titleFromSlug(slug: string): string {
+  const words = slug.replace(/[-_]+/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : slug;
+}
