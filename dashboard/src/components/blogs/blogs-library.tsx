@@ -547,6 +547,8 @@ function Library({
   // The month on screen is the whole list as far as this page's counts and empty state are
   // concerned.
   const total = monthBlogs.length;
+  /** What the OPEN TAB holds before the search box narrows it: what the footer under it counts. */
+  const tabTotal = byTab[url.tab].length;
   const filtering = url.query.trim() !== "" || url.status !== "all";
 
   /**
@@ -610,21 +612,27 @@ function Library({
           </div>
         ) : (
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <div className="relative">
-            <Search
-              className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
-              aria-hidden
-            />
-            <Input
-              ref={searchRef}
-              type="search"
-              value={url.query}
-              onChange={(event) => url.setQuery(event.target.value)}
-              placeholder="Search titles"
-              aria-label="Search blogs by title or slug"
-              className="h-8 w-52 pl-8 text-xs"
-            />
-          </div>
+          {/* NOT ON NEW. It searches BLOGS, and New renders roadmap rows through its own component,
+              which has no search of its own to collide with. Standing there it was a box that
+              filtered a table not on the page: typing in it changed nothing, which reads as broken.
+              Refresh stays, because it reloads the list and the queue under it, which New has. */}
+          {url.tab !== "new" ? (
+            <div className="relative">
+              <Search
+                className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
+                aria-hidden
+              />
+              <Input
+                ref={searchRef}
+                type="search"
+                value={url.query}
+                onChange={(event) => url.setQuery(event.target.value)}
+                placeholder="Search titles"
+                aria-label="Search blogs by title or slug"
+                className="h-8 w-52 pl-8 text-xs"
+              />
+            </div>
+          ) : null}
           <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={refreshing}>
             <RotateCw
               className={cn(refreshing && "animate-spin motion-reduce:animate-none")}
@@ -669,7 +677,14 @@ function Library({
         <QueueTable brandSlug={brandSlug} onChanged={() => void refresh()} />
       </TabsContent>
 
-      {!error && blogs !== null ? (
+      {/* NOT ON NEW, and the panel below is why: `value={url.tab}` matches whatever tab is open,
+          INCLUDING new, so the roadmap picker above rendered with an article table stacked under
+          it. byTab deliberately keeps no rows for `new` (a topic with no scored draft is shown as
+          its SHEET ROW, not as the empty record the engine may hold), so that table was always
+          empty and always drew the no-matches panel: two empty states, one saying the brand has no
+          roadmap and the other saying no blog matched a search nobody had typed, over a footer
+          counting six blogs that were sitting in the other three tabs. */}
+      {!error && blogs !== null && url.tab !== "new" ? (
         total === 0 ? (
           <NoBlogs
             brandName={brandName}
@@ -682,7 +697,11 @@ function Library({
           <TabsContent value={url.tab}>
             <Card className="overflow-hidden p-0">
               {shown.length === 0 ? (
-                <NoMatches onClear={url.clearFilters} />
+                <EmptyTab
+                  tab={url.tab}
+                  filtering={filtering}
+                  onClear={url.clearFilters}
+                />
               ) : (
                 <BlogsTable
                   blogs={shown}
@@ -725,10 +744,14 @@ function Library({
             </Card>
 
             <div className="mt-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
+              {/* THE TAB'S COUNT, NOT THE MONTH'S. It sits directly under this tab's table, so it
+                  has to count that table: the month total read "6 blogs" beneath an empty Client
+                  review, which is a number about four other lists. `total` stays month-scoped where
+                  it belongs, deciding the brand-level empty state above. */}
               <p className="machine text-xs text-muted-foreground">
                 {filtering
-                  ? `${formatCount(shown.length)} of ${formatCount(total)} blogs`
-                  : `${formatCount(total)} ${total === 1 ? "blog" : "blogs"}`}
+                  ? `${formatCount(shown.length)} of ${formatCount(tabTotal)} blogs`
+                  : `${formatCount(tabTotal)} ${tabTotal === 1 ? "blog" : "blogs"}`}
               </p>
               <p className="text-xs text-muted-foreground">
                 <kbd className="machine">j</kbd> and <kbd className="machine">k</kbd> to move,{" "}
@@ -807,16 +830,66 @@ function WaitingOnYou({ signals }: { signals: ReadonlyMap<string, WaitingSignal>
   );
 }
 
-function NoMatches({ onClear }: { onClear: () => void }) {
+/**
+ * WHAT AN EMPTY TABLE SAYS, and the whole point is that it is TWO different sentences.
+ *
+ * A tab holding nothing and a search that matched nothing are different facts with different
+ * answers, and the old copy gave the second one to both. On a brand whose Client review was simply
+ * empty it read "No blogs match this search" under an untouched search box and offered to clear
+ * filters that were not set, which reads as a broken control rather than as an empty shelf.
+ *
+ * `filtering` is the discriminator, and it is the SAME term the footer counts by, so the two can
+ * never tell an operator different stories about one list.
+ */
+function EmptyTab({
+  tab,
+  filtering,
+  onClear,
+}: {
+  tab: BlogTab;
+  filtering: boolean;
+  onClear: () => void;
+}) {
+  if (filtering) {
+    return (
+      <div className="px-4 py-12 text-center">
+        <p className="text-sm text-muted-foreground">
+          No blogs in {BLOG_TAB_LABELS[tab]} match this search.
+        </p>
+        <Button variant="outline" size="sm" className="mt-3" onClick={onClear}>
+          Clear search
+        </Button>
+      </div>
+    );
+  }
   return (
     <div className="px-4 py-12 text-center">
-      <p className="text-sm text-muted-foreground">No blogs match this search.</p>
-      <Button variant="outline" size="sm" className="mt-3" onClick={onClear}>
-        Clear filters
-      </Button>
+      <p className="text-sm font-medium">{EMPTY_TAB_TITLE[tab]}</p>
+      <p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-muted-foreground">
+        {EMPTY_TAB_BODY[tab]}
+      </p>
     </div>
   );
 }
+
+/** Each tab's empty shelf, named by what has not happened yet rather than by an absence. */
+const EMPTY_TAB_TITLE: Record<BlogTab, string> = {
+  new: "Nothing to generate",
+  internal: "Nothing on the bench",
+  client: "Nothing with the client",
+  published: "Nothing published yet",
+};
+
+/** What the operator does about it, in one sentence, naming the tab that holds the next act. */
+const EMPTY_TAB_BODY: Record<BlogTab, string> = {
+  new: "Every roadmap row for this month already has a blog behind it.",
+  internal:
+    "A blog lands here the moment the engine scores it. Generate one from New, or look in Client review for the ones already sent.",
+  client:
+    "Nothing has been sent for this month. Tick a blog in Internal review and press Send to client.",
+  published:
+    "A blog lands here once it is pushed to the CMS. Approved ones waiting for that push are in Client review.",
+};
 
 function NoBlogs({
   brandName,
