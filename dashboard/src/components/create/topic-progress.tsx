@@ -91,32 +91,8 @@ export function TopicProgress({
 
       <TopicClock topic={topic} now={now} />
 
-      <div className="mt-3 grid grid-cols-5 gap-1.5">
-        {SEGMENTS.map((segment) => {
-          const state = topic.segments[segment];
-          return (
-            <div key={segment}>
-              <div
-                className={cn(
-                  "h-1.5 rounded-full",
-                  state === "done" && "bg-primary",
-                  // The active stage breathes rather than crawls: it says "working", not
-                  // "this far along". Reduced motion drops it to a flat tint.
-                  state === "active" && "animate-pulse bg-primary/45 motion-reduce:animate-none",
-                  state === "pending" && "bg-border",
-                )}
-              />
-              <p
-                className={cn(
-                  "machine mt-1 text-[0.625rem] leading-none",
-                  state === "pending" ? "text-muted-foreground/60" : "text-muted-foreground",
-                )}
-              >
-                {segment}
-              </p>
-            </div>
-          );
-        })}
+      <div className="mt-3">
+        <StageMarks topic={topic} />
       </div>
 
       <ScoreTrail topic={topic} />
@@ -144,6 +120,48 @@ export function TopicProgress({
         <TerminalActions topic={topic} blogsHref={blogsHref} onRetry={onRetry} />
       ) : null}
     </li>
+  );
+}
+
+/**
+ * THE FIVE STAGE MARKS, extracted so the queue's expanded row can draw them too.
+ *
+ * Extracted rather than reusing TopicProgress whole, and the reason is HTML: TopicProgress's root
+ * is an `<li>` because the Overview's session card renders it inside a `<ul>`, and an `<li>` inside
+ * the queue's `<td>` is invalid. The marks, the clock and the trail are the parts both surfaces
+ * want; the list item, the terminal actions and the retry button are not.
+ *
+ * Still not a progress bar, for every reason the note at the top of this file gives.
+ */
+export function StageMarks({ topic }: { topic: TopicRun }) {
+  return (
+    <div className="grid grid-cols-5 gap-1.5">
+      {SEGMENTS.map((segment) => {
+        const state = topic.segments[segment];
+        return (
+          <div key={segment}>
+            <div
+              className={cn(
+                "h-1.5 rounded-full",
+                state === "done" && "bg-primary",
+                // The active stage breathes rather than crawls: it says "working", not
+                // "this far along". Reduced motion drops it to a flat tint.
+                state === "active" && "animate-pulse bg-primary/45 motion-reduce:animate-none",
+                state === "pending" && "bg-border",
+              )}
+            />
+            <p
+              className={cn(
+                "machine mt-1 text-[0.625rem] leading-none",
+                state === "pending" ? "text-muted-foreground/60" : "text-muted-foreground",
+              )}
+            >
+              {segment}
+            </p>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -289,7 +307,7 @@ function TerminalActions({
  *
  * Rendered with the arrow glyph, never a dash of any kind, per house style.
  */
-function ScoreTrail({ topic }: { topic: TopicRun }) {
+export function ScoreTrail({ topic }: { topic: TopicRun }) {
   const entries = [...topic.scores.entries()].sort((a, b) => a[0] - b[0]);
 
   if (entries.length === 0) {

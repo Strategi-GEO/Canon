@@ -68,7 +68,6 @@ export function SelectState({
   embedded = false,
   queueing = false,
   onUploaded,
-  onWatch,
   onStarted,
 }: {
   brandSlug: string;
@@ -122,7 +121,6 @@ export function SelectState({
   queueing?: boolean;
   /** An article was uploaded against one row: the caller refetches the roadmap and the blogs. */
   onUploaded: () => void;
-  onWatch: () => void;
   /** sessionInstructions is what the operator typed in the Generate dialog, "" when they skipped. */
   onStarted: (runId: string, seeds: Seed[], sessionInstructions: string) => void;
 }) {
@@ -460,14 +458,16 @@ export function SelectState({
                 <CircleDot className="size-3.5 shrink-0" aria-hidden />A run is live for{" "}
                 {brandName}
               </p>
+              {/* THE BUTTON IS GONE BECAUSE ITS DESTINATION IS. "Watch the run" opened a separate
+                  panel that reported the same run the queue at the bottom of this tab reports,
+                  with its own counts and its own clock. There is one queue now, it is on this
+                  page already, and every row of it expands to that blog's stage trail. */}
               <p className="mt-1 text-xs text-muted-foreground">
                 Its topics are yellow below and cannot be picked again. Everything else stays
-                selectable, and the engine starts each one as a slot frees.
+                selectable, and the engine starts each one as a slot frees. The queue at the
+                bottom of this tab shows what each one is doing.
               </p>
             </div>
-            <Button variant="outline" size="sm" onClick={onWatch}>
-              Watch the run
-            </Button>
           </CardContent>
         </Card>
       ) : null}

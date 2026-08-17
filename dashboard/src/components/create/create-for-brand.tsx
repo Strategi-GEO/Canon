@@ -4,13 +4,11 @@ import * as React from "react";
 import { useSearchParams } from "next/navigation";
 import { ApiError, api } from "@/lib/api";
 import { SelectState } from "@/components/create/select-state";
-import { WatchState } from "@/components/create/watch-state";
-import { seedsFor, useRunStream, type Seed } from "@/components/create/use-run-stream";
-import { liveTopicSlugs } from "@/components/create/row-status";
+import { seedsFor, type Seed } from "@/components/create/use-run-stream";
 import { isBelowBar } from "@/lib/blog-score";
 import { brandHref } from "@/lib/orgs-context";
 import { useRuns } from "@/lib/runs-context";
-import { factsBuildOf, useFactsGen } from "@/lib/use-facts-gen";
+import { useFactsGen } from "@/lib/use-facts-gen";
 import { hasEnded, isLive, runStateOf } from "@/lib/sessions";
 import type { BlogSummary, RoadmapResponse, RunState } from "@/types";
 
@@ -41,8 +39,6 @@ type LiveRun = {
    */
   sessionInstructions: string;
 };
-
-const NO_SEEDS: Seed[] = [];
 
 /**
  * Everything that belongs to one BRAND: its roadmap, its selection, its run.
@@ -88,7 +84,6 @@ export function CreateForBrand({
   const [blogs, setBlogs] = React.useState<BlogSummary[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [run, setRun] = React.useState<LiveRun | null>(null);
-  const [watching, setWatching] = React.useState(false);
   /**
    * A retry sends topics back to the roadmap ticked. The token forces a remount of the select
    * view, which is what lets its selection state start from these slugs: an effect that
@@ -111,7 +106,6 @@ export function CreateForBrand({
     // Token increments off the previous one so it stays unique and forces the select view to
     // remount with the row pre-ticked, exactly as the in-tab retry's Date.now() token does.
     setRetry((prev) => ({ token: (prev?.token ?? 0) + 1, slugs: [retryParam] }));
-    setWatching(false);
   }
 
   /**
@@ -137,18 +131,11 @@ export function CreateForBrand({
    */
   const factsGen = useFactsGen(brandSlug);
 
-  // The stream is held HERE rather than inside the live view, because the roadmap needs it
-  // too: a topic in flight has to read as yellow on the table, and it has to be true while
-  // the operator is looking at the table rather than the run.
-  //
-  // It stays attached while the run is QUEUED, which the Overview card deliberately does not
-  // do, because this view owes the roadmap something that card does not: a queued run's topics
-  // are in_flight to the engine (app.py gates that on `live`, which is true from POST), so
-  // their rows must stay locked or the operator ticks them again and earns a 409. The feed on
-  // a queued run is silent and harmless: app.py streams from each topic's status.jsonl, which
-  // does not exist yet, so it sends heartbeats and nothing else. What must not happen is this
-  // view DESCRIBING that silence as work, and WatchState branches on `state` so it does not.
-  const stream = useRunStream(run?.runId ?? null, run?.seeds ?? NO_SEEDS);
+  /* NO SSE STREAM LIVES HERE ANY MORE. This component used to hold one so the roadmap could
+     tint in-flight rows, and the queue table below it now streams the very same runs to draw
+     their stage trails. Two subscribers to one run is exactly what queue-table.tsx refused to
+     allow, and it was right. The tint reads off the run poll's per-topic `terminal` flag
+     instead, which is the same field the engine's own 409 guard uses. See `live` below. */
 
   // The engine is an external system, so this subscribes to it and writes state from the
   // settled callback rather than synchronously inside an effect body.
@@ -253,7 +240,6 @@ export function CreateForBrand({
       // view shows the brand instructions alone, and each blog's dossier carries this run's.
       sessionInstructions: "",
     });
-    setWatching(true);
   }
 
   /**
@@ -282,7 +268,7 @@ export function CreateForBrand({
   // forever on a brand that halted, and the run list is the only thing that knows. Without this
   // arm a stop would leave every row on this roadmap locked yellow permanently, and the operator
   // could not resubmit the very topics the stop exists to hand back to them.
-  const finished = stream.finished || (run !== null && hasEnded(run.state));
+  const finished = run !== null && hasEnded(run.state);
 
   // A finished run moved the ledger and wrote blogs to disk, so the roadmap's
   // already_generated flags and the failed set are both stale. Re-read them, which is what
@@ -295,9 +281,30 @@ export function CreateForBrand({
     void loadBlogs();
   }, [finished, reloadRoadmap, loadBlogs]);
 
+  /**
+   * The rows to lock yellow, READ OFF THE RUN POLL rather than off an SSE stream of our own.
+   *
+   * This used to be `liveTopicSlugs(stream.topics, finished)`, which meant this component held a
+   * second subscription to the very run the queue table below it streams. Two subscribers to one
+   * run is what queue-table refused to allow for years, and it was right: the same frames folded
+   * twice is two clocks that can disagree.
+   *
+   * The run poll already carries the answer. `mark_topic_terminal` sets `terminal` the instant a
+   * topic's session settles, and it is the same field server/app.py's own 409 guard reads to
+   * decide what is in flight, so a row locked from it is locked on exactly the condition that
+   * would refuse a resubmit. A topic still queued has no terminal flag and stays locked, which is
+   * correct: the engine holds it, and ticking it again earns the 409.
+   */
   const live = React.useMemo(
-    () => liveTopicSlugs(stream.topics, finished),
-    [stream.topics, finished],
+    () =>
+      new Set(
+        runs
+          .filter((r) => r.kind !== "repurpose" && isLive(r) && r.client === brandSlug)
+          .flatMap((r) => r.topics)
+          .filter((t) => t.terminal !== true)
+          .map((t) => t.topic_slug),
+      ),
+    [runs, brandSlug],
   );
   // A failed blog inside the below-bar band is a near miss rather than a plain failure:
   // split by the same isBelowBar the Blogs tab tag uses, so its row wears the yellow "below bar"
@@ -323,42 +330,17 @@ export function CreateForBrand({
     [blogs],
   );
 
-  if (run && watching) {
-    return (
-      <WatchState
-        runId={run.runId}
-        state={run.state}
-        brandInstructions={brandInstructions}
-        sessionInstructions={run.sessionInstructions}
-        // Resolved against THIS run's id, so a build the engine still holds from an earlier run
-        // cannot put a live phase over a run that is past it.
-        factsBuild={factsBuildOf(run.runId, factsGen.job)}
-        submittedAt={run.submittedAt}
-        runningSince={run.runningSince}
-        /* Straight off the engine's record rather than folded into local run state: the phase
-           flips exactly once per run, and the record poll is what reports it. Null until the
-           poll lands or from an engine that predates the field, which the clock reads as the
-           old single timer. */
-        phase={record?.phase ?? null}
-        phaseStarted={record?.phase_started ?? null}
-        stream={stream}
-        blogsHref={brandHref(orgSlug, brandSlug, "/blogs")}
-        onBack={() => {
-          setWatching(false);
-          // The ledger moves while a run is going, so the flags on screen are already stale.
-          void reloadRoadmap();
-          void loadBlogs();
-        }}
-        onRetry={(topicSlug) => {
-          setRetry({ token: Date.now(), slugs: [topicSlug] });
-          setWatching(false);
-          void reloadRoadmap();
-          void loadBlogs();
-        }}
-      />
-    );
-  }
-
+  /* THE WATCHING VIEW IS GONE, AND THE PICK LIST IS THE ONLY BODY THIS TAB HAS.
+   *
+   * A run used to replace this component with WatchState: a second header, a second set of
+   * counts, a second clock and a second per-topic list, sitting directly above a queue table
+   * that was already reporting the same run. Two queues describing one engine, disagreeing about
+   * how many blogs were running, is what this removes.
+   *
+   * What that panel uniquely carried has a home: the counts and the clock are on the queue's own
+   * header, the per-topic stage trail is inside the row that names the topic, and the outcome of
+   * a finished blog is what the other three tabs of this page are for. Retry keeps both its
+   * doors, `?retry=<slug>` from a blog's own page and a failed row being tickable right here. */
   return (
     <SelectState
       key={`${roadmap?.upload_id ?? "no-roadmap"}:${retry?.token ?? 0}`}
@@ -405,7 +387,6 @@ export function CreateForBrand({
         void reloadRoadmap();
         void loadBlogs();
       }}
-      onWatch={() => setWatching(true)}
       onStarted={(runId, seeds, sessionInstructions) => {
         // QUEUED, not running, and that is not a guess: runner.py's register_run marks every
         // run queued at the instant the POST lands, and only a free slot promotes it. On an
@@ -431,7 +412,6 @@ export function CreateForBrand({
         // answers with until the instant one begins. Asking again is what turns the live view
         // into the facts phase rather than an empty topic list that reads as a stall.
         factsGen.recheck();
-        setWatching(true);
       }}
     />
   );

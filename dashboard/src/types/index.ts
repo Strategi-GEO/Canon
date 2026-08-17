@@ -519,6 +519,14 @@ export type RunTopic = {
    */
   source_topic_slug?: string;
   channel?: RepurposeChannel;
+  /**
+   * Set by runner.mark_topic_terminal the instant this topic's session settles, and the ONE
+   * per-topic fact the run poll carries: everything else on a RunTopic describes the run.
+   * Absent while the topic is still in flight, and absent on every frame written before the
+   * field existed, so absent reads as false. server/app.py's own 409 guard reads it the same
+   * way, which is why it is safe to tint a roadmap row from it.
+   */
+  terminal?: boolean;
 };
 
 export type RepurposeChannel = "linkedin" | "medium";

@@ -368,6 +368,115 @@ export function useRunStream(runId: string | null, seeds: Seed[]): StreamState {
   return { topics: state.topics, finished: state.finished, reconnecting: state.reconnecting };
 }
 
+/** The key both the queue table and this hook agree on: a topic slug is unique per BRAND. */
+export function topicKey(brandSlug: string, topicSlug: string): string {
+  return `${brandSlug}/${topicSlug}`;
+}
+
+/**
+ * EVERY LIVE RUN'S FRAMES AT ONCE, for the one queue.
+ *
+ * The queue is repo-wide by design (TOPIC_SEMAPHORE admits GEO_CONCURRENCY blogs across every
+ * brand), so it spans several runs and `useRunStream`, which is one run, cannot serve it. This
+ * opens one EventSource per live run and folds them all into ONE map through `applyEvent`, so
+ * every row reads its stage, iteration, score trail and note from the same code the watch view
+ * used, rather than from a second interpretation of the same frames.
+ *
+ * NO SEEDS, AND THAT IS THE DESIGN. `useRunStream` needs them because it must name a topic
+ * before its first frame; here the ABSENCE of an entry is itself the answer, and it is the
+ * honest one: a topic writes no status line until its session opens, which happens only after
+ * `await TOPIC_SEMAPHORE.acquire()`, so "no frames yet" means "not admitted yet" means QUEUED.
+ * The rows come from the run poll, which already names every accepted topic, so nothing is lost.
+ *
+ * The cost, stated: a topic admitted a second ago whose CLI has not yet written its first line
+ * counts as queued until it does. `/api/queue` knows exactly, and it is admin-only, needs a
+ * second poll, and carries no stage, no iteration and no score, so it cannot draw a single thing
+ * this map is for.
+ *
+ * ponytail: one socket per live run, capped at MAX_QUEUE_STREAMS. Browsers allow ~6 per origin
+ * over HTTP/1.1 and uvicorn is HTTP/1.1, so an uncapped fleet could starve the /api/runs poll
+ * these rows are built from. When it bites, the fix is one repo-wide GET /api/events on the
+ * engine: _event_stream and _TopicTail already do this work per run.
+ */
+const MAX_QUEUE_STREAMS = 4;
+
+export function useQueueStreams(runIds: readonly string[]): ReadonlyMap<string, TopicRun> {
+  const wanted = runIds.slice(0, MAX_QUEUE_STREAMS);
+  // The effect keys on the CONTENT of the list, not its identity: a poll every four seconds
+  // hands back a fresh array every time, and an identity dep would tear down and reopen every
+  // socket on each poll, replaying the whole history four times a second.
+  const key = wanted.join(",");
+  const [state, setState] = React.useState<{ key: string; topics: ReadonlyMap<string, TopicRun> }>(
+    () => ({ key, topics: new Map() }),
+  );
+
+  // Adjusting state DURING RENDER when the run set changes, which is React's own answer to a
+  // prop change that invalidates state and the same thing useRunStream does above. It matters
+  // here for two reasons: the last run ending must drop its frames rather than leave a finished
+  // queue on screen forever, and an effect that cleared instead would be a setState in an effect
+  // body, which cascades a render every time the poll changes the set.
+  if (state.key !== key) {
+    setState({ key, topics: new Map() });
+  }
+
+  const setTopics = React.useCallback(
+    (update: (current: ReadonlyMap<string, TopicRun>) => ReadonlyMap<string, TopicRun>) => {
+      setState((current) => ({ ...current, topics: update(current.topics) }));
+    },
+    [],
+  );
+
+  React.useEffect(() => {
+    const ids = key === "" ? [] : key.split(",");
+    if (ids.length === 0 || HOSTED_READONLY) {
+      return;
+    }
+
+    const sources: EventSource[] = [];
+    // Per SOURCE, because the engine replays a run's whole history on every reconnect and two
+    // runs can legitimately carry an identical line for different topics.
+    const seen = new Set<string>();
+
+    for (const runId of ids) {
+      const source = new EventSource(api.eventsUrl(runId));
+      source.addEventListener("status", (message: MessageEvent<string>) => {
+        if (seen.has(message.data)) {
+          return;
+        }
+        seen.add(message.data);
+        let e: StatusEvent;
+        try {
+          e = JSON.parse(message.data) as StatusEvent;
+        } catch {
+          return;
+        }
+        setTopics((current) => {
+          const next = new Map(current);
+          const k = topicKey(e.slug, e.topic_slug);
+          next.set(
+            k,
+            applyEvent(
+              current.get(k) ??
+                blank({ topicSlug: e.topic_slug, label: e.topic_slug, roadmapIndex: null }),
+              e,
+            ),
+          );
+          return next;
+        });
+      });
+      sources.push(source);
+    }
+
+    return () => {
+      for (const source of sources) {
+        source.close();
+      }
+    };
+  }, [key, setTopics]);
+
+  return state.topics;
+}
+
 /**
  * Counts for the closing summary and the live header. Derived from status, never from the
  * stage reached.

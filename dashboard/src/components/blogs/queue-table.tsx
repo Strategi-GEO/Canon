@@ -25,23 +25,29 @@ import {
 } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ApiError, api } from "@/lib/api";
-import { formatCount, formatRelative } from "@/lib/format";
+import { formatCount, formatElapsed, formatRelative } from "@/lib/format";
 import { useOrgs } from "@/lib/orgs-context";
 import { useRuns } from "@/lib/runs-context";
 import { cn } from "@/lib/utils";
-import type { RunSummary } from "@/types";
+import { StatusBadge } from "@/components/shell/status-badge";
+import { ScoreTrail, StageMarks } from "@/components/create/topic-progress";
+import { useNow } from "@/components/create/use-now";
+import { topicKey, useQueueStreams, type TopicRun } from "@/components/create/use-run-stream";
+import { isLive } from "@/lib/sessions";
+
+/** Where a topic sits. Derived from ITS OWN frames, never from the run that carries it. */
+type Phase = "running" | "queued" | "finished";
 
 /** One topic the engine is working on or owes work to. */
 type QueueRow = {
   key: string;
   brandSlug: string;
   topicSlug: string;
-  /** True once the engine reports the run running rather than queued. */
-  running: boolean;
+  phase: Phase;
+  /** Its own stage feed, or null while it is still behind the semaphore. */
+  run: TopicRun | null;
   /** When the operator submitted, for the waiting clock. */
   submitted: string;
-  /** When the engine picked the run up, or null while queued. */
-  startedRunning: string | null;
   /** This brand's, so the operator can tell their own rows from the ones ahead of them. */
   mine: boolean;
 };
@@ -91,6 +97,27 @@ export function QueueTable({
     return map;
   }, [orgs]);
 
+  /**
+   * The live blog runs this table streams. Repurpose runs are excluded here for the same reason
+   * their rows are: their topic slugs are synthetic and the per-topic stop route cannot reach
+   * them, so a socket for one would buy frames nothing renders.
+   */
+  const liveRunIds = React.useMemo(
+    () =>
+      runs
+        .filter((run) => run.kind !== "repurpose" && isLive(run))
+        // This brand's first, so the cap inside useQueueStreams drops somebody else's run before
+        // it drops the one the operator is standing in front of.
+        .sort(
+          (a, b) =>
+            Number(b.client === brandSlug) - Number(a.client === brandSlug) ||
+            a.started.localeCompare(b.started),
+        )
+        .map((run) => run.run_id),
+    [runs, brandSlug],
+  );
+  const streamed = useQueueStreams(liveRunIds);
+
   const rows = React.useMemo<QueueRow[]>(() => {
     const out: QueueRow[] = [];
     for (const run of runs) {
@@ -102,26 +129,67 @@ export function QueueTable({
         continue;
       }
       for (const topic of run.topics) {
+        const key = topicKey(run.client, topic.topic_slug);
+        /**
+         * THE PHASE COMES FROM THE TOPIC'S OWN FRAMES, and this is the fix.
+         *
+         * It used to read `runStateIsRunning(run)`, a RUN-level flag fanned onto every topic the
+         * run carried, so ten topics under one running batch all read "Running" while five of
+         * them were parked on the semaphore: the header said "10 running, 0 waiting" over an
+         * engine holding exactly five slots. mark_running flips once, on the run's FIRST slot,
+         * and runner.py says so itself.
+         *
+         * No entry means no status line, and a topic writes none until its session opens, which
+         * happens only after `await TOPIC_SEMAPHORE.acquire()`. So absence IS queued.
+         */
+        const streamedRun = streamed.get(key) ?? null;
+        const phase: Phase =
+          streamedRun === null
+            ? "queued"
+            : streamedRun.status === "running"
+              ? "running"
+              : "finished";
         out.push({
-          key: `${run.client}/${topic.topic_slug}`,
+          key,
           brandSlug: run.client,
           topicSlug: topic.topic_slug,
-          running: runStateIsRunning(run),
+          phase,
+          run: streamedRun,
           submitted: run.started,
-          startedRunning: run.started_running ?? null,
           mine: run.client === brandSlug,
         });
       }
     }
-    // Running first, then this brand's, then by submit time: what is moving matters most, and
-    // among the rest an operator cares about their own before somebody else's.
+    // Running first, then queued, then what has landed; within each, this brand's before
+    // somebody else's, then by submit time. What is moving matters most.
+    const rank: Record<Phase, number> = { running: 0, queued: 1, finished: 2 };
     return out.sort(
       (a, b) =>
-        Number(b.running) - Number(a.running) ||
+        rank[a.phase] - rank[b.phase] ||
         Number(b.mine) - Number(a.mine) ||
         a.submitted.localeCompare(b.submitted),
     );
-  }, [runs, brandSlug]);
+  }, [runs, brandSlug, streamed]);
+
+  const running = rows.filter((row) => row.phase === "running").length;
+  const queued = rows.filter((row) => row.phase === "queued").length;
+  const finished = rows.filter((row) => row.phase === "finished").length;
+
+  /**
+   * ONE CLOCK, AND IT MEASURES THE OLDEST BLOG STILL RUNNING.
+   *
+   * There is no single run here to time. The queue is repo-wide and spans several runs whose
+   * topics start at different moments, so a run-level elapsed would be a number about one of
+   * them printed over all of them. The oldest running topic is the honest summary of "how long
+   * has the engine been on this", it is the row an operator scans for anyway, and every row
+   * carries its own clock beside it.
+   */
+  const oldestStart = rows.reduce<string | null>((acc, row) => {
+    const at = row.phase === "running" ? row.run?.startedAt ?? null : null;
+    return at !== null && (acc === null || at < acc) ? at : acc;
+  }, null);
+  // Ticks only while something is running: a settled queue's clock is a duration, not a timer.
+  const now = useNow(running > 0);
 
   if (rows.length === 0) {
     return null;
@@ -159,15 +227,35 @@ export function QueueTable({
     }
   }
 
-  const runningCount = rows.filter((row) => row.running).length;
-
   return (
     <div className="mt-6">
       <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <h3 className="text-sm font-medium text-foreground">Queue</h3>
+        {/* THE LINE THE WATCH PANEL USED TO CARRY, now over the one queue that remains. Same
+            three clauses and the same rule for them: a clause whose count is zero is omitted
+            rather than printed as a zero, because "0 finished" is noise on a run that has only
+            just started. The repo-wide qualifier stays, because it is the answer to the question
+            this table exists for: the blog ahead of yours often belongs to another brand. */}
         <p className="machine text-xs text-muted-foreground">
-          {formatCount(runningCount)} running, {formatCount(rows.length - runningCount)} waiting,
-          across every brand
+          <span className="text-foreground">{formatCount(running)}</span> running
+          {queued > 0 ? (
+            <>
+              , <span className="text-foreground">{formatCount(queued)}</span> queued
+            </>
+          ) : null}
+          {finished > 0 ? (
+            <>
+              , <span className="text-foreground">{formatCount(finished)}</span> finished
+            </>
+          ) : null}{" "}
+          of <span className="text-foreground">{formatCount(rows.length)}</span>, across every
+          brand
+          {oldestStart !== null && now !== null ? (
+            <>
+              {" "}
+              <span aria-hidden>&middot;</span> {formatElapsed(oldestStart, now)} elapsed
+            </>
+          ) : null}
         </p>
       </div>
       <Card className="overflow-hidden p-0">
@@ -181,8 +269,12 @@ export function QueueTable({
               <TableHead className="machine w-44 text-xs font-medium text-muted-foreground">
                 Brand
               </TableHead>
-              <TableHead className="machine w-28 text-xs font-medium text-muted-foreground">
-                State
+              {/* STAGE, NOT STATE. "Running" was the same word on every moving row and told an
+                  operator nothing they could not already see from the spinner; which of the five
+                  stages a blog is on is the fact they are actually watching for, and research
+                  sitting still for minutes is the normal case they need to be able to read. */}
+              <TableHead className="machine w-32 text-xs font-medium text-muted-foreground">
+                Stage
               </TableHead>
               <TableHead className="machine w-32 text-xs font-medium text-muted-foreground">
                 Since
@@ -232,64 +324,63 @@ export function QueueTable({
                       )}
                     </TableCell>
                     <TableCell className="py-2.5">
-                      {row.running ? (
-                        <span className="inline-flex items-center gap-1.5 text-xs text-foreground">
-                          <Loader2
-                            className="size-3 animate-spin motion-reduce:animate-none"
-                            aria-hidden
-                          />
-                          Running
-                        </span>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">Queued</span>
-                      )}
+                      <StageCell row={row} />
                     </TableCell>
                     <TableCell className="machine py-2.5 text-xs text-muted-foreground">
-                      {formatRelative(row.startedRunning ?? row.submitted)}
+                      <RowClock row={row} now={now} />
                     </TableCell>
                     <TableCell
                       className="py-2.5"
                       onClick={(event) => event.stopPropagation()}
                     >
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="size-8 text-muted-foreground hover:text-fail"
-                              disabled={busy !== null}
-                              onClick={() =>
-                                // A QUEUED TOPIC NEEDS NO CONFIRM. Nothing has been spent on it
-                                // and putting it back is one press, so a dialog would be a
-                                // question with only one sensible answer. A running one is the
-                                // opposite and always asks.
-                                row.running ? setPending(row) : void stop(row)
-                              }
-                            >
-                              {busy === row.key ? (
-                                <Loader2 className="animate-spin" aria-hidden />
-                              ) : (
-                                <X aria-hidden />
-                              )}
-                              <span className="sr-only">
-                                {row.running ? "Stop" : "Remove from the queue"} {row.topicSlug}
-                              </span>
-                            </Button>
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          {row.running
-                            ? "Stop this session"
-                            : "Remove from the queue. It has not started, so nothing is lost."}
-                        </TooltipContent>
-                      </Tooltip>
+                      {/* NOTHING TO STOP ON A TOPIC THAT HAS LANDED. The engine holds no slot and
+                          no queue entry for it, so stop_topic answers 404, and a control whose
+                          only outcome is an error is worse than no control. It could not be
+                          hidden before this change, because every row claimed to be running. */}
+                      {row.phase === "finished" ? null : (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="size-8 text-muted-foreground hover:text-fail"
+                                disabled={busy !== null}
+                                onClick={() =>
+                                  // A QUEUED TOPIC NEEDS NO CONFIRM. Nothing has been spent on it
+                                  // and putting it back is one press, so a dialog would be a
+                                  // question with only one sensible answer. A running one is the
+                                  // opposite and always asks. This warning is only now correct:
+                                  // it used to fire on genuinely queued rows, telling an operator
+                                  // a costless withdrawal would throw away real work.
+                                  row.phase === "running" ? setPending(row) : void stop(row)
+                                }
+                              >
+                                {busy === row.key ? (
+                                  <Loader2 className="animate-spin" aria-hidden />
+                                ) : (
+                                  <X aria-hidden />
+                                )}
+                                <span className="sr-only">
+                                  {row.phase === "running" ? "Stop" : "Remove from the queue"}{" "}
+                                  {row.topicSlug}
+                                </span>
+                              </Button>
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {row.phase === "running"
+                              ? "Stop this session"
+                              : "Remove from the queue. It has not started, so nothing is lost."}
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
                     </TableCell>
                   </TableRow>
                   {expanded ? (
                     <TableRow className="hover:bg-transparent">
                       <TableCell colSpan={6} className="bg-muted/30 py-3 whitespace-normal">
-                        <QueueRowDetail row={row} />
+                        <QueueRowDetail row={row} now={now} />
                       </TableCell>
                     </TableRow>
                   ) : null}
@@ -345,16 +436,81 @@ export function QueueTable({
 }
 
 /**
- * What one expanded row shows.
+ * The stage the blog is actually on, in the column that used to say "Running" on every row.
  *
- * A QUEUED TOPIC HAS NO PROGRESS TO DRAW and saying so is the honest thing: it has not started,
- * so an empty stage trail would read as a session that has stalled. A running one gets the stage
- * feed, which arrives on the run's own SSE stream rather than from this table, so the detail is
- * deliberately thin here: the watch view owns that stream, and opening two subscriptions to the
- * same run from two components is how a page ends up with two disagreeing clocks.
+ * A queued topic has no stage, and saying "research" over one that has not started would be the
+ * same class of lie the old State column told. It says what is true instead: it is waiting.
  */
-function QueueRowDetail({ row }: { row: QueueRow }) {
-  if (!row.running) {
+function StageCell({ row }: { row: QueueRow }) {
+  if (row.phase === "queued") {
+    return <span className="text-xs text-muted-foreground">Queued</span>;
+  }
+  if (row.phase === "finished") {
+    return <StatusBadge status={row.run?.status ?? "done"} />;
+  }
+  const stage = row.run?.stage ?? null;
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs text-foreground">
+      <Loader2 className="size-3 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden />
+      {/* Between a stage's end frame and the next stage's start frame nothing is open, which is
+          why TopicRun holds `stage` separately from `segments`. Null only before the first frame
+          of a topic that has just been admitted. */}
+      <span className="machine">{stage ?? "starting"}</span>
+      {row.run !== null && row.run.iter > 1 ? (
+        <span
+          className="machine rounded border border-border bg-muted px-1 py-0.5 text-[0.625rem] leading-none text-muted-foreground"
+          title={`Revise iteration ${row.run.iter} of a maximum 4`}
+        >
+          iter {row.run.iter}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * THIS TOPIC'S OWN CLOCK, which is what the column always claimed to be showing.
+ *
+ * It used to render the RUN's `started_running`, the instant its FIRST topic took a slot, so a
+ * topic still parked on the semaphore displayed a clock a sibling had started, and every row of
+ * a ten-topic run read the same age. Three phases, three measurements, none of them borrowed.
+ */
+function RowClock({ row, now }: { row: QueueRow; now: Date | null }) {
+  if (now === null) {
+    // Pre-mount: elapsed must not render during SSR, and a fixed cell keeps the row from
+    // resizing when it arrives.
+    return <span className="inline-block h-4" aria-hidden />;
+  }
+  if (row.phase === "queued") {
+    return <span>waiting {formatElapsed(row.submitted, now)}</span>;
+  }
+  const startedAt = row.run?.startedAt ?? null;
+  if (startedAt === null) {
+    return <span>{formatRelative(row.submitted)}</span>;
+  }
+  if (row.phase === "finished") {
+    const endedAt = row.run?.endedAt ?? null;
+    // Frozen at the terminal frame, so a landed blog reports the duration it actually took
+    // rather than ticking upward forever after the work stopped.
+    return <span>took {formatElapsed(startedAt, endedAt !== null ? new Date(endedAt) : now)}</span>;
+  }
+  return <span>{formatElapsed(startedAt, now)}</span>;
+}
+
+/**
+ * What one expanded row shows: the progress the watch panel used to draw, per blog, here.
+ *
+ * THE OLD OBJECTION IS GONE AND THAT IS WHY THIS CAN EXIST. This used to be two sentences of
+ * prose, refusing to draw the stage trail because "the watch view owns that stream, and opening
+ * two subscriptions to the same run from two components is how a page ends up with two
+ * disagreeing clocks". There is no watch view now: this table is the only subscriber, so there
+ * is one stream, one clock, and one place a blog's progress is reported.
+ *
+ * A QUEUED TOPIC STILL HAS NO PROGRESS TO DRAW, and an empty five-stage trail over one would
+ * read as a session that has stalled rather than one that has not begun.
+ */
+function QueueRowDetail({ row, now }: { row: QueueRow; now: Date | null }) {
+  if (row.run === null) {
     return (
       <p className="text-xs leading-relaxed text-muted-foreground">
         Waiting for a slot. The engine runs a fixed number of blogs at once across every brand, so
@@ -363,17 +519,53 @@ function QueueRowDetail({ row }: { row: QueueRow }) {
       </p>
     );
   }
-  return (
-    <p className="text-xs leading-relaxed text-muted-foreground">
-      Running since{" "}
-      <span className="machine">{formatRelative(row.startedRunning ?? row.submitted)}</span>. The
-      engine writes each stage to this topic&apos;s own status feed as it happens, so you can leave
-      this page and come back: nothing here is holding the run open.
-    </p>
-  );
-}
 
-/** The engine's own word for whether a run has been picked up, defaulting to queued. */
-function runStateIsRunning(run: RunSummary): boolean {
-  return run.state === "running";
+  const topic = row.run;
+  const settled = row.phase === "finished";
+  const end = settled && topic.endedAt !== null ? new Date(topic.endedAt) : now;
+
+  return (
+    <div className="max-w-3xl">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <p className="machine flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+          {/* The two clocks TopicProgress carries, for the reason it gives: total elapsed answers
+              "how long has this blog taken", and the stage clock answers "is it stuck?", which
+              total elapsed cannot, because research legitimately runs for minutes. */}
+          {end !== null && topic.startedAt !== null ? (
+            <>
+              {!settled && topic.stage !== null && topic.stageSince !== null ? (
+                <>
+                  <span className="text-foreground">{topic.stage}</span>
+                  <span>for {formatElapsed(topic.stageSince, end)}</span>
+                  <span aria-hidden>&middot;</span>
+                </>
+              ) : null}
+              <span>{formatElapsed(topic.startedAt, end)} total</span>
+            </>
+          ) : null}
+        </p>
+        <div className="flex shrink-0 items-center gap-2">
+          {topic.iter > 1 ? (
+            <span
+              className="machine rounded border border-border bg-muted px-1.5 py-0.5 text-[0.6875rem] leading-none text-muted-foreground"
+              title={`Revise iteration ${topic.iter} of a maximum 4`}
+            >
+              iter {topic.iter}
+            </span>
+          ) : null}
+          <StatusBadge status={topic.status} />
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <StageMarks topic={topic} />
+      </div>
+
+      <ScoreTrail topic={topic} />
+
+      {topic.note ? (
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{topic.note}</p>
+      ) : null}
+    </div>
+  );
 }
