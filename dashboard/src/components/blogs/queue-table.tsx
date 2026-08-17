@@ -43,6 +43,18 @@ type QueueRow = {
   key: string;
   brandSlug: string;
   topicSlug: string;
+  /**
+   * Its row on the sheet the RUN WAS ACCEPTED AGAINST, one-based, which is the same number the
+   * blogs table prints in its own "#". Null on a topic the run carries no index for.
+   *
+   * The run's own index is the right source HERE and is the wrong one elsewhere. seedsFor refuses
+   * it and says why: an index means something only inside the sheet it came from, and the sheet on
+   * screen is often not the sheet a run started from, so a number read across the two can point at
+   * an unrelated topic. This table shows LIVE runs only, and a live run's sheet is the one it was
+   * dispatched from moments ago. What it must never do is match a topic BY that index, which is
+   * how seedsFor's defect worked; this only prints it beside a row already identified by slug.
+   */
+  label: number | null;
   phase: Phase;
   /** Its own stage feed, or null while it is still behind the semaphore. */
   run: TopicRun | null;
@@ -153,6 +165,7 @@ export function QueueTable({
           key,
           brandSlug: run.client,
           topicSlug: topic.topic_slug,
+          label: typeof topic.index === "number" ? topic.index + 1 : null,
           phase,
           run: streamedRun,
           submitted: run.started,
@@ -160,14 +173,25 @@ export function QueueTable({
         });
       }
     }
-    // Running first, then queued, then what has landed; within each, this brand's before
-    // somebody else's, then by submit time. What is moving matters most.
-    const rank: Record<Phase, number> = { running: 0, queued: 1, finished: 2 };
+    /**
+     * BY "#", ALWAYS, AND THE POINT IS THAT A ROW NEVER MOVES.
+     *
+     * This used to sort by phase, running first, then queued, then landed. Every topic therefore
+     * JUMPED THE LENGTH OF THE TABLE the moment it took a slot, and again when it finished, so the
+     * one list an operator watches rearranged itself under them precisely when something happened.
+     * Sorting by the sheet's own number gives each topic a fixed home for the life of the run: the
+     * stage cell changes in place, and nothing else moves.
+     *
+     * A topic with no number sorts last rather than as zero, which would put an unnumbered row
+     * ahead of row one. Brand breaks ties, because two brands both have a "#1" and the numbers
+     * would otherwise shuffle between polls; the slug settles it after that, so the order is total
+     * and stable rather than left to the sort's own tie behaviour.
+     */
     return out.sort(
       (a, b) =>
-        rank[a.phase] - rank[b.phase] ||
-        Number(b.mine) - Number(a.mine) ||
-        a.submitted.localeCompare(b.submitted),
+        (a.label ?? Number.MAX_SAFE_INTEGER) - (b.label ?? Number.MAX_SAFE_INTEGER) ||
+        a.brandSlug.localeCompare(b.brandSlug) ||
+        a.topicSlug.localeCompare(b.topicSlug),
     );
   }, [runs, brandSlug, streamed]);
 
@@ -263,6 +287,11 @@ export function QueueTable({
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <TableHead className="w-8" />
+              {/* No sort control on it, because the table has exactly one order and this column
+                  IS that order. An arrow here would offer to change something that cannot change. */}
+              <TableHead className="machine w-12 text-xs font-medium text-muted-foreground">
+                #
+              </TableHead>
               <TableHead className="machine text-xs font-medium text-muted-foreground">
                 Topic
               </TableHead>
@@ -307,6 +336,11 @@ export function QueueTable({
                         )}
                         aria-hidden
                       />
+                    </TableCell>
+                    <TableCell className="machine py-2.5 text-xs text-muted-foreground">
+                      {/* The same number the blogs table prints, so "blog 6" and "queue row 6"
+                          are one topic. A dash where the run carries no index for the row. */}
+                      {row.label ?? "-"}
                     </TableCell>
                     <TableCell className="max-w-0 py-2.5">
                       <span className="block truncate text-sm text-foreground">
@@ -379,7 +413,7 @@ export function QueueTable({
                   </TableRow>
                   {expanded ? (
                     <TableRow className="hover:bg-transparent">
-                      <TableCell colSpan={6} className="bg-muted/30 py-3 whitespace-normal">
+                      <TableCell colSpan={7} className="bg-muted/30 py-3 whitespace-normal">
                         <QueueRowDetail row={row} now={now} />
                       </TableCell>
                     </TableRow>

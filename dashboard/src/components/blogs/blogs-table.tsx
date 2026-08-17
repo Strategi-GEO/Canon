@@ -90,7 +90,12 @@ export function BlogsTable<T extends BlogTableRow>({
   sortDir: SortDir;
   /** The row the keyboard is on. Highlighted, and the only row in the tab order. */
   activeSlug: string | null;
-  onSort: (key: SortKey) => void;
+  /**
+   * Omitted where the table cannot be reordered. The New tab is the case: its rows ARE the sheet,
+   * the sheet's order is the "#" column, and it used to pass a function that did nothing, so every
+   * header wore a control that looked live, clicked, and changed not one row.
+   */
+  onSort?: (key: SortKey) => void;
   /** The blog's own page. The title is a real link, so cmd-click and middle-click work. */
   hrefFor: (blog: T) => string;
   /** The whole-row click, which the parent routes to the same page. */
@@ -130,11 +135,13 @@ export function BlogsTable<T extends BlogTableRow>({
    * and delete is one of them. The client portal passes nothing, so its table has no checkboxes
    * and no controls at all, which is the same shape it had before.
    *
-   * There is no per-row `selectable` predicate on purpose. EVERY row can be ticked, because
-   * eligibility is a property of the ACT and not of the selection: the same blog can be
-   * downloadable and unsendable at once, so a checkbox that tried to encode "can this be acted
-   * on" would have to pick one act to be about. The bulk bar computes an eligible subset per
-   * action and says what it will touch.
+   * `disabled` BELOW IS NARROW, AND THE RULE IT NARROWS STILL STANDS. Eligibility is normally a
+   * property of the ACT and not of the selection: the same blog can be downloadable and
+   * unsendable at once, so a checkbox encoding "can this be acted on" would have to pick one act
+   * to be about, which is why the bulk bar computes an eligible subset per action and says what
+   * it will touch. The New tab is the exception because it has exactly ONE act. Generate, and the
+   * engine answers 409 for a topic it already holds, so there ticking is not choosing between
+   * acts, it is asking for the only one and being refused.
    */
   selection?: {
     selected: ReadonlySet<string>;
@@ -670,9 +677,26 @@ export function SortableHead<K extends string>({
   column: K;
   sortKey: K;
   sortDir: SortDir;
-  onSort: (key: K) => void;
+  /**
+   * Omitted where the table has ONE order and cannot be reordered, which is the New tab: its rows
+   * are the sheet, the sheet's order is the "#" column, and there is nothing to sort them into.
+   * It used to be passed a function that did nothing, so every header wore a control that looked
+   * live, clicked, and changed not one row.
+   */
+  onSort?: (key: K) => void;
   className?: string;
 }) {
+  // A plain label, not a disabled button: there is no sort to offer, so nothing should suggest
+  // one is being withheld.
+  if (onSort === undefined) {
+    return (
+      <TableHead
+        className={cn("machine text-xs font-medium text-muted-foreground", className)}
+      >
+        {label}
+      </TableHead>
+    );
+  }
   const active = sortKey === column;
   const Icon = !active ? ChevronsUpDown : sortDir === "asc" ? ArrowUp : ArrowDown;
   return (

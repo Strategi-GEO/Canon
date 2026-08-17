@@ -610,7 +610,9 @@ export function SelectState({
             sortKey="roadmap"
             sortDir="asc"
             activeSlug={null}
-            onSort={() => {}}
+            /* No onSort: this table has one order, the sheet's, and the "#" column IS that order.
+               It used to be handed a no-op, so every header rendered a sort control that clicked
+               and did nothing. */
             /* A FAILED ROW OPENS ITS BLOG, because there is one: the run wrote a draft, an
                evaluator may have scored it, and reading that is how an operator decides between
                running it again and sending it as it stands. A row with no article opens nothing,
