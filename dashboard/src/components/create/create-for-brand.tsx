@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ApiError, api } from "@/lib/api";
 import { SelectState } from "@/components/create/select-state";
 import { seedsFor, type Seed } from "@/components/create/use-run-stream";
@@ -79,6 +79,7 @@ export function CreateForBrand({
   /** A blog run is already live anywhere, so this submit will queue. Relabels Generate. */
   queueing?: boolean;
 }) {
+  const router = useRouter();
   const [roadmap, setRoadmap] = React.useState<RoadmapResponse | null>(null);
   const [roadmapError, setRoadmapError] = React.useState<ApiError | null>(null);
   const [blogs, setBlogs] = React.useState<BlogSummary[]>([]);
@@ -356,6 +357,12 @@ export function CreateForBrand({
       // prop: a component that derives its own routes can point at the wrong brand.
       roadmapHref={brandHref(orgSlug, brandSlug, "/roadmap")}
       resourcesHref={brandHref(orgSlug, brandSlug, "/resources")}
+      blogHref={(topicSlug) =>
+        `${brandHref(orgSlug, brandSlug, "/blogs")}/${encodeURIComponent(topicSlug)}`
+      }
+      onOpenBlog={(topicSlug) =>
+        router.push(`${brandHref(orgSlug, brandSlug, "/blogs")}/${encodeURIComponent(topicSlug)}`)
+      }
       brandInstructions={brandInstructions}
       hasCanonicalFacts={hasCanonicalFacts}
       resourceCount={resourceCount}

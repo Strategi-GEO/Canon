@@ -53,6 +53,8 @@ export function SelectState({
   newBlogHref,
   roadmapHref,
   resourcesHref,
+  blogHref,
+  onOpenBlog,
   hasCanonicalFacts,
   resourceCount,
   roadmap,
@@ -82,6 +84,10 @@ export function SelectState({
   roadmapHref: string;
   /** The Resources tab, where the fact base warning below sends an operator who has none. */
   resourcesHref: string;
+  /** One blog's stage page. Only a failed row uses it: the rest have no article to open. */
+  blogHref: (topicSlug: string) => string;
+  /** Navigate to that page. The route owns routing, exactly as it owns every URL here. */
+  onOpenBlog: (topicSlug: string) => void;
   /**
    * Whether this brand already has a canonical-facts.md, from the client record the route
    * already holds. False means this run builds one first, before any blog.
@@ -157,18 +163,30 @@ export function SelectState({
   );
 
   /**
-   * THE ROWS THE NEW TAB SHOWS: the ones with no article behind them.
+   * THE ROWS THE NEW TAB SHOWS: everything a run could still be asked for.
    *
-   * A topic that has been written lives on another tab now, by the partition in lib/blog-tabs.ts:
-   * a scored draft is Internal review, and anything the client can see is Client review. So
-   * `generated`, `needs_review`, `failed` and `below_bar` all leave this list, and what remains is
-   * a topic nothing has written (`ready`), one the sheet cannot write (`incomplete`), and one a
-   * run owns right now (`in_progress`).
+   * A FAILURE STAYS ON THE SHEET, by the operator's own instruction: "if anything fails, keep it
+   * in the roadmap itself so I can select all in one place rather than having to select from
+   * different places". Rerunning is one act over one list, and a run of ten that lost four is
+   * four ticks and one press here, not a hunt across tabs.
    *
-   * RETRY THEREFORE MOVES with those rows. `failed` and `below_bar` used to be selectable HERE so
-   * a near miss could be re-run from the pick list, and they are not on this tab any more, so the
-   * bulk bar on Internal review carries Retry instead. Leaving them here as well would put one
-   * blog on two tabs, which is exactly what the partition exists to prevent.
+   * An earlier draft of this filter dropped `failed` and `below_bar` on the ground that a blog
+   * must live on exactly one tab, and promised Retry would appear on Internal review's bulk bar
+   * instead. That bar was never built, so the rows left this list and arrived nowhere: a topic
+   * that died with no score files under `new` by the partition and was represented here by a
+   * roadmap row this very filter had just removed. `moving-from-1d-barcodes-to-gs1-digital-link`
+   * sat on no tab in the app with a 2509 word draft committed against it.
+   *
+   * THE PARTITION IS NOT VIOLATED, because these are two different lists of two different things.
+   * The tabs partition ARTICLES; this is the SHEET, and a roadmap row is a plan for a topic
+   * whether or not an article exists for it. A below-bar blog appearing here as a row to re-run
+   * and on Internal review as a draft to read and send is one topic offered two acts, in the two
+   * places each act belongs.
+   *
+   * `generated` and `needs_review` stay out and are unchanged: the first is a blog the engine
+   * refuses to write twice, and the second is held for an answer, so neither is a row anyone can
+   * ask a run for. isSelectable already agreed with all of this: it has always returned true for
+   * `failed` and `below_bar` and false for those two.
    *
    * Unembedded (the standalone Create page, still reachable until the redirect lands) keeps every
    * row, so nothing about that surface changes while both exist.
@@ -186,9 +204,29 @@ export function SelectState({
         return true;
       }
       const state = resolveRowState(row, facts);
-      return state === "ready" || state === "incomplete" || state === "in_progress";
+      return (
+        state === "ready" ||
+        state === "incomplete" ||
+        state === "in_progress" ||
+        state === "failed" ||
+        state === "below_bar"
+      );
     });
   }, [embedded, rows, facts, preselectSlugs]);
+
+  /**
+   * Each shown row's state, resolved ONCE for the table below, which needs it twice: for the tag
+   * it prints and for whether the row opens anything. Hardcoding "not_generated" was right while
+   * this list held only unwritten topics and would now print "Not generated" over a blog that
+   * demonstrably ran.
+   */
+  const stateOfRow = React.useMemo(() => {
+    const map = new Map<string, ReturnType<typeof resolveRowState>>();
+    for (const row of shownRows) {
+      map.set(row.topic_slug, resolveRowState(row, facts));
+    }
+    return map;
+  }, [shownRows, facts]);
 
   /**
    * BlogsTable keys its selection by SLUG and this component keys its by row INDEX, because the
@@ -534,17 +572,34 @@ export function SelectState({
             }))}
             columns="brief"
             waiting={NO_WAITING}
-            // Every row here is a topic with no article, which is the one state blogState can
-            // never derive. See blog-state.ts: the New tab supplies it for rows it invents.
-            stateOf={() => "not_generated"}
+            /* A row with no article is `not_generated`, the one state blogState cannot derive
+               (see blog-state.ts: this tab supplies it for rows it invents). A row whose run
+               ENDED FAILED says so, because it did run, and a sheet that reported "Not generated"
+               over a topic with a draft on disk would be the plainest lie on the page. */
+            stateOf={(blog) => {
+              const state = stateOfRow.get(blog.topic_slug);
+              return state === "failed" || state === "below_bar" ? "failed" : "not_generated";
+            }}
             sortKey="roadmap"
             sortDir="asc"
             activeSlug={null}
             onSort={() => {}}
-            hrefFor={() => roadmapHref}
-            // Nothing to open: there is no article yet. The row's own controls are its checkbox
-            // and its upload button.
-            onOpen={() => {}}
+            /* A FAILED ROW OPENS ITS BLOG, because there is one: the run wrote a draft, an
+               evaluator may have scored it, and reading that is how an operator decides between
+               running it again and sending it as it stands. A row with no article opens nothing,
+               exactly as before. */
+            hrefFor={(blog) => {
+              const state = stateOfRow.get(blog.topic_slug);
+              return state === "failed" || state === "below_bar"
+                ? blogHref(blog.topic_slug)
+                : roadmapHref;
+            }}
+            onOpen={(blog) => {
+              const state = stateOfRow.get(blog.topic_slug);
+              if (state === "failed" || state === "below_bar") {
+                onOpenBlog(blog.topic_slug);
+              }
+            }}
             selection={{
               selected: new Set(
                 shownRows.filter((r) => selected.has(r.index)).map((r) => r.topic_slug),
