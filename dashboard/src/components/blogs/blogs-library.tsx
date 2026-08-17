@@ -671,6 +671,56 @@ function Library({
             queueing={anyRunLive}
           />
         ) : null}
+
+        {/* THE TOPICS THAT RAN AND LEFT NO SCORED DRAFT, which live in this tab by the partition
+            and had nowhere to be drawn.
+
+            blogTab files a topic under `new` when hasDraft is false, meaning no evaluator ever
+            scored it: a run that died, was stopped mid write, or broke before its first eval. The
+            intent was that its ROADMAP ROW represents it here, and that holds only while the brand
+            has a roadmap on disk. A sheet uploaded for one run is archived rather than saved, so a
+            brand can run ten topics and still have no row for any of them, and then these blogs
+            appear on no tab at all. One of them had a 2509 word draft committed as version 1.
+
+            They are a SECOND table rather than rows folded into the pick list above, because the
+            two lists answer different questions: that one is topics with no article, this one is
+            articles with no verdict. Opening one reaches the draft the run did write, and
+            generating the topic again is the other door. */}
+        {!error && byTab.new.length > 0 ? (
+          <div className="mt-6">
+            <div className="mb-2">
+              <h3 className="text-sm font-medium text-foreground">Ran without a verdict</h3>
+              <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+                No evaluator scored these, so there is nothing to review and nothing to send. Open
+                one to read whatever it wrote, or pick the topic above and generate it again.
+              </p>
+            </div>
+            <Card className="overflow-hidden p-0">
+              <BlogsTable
+                blogs={byTab.new}
+                waiting={waiting}
+                stateOf={blogState}
+                sortKey={url.sortKey}
+                sortDir={url.sortDir}
+                // ITS OWN TAB STOP, the first row. BlogsTable gives one roving tabindex per table
+                // and hands every other row -1, so passing null here would leave this table with
+                // no reachable link at all. j and k stay bound to the tab's main list, which this
+                // is not; Tab reaches this table and enter opens the row.
+                activeSlug={byTab.new[0]?.topic_slug ?? null}
+                onSort={url.setSort}
+                hrefFor={(blog) => blogHref(blog.topic_slug)}
+                onOpen={(blog) => {
+                  setPicked(blog.topic_slug);
+                  router.push(blogHref(blog.topic_slug));
+                }}
+                // No selection: every bulk act is a send, a push or a delete, and the first two
+                // need a scored draft this table is defined by the absence of. Deleting one is on
+                // its own page, where the operator can see what they are throwing away.
+              />
+            </Card>
+          </div>
+        ) : null}
+
         {/* UNDER the pick list, because the reading order is "what could I start" then "what is
             already going". It renders nothing at all when the engine is idle, so an operator with
             no runs sees the table they came for and no empty shell below it. */}
