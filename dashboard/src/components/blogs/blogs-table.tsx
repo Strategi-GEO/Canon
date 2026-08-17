@@ -150,6 +150,13 @@ export function BlogsTable<T extends BlogTableRow>({
      * nothing, which is what a table without it did.
      */
     onSelectRange?: (topicSlugs: readonly string[]) => void;
+    /**
+     * Rows a tick may NOT reach, so the checkbox renders disabled rather than merely ignoring
+     * the click. The New tab passes it for a topic the engine already holds: a run owns it, a
+     * second request earns a 409, and a checkbox that ticks and then quietly does nothing is
+     * worse than one that plainly cannot be ticked. Absent means every row is selectable.
+     */
+    disabled?: (topicSlug: string) => boolean;
   };
   /**
    * WHICH COLUMNS. "full" is the written-blog set. "brief" is the New tab, whose rows are roadmap
@@ -174,12 +181,22 @@ export function BlogsTable<T extends BlogTableRow>({
   const admin = audience === "admin" && columns === "full";
   const brief = columns === "brief";
   const shownSlugs = blogs.map((blog) => blog.topic_slug);
+  /**
+   * The rows select-all can actually reach, which is what its own checked state must be read
+   * from. Counting locked rows would leave the header box permanently unchecked on a tab holding
+   * one topic the engine already owns, and "select all" would then look broken every time it had
+   * in fact selected everything it is allowed to.
+   */
+  const reachableSlugs =
+    selection?.disabled === undefined
+      ? shownSlugs
+      : shownSlugs.filter((slug) => selection.disabled?.(slug) !== true);
   const allSelected =
-    selection !== undefined && shownSlugs.length > 0 &&
-    shownSlugs.every((slug) => selection.selected.has(slug));
+    selection !== undefined && reachableSlugs.length > 0 &&
+    reachableSlugs.every((slug) => selection.selected.has(slug));
   const someSelected =
     selection !== undefined && !allSelected &&
-    shownSlugs.some((slug) => selection.selected.has(slug));
+    reachableSlugs.some((slug) => selection.selected.has(slug));
 
   /**
    * The last row whose checkbox was clicked, and the shift flag from the click that is happening
@@ -312,6 +329,7 @@ export function BlogsTable<T extends BlogTableRow>({
             href={hrefFor(blog)}
             onOpen={onOpen}
             selected={selection ? selection.selected.has(blog.topic_slug) : null}
+            selectDisabled={selection?.disabled?.(blog.topic_slug) === true}
             onSelect={selection ? () => clickRow(blog.topic_slug) : undefined}
             onSelectMouseDown={
               selection
@@ -341,6 +359,7 @@ function Row<T extends BlogTableRow>({
   onOpen,
   selected,
   onSelect,
+  selectDisabled = false,
   onSelectMouseDown,
   columns,
   action,
@@ -366,6 +385,8 @@ function Row<T extends BlogTableRow>({
   /** Ticked, unticked, or null where this table has no selection at all (the client portal). */
   selected: boolean | null;
   onSelect?: () => void;
+  /** The row is shown but locked: the checkbox renders disabled. See selection.disabled. */
+  selectDisabled?: boolean;
   /** Records the shift key before Radix's change handler reads it. See the anchor in the parent. */
   onSelectMouseDown?: (event: React.MouseEvent) => void;
   columns: "full" | "brief";
@@ -404,6 +425,7 @@ function Row<T extends BlogTableRow>({
         <TableCell className="py-2.5" onClick={(event) => event.stopPropagation()}>
           <Checkbox
             checked={selected}
+            disabled={selectDisabled}
             onClick={onSelectMouseDown}
             onCheckedChange={() => onSelect?.()}
             aria-label={`Select ${blog.topic}`}

@@ -228,6 +228,7 @@ export function SelectState({
     return map;
   }, [shownRows, facts]);
 
+
   /**
    * BlogsTable keys its selection by SLUG and this component keys its by row INDEX, because the
    * engine's generate body names rows by index and the parser leaves gaps in them. One map each
@@ -257,6 +258,24 @@ export function SelectState({
     },
   );
 
+  /**
+   * WHAT GENERATE WOULD ACTUALLY RUN: the ticks, narrowed to rows a run can still be asked for.
+   *
+   * DERIVED, NEVER PRUNED, which is the same rule the Blogs tab's own selection follows. A tick
+   * is the operator's; what changes underneath it is the engine's. The instant a submit is
+   * accepted those rows become `in_progress` and drop out of this set on their own, so the count
+   * falls, the button disables when nothing is left, and no effect has to race the poll to
+   * rewrite state the operator set. It also covers the case the operator named: tick eight, four
+   * of them already queued, and only the four that are not go.
+   */
+  const runnable = React.useMemo(
+    () => new Set([...selected].filter((index) => {
+      const row = rows.find((r) => r.index === index);
+      return row !== undefined && eligible(row);
+    })),
+    [selected, rows, eligible],
+  );
+
   const scrollTo = React.useCallback((index: number) => {
     const node = rowRefs.current.get(index);
     if (!node) {
@@ -278,7 +297,7 @@ export function SelectState({
 
     const session = sessionInstructions.trim();
     const body: GenerateBody = {
-      rows: [...selected].sort((a, b) => a - b),
+      rows: [...runnable].sort((a, b) => a - b),
       // The engine re-reads the archived upload instead of trusting rows the browser sends
       // back, so upload_id has to survive from the upload all the way to this submit. Drop
       // it and the engine scores a different sheet than the one on screen. A roadmap loaded
@@ -292,6 +311,12 @@ export function SelectState({
 
     try {
       const accepted = await api.generate(brandSlug, body);
+      // THE TICKS GO THE MOMENT THE ENGINE TAKES THEM. `runnable` above would empty on its own
+      // once the run poll reports these topics in flight, but that is up to four seconds away,
+      // and for those four seconds the operator sees the rows they just submitted still ticked
+      // under a button that still says it will run them. Cleared only on SUCCESS: a 409 or a 422
+      // ran nothing, and the duplicate banner below exists precisely to act on ticks that stayed.
+      setSelected(new Set());
       onStarted(accepted.run_id, seedsFor(accepted.topics, rows), session);
     } catch (cause) {
       const apiError =
@@ -318,7 +343,7 @@ export function SelectState({
     } finally {
       setSubmitting(false);
     }
-  }, [brandSlug, onStarted, rows, scrollTo, selected, uploadId]);
+  }, [brandSlug, onStarted, rows, runnable, scrollTo, setSelected, uploadId]);
 
   /**
    * A brand with no fact base AND no resources gets the question first. Both halves matter: the
@@ -362,7 +387,9 @@ export function SelectState({
     [needsFactBase, generate],
   );
 
-  const canGenerate = !submitting && selected.size > 0;
+  // Disabled when nothing ticked CAN run, not merely when nothing is ticked: a selection made
+  // entirely of topics the engine already holds is a press that could only earn a 409.
+  const canGenerate = !submitting && runnable.size > 0;
   const modLabel = useModLabel();
 
   // The roadmap is a keyboard surface: tab to a row, space to tick, and submit without
@@ -602,11 +629,22 @@ export function SelectState({
             }}
             selection={{
               selected: new Set(
-                shownRows.filter((r) => selected.has(r.index)).map((r) => r.topic_slug),
+                shownRows.filter((r) => runnable.has(r.index)).map((r) => r.topic_slug),
               ),
+              // A topic a run already owns is shown and locked: the engine answers 409 for it,
+              // so the box cannot be ticked rather than ticking and quietly doing nothing.
+              disabled: (slug) => {
+                const row = shownRows.find((r) => r.topic_slug === slug);
+                return row === undefined || !eligible(row);
+              },
               onToggle: (slug) => {
                 const index = indexOfSlug.get(slug);
-                if (index !== undefined) toggle(index, false);
+                const row = shownRows.find((r) => r.topic_slug === slug);
+                // ELIGIBILITY IS CHECKED HERE TOO, and it was the one path that skipped it.
+                // onToggleAll and onSelectRange below both refuse a locked row; a single click
+                // did not, so a topic the engine already holds could be ticked, counted by
+                // Generate, and sent, where it earns a 409 the operator never asked for.
+                if (index !== undefined && row && eligible(row)) toggle(index, false);
               },
               onToggleAll: (slugs) => {
                 const reachable = shownRows.filter(
@@ -681,7 +719,7 @@ export function SelectState({
           </div>
           <div className="flex shrink-0 items-center gap-3">
             <SelectionSummary
-              selectedCount={selected.size}
+              selectedCount={runnable.size}
               selectableCount={selectable.length}
               brandName={brandName}
             />
@@ -715,7 +753,7 @@ export function SelectState({
         onOpenChange={setSessionOpen}
         brandName={brandName}
         brandInstructions={brandInstructions}
-        selectedCount={selected.size}
+        selectedCount={runnable.size}
         onConfirm={proceed}
       />
 
