@@ -331,6 +331,24 @@ export function CreateForBrand({
     [blogs],
   );
 
+  /**
+   * THE RECORDS THEMSELVES, not another set derived from them.
+   *
+   * The four sets above answer "is this row in this bucket", which was enough while the pick list
+   * drew two chips. It draws the real tag now, and a tag needs the SCORE and the STATUS, which a
+   * Set<string> has thrown away by construction: `adminFailedTag(null)` cannot say "Below bar", so
+   * an 87 the Blogs tab called a near miss read a flat red "Failed" here, and a STOPPED blog fell
+   * through every bucket and read "Not generated" over a draft with four iterations on disk. One
+   * blog, three vocabularies, on one page.
+   *
+   * blog-state.ts exists to be the single answer to "what state is this blog in", so the pick list
+   * is handed the same record the Blogs tab folds and calls the same blogState on it.
+   */
+  const blogBySlug = React.useMemo(
+    () => new Map(blogs.map((b) => [b.topic_slug, b])),
+    [blogs],
+  );
+
   /* THE WATCHING VIEW IS GONE, AND THE PICK LIST IS THE ONLY BODY THIS TAB HAS.
    *
    * A run used to replace this component with WatchState: a second header, a second set of
@@ -377,6 +395,7 @@ export function CreateForBrand({
       failed={failed}
       belowBar={belowBar}
       needsReview={needsReview}
+      blogBySlug={blogBySlug}
       // Not knowing is different from knowing there is no run, and the difference matters: a
       // live run this view missed leaves rows selectable that the engine will refuse. Say so
       // rather than imply an idle brand. The engine stays the backstop either way, since it

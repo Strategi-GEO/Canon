@@ -39,6 +39,7 @@ import type {
   RoadmapGenJob,
   RoadmapMonthsResponse,
   RepurposeArtifact,
+  QueueState,
   RepurposeBody,
   RepurposeChannel,
   RepurposeListing,
@@ -607,6 +608,12 @@ export const api = {
     ),
 
   runs: (signal?: AbortSignal) => request<RunsResponse>("/api/runs", { signal }),
+
+  /**
+   * The engine's slot table. Admin only, in-process, no database. Read beside runs() by the
+   * queue view, which cannot learn who is running from SSE alone (see QueueState).
+   */
+  queue: (signal?: AbortSignal) => request<QueueState>("/api/queue", { signal }),
 
   /**
    * Stops every live run for ONE brand, and deletes nothing.

@@ -26,6 +26,7 @@ import asyncio
 import json
 import sys
 import tempfile
+import types
 import time
 from pathlib import Path
 
@@ -83,7 +84,17 @@ class _Roots:
             "commit": runner._schedule_commit,
             "approved": runner._approved_refusal,
             "row": runner._row_for_topic,
+            # THE WATCHDOG MAILS NOW, and this suite drives it to a real reclaim on purpose. Left
+            # alone, server/notify.py would claim a row in the PRODUCTION admin_notifications
+            # table and POST to Resend, on any machine that has a key in server/.env: this file's
+            # own header promises it opens no sockets and needs no credential, and CI stays green
+            # only because the runner has no server/.env. Worse than the stray email is the row,
+            # because notify.backfill treats the table as its record of having run, so a test row
+            # can mute the first-run backfill on a real install.
+            "notify": runner.notify,
         }
+        runner.notify = types.SimpleNamespace(
+            slot_reclaimed=lambda *a, **k: None, engine_halted=lambda *a, **k: None)
         runner.OUTPUTS_ROOT = Path(self.tmp.name)
         runner.TOPIC_SEMAPHORE = asyncio.Semaphore(5)
         runner._FACTS_LOCKS.clear()
@@ -129,6 +140,7 @@ class _Roots:
         runner._schedule_commit = self.saved["commit"]
         runner._approved_refusal = self.saved["approved"]
         runner._row_for_topic = self.saved["row"]
+        runner.notify = self.saved["notify"]
         self.tmp.cleanup()
 
 

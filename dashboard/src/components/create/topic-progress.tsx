@@ -133,9 +133,11 @@ export function TopicProgress({
  *
  * Still not a progress bar, for every reason the note at the top of this file gives.
  */
-export function StageMarks({ topic }: { topic: TopicRun }) {
+export function StageMarks({ topic, compact = false }: { topic: TopicRun; compact?: boolean }) {
+  // `compact` drops the per-segment captions for the queue table, where the cell already prints
+  // the current stage by name right above the bar and five more words would just repeat it.
   return (
-    <div className="grid grid-cols-5 gap-1.5">
+    <div className={cn("grid grid-cols-5", compact ? "gap-1" : "gap-1.5")}>
       {SEGMENTS.map((segment) => {
         const state = topic.segments[segment];
         return (
@@ -150,14 +152,16 @@ export function StageMarks({ topic }: { topic: TopicRun }) {
                 state === "pending" && "bg-border",
               )}
             />
-            <p
-              className={cn(
-                "machine mt-1 text-[0.625rem] leading-none",
-                state === "pending" ? "text-muted-foreground/60" : "text-muted-foreground",
-              )}
-            >
-              {segment}
-            </p>
+            {compact ? null : (
+              <p
+                className={cn(
+                  "machine mt-1 text-[0.625rem] leading-none",
+                  state === "pending" ? "text-muted-foreground/60" : "text-muted-foreground",
+                )}
+              >
+                {segment}
+              </p>
+            )}
           </div>
         );
       })}

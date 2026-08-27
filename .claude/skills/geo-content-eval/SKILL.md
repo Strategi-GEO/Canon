@@ -62,7 +62,7 @@ Score each graded dimension on the rubric's 0 to 3 scale, multiply by its weight
 
 There is ONE number, it is 90, and the band is BINARY.
 - **90 to 100 is SHIP.** This is the number the loop ends on, and the first score at or above it is final.
-- **Below 90 is REJECT.** An 89 is a REJECT, not a ship, no matter how close it looks. A run that ends between 85 and 89 is below bar: it resolves failed and reaches a client only if the operator promotes it.
+- **Below 90 is REJECT.** An 89 is a REJECT, not a ship, no matter how close it looks. A run that ends between 80 and 89 is below bar: it resolves failed and reaches a client only if the operator promotes it.
 - Any hard-gate failure is a REJECT regardless of the graded score.
 
 Score the draft honestly and let the engine apply the bands. Never nudge a number to land it in a band, and never report 95, which the scoring math cannot produce.

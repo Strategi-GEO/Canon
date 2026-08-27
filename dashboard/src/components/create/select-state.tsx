@@ -21,8 +21,10 @@ import { formatCount } from "@/lib/format";
 import { ENGINE_SLOTS } from "@/lib/sessions";
 import { RoadmapTable } from "@/components/create/roadmap-table";
 import { BlogsTable } from "@/components/blogs/blogs-table";
+import { blogState } from "@/lib/blog-state";
 import { UploadBlog } from "@/components/blogs/upload-blog";
 import type { WaitingSignal } from "@/components/blogs/questions-state";
+import type { BlogSummary } from "@/types";
 import { NoFactBaseDialog } from "@/components/create/no-fact-base-dialog";
 import { SessionInstructionsDialog } from "@/components/create/session-instructions-dialog";
 import { EngineErrorNote, detailText } from "@/components/create/engine-error";
@@ -64,6 +66,7 @@ export function SelectState({
   failed,
   belowBar,
   needsReview,
+  blogBySlug,
   runsUnavailable,
   liveRunId,
   preselectSlugs,
@@ -107,6 +110,11 @@ export function SelectState({
   belowBar: ReadonlySet<string>;
   /** Topic slugs whose blog is held for the operator's answer (status needs_review). */
   needsReview: ReadonlySet<string>;
+  /**
+   * The brand's real blog records by slug, for rows that HAVE one. The four sets above say which
+   * bucket a row is in; only the record carries the score and status a tag is made of.
+   */
+  blogBySlug: ReadonlyMap<string, BlogSummary>;
   /** True when /api/runs could not be reached, so whether a run is live is unknown. */
   runsUnavailable: boolean;
   /** The live run for this brand, or null. Lets the operator jump back to watching it. */
@@ -588,24 +596,43 @@ export function SelectState({
              blogs-table.tsx: the scope column, the shift-click range and the per-row upload all
              moved there so this tab could use it without losing anything. */
           <BlogsTable
-            blogs={shownRows.map((row) => ({
-              topic: row.topic,
-              topic_slug: row.topic_slug,
-              // A topic nothing has written has no creation stamp, and `brief` renders the scope
-              // column in that slot rather than this value, so it is never read.
-              created: "",
-              roadmap_index: row.index,
-              covers: row.covers,
-            }))}
+            blogs={shownRows.map((row) => {
+              const record = blogBySlug.get(row.topic_slug);
+              return {
+                topic: row.topic,
+                topic_slug: row.topic_slug,
+                // A topic nothing has written has no creation stamp, and `brief` renders the
+                // scope column in that slot rather than this value, so it is never read.
+                created: "",
+                roadmap_index: row.index,
+                covers: row.covers,
+                // THE SCORE IS WHAT SPLITS "Below bar" FROM "Failed", and omitting it is why this
+                // table could only ever say "Failed": BlogsTable builds the chip with
+                // adminFailedTag(blog.score ?? null), and null is never below bar.
+                score: record?.score ?? null,
+              };
+            })}
             columns="brief"
             waiting={NO_WAITING}
             /* A row with no article is `not_generated`, the one state blogState cannot derive
                (see blog-state.ts: this tab supplies it for rows it invents). A row whose run
                ENDED FAILED says so, because it did run, and a sheet that reported "Not generated"
                over a topic with a draft on disk would be the plainest lie on the page. */
+            /* THE SAME ANSWER THE BLOGS TAB GIVES, from the same function over the same
+               record. This used to flatten every row to `failed` or `not_generated`, which is
+               why one blog wore three different chips on one page: 87 read "Below bar" on the
+               Blogs tab and "Failed" here, and a stopped blog read "Stopped" there and "Not
+               generated" here over a draft that had run four iterations. `not_generated` stays
+               the fallback and only that: it is the one state blogState cannot derive, and it is
+               correct exactly when no record exists. */
             stateOf={(blog) => {
-              const state = stateOfRow.get(blog.topic_slug);
-              return state === "failed" || state === "below_bar" ? "failed" : "not_generated";
+              const record = blogBySlug.get(blog.topic_slug);
+              if (record !== undefined) {
+                return blogState(record);
+              }
+              return stateOfRow.get(blog.topic_slug) === "in_progress"
+                ? "generating"
+                : "not_generated";
             }}
             sortKey="roadmap"
             sortDir="asc"

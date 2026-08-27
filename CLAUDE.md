@@ -999,10 +999,10 @@ link-clean AND has no current questions on disk. That score is final. Write the 
 status and stop. 90 ships. 96 ships. No score at or above 90 is borderline, and a better one is
 never worth seeking.
 
-**A draft that ends between 85 and 89 is BELOW BAR, and below bar is not a ship.** It resolves
+**A draft that ends between 80 and 89 is BELOW BAR, and below bar is not a ship.** It resolves
 terminal `failed` exactly as any other sub-90 run does, and it reaches a client only when the
 operator presses send. That is a statement about WHO decides and not a second threshold: the
-engine compares against 90 alone, and nothing in the 85 to 89 range changes what the loop, the
+engine compares against 90 alone, and nothing in the 80 to 89 range changes what the loop, the
 resolver, or the ledger does. The operator reads anything that misses 90 before a client sees it,
 which is the whole point of the choice. The dashboard labels that range "Below bar" so a near miss
 reads differently from an outright failure, and that label is presentation over a terminal status
@@ -1073,7 +1073,7 @@ passing blog WITH a current question is `needs_review`, and that is not a contra
 verdict is ship, the workflow state is held.
 
 ## Reporting
-Per blog, one line: slug, SCORE, iterations, status, links corrected. A score of 85 to 89 beside
+Per blog, one line: slug, SCORE, iterations, status, links corrected. A score of 80 to 89 beside
 status `failed` is a below-bar blog waiting on the operator's send, not a defect. A stopped blog reports
 the last score actually seen or none, the iterations it completed, and status `stopped`; its
 score is never inferred from a loop that did not finish. The lead records only

@@ -303,7 +303,7 @@ change. A real 12-blog run afterwards produced trajectories of 72 to 89 to 88, 8
 to 80, 82 and 73, with ZERO of the twelve ever reaching 95, so every blog was guaranteed to burn
 all four iterations and end failed, which is where the account's usage limit went in two hours.
 Under a bar of 90 the best of them, 89, is one point short and does not ship on its own. **A draft
-that ends between 85 and 89 is BELOW BAR:** it resolves terminal `failed` like any other sub-90 run
+that ends between 80 and 89 is BELOW BAR:** it resolves terminal `failed` like any other sub-90 run
 and reaches a client only when the operator presses send, which is a statement about who decides
 and not a second threshold. The dashboard labels that range "Below bar" so a near miss reads
 differently from an outright failure, over a terminal status that is `failed` in both cases. The evaluator is stateless and its score varies by several points on an identical

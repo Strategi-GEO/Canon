@@ -14,7 +14,7 @@ THE NUMBER IN THAT TABLE IS 90 AND IT IS THE ONLY BAR THE ENGINE HAS. The band i
 same 90 ends the loop, is what the writer aims at, and settles the nothing-to-answer branch here:
 there is no second threshold under any name and no middle band beneath it. 90 is exactly
 attainable, 81 of the 90 available weighted points, which is what makes it a bar a draft can
-actually clear. A blog that ends between 85 and 89 is BELOW BAR: it resolves failed here, and it
+actually clear. A blog that ends between 80 and 89 is BELOW BAR: it resolves failed here, and it
 ships only if the operator reads it and presses send, which is a person's call and never this
 resolver's.
 

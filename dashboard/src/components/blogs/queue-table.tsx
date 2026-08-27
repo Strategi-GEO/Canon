@@ -39,6 +39,67 @@ import { titleFromSlug } from "@/lib/blog-label";
 /** Where a topic sits. Derived from ITS OWN frames, never from the run that carries it. */
 type Phase = "running" | "queued" | "finished";
 
+/**
+ * THE ENGINE'S OWN SLOT TABLE, POLLED, BECAUSE SSE CANNOT ANSWER "WHO IS RUNNING".
+ *
+ * useQueueStreams caps sockets at MAX_QUEUE_STREAMS (4, because browsers allow ~6 per origin over
+ * HTTP/1.1 and the /api/runs poll must not be starved). GEO_CONCURRENCY is 5 here and may be set
+ * higher, so the cap sits UNDER the number of blogs the engine will run at once, and a topic in an
+ * unstreamed run has no frames for a reason that has nothing to do with the semaphore. Reading
+ * that absence as "queued" is what made the header say "3 running" over an engine holding five
+ * slots.
+ *
+ * GET /api/queue is the cure and needs no socket: it reports runner._SLOTS directly, so it knows
+ * every holder whether or not this browser is listening to it. It is used ONLY to fill the gap.
+ * Where frames exist they still win, because they carry the stage and the score this table renders
+ * and the slot table carries neither.
+ *
+ * Same 4s cadence and the same hidden-tab rule as the runs poll, for the same reasons; the
+ * endpoint reads process memory and touches no database. A failed read leaves the last answer
+ * standing rather than blanking it: one dropped request is not the engine going idle.
+ */
+function useSlotKeys(): Set<string> {
+  const [keys, setKeys] = React.useState<Set<string>>(() => new Set());
+  React.useEffect(() => {
+    const controller = new AbortController();
+    let timer = 0;
+    let inFlight = false;
+    function schedule() {
+      window.clearTimeout(timer);
+      if (document.visibilityState === "hidden") return;
+      timer = window.setTimeout(poll, 4000);
+    }
+    function poll() {
+      if (inFlight) return;
+      inFlight = true;
+      api.queue(controller.signal).then(
+        (state) => {
+          inFlight = false;
+          if (controller.signal.aborted) return;
+          setKeys(new Set(state.slots.map((slot) => topicKey(slot.client, slot.topic_slug))));
+          schedule();
+        },
+        () => {
+          inFlight = false;
+          if (controller.signal.aborted) return;
+          schedule();
+        },
+      );
+    }
+    function onVisible() {
+      if (document.visibilityState === "visible") poll();
+    }
+    poll();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+  return keys;
+}
+
 /** One topic the engine is working on or owes work to. */
 type QueueRow = {
   key: string;
@@ -130,6 +191,7 @@ export function QueueTable({
     [runs, brandSlug],
   );
   const streamed = useQueueStreams(liveRunIds);
+  const slotKeys = useSlotKeys();
 
   const rows = React.useMemo<QueueRow[]>(() => {
     const out: QueueRow[] = [];
@@ -154,14 +216,38 @@ export function QueueTable({
          *
          * No entry means no status line, and a topic writes none until its session opens, which
          * happens only after `await TOPIC_SEMAPHORE.acquire()`. So absence IS queued.
+         *
+         * EXCEPT THAT ABSENCE HAS A SECOND CAUSE, AND `terminal` IS WHY IT MUST BE READ FIRST.
+         * The rule above holds only while every live run owns a socket, and useQueueStreams caps
+         * them at MAX_QUEUE_STREAMS. A topic in an unstreamed run therefore has no frames for a
+         * reason that has nothing to do with the semaphore, and reading that as "queued" printed
+         * `Queued, waiting 24m` over a topic that had FAILED twenty minutes earlier, counting up
+         * forever. The same gap ran the other way on a stopped topic: its last delivered frame
+         * said `revise/start`, the `stopped` frame never arrived, and the row advertised a live
+         * write on a session the operator had already killed, under a stop button that then
+         * reported "it never started" because the engine no longer held it.
+         *
+         * `terminal` is the cure because it is not inferred. runner.mark_topic_terminal sets it
+         * the instant a topic's session settles, it rides the same /api/runs poll these rows are
+         * already built from, and server/app.py's 409 guard and create-for-brand's own lock set
+         * read it exactly this way. Deriving the phase from anything weaker is what let one topic
+         * read Queued here and Not generated on the New tab at the same moment.
          */
         const streamedRun = streamed.get(key) ?? null;
+        // Frames first where they exist, then the slot table, then absence. The order is the
+        // whole of the fix: a stream carries the terminal line and the stage, so it outranks a
+        // slot that has not been released yet; the slot table speaks only for the topics no
+        // socket reached, which is exactly the set that used to read "Queued" while running.
         const phase: Phase =
-          streamedRun === null
-            ? "queued"
-            : streamedRun.status === "running"
-              ? "running"
-              : "finished";
+          topic.terminal === true
+            ? "finished"
+            : streamedRun !== null
+              ? streamedRun.status === "running"
+                ? "running"
+                : "finished"
+              : slotKeys.has(key)
+                ? "running"
+                : "queued";
         out.push({
           key,
           brandSlug: run.client,
@@ -194,7 +280,7 @@ export function QueueTable({
         a.brandSlug.localeCompare(b.brandSlug) ||
         a.topicSlug.localeCompare(b.topicSlug),
     );
-  }, [runs, brandSlug, streamed]);
+  }, [runs, brandSlug, streamed, slotKeys]);
 
   const running = rows.filter((row) => row.phase === "running").length;
   const queued = rows.filter((row) => row.phase === "queued").length;
@@ -303,7 +389,7 @@ export function QueueTable({
                   operator nothing they could not already see from the spinner; which of the five
                   stages a blog is on is the fact they are actually watching for, and research
                   sitting still for minutes is the normal case they need to be able to read. */}
-              <TableHead className="machine w-32 text-xs font-medium text-muted-foreground">
+              <TableHead className="machine w-48 text-xs font-medium text-muted-foreground">
                 Stage
               </TableHead>
               <TableHead className="machine w-32 text-xs font-medium text-muted-foreground">
@@ -495,25 +581,54 @@ function StageCell({ row }: { row: QueueRow }) {
     return <span className="text-xs text-muted-foreground">Queued</span>;
   }
   if (row.phase === "finished") {
-    return <StatusBadge status={row.run?.status ?? "done"} />;
+    /**
+     * NEVER GUESS WHICH TERMINAL. This defaulted to "done", which renders as "shipped", and the
+     * default is reached exactly when the row has NO frames: a topic in a run past
+     * MAX_QUEUE_STREAMS, or one whose terminal frame never arrived. So the rows least known to
+     * this table were the ones it congratulated. A blog that failed at research with no score,
+     * and one that ended failed at 87, both read "shipped" beside a queue that offered no way to
+     * remove them, while the sheet above called the same blogs "Failed".
+     *
+     * `terminal` says THAT a topic settled and never WHICH way, so with no frames the honest word
+     * is neither "shipped" nor "failed": it is finished, and the row's own page has the verdict.
+     */
+    if (row.run === null) {
+      return <span className="text-xs text-muted-foreground">Finished</span>;
+    }
+    return <StatusBadge status={row.run.status} />;
   }
   const stage = row.run?.stage ?? null;
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-foreground">
-      <Loader2 className="size-3 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden />
-      {/* Between a stage's end frame and the next stage's start frame nothing is open, which is
-          why TopicRun holds `stage` separately from `segments`. Null only before the first frame
-          of a topic that has just been admitted. */}
-      <span className="machine">{stage ?? "starting"}</span>
-      {row.run !== null && row.run.iter > 1 ? (
-        <span
-          className="machine rounded border border-border bg-muted px-1 py-0.5 text-[0.625rem] leading-none text-muted-foreground"
-          title={`Revise iteration ${row.run.iter} of a maximum 4`}
-        >
-          iter {row.run.iter}
-        </span>
-      ) : null}
-    </span>
+    <div className="flex flex-col gap-1.5">
+      <span className="inline-flex items-center gap-1.5 text-xs text-foreground">
+        <Loader2 className="size-3 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden />
+        {/* Between a stage's end frame and the next stage's start frame nothing is open, which is
+            why TopicRun holds `stage` separately from `segments`.
+
+            NULL HAS TWO CAUSES AND THEY DESERVE DIFFERENT WORDS. With a stream attached, null
+            means the session has opened and its first agent has not announced itself yet, which
+            is genuinely "starting" and now lasts seconds rather than minutes: every agent writes
+            its --event start line as its first action (see _agent_definitions). With NO stream,
+            the row is here because /api/queue reports the engine holding a slot for it, and the
+            slot table carries no stage, so "starting" would be a guess about a blog that may be
+            an hour into its work. "running" is what is actually known. */}
+        <span className="machine">{stage ?? (row.run === null ? "running" : "starting")}</span>
+        {row.run !== null && row.run.iter > 1 ? (
+          <span
+            className="machine rounded border border-border bg-muted px-1 py-0.5 text-[0.625rem] leading-none text-muted-foreground"
+            title={`Revise iteration ${row.run.iter} of a maximum 4`}
+          >
+            iter {row.run.iter}
+          </span>
+        ) : null}
+      </span>
+      {/* THE PROGRESS BAR THE OVERVIEW CARD USED TO CARRY, ON THE ROW ITSELF. It used to require
+          expanding the row, so the one thing an operator opens this table to see was the one
+          thing behind a click. Drawn only where frames exist: an unstreamed row knows the topic
+          holds a slot and nothing about which of the five stages it is on, and five unlit
+          segments over a working blog reads as a stall rather than as missing information. */}
+      {row.run !== null ? <StageMarks topic={row.run} compact /> : null}
+    </div>
   );
 }
 
@@ -560,6 +675,17 @@ function RowClock({ row, now }: { row: QueueRow; now: Date | null }) {
  */
 function QueueRowDetail({ row, now }: { row: QueueRow; now: Date | null }) {
   if (row.run === null) {
+    // A running row with no frames is a slot the engine reported through /api/queue while this
+    // browser had no socket left for its run. It IS spending quota, so it must not be offered the
+    // queued row's "nothing has been spent on it" copy.
+    if (row.phase === "running") {
+      return (
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Running. This browser is not streaming this run, so the stage trail is not available
+          here; the engine reports the slot it holds. Open the blog to read its progress.
+        </p>
+      );
+    }
     return (
       <p className="text-xs leading-relaxed text-muted-foreground">
         Waiting for a slot. The engine runs a fixed number of blogs at once across every brand, so

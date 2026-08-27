@@ -25,6 +25,7 @@ import json
 import os
 import sys
 import tempfile
+import types
 import time
 from pathlib import Path
 
@@ -81,6 +82,14 @@ def _run_topic_with(session_behaviour, retries="1", reset_breaker=True, topic="A
     original_session, original_facts = runner._sdk_session, runner.canonical_facts_path
     runner._sdk_session = session_behaviour
     runner.canonical_facts_path = lambda *a, **k: facts
+    # THE BREAKER MAILS NOW, and this file trips it deliberately, more than once. Left alone,
+    # server/notify.py would claim a row in the PRODUCTION admin_notifications table and POST to
+    # Resend on any machine holding a key in server/.env, which this suite promises it never
+    # does. The row is the worse half: notify.backfill reads that table as its record of having
+    # run, so a row written here can mute the first-run backfill on a real install.
+    original_notify = runner.notify
+    runner.notify = types.SimpleNamespace(
+        engine_halted=lambda *a, **k: None, slot_reclaimed=lambda *a, **k: None)
     old_retries = os.environ.get("GEO_RETRIES")
     os.environ["GEO_RETRIES"] = retries
     try:
@@ -90,6 +99,7 @@ def _run_topic_with(session_behaviour, retries="1", reset_breaker=True, topic="A
     finally:
         runner._sdk_session = original_session
         runner.canonical_facts_path = original_facts
+        runner.notify = original_notify
         if old_retries is None:
             os.environ.pop("GEO_RETRIES", None)
         else:

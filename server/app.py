@@ -47,7 +47,7 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
                                StreamingResponse)
 from pydantic import BaseModel
 
-from . import analysis_gen, auth, blog_edit, blog_upload, client_answers, db, describe, docx_export, facts_gen, ledger, portal_login, report_gen, repurpose, roadmap, roadmap_gen, runner, sync
+from . import analysis_gen, auth, blog_edit, blog_upload, client_answers, db, describe, docx_export, facts_gen, ledger, notify, portal_login, report_gen, repurpose, roadmap, roadmap_gen, runner, sync
 # Aliased: many channel routes take a `channel` path param that would shadow the bare module.
 from . import channel as channel_mod
 # Aliased for the same reason clients is: "questions" is the natural name for the list of
@@ -267,6 +267,23 @@ async def _client_answers_pickup():
         client_answers.run_forever(
             dispatch,
             lambda slug, topic_slug: topic_slug in _live_run_slugs(slug)))
+    _STARTUP_TASKS.add(task)
+    task.add_done_callback(_STARTUP_TASKS.discard)
+
+
+@app.on_event("startup")
+async def _admin_email_notifications():
+    """Poll for the things a CLIENT did and mail the operator about them.
+
+    Separate from the pickup sweep above and deliberately NOT conditional on it: that one is off
+    by default because it spends this machine's quota, while this one only reads and sends mail.
+    The two answer different questions about the same event, and an operator who has not enabled
+    automatic pickup is precisely the operator who needs telling that a rerun is owed.
+
+    server/notify.py turns itself off when the machine has no RESEND_API_KEY, so this is a no-op
+    on every machine that has not configured one.
+    """
+    task = asyncio.create_task(notify.run_forever())
     _STARTUP_TASKS.add(task)
     task.add_done_callback(_STARTUP_TASKS.discard)
 

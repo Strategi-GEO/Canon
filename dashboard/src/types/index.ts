@@ -638,6 +638,29 @@ export type RunsResponse = {
 };
 
 /**
+ * GET /api/queue: the engine's OWN slot table, the only surface that knows which topics hold a
+ * TOPIC_SEMAPHORE slot right now. The queue view needs it because SSE cannot answer the question:
+ * useQueueStreams caps sockets at MAX_QUEUE_STREAMS, which sits under GEO_CONCURRENCY, so a topic
+ * that is genuinely running in an unstreamed run has no frames and used to read "Queued".
+ */
+export type QueueState = {
+  concurrency: number;
+  in_use: number;
+  waiting: number;
+  stall_timeout: number;
+  dispatch_blocked: string | null;
+  silent_deaths: number;
+  slots: {
+    client: string;
+    topic_slug: string;
+    held_seconds: number;
+    since_progress_seconds: number;
+    waited_seconds: number;
+    cancelled: boolean;
+  }[];
+};
+
+/**
  * What DELETE /api/clients/{slug}/runs did, which is always brand-scoped: the operator's choice
  * was "stop everything for that brand", so one press halts every live run they have, and there
  * is no per-run stop to race the queue with.

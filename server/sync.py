@@ -110,6 +110,42 @@ def _client_md_with_market(client_md, market):
     return client_md.rstrip("\n") + "\n\n" + section
 
 
+def _warn_if_clobbering(path, incoming, slug):
+    """Say so, loudly, when the record is about to discard a DIFFERENT file on disk.
+
+    THIS EXISTS BECAUSE A SILENT OVERWRITE COST THREE FAILED RUNS. clients/<slug>/ is a scratch
+    copy: the record is the source of truth and materialize_client rewrites these files
+    unconditionally at the start of every run. An operator who edits gates.json on disk therefore
+    changes nothing, and learns it only when the next run fails for the reason the edit was meant
+    to fix. That is exactly what happened to true-power: gates.json named the brand "True Power",
+    canonical-facts binds the live brand as "Truepower", the entity-anchor gate could never be
+    satisfied, someone corrected the file on disk, the very next run overwrote it from the record
+    at materialize time, and the lead refused again reading the same stale value. Three times.
+
+    THE RECORD STILL WINS, and that is deliberate: agents must read what the app stores, not what
+    a stale scratch directory happens to hold. What changes is that the loss is no longer silent,
+    and the message names the only fix that actually sticks, which is the record and never the
+    path the file lives at.
+
+    Best effort by construction. A materialize that fails here would cost a run its client
+    directory, and a warning is worth strictly less than that.
+    """
+    try:
+        if not path.is_file():
+            return
+        current = path.read_text(encoding="utf-8")
+        if current == incoming:
+            return
+        log.warning(
+            "%s/%s on disk differs from the record and is being overwritten. Edits to "
+            "clients/%s/ NEVER take: this directory is laid down from the record at the start of "
+            "every run. Change the record (the clients table) instead, or the next run reads the "
+            "old value again.",
+            slug, path.name, slug)
+    except Exception:
+        log.debug("could not compare %s against the record", path, exc_info=True)
+
+
 def materialize_client(slug):
     """Lay clients/<slug>/ down from the record.
 
@@ -130,9 +166,9 @@ def materialize_client(slug):
 
     cdir = _client_dir(slug)
     cdir.mkdir(parents=True, exist_ok=True)
-    (cdir / "gates.json").write_text(
-        json.dumps(gates or {}, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8")
+    gates_text = json.dumps(gates or {}, indent=2, ensure_ascii=False) + "\n"
+    _warn_if_clobbering(cdir / "gates.json", gates_text, slug)
+    (cdir / "gates.json").write_text(gates_text, encoding="utf-8")
     if client_md is not None:
         (cdir / "client.md").write_text(
             _client_md_with_market(client_md, market), encoding="utf-8")

@@ -100,7 +100,7 @@ Apply all core writing principles (below). Cite only from the dossier. Use the e
 
 Before the gates, score your own draft against `../geo-content-eval/references/rubric.md`: walk every graded dimension in buckets A, B, C and D, apply the scoring math to your own draft, and fix what would lose points.
 
-**Clear 90, the only bar.** A draft that scores 90 or above ends the evaluation loop at once and ships. Below 90 it does not ship: an 89 is a reject, and a draft that ends between 85 and 89 is below bar, resolving failed and reaching a client only if the operator promotes it. There is no middle band to land in, so write for 90. Then verify against `references/quality-checklist.md` for the items no bucket scores. Confirm separately that every external fact in the draft traces to a verified claim in the dossier and that nothing from the Do Not Claim list slipped in as a fact. Fix any failure before moving on.
+**Clear 90, the only bar.** A draft that scores 90 or above ends the evaluation loop at once and ships. Below 90 it does not ship: an 89 is a reject, and a draft that ends between 80 and 89 is below bar, resolving failed and reaching a client only if the operator promotes it. There is no middle band to land in, so write for 90. Then verify against `references/quality-checklist.md` for the items no bucket scores. Confirm separately that every external fact in the draft traces to a verified claim in the dossier and that nothing from the Do Not Claim list slipped in as a fact. Fix any failure before moving on.
 
 ### Step 7: Run the mechanical gates until they pass
 

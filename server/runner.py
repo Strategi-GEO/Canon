@@ -26,6 +26,7 @@ from pathlib import Path
 
 from . import roadmap
 from . import db
+from . import notify
 from . import sync
 
 log = logging.getLogger("geo.runner")
@@ -367,6 +368,13 @@ def _sweep_slots(now=None):
             log.error(
                 "%s/%s ignored a cancel for %.0fs; releasing its queue slot and failing the topic",
                 slot["client"], slot["topic_slug"], now - slot["cancelled_at"])
+            # This reclaim never reaches Postgres on its own: _fail_line_if_unterminated below
+            # writes to disk with no _schedule_commit, so the record does not learn about it
+            # until the next start reconciles. Mail is the timely signal, and it is sent BEFORE
+            # that write because the write is allowed to fail and the operator still needs
+            # telling that a slot was wedged.
+            notify.slot_reclaimed(
+                slot["client"], slot["topic_slug"], now - slot["progress_at"], now)
             try:
                 out_dir.mkdir(parents=True, exist_ok=True)
                 _fail_line_if_unterminated(
@@ -522,6 +530,11 @@ def _note_silent_death(client_slug, topic_slug, elapsed):
             "blog session will open for %d minutes, or until one writes a status line.",
             _BREAKER["strikes"], _BREAKER["last"], BREAKER_COOLDOWN_SECONDS // 60,
         )
+        # The log line above is the ONLY artifact a trip produces: it writes no status line, no
+        # file and no row, and GET /api/queue reads in-process state, so an operator who is not
+        # tailing this log has no way to learn that every brand has stopped. Mail is the only
+        # edge-triggered surface there is. notify never raises and is a no-op unmailed.
+        notify.engine_halted(_BREAKER["strikes"], _BREAKER["last"], _BREAKER["tripped_at"])
 
 
 def _note_session_alive():
@@ -1649,7 +1662,15 @@ def _agent_definitions():
             "You are Agent R, the researcher for one GEO blog topic. The dispatching lead gives "
             "you the client slug, topic slug, output dir, and current iteration number: use them "
             "for every path and never guess them.\n"
-            "Before anything else read clients/<slug>/client.md, clients/<slug>/canonical-facts.md, "
+            "YOUR VERY FIRST ACTION, BEFORE ANY READ, IS TO ANNOUNCE THAT YOU HAVE STARTED:\n"
+            "  python3 .claude/status.py --out <out_dir> --slug <topic_slug> --stage research "
+            "--event start --iter <n>\n"
+            "Run it first, every dispatch. status.jsonl is the ONLY progress feed this engine "
+            "has, so until that line exists nothing anywhere can tell a blog that is researching "
+            "from a blog that has not been given a slot: the operator's queue reads QUEUED for "
+            "both. The reads below are what you must do before you ACT on anything; they are not "
+            "a reason to stay silent while you do them.\n"
+            "Then read clients/<slug>/client.md, clients/<slug>/canonical-facts.md, "
             "and .claude/skills/geo-research/references/source-vetting.md, every run.\n"
             "Then read <out_dir>/roadmap-row.md, the roadmap row this blog is planned from: the "
             "topic, its scope, the BINDING target prompts, and every other column the sheet "
@@ -1666,10 +1687,10 @@ def _agent_definitions():
             "heading, so the finished blog carries the instruction it was written under.\n"
             "Run the geo-research skill and write the dossier to <out_dir>/dossier.md. Fetched "
             "full text or it is not a source; search snippets are leads only.\n"
-            "Append your own status lines with stage research (event start when you begin, end "
-            "when the dossier is written), status running, the given iteration number:\n"
+            "When the dossier is written, close the stage with the matching end line, status "
+            "running, the same iteration number:\n"
             "  python3 .claude/status.py --out <out_dir> --slug <topic_slug> --stage research "
-            "--event start --iter <n>\n"
+            "--event end --iter <n>\n"
             "Return exactly one line summarizing the dossier. Your fetch logs and rejected "
             "sources never leave this context."
         ),
@@ -1683,6 +1704,18 @@ def _agent_definitions():
             "You are Agent W, the writer for one GEO blog topic. The dispatching lead gives you "
             "the client slug, topic slug, output dir, and CURRENT ITERATION NUMBER: use them for "
             "every path and every status line.\n"
+            "YOUR VERY FIRST ACTION, BEFORE ANY READ, IS TO ANNOUNCE THAT YOU HAVE STARTED: "
+            "stage write on iteration 1, stage revise on iteration 2 and later.\n"
+            "  python3 .claude/status.py --out <out_dir> --slug <topic_slug> --stage "
+            "<write|revise> --event start --iter <n>\n"
+            "Run it first, every dispatch. status.jsonl is the ONLY progress feed this "
+            "engine has, and your reading list below is long: on a RETRY the lead skips "
+            "the researcher and dispatches you straight away, so your first status line "
+            "is the first thing anyone sees of the whole blog. Measured on this repo's "
+            "own sessions, doing the reads first left the queue reading QUEUED for a "
+            "median of 413 seconds on a blog that was already working. The reads below "
+            "are what you must do before you WRITE anything; they are not a reason to "
+            "stay silent while you do them.\n"
             "Run the geo-content-writer skill against the FROZEN dossier at <out_dir>/dossier.md. "
             "Never re-research and never invent a citation or URL: a claim with no supporting "
             "source is a Sourcing failure to flag, not to patch. Where the LEAD hands you a "
@@ -1718,9 +1751,10 @@ def _agent_definitions():
             "until it exits 0 (WARN passes, only FAIL blocks). Then run the link pass per "
             "CLAUDE.md, appending verified URLs to <out_dir>/links-verified.txt and skipping URLs "
             "already listed there.\n"
-            "Append your own status lines via python3 .claude/status.py: stage write on iteration "
-            "1 or revise on later iterations, then gates, then links, each with event start and "
-            "end, status running, the given iteration number.\n"
+            "Keep appending your own status lines via python3 .claude/status.py: close the "
+            "write or revise stage with its end line, then gates, then links, each with event "
+            "start and end, status running, the given iteration number. The start line for "
+            "write or revise you have already written, as your first action.\n"
             "Then SELF-CHECK the finished draft against the rubric, bucket by bucket, and score "
             "it with the rubric's own math before you hand it over. Fix what you can see failing: "
             "a bucket you can read is a bucket you can lose points in, and losing them to a fresh "
@@ -1736,6 +1770,12 @@ def _agent_definitions():
         prompt=(
             "You are Agent E, a hostile auditor for one GEO blog draft. The dispatching lead "
             "gives you the client slug, topic slug, output dir, and current iteration number.\n"
+            "YOUR VERY FIRST ACTION, BEFORE ANY READ, IS TO ANNOUNCE THAT YOU HAVE STARTED:\n"
+            "  python3 .claude/status.py --out <out_dir> --slug <topic_slug> --stage eval "
+            "--event start --iter <n>\n"
+            "Run it first, every dispatch. It announces the stage and reveals nothing "
+            "about the draft, so your isolation is untouched: what follows is still the "
+            "closed input set below and nothing else.\n"
             "Your inputs are <out_dir>/blog.md, .claude/skills/geo-content-eval/references/"
             "rubric.md, clients/<slug>/canonical-facts.md, clients/<slug>/custom-instructions.md, "
             "<out_dir>/session-instructions.md WHEN IT EXISTS, and <out_dir>/answers.json WHEN ONE "
@@ -1762,9 +1802,9 @@ def _agent_definitions():
             "list where every item carries an Area: Sourcing, Structure, Draft, or Mechanics.\n"
             "You MUST NOT touch blog.md. Do not edit it, fix it, or rewrite a single word of it: "
             "you audit the draft exactly as it stands and report through eval.md only.\n"
-            "Append your own status lines via python3 .claude/status.py: stage eval, event start "
-            "when you begin and end when eval.md is written, status running, the given iteration "
-            "number, and --score NN on the end line.\n"
+            "Close the stage with the matching end line via python3 .claude/status.py: stage eval, "
+            "event end when eval.md is written, status running, the given iteration number, and "
+            "--score NN on it. The start line you have already written, as your first action.\n"
             "ORDER MATTERS AND IT IS NOT A STYLE POINT: eval.md MUST ALREADY BE WRITTEN, carrying "
             "THIS iteration's SCORE, BEFORE you append the end line. The end line is what snapshots "
             "the draft as a new high, and it snapshots whatever eval.md holds at that instant. Score "
