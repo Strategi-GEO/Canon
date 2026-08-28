@@ -224,6 +224,58 @@ def assert_publishable(runner, client_slug, topic_slug):
     return blog_md
 
 
+def client_approved_at(client_slug, topic_slug):
+    """When the client signed this article off, or None. The test seam matches the two above."""
+    tid = db.topic_id(client_slug, topic_slug)
+    if not tid:
+        return None
+    row = db.q("select client_approved_at from topics where id = %s", (tid,), fetch="one")
+    return row[0] if row else None
+
+
+def assert_destination(site, client_slug):
+    """Raise PublishRefused unless this brand has somewhere to publish to.
+
+    WHY "NO DESTINATION" IS A REFUSAL RATHER THAN A FALLBACK. Before migration 035 an
+    unconfigured brand silently posted to the Strategi CMS, which made "not configured" a state
+    nothing could name: the button was always live, and an operator could not tell a brand
+    that was deliberately on the CMS from one nobody had set up. Every existing brand was
+    backfilled to the CMS by that migration, so this can only fire on a brand created since,
+    which is exactly the one that needs asking.
+    """
+    kind = str((site or {}).get("kind") or "").strip()
+    if not kind:
+        raise PublishRefused(
+            f"No blog destination is set for '{client_slug}'. Choose where its blogs publish "
+            f"in Settings, under Blog destination, before posting.",
+            status="no_destination")
+
+
+def assert_client_approved(site, client_slug, topic_slug, approved_at):
+    """Raise PublishRefused unless the client has approved, for a website destination.
+
+    THE ASYMMETRY WITH THE CMS IS THE POINT, and it is not an oversight that the CMS path
+    skips this. A push to the Strategi CMS files a DRAFT that an editor of ours reviews, so it
+    releases nothing and the admin bench has always offered it from internal review onwards. A
+    push to the CLIENT'S OWN WEBSITE publishes the article live on their domain; it is the
+    final release, and the thing that authorises a final release in this app is the client's
+    own approval. So the clause is scoped to a website destination and the CMS keeps the
+    behaviour it has always had.
+
+    THIS IS THE GUARD, AND THE HIDDEN BUTTON IS THE COURTESY, exactly as the module docstring
+    says of the done check: the dashboard narrows the bench so the button does not appear
+    before approval, and a stale tab, a replayed request or a hand-rolled curl still lands
+    here.
+    """
+    if str((site or {}).get("kind") or "").strip() in ("", "strategi-cms"):
+        return
+    if approved_at is None:
+        raise PublishRefused(
+            f"'{topic_slug}' has not been approved by the client yet. Posting publishes it "
+            f"live on their website, so it waits for their sign-off.",
+            status="not_client_approved")
+
+
 def build_for_publish(runner, ledger, client_slug, topic_slug, client=None, meta=None):
     """Gate, then transform. The only way this package builds a payload.
 

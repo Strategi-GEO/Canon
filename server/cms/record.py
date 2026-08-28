@@ -24,7 +24,28 @@ from .. import db
 log = logging.getLogger("geo-factory")
 
 
-def record_publish(client_slug, topic_slug, result, email=None):
+def remote_article(client_slug, topic_slug):
+    """What the record knows about this article on the destination, or None if nothing.
+
+    THE WHOLE OF RE-POST SAFETY, and it is why the driver needs no idempotency key of its own.
+    The Strategi CMS dedupes on payload.source_run_id, a uuid5 the CMS itself resolves; a
+    client's WordPress has no such concept, so "have we posted this before" has to be answered
+    from here. post_id null means create, post_id set means update that article.
+
+    pushed_at rides along because the driver compares it against the destination's own modified
+    stamp: an article edited on their site AFTER our last push must not be silently overwritten.
+    """
+    tid = db.topic_id(client_slug, topic_slug)
+    if tid is None:
+        return None
+    row = db.q("select cms_post_id, published_at from topics where id = %s",
+               (tid,), fetch="one")
+    if row is None or not row[0]:
+        return None
+    return {"post_id": str(row[0]), "pushed_at": row[1]}
+
+
+def record_publish(client_slug, topic_slug, result, email=None, destination=None):
     """Stamp one topic with the push the CMS just accepted.
 
     RE-STAMPED ON EVERY PUSH, not first-write-wins, matching blog_edit.mark_sent. A second
@@ -52,12 +73,20 @@ def record_publish(client_slug, topic_slug, result, email=None):
                      published_by = %s,
                      cms_post_id  = %s,
                      cms_slug     = %s,
-                     cms_status   = %s
+                     cms_status   = %s,
+                     -- coalesce, NOT overwrite: the Strategi CMS answers with no url and a
+                     -- website destination does, so a plain assignment would blank a good
+                     -- link on any later push that could not supply one. A url once known
+                     -- stays known until a push replaces it with a different one.
+                     cms_url      = coalesce(%s, cms_url),
+                     published_to = coalesce(%s, published_to)
                where id = %s""",
             (email,
              _text(result.get("post_id")),
              _text(result.get("slug")),
              _text(result.get("status")),
+             _text(result.get("url")),
+             _text(destination),
              tid),
             fetch="none")
     except Exception:

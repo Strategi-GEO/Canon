@@ -11,11 +11,11 @@ whatever ships those logs.
 import asyncio
 import logging
 import os
-import socket
 
 import httpx
 
 from .. import db
+from . import http as shared_http
 
 log = logging.getLogger("geo-factory")
 
@@ -43,11 +43,13 @@ CMS_URL = os.environ.get("STRATEGI_CMS_URL", "https://client.strategi.is/api/v1/
 # server/.env, and resolve_key below says which wins and why.
 KEY_VAR = "STRATEGI_CMS_WRITE_KEY"
 
-MAX_ATTEMPTS = 5
-REQUEST_TIMEOUT = 30.0
-# A guessed Retry-After of "3600" from a confused proxy must not hang the request
-# for an hour with an operator watching a spinner.
-MAX_BACKOFF_SECONDS = 30.0
+# The retry rules now live in cms/http.py, because a second destination (a client's own
+# website, server/cms/sites.py) needs the identical four: cap Retry-After, retry 429 and 5xx
+# only, retry a reset connection, and fail an unresolvable host immediately. Re-exported under
+# the names this module has always used so nothing importing them has to know they moved.
+MAX_ATTEMPTS = shared_http.MAX_ATTEMPTS
+REQUEST_TIMEOUT = shared_http.REQUEST_TIMEOUT
+MAX_BACKOFF_SECONDS = shared_http.MAX_BACKOFF_SECONDS
 
 
 class CmsError(Exception):
@@ -105,31 +107,9 @@ def missing_key_detail():
     )
 
 
-def _is_dns_failure(error):
-    """True when a transport error is really "that hostname does not exist".
-
-    httpx wraps the resolver's socket.gaierror rather than exposing it, so the
-    cause chain is the only honest way to tell an unresolvable host from a
-    connection that was refused or reset. Matching on the message text would
-    break on a different resolver or a non-English locale.
-    """
-    seen = set()
-    while error is not None and id(error) not in seen:
-        if isinstance(error, socket.gaierror):
-            return True
-        seen.add(id(error))
-        error = error.__cause__ or error.__context__
-    return False
-
-
-def _retry_delay(response, attempt):
-    """Honour Retry-After when the CMS sends one, else exponential backoff."""
-    raw = response.headers.get("Retry-After", "") if response is not None else ""
-    try:
-        delay = float(raw)
-    except (TypeError, ValueError):
-        delay = float(2 ** attempt)
-    return max(0.0, min(delay, MAX_BACKOFF_SECONDS))
+# Both are cms/http.py's, under this module's own names. See the MAX_ATTEMPTS note above.
+_is_dns_failure = shared_http.is_dns_failure
+_retry_delay = shared_http.retry_delay
 
 
 def _error_message(response):

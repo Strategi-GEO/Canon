@@ -61,6 +61,11 @@ from . import clients as clients_mod
 # server/cms/ plus these two lines removes the feature whole.
 from .cms import router as cms_router
 from .cms import routes as cms_routes  # for the after-publish hook (channel auto-repurpose)
+# The blog-destination routes below. cms/ stays deletable whole: these four endpoints go with
+# it, and nothing in the generation pipeline imports any of them.
+from .cms import http as cms_http
+from .cms import sites as cms_sites
+from .cms import wordpress as cms_wordpress
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INDEX_HTML = REPO_ROOT / "web" / "index.html"
@@ -689,6 +694,126 @@ async def api_update_client(slug: str, body: UpdateClientRequest,
         raise HTTPException(status_code=404, detail=str(exc))
     except clients_mod.InvalidClient as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# The blog destination (migration 035)
+# ---------------------------------------------------------------------------
+# ADMIN ONLY, ALL FOUR, and not merely because they are settings. `connect` and the stored blob
+# carry a WRITE CREDENTIAL for a client's live website, so the read is admin-gated exactly like
+# the write: there is no viewer-safe version of "show me the destination" that these routes
+# needed to offer, and clients_mod.site_summary strips every secret key even so.
+
+class SiteConnectRequest(BaseModel):
+    """One connect attempt. `kind` is what the operator confirmed, never what detect guessed."""
+    kind: str
+    url: str
+    # Whatever that driver's fields() asked for. Free-form because the driver owns the shape:
+    # modelling WordPress's two keys here would mean editing this file to add Shopify, which is
+    # the coupling server/cms/sites.py exists to avoid.
+    credentials: dict = {}
+
+
+class SiteDetectRequest(BaseModel):
+    url: str
+
+
+@app.get("/api/clients/{slug}/site")
+async def api_site(slug: str, user: auth.Identity = Depends(auth.require_admin)):
+    """This brand's destination, with every secret field removed.
+
+    `fields` carries what a driver declared non-secret (the site URL, the username, the
+    resolved post type), so the settings card can render the connected state without a second
+    shape to maintain. The credential is never in this response.
+    """
+    _read_client_or_404(slug, user)
+    return {
+        **clients_mod.site_summary(slug),
+        # The dropdown's options and the current driver's inputs, so the card is entirely
+        # driven by the engine and adding a platform never edits the dashboard.
+        "kinds": cms_sites.KINDS,
+    }
+
+
+@app.get("/api/clients/{slug}/site/fields")
+async def api_site_fields(slug: str, kind: str,
+                          user: auth.Identity = Depends(auth.require_admin)):
+    """What connecting this kind asks for. The card renders whatever comes back."""
+    _read_client_or_404(slug, user)
+    return {"kind": kind, "fields": cms_sites.fields_for(kind)}
+
+
+@app.post("/api/clients/{slug}/site/detect")
+async def api_site_detect(slug: str, body: SiteDetectRequest,
+                          user: auth.Identity = Depends(auth.require_admin)):
+    """What platform runs this page, so the card can offer the right fields.
+
+    A HINT AND NEVER A DECISION. `kind` empty means "could not tell", which is an ordinary
+    answer the card handles with its dropdown, so this route does not fail on it. `unsupported`
+    carries the sentence explaining why a recognised platform still cannot be connected, which
+    is worth saying at setup rather than letting an operator promise a client something that
+    cannot be built.
+    """
+    _read_client_or_404(slug, user)
+    try:
+        kind = await cms_sites.detect(body.url)
+    except cms_http.TransportError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {
+        "kind": "" if kind in cms_sites.UNSUPPORTED else kind,
+        "unsupported": cms_sites.UNSUPPORTED.get(kind, ""),
+        "fields": cms_sites.fields_for(kind),
+    }
+
+
+@app.post("/api/clients/{slug}/site/connect")
+async def api_site_connect(slug: str, body: SiteConnectRequest,
+                           user: auth.Identity = Depends(auth.require_admin)):
+    """Prove the credential, resolve where blogs go, and store the destination.
+
+    THE DESTINATION IS WRITTEN ONLY IF THE DRIVER PROVED IT. A connect that half-worked stores
+    nothing, so the brand keeps whatever destination it had and the Post button keeps meaning
+    what it meant a minute ago. That is why there is no separate "save" route for the blob:
+    saving an unverified credential would put a button in front of an operator that fails on a
+    real article.
+    """
+    _read_client_or_404(slug, user)
+
+    # The one destination with no driver. It needs no credential and nothing to prove, so it
+    # is stored directly rather than pushed through a connect that would have nothing to do.
+    if body.kind == cms_sites.STRATEGI_CMS:
+        clients_mod.write_site(slug, {"kind": cms_sites.STRATEGI_CMS})
+        return {**clients_mod.site_summary(slug), "kinds": cms_sites.KINDS}
+
+    if body.kind in cms_sites.UNSUPPORTED:
+        raise HTTPException(status_code=422, detail=cms_sites.UNSUPPORTED[body.kind])
+
+    try:
+        site = await cms_sites.connect(body.kind, body.url, body.credentials)
+    except cms_sites.UnknownDestination as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except cms_wordpress.ConnectError as exc:
+        # 422 and not 502: every ConnectError names something the operator or the client can
+        # change (a wrong address, a rejected login, a blocked REST API), so blaming the
+        # upstream would send them looking in the wrong place.
+        raise HTTPException(status_code=422, detail=str(exc))
+    except cms_http.TransportError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    clients_mod.write_site(slug, site)
+    return {**clients_mod.site_summary(slug), "kinds": cms_sites.KINDS}
+
+
+@app.delete("/api/clients/{slug}/site", status_code=204)
+async def api_site_disconnect(slug: str, user: auth.Identity = Depends(auth.require_admin)):
+    """Forget the destination and its credential.
+
+    The Post button goes dark for this brand immediately, which is the honest outcome: there is
+    nowhere to publish. Nothing already published is touched, and published_to on each topic
+    still records where each article went.
+    """
+    _read_client_or_404(slug, user)
+    clients_mod.write_site(slug, {})
 
 
 @app.delete("/api/clients/{slug}", status_code=204)

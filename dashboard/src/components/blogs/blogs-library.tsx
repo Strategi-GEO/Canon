@@ -22,6 +22,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError, api } from "@/lib/api";
 import { brandHref } from "@/lib/orgs-context";
+import { useClients } from "@/lib/clients-context";
 import { HOSTED_READONLY } from "@/lib/hosted";
 import { inMonth } from "@/lib/blog-month";
 import { adminCan, blogState } from "@/lib/blog-state";
@@ -400,6 +401,9 @@ function Library({
    * over mid-flight applies describe a moment this list is not looking at. Passing "unread" would
    * fail closed on every row and offer nothing at all.
    */
+  // The brand record, for its blog destination alone. The list is already in context for the
+  // shell's brand switcher, so this costs no request.
+  const { activeClient } = useClients();
   const gateOf = React.useCallback(
     (blog: BlogSummary): GateInput => {
       const entry = byTopic.get(blog.topic_slug);
@@ -409,9 +413,14 @@ function Library({
           : entry.payload === null
             ? "absent"
             : { stale: entry.payload.stale, answered: entry.payload.answered };
-      return { record: blog, form };
+      // THE BRAND'S DESTINATION RIDES ON EVERY TOPIC'S RECORD, because two publish clauses read
+      // it and a record that omits it gets `unknowable` from both, which fails closed and greys
+      // the bulk Post for every blog. `undefined` while the brand list is still loading is
+      // exactly that case and exactly right: a page that cannot say where a brand publishes must
+      // not offer to publish there.
+      return { record: { ...blog, destination: activeClient?.site_kind }, form };
     },
-    [byTopic],
+    [byTopic, activeClient],
   );
 
   const selectedBlogs = React.useMemo(

@@ -38,3 +38,11 @@ beautifulsoup4>=4.12
 jinja2>=3.1
 markupsafe>=2.1
 playwright>=1.48
+
+# server/cms/sites.py converts a finished draft to HTML before posting it to a client's own
+# website. WordPress `content` and Shopify `body` both render HTML and neither renders
+# markdown, so a draft posted raw shows literal ## headings and pipe-delimited tables to the
+# reader. The `extra` extension is what carries the comparison table every draft is required to
+# have. Pure Python, no transitive dependencies. The Strategi CMS path does not need it and the
+# import is function-local, so an install without it still publishes to the CMS.
+markdown>=3.6

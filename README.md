@@ -369,6 +369,60 @@ Exit codes are three-valued so the runner can tell a bad draft from a bad setup:
 - `2` the run could not happen: missing or malformed `gates.json`, an uncompilable client
   regex, bad arguments, or an unreadable blog file
 
+## Where a brand's blogs publish
+
+Every brand has ONE destination, set in **Settings → Blog destination**. Two exist today:
+
+| destination | what a press does | when it opens |
+|---|---|---|
+| **Strategi CMS** | files a draft at `client.strategi.is` for one of our editors | from internal review onwards |
+| **The client's own WordPress** | publishes the article LIVE on their site | only after the client approves it |
+
+A brand with **no destination set** has the Post control disabled, with the reason on hover.
+Before migration 035 an unconfigured brand silently posted to the CMS, which made "nobody set
+this up" a state nothing could name; that migration stamped every brand that already existed
+with `strategi-cms`, so an empty destination is a brand created since.
+
+### Connecting a client's WordPress
+
+Ask the client for three things:
+
+1. **The link to their blog page**, or to any one of their existing articles.
+2. **A WordPress username** with Editor or Administrator access.
+3. **An Application Password** for that user: *Users → Profile → Application Passwords → type
+   `Canon` → Add New*. It is shown once. Their site must be on https, or WordPress does not
+   offer the panel at all.
+
+Never ask for their WordPress password, their hosting or cPanel login, or FTP details. None of
+them is needed.
+
+Paste those into the card, press **Detect** (which reads what platform the page runs on), then
+**Connect**. The engine makes four GETs and no writes, so it is safe to press repeatedly:
+
+- the page itself, which declares the site's REST root
+- `wp/v2/users/me?context=edit`, which proves the credential AND that their host did not strip
+  the `Authorization` header (the single most common real failure, and the error names the
+  one-line `.htaccess` fix so it can be forwarded)
+- an article off that page, whose `Link: rel="alternate"` header **names the post type their
+  blog actually renders from**
+- `wp/v2/types`, which refuses a page type or one WordPress will not show on the front end
+
+That third step is why this is not just "post to `/wp/v2/posts`". Plenty of client themes
+render their blog from a custom post type (`insights`, `news`), and posting to `posts` there
+does not fail: WordPress answers 201, the record stores an id, the UI says published, and the
+article sits in a section nobody renders. It is the only invisible failure in the pipeline, so
+the type is read from the site rather than assumed. A brand-new site with nothing published
+falls back to `posts` and says it is unverified.
+
+### Posting
+
+Press **Post to WordPress** on an approved blog. One HTTP call, no discovery: the post type was
+pinned at connect time. The article's real URL comes back in the same response and is stored,
+so the blog then shows **Published on acme.com 3 days ago** and a **View on acme.com** link.
+
+Pressing again updates the same article rather than making a second one. If somebody edited it
+on their site after our last push, the engine **declines to overwrite** and reports it.
+
 ## Posting a blog to the Strategi CMS
 
 An operator opens a finished blog in the Blogs library and presses **Post to CMS** in the

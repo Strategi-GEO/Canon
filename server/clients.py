@@ -159,6 +159,13 @@ def exists(slug):
 _CLIENT_SELECT = """
     select c.slug, c.name, c.domain, c.industry, c.market, c.description,
            c.custom_instructions, c.cms_client,
+           -- THE KIND ONLY, EXTRACTED IN SQL, and never the blob. clients.site holds a write
+           -- credential for a client's live website and this select answers to require_user,
+           -- so the credential must not leave the database on this path at all. Masking it in
+           -- Python after selecting it would work until someone adds a passthrough; selecting
+           -- one string makes the leak unreachable. The settings page reads the rest through
+           -- GET /api/clients/{slug}/site, which is admin-only and drops every secret key.
+           c.site->>'kind' as site_kind,
            c.created_at,
            exists (select 1 from roadmap_sheets r where r.client_id = c.id)
              as has_roadmap,
@@ -178,7 +185,7 @@ _CLIENT_SELECT = """
 
 def _client_from_row(row):
     (slug, name, domain, industry, market, description, custom_instructions,
-     cms_client, created_at, has_roadmap, has_facts, resource_count, blog_count,
+     cms_client, site_kind, created_at, has_roadmap, has_facts, resource_count, blog_count,
      org_slug, org_name) = row
     return {
         "slug": slug,
@@ -204,6 +211,11 @@ def _client_from_row(row):
         # payload falls back to this brand's slug, which is how every brand posted before the
         # column existed. Operator material: on the engine's own record, never the hosted read.
         "cms_client": cms_client or "",
+        # WHERE this brand's blogs publish, as a bare kind: "strategi-cms", "wordpress", or ""
+        # when nothing is configured. The Post button reads exactly this: empty means no
+        # destination, which the publish route refuses on with its own sentence rather than
+        # falling back to anything. No part of the credential is here; see the select's note.
+        "site_kind": site_kind or "",
         "has_roadmap": bool(has_roadmap),
         "has_canonical_facts": bool(has_facts),
         "resource_count": resource_count,
@@ -712,6 +724,73 @@ def update_client(slug, description=None, name=None, organisation_name=None,
         sync.materialize_client(slug)
 
     return read_client(slug)
+
+
+# ---------------------------------------------------------------------------
+# The blog destination (migration 035)
+# ---------------------------------------------------------------------------
+# WHY THESE TWO FUNCTIONS EXIST INSTEAD OF A FIELD ON _CLIENT_SELECT, which is where every
+# other per-brand fact is read. clients.site holds a WRITE CREDENTIAL for a client's live
+# website, and GET /api/clients/{slug} answers to auth.require_user, not require_admin. So
+# everything _CLIENT_SELECT carries reaches any logged-in user: putting the blob there would
+# hand a viewer a credential that can publish to a client's site. The client record instead
+# carries the MASKED summary that site_summary builds, and the raw blob is read here, by the
+# publish path, over the owner connection.
+
+def read_site(slug):
+    """This brand's blog destination, credential included, or {} when none is configured.
+
+    THE ONLY READER OF THE RAW BLOB. Callers are the publish route and the connection test;
+    nothing that answers an HTTP body may call this. An unconfigured brand answers {} rather
+    than raising, because "no destination" is an ordinary state the publish gate refuses on
+    with its own sentence, not an error.
+    """
+    row = db.q("select site from clients where slug = %s and deleted_at is null",
+               (slug,), fetch="one")
+    if row is None or not isinstance(row[0], dict):
+        return {}
+    return row[0]
+
+
+def write_site(slug, site):
+    """Replace this brand's destination wholesale. {} clears it.
+
+    WHOLESALE AND NOT A MERGE, unlike update_client's field-by-field PATCH. A destination is
+    one coherent object: a WordPress connection's post type belongs to its url and credential,
+    and merging a Shopify blob over a WordPress one would leave a chimera carrying half of
+    each that no driver can read. The caller builds the whole object or clears it.
+    """
+    cid = db.client_id(slug)
+    if not cid:
+        raise UnknownClient(f"unknown client {slug!r}")
+    db.q("update clients set site = %s::jsonb where id = %s",
+         (json.dumps(site or {}, ensure_ascii=False), cid), fetch="none")
+    db.invalidate_client_cache()
+
+
+def site_summary(slug):
+    """What a SURFACE may know about the destination: everything except the secret.
+
+    Every key a driver marks secret is dropped, so this is safe to return in an HTTP body and
+    safe to log. `configured` is the one thing the publish button reads, and it is derived
+    from `kind` rather than from the blob being non-empty: a half-written blob carrying a url
+    and no kind is not a destination, and reporting it as one would offer a Post button that
+    the route then refuses.
+    """
+    site = read_site(slug)
+    kind = str(site.get("kind") or "").strip()
+    if not kind:
+        return {"configured": False, "kind": "", "label": "", "fields": {}}
+
+    from .cms import sites as sites_mod
+    secret_keys = {f["key"] for f in sites_mod.fields_for(kind) if f.get("secret")}
+    return {
+        "configured": True,
+        "kind": kind,
+        "label": sites_mod.label_for(site),
+        "fields": {k: v for k, v in site.items()
+                   if k != "kind" and k not in secret_keys},
+    }
 
 
 # ---------------------------------------------------------------------------

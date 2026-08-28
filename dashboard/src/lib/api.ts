@@ -30,6 +30,9 @@ import type {
   OrgsResponse,
   OutputFile,
   PublishResult,
+  SiteConnection,
+  SiteDetection,
+  SiteField,
   ReportGenJob,
   ReportsResponse,
   ShareReportResult,
@@ -881,6 +884,48 @@ export const api = {
     request<PublishResult>(`/api/clients/${slug}/blogs/${topicSlug}/publish`, {
       method: "POST",
     }),
+
+  /**
+   * WHERE THIS BRAND'S BLOGS PUBLISH (migration 035). Admin-only, all four, because the stored
+   * destination holds a write credential for a client's live website: there is no viewer-safe
+   * version of these that anything needed. The engine strips every secret field before it
+   * answers, so no response below can carry a password.
+   */
+  siteConnection: (slug: string, signal?: AbortSignal) =>
+    request<SiteConnection>(`/api/clients/${slug}/site`, { signal }),
+
+  /** What connecting this platform asks for. The card renders whatever comes back. */
+  siteFields: (slug: string, kind: string) =>
+    request<{ kind: string; fields: SiteField[] }>(
+      `/api/clients/${slug}/site/fields?kind=${encodeURIComponent(kind)}`,
+    ),
+
+  /**
+   * What platform runs this page. A HINT that picks the right credential fields, never a
+   * decision: connect() re-decides everything by authenticating against the site's own API.
+   * An empty `kind` is an ordinary answer the card handles with its dropdown.
+   */
+  siteDetect: (slug: string, url: string) =>
+    request<SiteDetection>(`/api/clients/${slug}/site/detect`, {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
+
+  /**
+   * Prove the credential, resolve where blogs go, and store it. NOTHING IS STORED UNLESS THE
+   * ENGINE PROVED IT, which is why there is no separate save: a saved-but-unverified credential
+   * would put a Post button in front of an operator that fails on a real article. 422 carries a
+   * sentence the operator or the client can act on; 502 means their site was unreachable.
+   */
+  siteConnect: (slug: string, kind: string, url: string, credentials: Record<string, string>) =>
+    request<SiteConnection>(`/api/clients/${slug}/site/connect`, {
+      method: "POST",
+      body: JSON.stringify({ kind, url, credentials }),
+    }),
+
+  /** Forget the destination and its credential. The Post button goes dark for this brand. */
+  siteDisconnect: (slug: string) =>
+    request<void>(`/api/clients/${slug}/site`, { method: "DELETE" }),
 
   /**
    * Every month of reports this brand holds, plus the current month even when it has no report

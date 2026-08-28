@@ -45,6 +45,19 @@ export type Client = {
    * with `?? ""` at every read.
    */
   cms_client: string;
+  /**
+   * WHERE THIS BRAND'S BLOGS PUBLISH, as a bare kind: "strategi-cms", "wordpress", or "" when
+   * nothing is configured (migration 035). The Post control reads exactly this, through the
+   * gate contract's `destination`, and an empty string is a REAL value meaning nobody has set
+   * this brand up: 035 backfilled every brand that already existed, so "" is a brand created
+   * since. Absent-safe with `?? ""` at every read, like custom_instructions.
+   *
+   * NO PART OF THE CREDENTIAL IS HERE, and the engine extracts this one string in SQL so the
+   * rest cannot leak: GET /api/clients/{slug} answers to any logged-in user, and the stored
+   * destination holds a write credential for a client's live website. The settings card reads
+   * the rest from GET /api/clients/{slug}/site, which is admin-only.
+   */
+  site_kind: string;
   domain: string;
   industry: string;
   /**
@@ -1024,8 +1037,16 @@ export type AnswersBody = {
 export type PublishResult = {
   post_id: string | null;
   slug: string | null;
-  /** Always "draft" on a fresh push. The CMS owns the lifecycle; the engine never sets it. */
+  /**
+   * The destination's own word for the article. "draft" on a fresh CMS push, where the CMS owns
+   * the lifecycle and the engine never sets it; "publish" on a client's own website, where the
+   * article goes live because the client already approved it in the portal.
+   */
   status: string | null;
+  /** The published article's URL, on a website destination. Null from the CMS, which has none. */
+  url?: string | null;
+  /** Where it went: "strategi-cms" or a host like "acme.com". */
+  destination?: string | null;
   created: boolean;
   updated: boolean;
   skipped: string | null;
@@ -1211,6 +1232,63 @@ export type BlogReviewState = {
    * "unknown" rather than "draft" and never licenses saying the article is live.
    */
   cms_status: string | null;
+  /**
+   * The published article's own URL on the destination, or null when nothing recorded one
+   * (migration 035). This is the link the View control opens, and it is the URL the
+   * DESTINATION reported rather than one built from a slug: permalink structure is a per-site
+   * setting, so a derived link would be wrong on a good fraction of sites.
+   *
+   * Null on every article pushed to the Strategi CMS, which answers with a preview token
+   * instead, and on everything published before 035. Absent means "no link recorded", never
+   * "not published", exactly as published_at's own null does.
+   */
+  cms_url?: string | null;
+  /**
+   * WHERE this article went: "strategi-cms", or a host like "acme.com". clients.site_kind says
+   * where the brand publishes NOW, which is a different question the moment a brand is moved
+   * from the CMS to its own website: without this, every article it ever published would read
+   * as having gone to the new place.
+   */
+  published_to?: string | null;
+};
+
+/**
+ * A brand's blog destination, as the admin-only site endpoints report it.
+ *
+ * EVERY SECRET FIELD IS ALREADY GONE by the time this reaches a browser: the engine drops each
+ * key its driver marked secret, so `fields` carries the site URL, the username and the resolved
+ * post type, and never the application password. There is no shape here that could hold one.
+ */
+export type SiteConnection = {
+  configured: boolean;
+  /** "strategi-cms", "wordpress", or "" when nothing is set up. */
+  kind: string;
+  /** One line naming the destination, e.g. "acme.com (Insights)". "" when unconfigured. */
+  label: string;
+  /** The non-secret half of the stored destination, for the connected card to render. */
+  fields: Record<string, unknown>;
+  /** Every destination this engine can offer, for the dropdown. Engine-driven, never hardcoded. */
+  kinds: { kind: string; label: string }[];
+};
+
+/**
+ * One credential field a destination asks for. The settings card renders whatever the engine
+ * returns, so adding a platform is a driver file and never a dashboard change.
+ */
+export type SiteField = {
+  key: string;
+  label: string;
+  secret: boolean;
+  help?: string;
+};
+
+/** What POST /site/detect answers: a hint, never a decision. */
+export type SiteDetection = {
+  /** The platform, or "" when it could not tell, which the card answers with its dropdown. */
+  kind: string;
+  /** Why a recognised platform still cannot be connected, or "". */
+  unsupported: string;
+  fields: SiteField[];
 };
 
 /** The server whitelists exactly these artifact names, so the client should too. */

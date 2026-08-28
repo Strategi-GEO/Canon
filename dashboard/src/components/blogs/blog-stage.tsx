@@ -7,6 +7,7 @@ import {
   Check,
   CheckCheck,
   FileUp,
+  ExternalLink,
   Globe,
   Laptop,
   Pencil,
@@ -40,6 +41,7 @@ import { readTrail, type RunTrail } from "@/components/blogs/status-trail";
 import { artifactText, useArtifact, type LoadedArtifact } from "@/components/blogs/use-artifact";
 import { useBlogComments } from "@/components/blogs/use-blog-comments";
 import { brandHref } from "@/lib/orgs-context";
+import { useClients } from "@/lib/clients-context";
 import {
   adminActions,
   adminCan,
@@ -357,6 +359,20 @@ function StageBody({
   const state = blogState(record);
 
   /**
+   * THE BRAND'S BLOG DESTINATION, which two publish clauses read and neither can guess.
+   *
+   * It is a BRAND fact on a TOPIC's gate input, which is why it rides on gateInput below rather
+   * than in `record`: blogState answers where the ARTICLE sits and has no use for it, while the
+   * gate answers whether the record will take a publish and has two questions that turn on it.
+   *
+   * `undefined` while the brand list loads is the honest value and fails closed: both clauses
+   * answer `unknowable`, the Post control is withheld, and it appears once the read lands. A
+   * page that cannot say where a brand publishes must not offer to publish there.
+   */
+  const { activeClient } = useClients();
+  const destination = activeClient?.site_kind;
+
+  /**
    * WHAT THE STATE PERMITS. This replaces a single `blog.status === "done"` flag that governed
    * everything, and the reason it had to go is that `done` is not a place: it was equally true of
    * an article on the refining bench, one the client is reading right now, one they have approved,
@@ -436,7 +452,11 @@ function StageBody({
   // the state machine reads the merge is the seam that put a Send button over an article whose
   // client had just filed a suggestion, and took one away from an article whose suggestions were
   // all resolved. The two must be asked about the same version of the same blog.
-  const gateInput: GateInput = { record, form: questionForm, applying: applyingFact };
+  // `destination` spreads onto the record HERE rather than into `record` above, because it is a
+  // brand fact and blogState must not see it: the bench answers where the ARTICLE sits, and the
+  // gate answers whether the record will take the act.
+  const gateRecord = { ...record, destination };
+  const gateInput: GateInput = { record: gateRecord, form: questionForm, applying: applyingFact };
   /**
    * EDIT IS A STANDING RATHER THAN A BOOLEAN, and the difference is the greyed button.
    *
@@ -806,7 +826,12 @@ function StageBody({
               state chip beside its own control. It renders on the hosted build too, where
               PublishAction is absent: the record of a push is worth reading even where the
               push itself cannot be made. */}
-          <PublishedChip published={reviewState.published} cmsStatus={reviewState.cms_status} />
+          <PublishedChip
+            published={reviewState.published}
+            cmsStatus={reviewState.cms_status}
+            url={reviewState.cms_url ?? null}
+            destination={reviewState.published_to ?? null}
+          />
           {/* GONE RATHER THAN GREYED wherever the state refuses them, both of these.
 
               A disabled Post to CMS on an article the client has not approved yet, or a
@@ -831,6 +856,11 @@ function StageBody({
               topic={blog.topic}
               status={blog.status}
               score={blog.score ?? null}
+              // The BRAND's current destination, not the article's published_to: this decides
+              // where a press would send it, and the chip beside it reports where a past push
+              // actually went. Those differ the moment a brand is moved from the CMS to its
+              // own website, and conflating them would label the button with history.
+              destination={destination}
               onPublished={() => {
                 // THE PUSH MOVES THE STATE NOW, so it has to move this page the way a send
                 // does. `published` used to require a send stamp as well, which meant a push
@@ -1547,36 +1577,74 @@ function ReviewStamp({ review }: { review: BlogReviewState }) {
 function PublishedChip({
   published,
   cmsStatus,
+  url,
+  destination,
 }: {
   published: string | null;
   cmsStatus: string | null;
+  /** The article's own URL where it was published, or null when nothing recorded one. */
+  url: string | null;
+  /** "strategi-cms", or a host like "acme.com". Null on everything published before 035. */
+  destination: string | null;
 }) {
   if (published === null) {
     return null;
   }
-  const live = cmsStatus === "published";
+  // TWO DESTINATIONS AND THEY MEAN OPPOSITE THINGS BY A PUSH. The CMS receives a DRAFT, so the
+  // push is not the publication and the chip has always said so; an editor of ours decides
+  // afterwards, and cms_status flipping to "published" is that decision landing. A client's own
+  // website receives a LIVE article, because the publish door there opens only after the client
+  // approved it, so the push IS the publication and there is no later step to wait for.
+  //
+  // Null destination is the pre-035 record, which can only have been a CMS push: the website
+  // path did not exist to produce one.
+  const toSite = Boolean(destination) && destination !== "strategi-cms";
+  const live = toSite || cmsStatus === "published";
+  const where = toSite ? destination : "CMS";
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          className={cn(
-            "inline-flex cursor-default items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium",
-            live
-              ? "border-ship/25 bg-ship/10 text-ship"
-              : "border-border bg-muted text-muted-foreground",
-          )}
-        >
-          <Globe className="size-3.5" aria-hidden />
-          {live ? "Live in the CMS" : "Posted to CMS"} {formatRelative(published)}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent className="max-w-xs">
-        <span className="machine">{formatAbsolute(published)}</span>.{" "}
-        {live
-          ? "The CMS reports this post as published, so an editor has already taken it live and posting again will not change it."
-          : "This is the push, not the publication. An editor decides in the CMS whether the draft goes out."}
-      </TooltipContent>
-    </Tooltip>
+    <span className="inline-flex items-center gap-1.5">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            className={cn(
+              "inline-flex cursor-default items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium",
+              live
+                ? "border-ship/25 bg-ship/10 text-ship"
+                : "border-border bg-muted text-muted-foreground",
+            )}
+          >
+            <Globe className="size-3.5" aria-hidden />
+            {toSite
+              ? `Published on ${where}`
+              : live
+                ? "Live in the CMS"
+                : "Posted to CMS"}{" "}
+            {formatRelative(published)}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs">
+          <span className="machine">{formatAbsolute(published)}</span>.{" "}
+          {toSite
+            ? `This article is live on ${where}. It went out on the client's own site, which is why it waited for their approval.`
+            : live
+              ? "The CMS reports this post as published, so an editor has already taken it live and posting again will not change it."
+              : "This is the push, not the publication. An editor decides in the CMS whether the draft goes out."}
+        </TooltipContent>
+      </Tooltip>
+
+      {/* THE LINK IS THE DESTINATION'S OWN, never one built from a slug: permalink structure is
+          a per-site setting, so a derived URL is wrong on a good fraction of sites. Rendered
+          only when the record actually holds one, which is every website push and no CMS push,
+          so this never offers a link that goes nowhere. */}
+      {url ? (
+        <Button size="sm" variant="outline" asChild>
+          <a href={url} target="_blank" rel="noreferrer">
+            <ExternalLink data-icon="inline-start" aria-hidden />
+            View on {where}
+          </a>
+        </Button>
+      ) : null}
+    </span>
   );
 }
 

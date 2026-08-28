@@ -152,6 +152,23 @@ create table clients (
   -- authenticated re-grant below, so the hosted mirror cannot read it.
   cms_client text not null default '',
 
+  -- WHERE this brand's finished blogs are published, and the credential that gets them there
+  -- (migration 035). `{"kind": "strategi-cms"}` is the Strategi CMS, which every brand used
+  -- before this column existed; `{"kind": "wordpress", "url": ..., "user": ..., "password": ...,
+  -- "post_type": ...}` is the client's own website. An EMPTY object means no destination is
+  -- configured, which the publish route refuses on rather than falling back to anything: an
+  -- implicit fallback is what made "not configured" unnameable.
+  --
+  -- ONE jsonb, not a column per field, because the shape differs per platform and the column
+  -- does not: adding a platform costs a driver file and no migration. `gates` is the precedent.
+  --
+  -- IT HOLDS A WRITE CREDENTIAL FOR A CLIENT'S LIVE WEBSITE, which makes it the most sensitive
+  -- column here. Absent from the authenticated re-grant below like custom_instructions and
+  -- cms_client, AND read by server/clients.py through its own query rather than _CLIENT_SELECT,
+  -- because GET /api/clients/{slug} answers to require_user and everything in that select
+  -- reaches any logged-in user.
+  site jsonb not null default '{}'::jsonb,
+
   created_at  timestamptz not null default now(),
   deleted_at  timestamptz,
 
@@ -545,6 +562,21 @@ create table topics (
   cms_post_id  text,
   cms_slug     text,
   cms_status   text,
+
+  -- 035 pointed the push at the CLIENT'S OWN WEBSITE as well as at our CMS. The five columns
+  -- above carry over unchanged, because a remote article has an id, a slug and a status
+  -- wherever it lives and a blog goes to exactly ONE destination; the `cms_` prefix is now a
+  -- legacy name for "the remote article". These two are what that prefix cannot cover.
+  --
+  -- cms_url is the published article's own URL AS THE DESTINATION REPORTED IT, never derived:
+  -- permalink structure is a per-site setting, so building it from cms_slug would be a guess.
+  -- Every create call returns the real link in the same response, so the honest value is free.
+  --
+  -- published_to is where THIS article went ('strategi-cms', or a host like 'acme.com').
+  -- clients.site says where the brand publishes NOW; without this, changing that would rewrite
+  -- the history of every article the brand ever published.
+  cms_url      text,
+  published_to text,
 
   created_at timestamptz not null default now(),
   deleted_at timestamptz,
@@ -1143,11 +1175,17 @@ grant select (id, org_id, slug, name, domain, industry, market, description,
 -- names WHICH body the client reviews (and blog_versions.body is already theirs to read),
 -- and client_approved_at records the client's own act. published_at (012) joins them as the
 -- same shape of fact: a date something happened to this article. The three _by columns are
--- person emails, operator material, and stay off this list, and so do the cms_ columns,
--- which are our CMS's internals and have no client-side reader.
+-- person emails, operator material, and stay off this list, and so do the cms_post_id,
+-- cms_slug and cms_status columns, which are the remote system's internals.
+--
+-- cms_url and published_to (035) ARE granted, and the difference is what each one is: a public
+-- article URL and a hostname, both rendered by the blog surfaces (the "View on acme.com" link
+-- and the destination label). Neither carries a credential. Getting this wrong is not a missing
+-- field, it is a 502 for every caller of any hosted route that selects them.
 revoke select on topics from authenticated;
 grant select (id, client_id, slug, title, shipped_version_id, created_at, deleted_at,
-              sent_to_client_at, sent_version_id, client_approved_at, published_at)
+              sent_to_client_at, sent_version_id, client_approved_at, published_at,
+              cms_url, published_to)
   on topics to authenticated;
 
 -- blog_versions: score and eval_body are the whole hostile-audit surface; iteration and

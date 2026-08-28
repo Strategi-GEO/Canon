@@ -41,6 +41,7 @@ export function PublishAction({
   topic,
   status,
   score,
+  destination,
   onPublished,
 }: {
   brandSlug: string;
@@ -57,6 +58,17 @@ export function PublishAction({
    * partial record is only ever safe when every clause on the door reads what it carries.
    */
   score: number | null;
+  /**
+   * WHERE THIS BRAND PUBLISHES: "strategi-cms", "wordpress", "" for nothing configured, or
+   * undefined while the brand record is still loading.
+   *
+   * IT IS A PROP RATHER THAN A LOOKUP because blockedReason owes the gate every fact its
+   * clauses read, and two of them read this one. The note on blockedReason spells out why a
+   * partial record is only safe by coincidence: a call site that omitted this would answer both
+   * clauses by ABSENCE, and the button would grey on every blog with a sentence about a
+   * destination the caller simply declined to pass.
+   */
+  destination?: string;
   /**
    * Fired once the CMS has taken the article, so the page can re-read the record.
    *
@@ -94,7 +106,11 @@ export function PublishAction({
     return null;
   }
 
-  const blocked = blockedReason(status, score);
+  const blocked = blockedReason(status, score, destination);
+  // The domain, so an operator reads WHERE the article is going before they press. "Post to
+  // CMS" was unambiguous while there was one destination and is a trap now: the same button on
+  // two brands can mean an internal draft or a live article on a client's public website.
+  const target = destination && destination !== "strategi-cms" ? hostOf(destination) : "CMS";
 
   if (blocked) {
     return (
@@ -105,7 +121,7 @@ export function PublishAction({
           <span className="inline-flex">
             <Button size="sm" variant="outline" disabled>
               <Send data-icon="inline-start" aria-hidden />
-              Post to CMS
+              Post to {target}
             </Button>
           </span>
         </TooltipTrigger>
@@ -153,7 +169,7 @@ export function PublishAction({
           ) : (
             <Send data-icon="inline-start" aria-hidden />
           )}
-          {result ? "Posted to CMS" : "Post to CMS"}
+          {result ? `Posted to ${target}` : `Post to ${target}`}
         </Button>
       </AlertDialogTrigger>
 
@@ -248,17 +264,39 @@ export function PublishAction({
  * reads the approval and the open-suggestion count, and send-to-client.tsx builds it a record
  * carrying all three for precisely this reason.
  */
-function blockedReason(status: BlogStatus, score: number | null): string | null {
+function blockedReason(
+  status: BlogStatus,
+  score: number | null,
+  destination: string | undefined,
+): string | null {
   // BOUND AND NARROWED RATHER THAN READ STRAIGHT OFF THE CALL. GateVerdict is a discriminated
   // union and only its refusing arm carries `blocking`, so the allowed arm has to be answered
   // before the clause can be reached. That shape is deliberate on the contract's side: it makes
   // "the gate said yes" and "the gate said no and here is which clause" two different values a
   // caller cannot confuse, and the cost here is one branch that reads as the sentence it is.
-  const verdict = adminGateVerdict("publish", { record: { status, score }, form: "unread" });
+  const verdict = adminGateVerdict("publish", {
+    record: { status, score, destination },
+    form: "unread",
+  });
   if (verdict.allowed) {
     return null;
   }
   return verdict.blocking?.refusal ?? null;
+}
+
+/**
+ * The brand's destination as a label for a button.
+ *
+ * `site_kind` is a PLATFORM ("wordpress"), not a host, because that is the one thing the client
+ * record can carry without the credential riding along: the stored destination holds a write
+ * credential for a live website, so the engine extracts only the kind in SQL and the URL never
+ * reaches this surface. A platform name is what there is, and "Post to WordPress" says the thing
+ * that matters, which is that this press publishes on the client's own site rather than into our
+ * CMS. The exact host is on the settings card and on the chip after the push, both of which read
+ * it from somewhere that legitimately has it.
+ */
+function hostOf(kind: string): string {
+  return kind.charAt(0).toUpperCase() + kind.slice(1);
 }
 
 /** The CMS reports three outcomes and they are not the same event to an operator. */

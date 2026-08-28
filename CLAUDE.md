@@ -1032,6 +1032,22 @@ waived. It enters the ledger exactly as a 90+ ship does, so its roadmap row lock
 "failed row in the ledger" is an operator's send, not a defect. Below bar the blog also offers
 RETRY, which is an ADDITIONAL affordance and never a replacement for send.
 
+**THE POST DOOR NOW HAS TWO DESTINATIONS AND THEY ARE NOT THE SAME ACT.** A brand's destination
+is one field on its own record (`clients.site`, migration 035), and the door reads it. Posting to
+the STRATEGI CMS files a draft one of our editors reviews, so it releases nothing to anybody and
+the door opens from internal review onwards, exactly as it always has. Posting to the CLIENT'S OWN
+WEBSITE publishes the article LIVE on their domain, so it is the final release and the door opens
+only once THE CLIENT HAS APPROVED IT. That asymmetry is the rule and it is not an oversight in
+either direction: the thing that authorises a final release in this engine is the client's own
+approval, and a CMS draft is not a release. `server/cms/gate.py` `assert_client_approved` is
+where it is enforced, scoped to a website destination, and the dashboard's greyed button is the
+courtesy on top of it exactly as with every other refusal here. A brand with NO destination
+configured cannot post at all: before 035 an unconfigured brand silently posted to the CMS, which
+made "nobody set this up" a state nothing could name, so that migration stamped every brand that
+already existed and an empty destination now means a brand created since. **NO AGENT TOUCHES ANY
+OF THIS.** `server/cms/` is still deletable whole, still imported by nothing in the generation
+pipeline, and still hangs off one operator press.
+
 **A score is not a licence to ship past an open question.** Where the evaluator asked something
 current, the blog is HELD at ANY score, including 96, until the operator answers. Answering is a
 demand, never an offer, and there is no dismiss. If the operator never answers, THE BLOG NEVER

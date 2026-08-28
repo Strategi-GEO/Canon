@@ -18,6 +18,7 @@ import { FieldError } from "@/components/clients/engine-error";
 import { updateClient } from "@/components/clients/wire";
 import { OrgCombobox } from "@/components/shell/org-combobox";
 import { DeleteOrganisationDialog } from "@/components/clients/delete-organisation-dialog";
+import { SiteConnectionCard } from "@/components/clients/site-connection-card";
 import type { Client } from "@/types";
 
 export default function SettingsPage() {
@@ -78,6 +79,12 @@ function BrandSettings({ orgName, brand }: { orgName: string; brand: Client }) {
               orgName={orgName}
               onSaved={onSaved}
             />
+            {/* Directly under Identity, because the CMS routing slug it supersedes is a field
+                ON that card: where a brand's blogs go is one question, and splitting it across
+                two places is how the two come to disagree. Not keyed on a saved value like the
+                two forms around it, because it holds no draft to reset: it reads its own state
+                from the engine and re-reads after every change it makes. */}
+            <SiteConnectionCard slug={client.slug} onSaved={onSaved} />
             {/* Keyed on the saved value so a save resets the draft to what the engine now holds,
                 the same trick IdentityCard uses. */}
             <CustomInstructionsCard
