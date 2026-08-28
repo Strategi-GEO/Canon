@@ -309,7 +309,10 @@ function Connect({
           <Input
             id="site-url"
             value={url}
-            placeholder="https://acme.com/blog"
+            // Deliberately not a plausible domain. `acme` is this repo's example convention in
+            // comments and fixtures, and a placeholder is the one place it would be read as a
+            // real brand's address rather than as a hint.
+            placeholder="https://theirsite.com/blog"
             onChange={(event) => setUrl(event.target.value)}
           />
           <Button
