@@ -172,6 +172,15 @@ export type PortalBlogDetail = {
   sent: string | null;
   /** approved and published only: when the client approved. UTC ISO. */
   approved: string | null;
+  /**
+   * `published` only: the article's own address on the client's site, so the portal can offer a
+   * link out to it beside the "this is live" banner.
+   *
+   * NULL IS ORDINARY. A Strategi CMS push answers with no url, a push recorded before migration
+   * 035 has none, and an unpublished article loses the state that would show it. The banner is
+   * written to read correctly with no button beside it.
+   */
+  live_url: string | null;
 };
 
 export type AnswersBody = {

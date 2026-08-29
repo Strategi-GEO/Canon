@@ -10,6 +10,7 @@ import {
   Check,
   CheckCircle2,
   Clock,
+  ExternalLink,
   Inbox,
   Loader2,
   Lock,
@@ -950,12 +951,29 @@ export function BlogDetail({ org, brand, topic }: { org: string; brand: string; 
           ) : null}
 
           {blog.state === "published" ? (
-            <div className="flex items-start gap-2 rounded-lg border border-ship/20 bg-ship-bg px-4 py-3 text-sm text-ship">
+            <div className="flex flex-wrap items-start gap-x-3 gap-y-2 rounded-lg border border-ship/20 bg-ship-bg px-4 py-3 text-sm text-ship">
               <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden />
-              <span className="leading-relaxed">
+              <span className="min-w-0 flex-1 leading-relaxed">
                 This article is live on your site. It stays here so you can read exactly what
                 went out.
               </span>
+              {/* THE LINK IS THE DESTINATION'S OWN, never one built from the slug: permalink
+                  structure is a per-site setting, so a derived URL is wrong on a good fraction of
+                  sites. Rendered only when the record holds one, so a client is never handed a
+                  link that goes nowhere -- a Strategi CMS push answers with no url at all, and
+                  the sentence above stands perfectly well on its own without a button.
+
+                  IT SAYS "live on your site" AND NOW LETS THEM CHECK. Telling a client their
+                  article is published while giving them no way to open it asks them to take our
+                  word for the one fact they are best placed to verify themselves. */}
+              {blog.live_url ? (
+                <Button size="sm" variant="outline" asChild className="shrink-0">
+                  <a href={blog.live_url} target="_blank" rel="noreferrer">
+                    <ExternalLink data-icon="inline-start" aria-hidden />
+                    View live article
+                  </a>
+                </Button>
+              ) : null}
             </div>
           ) : null}
 

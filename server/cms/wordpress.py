@@ -23,6 +23,14 @@ That URL contains the post type. So connect fetches the blog page the operator p
 one article link on it, and reads that header off the article. No heuristics, no parsing of the
 theme, and it is correct on a site using any custom post type.
 
+WHY THE CATEGORY IS PINNED TOO, and it is the same failure one level down. On a site whose
+permalinks are /%category%/%postname%/ -- a WordPress preset, not an exotic setup -- the category
+IS the URL. Send no category and WordPress files the article under its default one, so an article
+lands at /uncategorized/<slug> while every other article on the site sits at /blogs/<slug>. It is
+published, it is reachable, and it is in a section their blog index does not list. So connect
+reads the categories off the very article it resolved the post type from and pins them: whatever
+section the operator pointed at is the section new articles join.
+
 WE PUBLISH LIVE, NOT AS A DRAFT, and the reason is upstream of this file: the publish door is
 open only once the CLIENT has approved the article in the portal (server/cms/gate.py). The
 review a WordPress draft exists to enable has already happened, so filing a draft would ask the
@@ -88,6 +96,11 @@ def label(site):
     """One line naming the destination, for a button and a settings card."""
     host = urlparse(site.get("url") or "").netloc or "WordPress"
     kind = site.get("post_type_label") or site.get("post_type") or ""
+    # The section is shown beside the type because it is half of where an article actually
+    # lands, and an operator could previously only find out by publishing one and looking.
+    section = site.get("category_label") or ""
+    if kind and section:
+        return f"{host} ({kind} -> {section})"
     return f"{host} ({kind})" if kind else host
 
 
@@ -147,12 +160,18 @@ async def connect(blog_url, creds, *, client=None):
         raise ConnectError(f"WordPress answered {me.status_code} when checking the login.")
 
     # 3. Where the blog actually lives, read off the article's own discovery header.
-    post_type = await _resolve_post_type(page, blog_url, rest_root, auth, client=client)
+    post_type, article_url = await _resolve_post_type(page, blog_url, client=client)
 
     # 4. Confirm the type is one we may publish into, and get its human label.
     types = await _get(f"{rest_root}wp/v2/types?context=edit",
                        client=client, auth=auth, label=_host(blog_url))
     resolved, type_label = _validate_type(types, post_type)
+
+    # 5. Which section of the blog the operator pointed at, so new articles join it rather
+    #    than the site default. Absent on a site with nothing published yet, which is the
+    #    same "unverified" case the post type already falls back on.
+    categories, category_label = await _resolve_categories(
+        article_url, rest_root, auth, client=client)
 
     return {
         "kind": KIND,
@@ -163,6 +182,10 @@ async def connect(blog_url, creds, *, client=None):
         "password": password,
         "post_type": resolved,
         "post_type_label": type_label,
+        # Term ids, exactly as wp/v2 wants them back. Empty means "say nothing about the
+        # category at push time", which is the behaviour every connection had before this.
+        "categories": categories,
+        "category_label": category_label,
         # True only when an actual article told us the type. False means we fell back to the
         # WordPress default because the site has nothing published yet, and the settings card
         # says so rather than claiming a confidence it does not have.
@@ -170,14 +193,18 @@ async def connect(blog_url, creds, *, client=None):
     }
 
 
-async def _resolve_post_type(page, blog_url, rest_root, auth, *, client=None):
-    """The rest_base the client's blog renders from, or "" when nothing is published yet.
+async def _resolve_post_type(page, blog_url, *, client=None):
+    """(rest_base, article REST url) for the blog, or ("", "") when nothing is published yet.
 
     Tries the pasted page as an article first, because an operator who pastes a post URL has
     given us the exact answer and there is no reason to go looking for a different one.
+
+    The article's own REST url comes back alongside the type because the SAME article answers
+    the second question connect asks -- which section new posts belong in -- and it was already
+    being thrown away here.
     """
-    direct = _alternate_post_type(page)
-    if direct:
+    direct = _alternate(page)
+    if direct[0]:
         return direct
 
     # An archive, then. Its article links are what carry the header, and they sit among a nav,
@@ -200,10 +227,55 @@ async def _resolve_post_type(page, blog_url, rest_root, auth, *, client=None):
             continue
         if article.status_code >= 400:
             continue
-        found = _alternate_post_type(article)
-        if found:
+        found = _alternate(article)
+        if found[0]:
             return found
-    return ""
+    return "", ""
+
+
+async def _resolve_categories(article_url, rest_root, auth, *, client=None):
+    """(term ids, one-line label) for the section the exemplar article sits in.
+
+    ([], "") ON EVERY UNCERTAINTY, and that is not laziness about errors: an empty list means
+    push says nothing about the category, which is exactly what it did before this existed. So
+    a site with nothing published, a custom post type carrying no categories, or an unreadable
+    response all degrade to the old behaviour rather than to a wrong section. Connect must not
+    fail over this either -- the post type is what it is really proving, and refusing a working
+    connection because a category lookup 500'd would trade a working destination for a cosmetic.
+
+    ONLY `categories`, deliberately. WordPress builds a URL from a term for exactly one
+    taxonomy, the built-in %category% on posts; a custom post type's permalink is rewritten
+    from the post type slug, not from any term. Copying an exemplar's tags across every future
+    article would also be plain wrong, because tags describe an article and a section does not.
+    """
+    if not article_url:
+        return [], ""
+    try:
+        article = await _get(f"{article_url}?context=edit&_fields=categories",
+                             client=client, auth=auth, label=_host(article_url))
+        if article.status_code >= 400:
+            return [], ""
+        ids = [int(t) for t in (article.json() or {}).get("categories") or []]
+    except (TransportError, ValueError, TypeError, AttributeError):
+        return [], ""
+    if not ids:
+        return [], ""
+
+    # The names, purely so the settings card can SAY where articles will land. This whole
+    # class of bug is invisible from every surface, so showing the answer is the cheap half
+    # of fixing it. A failure here costs the label and never the ids.
+    names = []
+    try:
+        listing = await _get(
+            f"{rest_root}wp/v2/categories?include={','.join(str(i) for i in ids)}"
+            f"&_fields=id,name&per_page=100",
+            client=client, auth=auth, label=_host(rest_root))
+        if listing.status_code < 400:
+            names = [str(t.get("name") or "") for t in (listing.json() or [])
+                     if isinstance(t, dict) and t.get("name")]
+    except (TransportError, ValueError, TypeError):
+        names = []
+    return ids, ", ".join(n for n in names if n)
 
 
 def _validate_type(response, post_type):
@@ -271,6 +343,8 @@ async def push(article, site, remote, *, client=None):
     host = _host(site.get("url") or "")
     endpoint = f"{rest_root}wp/v2/{base}"
 
+    post_id = (remote or {}).get("post_id")
+
     body = {
         "title": article["title"],
         "content": article["body_html"],
@@ -280,11 +354,15 @@ async def push(article, site, remote, *, client=None):
         body["excerpt"] = article["excerpt"]
     if article.get("slug"):
         body["slug"] = article["slug"]
+    if not post_id and site.get("categories"):
+        # At creation the category decides the URL on a /%category%/%postname%/ site, so
+        # leaving it unsaid files the article under the site default, away from every other
+        # article. An UPDATE is handled below, where the post's current sections are known.
+        body["categories"] = site["categories"]
     # author is deliberately absent: the article lands under the user whose application
     # password we are holding, which is the correct byline on a client's own site. The
     # Strategi CMS byline in cms/payload.py is Strategi's own and must not travel here.
 
-    post_id = (remote or {}).get("post_id")
     if post_id:
         existing = await _get(f"{endpoint}/{post_id}?context=edit",
                               client=client, auth=auth, label=host)
@@ -298,6 +376,21 @@ async def push(article, site, remote, *, client=None):
             # produce. Reported as a success, because the article IS published: nothing is
             # broken, we simply declined to clobber a newer version.
             return _receipt(existing, created=False, updated=False, skipped="edited_on_site")
+        drifted = _drifted_section(existing, site.get("categories"))
+        if drifted:
+            # THE ARTICLE IS NOT IN THE BLOG SECTION AT ALL, so put it back. Without this an
+            # article that was ever created in the wrong section can never be moved out of it
+            # from the app: every later press takes this branch, and a branch that says nothing
+            # about the category leaves the article wherever it first landed. That is the state
+            # this whole change exists to make impossible, so leaving one door to it open would
+            # only move the bug.
+            #
+            # SHARING ANY PINNED SECTION IS LEFT ALONE, which is what keeps this from fighting
+            # the client. An article in blogs, or in blogs AND their own extra category, is
+            # where it belongs and its URL is not touched. Only an article filed entirely
+            # outside the blog section is moved, and "entirely outside" is the site default
+            # every unfiled post lands in.
+            body["categories"] = drifted
         response = await _post(f"{endpoint}/{post_id}", body,
                                client=client, auth=auth, label=host)
     else:
@@ -311,6 +404,121 @@ async def push(article, site, remote, *, client=None):
         raise TransportError(_error_message(response), status=response.status_code)
 
     return _receipt(response, created=not post_id, updated=bool(post_id), skipped=None)
+
+
+async def unpublish(site, remote, *, force=False, hard=False, client=None):
+    """Take one published article back off the client's site. Returns a receipt like push's.
+
+    THE INVERSE OF push(), AND IT IS A STATUS FLIP RATHER THAN A DELETE. push sends
+    {"status": "publish"} (see the module docstring); this sends {"status": "draft"}. A drafted
+    post is unreachable to the public: WordPress answers its URL with the theme's 404 for anyone
+    without edit rights, it leaves the blog index, the feed and the sitemap, and the article,
+    its body, its slug and its whole revision history stay exactly where they were.
+
+    WHY NOT ONE OF THE OTHER FOUR THINGS THIS COULD MEAN. Each was considered and each is worse:
+
+      status=private   Anyone signed in to their own site still sees it, prefixed "Private:".
+                       A button that says the article is off the site would be lying to the
+                       operator about what a logged-in editor sees.
+      status=pending   Files the article in the client's editorial review queue, asserting a
+                       workflow that never happened and putting our act in their inbox.
+      DELETE (trash)   WordPress renames post_name to "<slug>__trash", RELEASING THE SLUG. If
+                       anyone creates a post at that slug in the interval, a later re-publish
+                       lands at "<slug>-2" and the original URL 404s forever. On a product whose
+                       whole business is being cited at a stable URL that is the one irreversible
+                       outcome, so it is behind `hard` and never the default.
+      DELETE ?force    Permanent, and it invalidates cms_post_id: every later Post press then
+                       hits push()'s "no longer exists" branch and fails forever. It is exactly
+                       the "destroy their work silently" outcome push() refuses to produce,
+                       executed deliberately.
+
+    `hard=True` is the operator explicitly asking for the trash can, and it is offered because
+    the operator asked for delete semantics by name. It still uses the ordinary trash rather
+    than ?force=true, so the client can restore it from their own Trash: an irreversible
+    purge of a client's content is not something this engine should be able to do at all.
+
+    ORDER IS LOAD-BEARING AND IS WHAT MAKES THIS RETRY-SAFE. The GET comes first and four
+    branches return WITHOUT writing:
+
+      404                     -> skipped="gone". Somebody deleted it there; nothing to do.
+      status is not "publish" -> skipped="already_draft". THIS IS THE IDEMPOTENCE. If the record
+                                 write failed after a successful flip, the retry finds a post we
+                                 already drafted and stops. Without it the retry would fall to
+                                 _edited_since, which compares against a modified stamp OUR OWN
+                                 flip just bumped, and would tell the operator the client edited
+                                 an article nobody touched.
+      edited since our push   -> skipped="edited_on_site", unless force. push() refuses this
+                                 outright because overwriting DESTROYS their work; a status flip
+                                 destroys nothing, so the ban does not carry over whole. What
+                                 does carry is push()'s other word, SILENTLY: the operator is
+                                 told, names the date, and decides. force=True is that decision.
+    """
+    rest_root = site.get("rest_root") or f"{site['url'].rstrip('/')}/wp-json/"
+    base = site.get("post_type") or "posts"
+    auth = (site.get("user") or "", site.get("password") or "")
+    host = _host(site.get("url") or "")
+    endpoint = f"{rest_root}wp/v2/{base}"
+
+    post_id = (remote or {}).get("post_id")
+    if not post_id:
+        raise TransportError(
+            f"The record holds no post id for this article on {host}, so there is nothing to "
+            f"take down.", status=409)
+
+    existing = await _get(f"{endpoint}/{post_id}?context=edit",
+                          client=client, auth=auth, label=host)
+    if existing.status_code == 404:
+        return _receipt(existing, created=False, updated=False, skipped="gone")
+    if existing.status_code >= 400:
+        raise TransportError(_error_message(existing), status=existing.status_code)
+
+    try:
+        current = (existing.json() or {}).get("status")
+    except ValueError:
+        current = None
+    if current is not None and current != "publish" and not hard:
+        return _receipt(existing, created=False, updated=False, skipped="already_draft")
+
+    if not force and _edited_since(existing, (remote or {}).get("pushed_at")):
+        return _receipt(existing, created=False, updated=False, skipped="edited_on_site")
+
+    if hard:
+        # The ordinary trash, never ?force=true: recoverable from the client's own Trash.
+        response = await send("DELETE", f"{endpoint}/{post_id}",
+                              client=client, auth=auth, label=host)
+    else:
+        response = await _post(f"{endpoint}/{post_id}", {"status": "draft"},
+                               client=client, auth=auth, label=host)
+
+    if response.status_code >= 400:
+        raise TransportError(_error_message(response), status=response.status_code)
+    return _receipt(response, created=False, updated=True, skipped=None)
+
+
+def _drifted_section(existing, pinned):
+    """The sections to move an article back into, or [] to say nothing about its sections.
+
+    Answers [] on every uncertainty for the same reason connect pins nothing on one: saying
+    nothing leaves the article exactly where it is, which is always safe, while guessing moves
+    a live URL on a client's site.
+
+    NOT A UNION with what the article already has, and that is the one non-obvious part. The
+    section an article lands in is the one WordPress picks for %category%, which is the lowest
+    term id among its categories. Uncategorized is term 1 on every WordPress install ever made,
+    so it wins that tie against any category created afterwards: adding blogs to an article
+    already in Uncategorized would leave the URL under /uncategorized exactly as before, having
+    changed something and fixed nothing.
+    """
+    pinned = [int(t) for t in (pinned or [])]
+    if not pinned:
+        return []
+    try:
+        current = (existing.json() or {}).get("categories")
+    except (ValueError, AttributeError):
+        return []
+    if not isinstance(current, list) or not current:
+        return []
+    return [] if set(pinned) & {int(t) for t in current if isinstance(t, int)} else pinned
 
 
 def _receipt(response, *, created, updated, skipped):
@@ -438,12 +646,12 @@ def _rest_root(page, blog_url):
     return root if root.endswith("/") else f"{root}/"
 
 
-def _alternate_post_type(response):
-    """The rest_base named by this page's own REST route, or "" when it names none.
+def _alternate(response):
+    """(rest_base, REST url) named by this page's own route, or ("", "") when it names none.
 
     Only singular pages carry it, which is exactly the property being used: an archive
     answering "" is how the caller knows to go looking at the articles on it.
     """
     href = _links(response).get("alternate", "")
     match = _ALTERNATE_ROUTE.search(href)
-    return match.group(1) if match else ""
+    return (match.group(1), href) if match else ("", "")

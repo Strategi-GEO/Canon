@@ -320,7 +320,8 @@ export type AdminAction =
    */
   | "send"
   /** Push it to the CMS. */
-  | "publish";
+  | "publish"
+  | "unpublish";
 
 const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   // A run owns the artifact while it is live. Every door is shut, including the ones a stopped
@@ -435,7 +436,19 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   // client has it), and not publish again. A re-push after an edit is not reachable because
   // the edit is not either; a genuinely broken push is re-driven from the CMS itself, which is
   // where a published post is administered.
-  published: [],
+  // UNPUBLISH IS THE ONE VERB A PUBLISHED ARTICLE GETS, and it reverses this bench's emptiness
+  // narrowly rather than abandoning the reason for it. That reason was, and still is, that the
+  // article's CONTENT is now the client's: not edit, because the bytes are published; not send,
+  // because they already have it; not delete, because a reader may be on the page. Every one of
+  // those acts on the article. Unpublish acts on our own PUSH, which is the one thing on this
+  // screen that is still ours, and it is the only door out of a mistaken publish that does not
+  // require someone to log in to the client's own WordPress.
+  //
+  // Offered on the STATE alone. Whether this particular brand's destination can retract is a
+  // server fact, so it rides the gate contract (UNPUBLISH_DESTINATION_IS_A_SITE) rather than
+  // being guessed here: a Strategi CMS article is published too, and there is nothing to take
+  // down from a CMS whose whole write surface is one ingest endpoint.
+  published: ["unpublish"],
   // The full admin-review bench plus BOTH exits, because a failed draft the operator has read
   // and likes is theirs to ship either way: `send` releases it to the client on their own
   // authority, and `publish` posts it to the CMS. Neither waits for a rerun to reach 90. A

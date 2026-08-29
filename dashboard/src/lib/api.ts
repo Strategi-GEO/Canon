@@ -30,6 +30,7 @@ import type {
   OrgsResponse,
   OutputFile,
   PublishResult,
+  UnpublishResult,
   SiteConnection,
   SiteDetection,
   SiteField,
@@ -886,6 +887,29 @@ export const api = {
     }),
 
   /**
+   * Take one published article back off the client's own website. DELETE on the publish path,
+   * because it is exactly that act's inverse rather than a new noun.
+   *
+   * `force` is the operator answering the 409 they were just shown: somebody edited the article
+   * on the client's own site since we published it, and taking it down hides their version.
+   * Never sent on the first press -- the whole point is that the second press is informed.
+   *
+   * `hard` moves the article to the client's Trash instead of back to a draft. Both leave it
+   * unreachable to a reader; the difference is that a trashed post RELEASES ITS SLUG, so a later
+   * re-publish can land at a different URL and the original 404s for good. Draft is the default
+   * for that reason and hard is only ever an explicit ask.
+   */
+  unpublishBlog: (slug: string, topicSlug: string,
+                  opts?: { force?: boolean; hard?: boolean }) => {
+    const q = new URLSearchParams();
+    if (opts?.force) q.set("force", "true");
+    if (opts?.hard) q.set("hard", "true");
+    const tail = q.toString() ? `?${q}` : "";
+    return request<UnpublishResult>(
+      `/api/clients/${slug}/blogs/${topicSlug}/publish${tail}`, { method: "DELETE" });
+  },
+
+  /**
    * WHERE THIS BRAND'S BLOGS PUBLISH (migration 035). Admin-only, all four, because the stored
    * destination holds a write credential for a client's live website: there is no viewer-safe
    * version of these that anything needed. The engine strips every secret field before it
@@ -908,7 +932,7 @@ export const api = {
   siteDetect: (slug: string, url: string) =>
     request<SiteDetection>(`/api/clients/${slug}/site/detect`, {
       method: "POST",
-      body: JSON.stringify({ url }),
+      body: { url },
     }),
 
   /**
@@ -920,7 +944,7 @@ export const api = {
   siteConnect: (slug: string, kind: string, url: string, credentials: Record<string, string>) =>
     request<SiteConnection>(`/api/clients/${slug}/site/connect`, {
       method: "POST",
-      body: JSON.stringify({ kind, url, credentials }),
+      body: { kind, url, credentials },
     }),
 
   /** Forget the destination and its credential. The Post button goes dark for this brand. */

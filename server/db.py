@@ -249,7 +249,28 @@ def pool():
                     "DATABASE_URL is not set in server/.env; the engine cannot "
                     "reach its store. Nothing falls back to disk: a silent disk "
                     "fallback is how two sources of truth are born.")
+            # max_idle RETIRES A CONNECTION BEFORE THE SERVER KILLS IT, and it is the cheap
+            # half of the fix whose expensive half was rejected on measurement. Supabase sits
+            # behind pgbouncer, which closes connections that have been idle, and psycopg_pool
+            # hands one out WITHOUT validating it. The caller then gets a corpse and its FIRST
+            # statement raises "server closed the connection unexpectedly" -- not at checkout,
+            # where the pool could have retried, but inside the caller, where it looks like the
+            # statement failed. server/notify.py's 120s poll is what surfaced it.
+            #
+            # check=ConnectionPool.check_connection is the pool's own answer and it was MEASURED
+            # AND REJECTED: it pings on every checkout and cost +39ms median against this DSN, on
+            # top of a 60ms baseline. runner.run_topic calls blog_edit.approved_at synchronously
+            # on the event loop, deliberately (its own comment says a cancellation point there
+            # would unwind past the arm that writes the terminal line), so 39ms of extra blocking
+            # per checkout is paid by the loop every time. tests/stop_check.py caught it as five
+            # failures: the cancel began landing before run_topic reached its try block.
+            #
+            # So the cost is paid ONLY when the failure happens. max_idle keeps connections
+            # younger than any sane server timeout, which prevents most of it for free, and q()
+            # retries the dropped-connection class once, which covers the rest including a
+            # network blip max_idle cannot see.
             _POOL = ConnectionPool(dsn, min_size=1, max_size=5, open=True,
+                                   max_idle=180.0,
                                    kwargs={"autocommit": True})
             import atexit
             atexit.register(close_pool)
@@ -268,7 +289,33 @@ def close_pool():
 
 
 def q(sql: str, params=None, fetch: str = "all"):
-    """Run one statement. fetch: 'all' | 'one' | 'val' | 'none'."""
+    """Run one statement. fetch: 'all' | 'one' | 'val' | 'none'.
+
+    RETRIED ONCE, AND ONLY FOR A CONNECTION THAT WAS ALREADY DEAD. See pool() for why the
+    per-checkout ping was rejected: this pays for the failure instead of taxing every caller.
+
+    THE RETRY IS SAFE ONLY BECAUSE OF WHAT IT CATCHES. A pooled connection closed by the
+    server has not received the statement at all, so re-running it cannot double-apply
+    anything -- there is no partially executed insert to worry about, which is the usual
+    reason a blind retry is wrong. psycopg raises OperationalError for exactly that class.
+    Every other error, including a genuine SQL error, IS NOT RETRIED: re-running a statement
+    the server rejected on its merits just produces the same rejection a second time.
+
+    Once, never a loop. If a fresh connection from the pool also fails, the database is down
+    and the caller needs to hear that now rather than after four backoffs."""
+    from psycopg import OperationalError
+    try:
+        return _q_once(sql, params, fetch)
+    except OperationalError:
+        # Discard whatever the pool is holding so the retry cannot draw the same corpse.
+        try:
+            pool().check()
+        except Exception:
+            pass
+        return _q_once(sql, params, fetch)
+
+
+def _q_once(sql: str, params=None, fetch: str = "all"):
     with pool().connection() as conn, conn.cursor() as cur:
         cur.execute(sql, params)
         if fetch == "none" or cur.description is None:

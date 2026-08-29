@@ -33,6 +33,7 @@ import { BlogEditor } from "@/components/blogs/blog-editor";
 import { MarkdownActions } from "@/components/blogs/markdown-actions";
 import { MarkdownView } from "@/components/blogs/markdown-view";
 import { PublishAction } from "@/components/blogs/publish-action";
+import { UnpublishAction } from "@/components/blogs/unpublish-action";
 import { SendToClient } from "@/components/blogs/send-to-client";
 import { CommentableArticle, type SelectionDraft } from "@/components/blogs/selection-comments";
 import { extractScore } from "@/components/blogs/markdown";
@@ -499,6 +500,41 @@ function StageBody({
    */
   const canSend = adminCan(state, "send") && adminGateAllows("send", gateInput);
   const canPublish = adminCan(state, "publish") && adminGateAllows("publish", gateInput);
+  // UNPUBLISH NEEDS BOTH HALVES, and neither implies the other.
+  //
+  // The STATE says an article of ours is published. The DESTINATION says whether it is on a
+  // website we can reach: an article pushed to the Strategi CMS is `published` too, and there
+  // is nothing there to take down, because that path's whole write surface is one ingest
+  // endpoint. The engine refuses it either way (gate.assert_site_destination), so this is the
+  // courtesy half -- but it is the half that decides whether an operator sees a button whose
+  // only possible outcome is a 409.
+  //
+  // published_to is the ARTICLE's own host, not the brand's current destination. A brand moved
+  // from WordPress to the CMS still has old articles live on WordPress, and those are exactly
+  // the ones somebody needs to take down.
+  const publishedTo = reviewState.published_to ?? null;
+  /**
+   * ITS OWN GATE INPUT, AND THE ONE FIELD THAT DIFFERS IS THE WHOLE REASON.
+   *
+   * gateRecord.destination is the BRAND's current destination, which is the right fact for a
+   * publish: it decides where a press would send the article. It is the WRONG fact for a
+   * retraction, which acts on a push that already happened. Move a brand from WordPress to the
+   * CMS and its old articles are still live on WordPress, and those are exactly the ones
+   * somebody needs to take down; asked with the brand's fact, the contract would refuse every
+   * one of them and the operator would have no door.
+   *
+   * So the article's own published_to is substituted, and nothing else about the input changes.
+   * `undefined` while the review read is in flight keeps failing closed, as everywhere else here.
+   */
+  const unpublishGateInput: GateInput = {
+    ...gateInput,
+    record: { ...record, destination: publishedTo ?? undefined },
+  };
+  const canUnpublish =
+    !HOSTED_READONLY &&
+    adminCan(state, "unpublish") &&
+    Boolean(reviewState.published) &&
+    adminGateAllows("unpublish", unpublishGateInput);
   /**
    * THE `answer` VERB IS TWO DOORS AND BOTH GATE ON THE FORM, NEVER ON THE STATUS. Rounds four and
    * five of one defect were both this flag, and the second one is why nothing here restates a rule
@@ -832,6 +868,22 @@ function StageBody({
             url={reviewState.cms_url ?? null}
             destination={reviewState.published_to ?? null}
           />
+          {/* Beside the chip that reports the push, because it is that push being reversed.
+              The chip also carries the "View on <host>" link, so the row reads: what happened,
+              where to see it, and how to undo it. */}
+          {canUnpublish ? (
+            <UnpublishAction
+              brandSlug={brandSlug}
+              topicSlug={topicSlug}
+              destination={publishedTo ?? ""}
+              onUnpublished={() => {
+                // Same reason PublishAction refreshes: the record moved, and without this the
+                // operator reads the same chip and the same buttons and presses again.
+                void loadReview();
+                onChanged();
+              }}
+            />
+          ) : null}
           {/* GONE RATHER THAN GREYED wherever the state refuses them, both of these.
 
               A disabled Post to CMS on an article the client has not approved yet, or a

@@ -300,8 +300,14 @@ test("adminActions: the full policy, state by state", () => {
     // The approved lock covers the bytes; publish is the one act that changes nothing the
     // client approved.
     approved: ["publish"],
-    // TERMINAL AND EMPTY: the article is live in the CMS and there is nothing left to offer.
-    published: [],
+    // ONE VERB, AND IT ACTS ON OUR PUSH RATHER THAN ON THE ARTICLE. This bench was empty and the
+    // reason still holds for everything absent from it: the CONTENT is the client's now, so not
+    // edit (the bytes are published), not send (they already have it), not delete (a reader may
+    // be on the page). Unpublish reverses the one thing on this screen that is still ours, and
+    // it is the only door out of a mistaken publish that does not need somebody logging in to
+    // the client's own WordPress. Whether this particular article's destination can retract is
+    // a server fact and rides the gate contract, not this table.
+    published: ["unpublish"],
     // The admin-review bench plus BOTH ship doors, and the client-facing one is now `send`, the
     // same verb internal_review carries. A separate `promote` verb described the identical act
     // with a different word and put two buttons on one bench; the engine promotes a failed topic
@@ -364,9 +370,14 @@ test("an approved article is locked for BOTH sides", () => {
   }
   // Posting is the one act left on approved, because it changes nothing about the article.
   assert.equal(adminCan("approved", "publish"), true);
-  // Published is terminal and offers NOTHING, publish included: the article is live in the
-  // CMS and a published post is administered there, not from this bench.
-  assert.deepEqual([...adminActions("published")], []);
+  // Published offers EXACTLY ONE verb, and the assertion is deliberately the pair rather than
+  // a length: unpublish is present, and every act that touches the BYTES the client approved is
+  // still absent. That is the invariant this test exists for. It used to be spelled as an empty
+  // bench, which asserted the invariant and a policy choice in one line and could not tell them
+  // apart; unpublish reverses the policy and leaves the invariant exactly where it was, because
+  // it acts on OUR push and not on the article.
+  assert.deepEqual([...adminActions("published")], ["unpublish"]);
+  assert.equal(adminCan("published", "unpublish"), true);
 });
 
 test("the admin cannot touch the BYTES of an article the client is reading", () => {
@@ -693,6 +704,14 @@ function lowerLayerAccepts(
     // approved against which is latest, which BlogStateFacts does not carry. Modelling a rule
     // this record cannot express would be inventing a refusal.
     case "publish":
+      return true;
+    // NOT GATED ON ANY FACT IN THIS RECORD EITHER, and for a sharper reason than publish's.
+    // The retraction's only clause reads the ARTICLE'S DESTINATION, which the gate contract
+    // decides and which this record does not carry: BlogStateFacts has no destination field,
+    // by design, because where an article was pushed is not part of where it SITS. Restating
+    // the clause here would mean inventing that field and then agreeing with myself about it,
+    // which is the exact defect the header above this function describes.
+    case "unpublish":
       return true;
   }
 }

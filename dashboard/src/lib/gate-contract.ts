@@ -216,6 +216,7 @@ export type GateSourceId =
   | "api_publish_blog"
   | "assert_publishable"
   | "assert_destination"
+  | "assert_site_destination"
   | "assert_client_approved"
   | "promote_if_failed"
   | "cms_record_blog"
@@ -1125,6 +1126,24 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
       "created since, which is exactly the one that needs asking.",
     exemptions: [],
   },
+  // THE RETRACTION'S OWN DESTINATION CHECK, and it is a SEPARATE source from assert_destination
+  // rather than a reuse, because the two answer different questions about the same field.
+  // assert_destination asks whether a destination is configured at all; this asks whether that
+  // destination is one an article can be taken DOWN from. The Strategi CMS passes the first and
+  // fails the second: its whole write surface is POST /api/v1/ingest, and /api/v1/posts answers
+  // DELETE and PATCH with 405, so nothing can retract what was filed there.
+  assert_site_destination: {
+    file: "server/cms/gate.py",
+    symbol: "assert_site_destination",
+    kind: "python",
+    fingerprint: "d87e4ede85a418ac",
+    gates: ["unpublish"],
+    what:
+      "Refuses an unpublish for a brand whose articles are not on a website this engine can " +
+      "reach: no destination at all, or the Strategi CMS, where an article went as a draft " +
+      "that was never public and which exposes no retraction endpoint.",
+    exemptions: [],
+  },
   assert_client_approved: {
     file: "server/cms/gate.py",
     symbol: "assert_client_approved",
@@ -1853,6 +1872,60 @@ const PUBLISH_DESTINATION_CONFIGURED: GateClause = {
 };
 
 /**
+ * A RETRACTION NEEDS A WEBSITE TO RETRACT FROM.
+ *
+ * Reads the ARTICLE's destination rather than the brand's, for the reason blog-stage states at
+ * the mount: a brand moved from WordPress to the CMS still has old articles live on WordPress,
+ * and those are precisely the ones somebody needs to take down. `unknowable` on an absent field,
+ * like every other unread fact here, so a page that has not loaded the record does not assert
+ * there is a site.
+ */
+/**
+ * A RETRACTION NEEDS A DESTINATION AT ALL, which is the FIRST of this source's two raises.
+ *
+ * It duplicates what assert_destination already refuses one line earlier in the route, and the
+ * duplication is deliberate in the engine: assert_site_destination is correct called on its own,
+ * rather than correct only when something else ran first. Two clauses here rather than one wider
+ * one, because the accounting test pins RAISES and not conditions, and a single clause covering
+ * both would leave one raise undescribed the day somebody deletes the other.
+ */
+const UNPUBLISH_HAS_A_DESTINATION: GateClause = {
+  id: "unpublish_has_a_destination",
+  source: "assert_site_destination",
+  line: 249,
+  condition: "if not kind:",
+  raises: "has no publishing destination set, so there is nothing to take",
+  refusal: "409 no blog destination is configured for this brand",
+  transient: false,
+  decide: ({ record }) =>
+    record.destination === undefined ? "unknowable" : record.destination ? "pass" : "refuse",
+  witness: {
+    passes: withRecord({ destination: "wordpress" }),
+    refuses: withRecord({ destination: "" }),
+  },
+};
+
+const UNPUBLISH_DESTINATION_IS_A_SITE: GateClause = {
+  id: "unpublish_destination_is_a_site",
+  source: "assert_site_destination",
+  line: 254,
+  condition: 'if kind == sites.STRATEGI_CMS:',
+  raises: "went to the Strategi CMS as a draft, not to a website",
+  refusal: "409 this article is not on a website this engine can take it down from",
+  transient: false,
+  decide: ({ record }) =>
+    record.destination === undefined
+      ? "unknowable"
+      : record.destination && record.destination !== "strategi-cms"
+        ? "pass"
+        : "refuse",
+  witness: {
+    passes: withRecord({ destination: "wordpress" }),
+    refuses: withRecord({ destination: "strategi-cms" }),
+  },
+};
+
+/**
  * THE CLIENT'S OWN APPROVAL, AND ONLY WHERE PUBLISHING MEANS THEIR LIVE WEBSITE.
  *
  * The asymmetry is the clause. A push to the Strategi CMS files a DRAFT that an editor of ours
@@ -1909,6 +1982,8 @@ export const ALL_GATE_CLAUSES: readonly GateClause[] = [
   DISMISS_NOT_APPLYING_ENGINE,
   PUBLISH_TOPIC_IS_DONE,
   PUBLISH_DESTINATION_CONFIGURED,
+  UNPUBLISH_HAS_A_DESTINATION,
+  UNPUBLISH_DESTINATION_IS_A_SITE,
   PUBLISH_CLIENT_APPROVED,
   FORM_EXISTS_FOR_ANSWERS,
   FORM_NOT_STALE_FOR_ANSWERS,
@@ -2036,6 +2111,19 @@ export const ADMIN_GATE_DOORS: Record<AdminAction, readonly GateDoor[]> = {
       id: "publish_to_cms",
       what: "push the article to the CMS",
       clauses: [PROMOTES_SCORED_DRAFT, PUBLISH_TOPIC_IS_DONE],
+    },
+  ],
+  // ONE CLAUSE, AND THE SHORTNESS OF THIS LIST IS THE DESIGN RATHER THAN AN OVERSIGHT. The
+  // engine's DELETE deliberately runs neither assert_publishable nor assert_client_approved,
+  // and routes.py carries the reasoning: the commonest reason to retract is that the WRONG
+  // article is live, and such an article's status has usually moved since, so demanding `done`
+  // would strand the mistake on a client's public site. Demanding the client's approval to take
+  // something DOWN would strand the one publish that should never have happened.
+  unpublish: [
+    {
+      id: "unpublish_from_site",
+      what: "take the article back off the client's own website",
+      clauses: [UNPUBLISH_HAS_A_DESTINATION, UNPUBLISH_DESTINATION_IS_A_SITE],
     },
   ],
 };

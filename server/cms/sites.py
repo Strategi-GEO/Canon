@@ -98,6 +98,28 @@ async def push(site, article, remote, *, client=None):
     return await driver.push(article, site, remote, client=client)
 
 
+async def unpublish(site, remote, *, force=False, hard=False, client=None):
+    """Take one published article back off a brand's own website. Raises TransportError.
+
+    UNPUBLISH IS AN OPTIONAL FIFTH NAME, resolved with getattr rather than assumed, and the
+    optionality is the point. `fields`, `label`, `connect` and `push` are what a destination
+    MUST have to be one at all; retraction is a capability some platforms simply do not offer,
+    and the Strategi CMS is the proof already in the tree (POST /api/v1/ingest is the whole of
+    its write surface, so an article filed there can only be taken down inside the CMS itself).
+    A driver that cannot retract stays a perfectly good driver and answers here instead of
+    being unwritable, which is what a required fifth name would have made it.
+    """
+    kind = str((site or {}).get("kind") or "").strip()
+    driver = driver_for(kind)
+    if driver is None:
+        raise UnknownDestination(f"No connector for '{kind}'.")
+    fn = getattr(driver, "unpublish", None)
+    if fn is None:
+        raise UnknownDestination(
+            f"{label_for(site) or kind} articles cannot be taken down from here.")
+    return await fn(site, remote, force=force, hard=hard, client=client)
+
+
 # ---------------------------------------------------------------------------
 # Platform detection
 # ---------------------------------------------------------------------------
@@ -120,6 +142,12 @@ _FINGERPRINTS = [
 # posts at all; the other two need an app registered with the vendor before any credential
 # exists, which is not a connection an operator can complete from this screen.
 UNSUPPORTED = {
+    # Detected by _FINGERPRINTS above but carrying no driver, which is why it needs a sentence
+    # here: without one, a Shopify brand reached connect() and got the bare UnknownDestination
+    # instead of being told what is actually missing.
+    "shopify": "Shopify publishing needs a custom app created in the client's own Shopify "
+               "admin before an Admin API token exists, which is not a connection an operator "
+               "can complete from this screen. Canon cannot publish or unpublish there yet.",
     "squarespace": "Squarespace has no public API for creating posts, so Canon cannot "
                    "publish there. Their articles have to be pasted in by hand.",
     "wix": "Wix publishing needs an app registered with Wix before a credential exists, "

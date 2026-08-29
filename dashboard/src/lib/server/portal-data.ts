@@ -317,6 +317,15 @@ export type PortalBlogCard = {
   sent: string | null;
   /** approved and published only: when the client approved. UTC ISO. */
   approved: string | null;
+  /**
+   * `published` only: the article's own address on the client's site, for a link out to it.
+   *
+   * NULL IS ORDINARY AND MEANS "no link to offer", never "not published". A Strategi CMS push
+   * answers with no url at all, and a push recorded before migration 035 has none either, so the
+   * banner is written to stand on its own and the button appears beside it only when there is
+   * somewhere real to go.
+   */
+  live_url: string | null;
 };
 
 export type PortalOrg = {
@@ -364,6 +373,8 @@ export type PortalBlogDetail = {
   sent: string | null;
   /** approved and published only: when the client approved. UTC ISO. */
   approved: string | null;
+  /** `published` only: the article's address on their site. Null when there is none to offer. */
+  live_url: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -387,6 +398,17 @@ type TopicRow = {
   client_approved_at: string | null;
   /** NULL IS "NO RECORD OF A PUSH", never "not published" (migration 012 has no backfill). */
   published_at: string | null;
+  /**
+   * The article's own address on the client's site, and the host it went to. Granted to
+   * `authenticated` by migration 035 for exactly this: neither carries a credential, they are a
+   * public URL and a hostname.
+   *
+   * NULL FOR A STRATEGI CMS PUSH, which is not a gap. That destination files a draft and answers
+   * with no url, so a client whose brand publishes there has nothing to be linked to; the banner
+   * still says the article is live and simply offers no button.
+   */
+  cms_url: string | null;
+  published_to: string | null;
 };
 type VersionRow = {
   id: string;
@@ -577,7 +599,13 @@ async function fetchBrand(token: string, clientId: string): Promise<BrandData> {
       // published_at joins the select because it is the TOP of blogState's delivery ladder: a
       // live article must not keep reading as merely approved. Migration 012 grants exactly
       // this column to authenticated, and an ungranted column would refuse the whole request.
-      `topics?select=id,slug,title,shipped_version_id,sent_version_id,sent_to_client_at,client_approved_at,published_at` +
+      //
+      // cms_url and published_to ride along so the client can OPEN the article the portal tells
+      // them is live. The banner said "This article is live on your site" and offered no way to
+      // go and look at it, which asks a client to take our word for the one fact they are best
+      // placed to check. Migration 035 granted both for this, and the same rule applies: an
+      // ungranted column here is a 502 for the whole portal, not a missing field.
+      `topics?select=id,slug,title,shipped_version_id,sent_version_id,sent_to_client_at,client_approved_at,published_at,cms_url,published_to` +
         `&client_id=eq.${clientId}&deleted_at=is.null`,
     ),
     pg<VersionRow[]>(
@@ -1174,6 +1202,12 @@ function cardOf(
       fold.state === "approved" || fold.state === "published"
         ? fold.topic.client_approved_at
         : null,
+    // SCOPED TO `published`, and to the CLIENT-FACING state rather than the admin one. A url can
+    // outlive the state that earned it: unpublishing clears published_at but deliberately KEEPS
+    // cms_url ("a url once known stays known"), so an article taken back off their site would
+    // otherwise still hand the client a link to a page that now 404s. Reading fold.state means
+    // the link appears exactly while the article is live and disappears the moment it is not.
+    live_url: fold.state === "published" ? (fold.topic.cms_url ?? null) : null,
   };
 }
 
@@ -1496,6 +1530,12 @@ export async function buildDetail(
       fold.state === "approved" || fold.state === "published"
         ? fold.topic.client_approved_at
         : null,
+    // SCOPED TO `published`, and to the CLIENT-FACING state rather than the admin one. A url can
+    // outlive the state that earned it: unpublishing clears published_at but deliberately KEEPS
+    // cms_url ("a url once known stays known"), so an article taken back off their site would
+    // otherwise still hand the client a link to a page that now 404s. Reading fold.state means
+    // the link appears exactly while the article is live and disappears the moment it is not.
+    live_url: fold.state === "published" ? (fold.topic.cms_url ?? null) : null,
   };
 }
 

@@ -25,6 +25,9 @@ runner parameter's fetch seams below, so they never touch the live record.
 """
 from .. import db
 from . import payload as payload_mod
+# sites, for STRATEGI_CMS alone. No cycle: sites imports wordpress and http and
+# never imports this module.
+from . import sites
 
 
 class PublishRefused(Exception):
@@ -249,6 +252,33 @@ def assert_destination(site, client_slug):
             f"No blog destination is set for '{client_slug}'. Choose where its blogs publish "
             f"in Settings, under Blog destination, before posting.",
             status="no_destination")
+
+
+def assert_site_destination(site, client_slug, topic_slug):
+    """Refuse a retraction for a brand whose articles are not on a website we can reach.
+
+    A SEPARATE REFUSAL FROM assert_destination, because they answer different questions.
+    assert_destination asks "is a destination configured at all"; this asks "is that destination
+    one an article can be taken DOWN from", and the Strategi CMS passes the first and fails the
+    second. Its whole write surface is POST /api/v1/ingest: /api/v1/posts is GET-only and answers
+    DELETE and PATCH with 405, so nothing here can retract what was filed there.
+
+    The refusal is also the honest sentence for that path. An article pushed to the CMS went as a
+    DRAFT and was never public, so "remove it from the client's website" describes something that
+    never happened. If an editor has since taken it live in the CMS, the CMS is where it comes
+    back down.
+    """
+    kind = str((site or {}).get("kind") or "").strip()
+    if not kind:
+        raise PublishRefused(
+            f"'{client_slug}' has no publishing destination set, so there is nothing to take "
+            f"'{topic_slug}' down from.",
+            status="no_destination")
+    if kind == sites.STRATEGI_CMS:
+        raise PublishRefused(
+            f"'{topic_slug}' went to the Strategi CMS as a draft, not to a website, so there is "
+            f"nothing here to take down. If an editor has taken it live, unpublish it in the CMS.",
+            status="not_a_website")
 
 
 def assert_client_approved(site, client_slug, topic_slug, approved_at):

@@ -1054,6 +1054,27 @@ export type PublishResult = {
 };
 
 /**
+ * What DELETE /api/clients/{slug}/blogs/{topic}/publish answers with.
+ *
+ * `skipped` is a SUCCESS in every value it can take here, which is the opposite of nothing and
+ * worth stating: "gone" means the post had already been deleted on the client's site and
+ * "already_draft" means we had already taken it down. Both satisfy what the operator asked for,
+ * so the UI reports them as done rather than as something to retry. The one case that is NOT a
+ * success, an article edited on their site since we published it, never arrives here: the route
+ * answers it with a 409 so the operator can decide, because there the article is still up.
+ */
+export type UnpublishResult = {
+  post_id: string | null;
+  /** The platform's own word for the post now: "draft" after a flip, "trash" after a hard one. */
+  status: string | null;
+  url: string | null;
+  /** The host it came off, for the toast. */
+  destination: string | null;
+  skipped: "gone" | "already_draft" | null;
+  hard: boolean;
+};
+
+/**
  * One selection comment on a shipped blog: someone selected rendered text, wrote an
  * instruction, and a short Claude session applies it to that passage.
  *

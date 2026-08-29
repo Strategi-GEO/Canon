@@ -320,3 +320,100 @@ async def _settle(slug, topic_slug, result, request, *, destination):
         "skipped": result.get("skipped"),
         "preview_token": result.get("preview_token"),
     }
+
+
+@router.delete("/api/clients/{slug}/blogs/{topic_slug}/publish")
+async def api_unpublish_blog(slug: str, topic_slug: str, request: Request,
+                             force: bool = False, hard: bool = False):
+    """Take one published article back off the client's own website.
+
+    DELETE ON THE PUBLISH PATH, not a new noun, because it is exactly the inverse of the POST
+    above: same resource, same admin gate, same attribution, opposite direction.
+
+    WHAT IT DOES NOT CHECK, AND WHY EACH ONE WOULD BE A BUG.
+
+      assert_publishable's literal-`done`. gate.py grounds that check on "an unvetted piece
+      REACHING the CMS is a piece that can reach the client": it is about what is delivered, and
+      this delivers nothing. Applying it here inverts it. The commonest reason to press Unpublish
+      is that the WRONG article is live, and a wrong article's status has usually moved since (a
+      retry, a regeneration that ended failed). Refusing to retract because the blog is no longer
+      `done` would leave the mistake on a client's public site with no door in the app at all.
+
+      assert_client_approved. Publishing "is the final release, and the thing that authorises a
+      final release in this app is the client's own approval". A REMOVAL is not a release.
+      Demanding approval to take something down means the one publish that should never have
+      happened, the unapproved one, is the one that cannot be undone.
+
+      The approval lock. Nothing here inserts into blog_versions or blog_comments, so migration
+      013's triggers do not fire. But the permission rests on the RIGHT ground, because
+      blog_edit.mark_sent also changes no bytes and IS still locked in Python: the rule this
+      codebase follows is not "byte-free acts are allowed", it is NEVER CLEAR A STAMP RECORDING
+      A CLIENT'S ACT. This clears published_at and published_by, which are OURS, and leaves
+      client_approved_at and sent_to_client_at alone.
+
+      promote_if_failed. Appending an operator-authority `done` verdict for a take-down would
+      put a lie on the trail.
+
+      A live-run 409. A run rewrites blog.md; it does not touch the remote post. A refusal with
+      no failure behind it is a stall.
+
+    THE ORDER IS REFUSE, ACT, RECORD, and the record RAISES rather than swallowing. See
+    record_unpublish: the article is down by then, so a swallowed stamp leaves every surface
+    saying it is live on a site it is not on, with a live-link button pointing at a 404.
+    """
+    if not clients_mod.exists(slug):
+        raise HTTPException(status_code=404, detail=f"No client '{slug}'")
+    if not runner.slugify(topic_slug) == topic_slug:
+        raise HTTPException(status_code=404, detail=f"No blog '{topic_slug}'")
+
+    site = clients_mod.read_site(slug)
+    try:
+        gate.assert_destination(site, slug)
+        gate.assert_site_destination(site, slug, topic_slug)
+    except gate.PublishRefused as refused:
+        raise HTTPException(status_code=409, detail=str(refused))
+
+    # What the record knows about this article on their site. None means nothing was ever
+    # pushed there, which is a 409 and not a 404: the blog exists, it simply is not on a site.
+    remote = record.remote_article(slug, topic_slug)
+    if remote is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{topic_slug}' has never been posted to {sites.host_of(site)}, so there "
+                   f"is nothing to take down.")
+
+    try:
+        result = await sites.unpublish(site, remote, force=force, hard=hard)
+    except sites_http.TransportError as cause:
+        raise HTTPException(status_code=_status_for(cause.status), detail=str(cause))
+    except sites.UnknownDestination as cause:
+        raise HTTPException(status_code=409, detail=str(cause))
+
+    # EDITED ON THEIR SITE IS A REFUSAL HERE, NOT A SUCCESS, and that is the one place this
+    # route deliberately differs from the POST. There, `skipped` means "we correctly left it
+    # alone" and the article is where the operator wanted it either way. Here the operator
+    # asked for it to come DOWN and it is still UP, so reporting success would be a lie that
+    # the live-link button would then contradict. 409 with the date, and ?force=true is the
+    # operator answering it having been told.
+    if result.get("skipped") == "edited_on_site":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Somebody edited this on {sites.host_of(site)} after we last published it. "
+                   f"Taking it down hides their version from readers. Nothing they wrote is "
+                   f"deleted. Press again to take it down anyway.")
+
+    record.record_unpublish(
+        slug, topic_slug, result,
+        email=getattr(request.state, "admin_email", None) or None)
+
+    return {
+        "post_id": result.get("post_id"),
+        "status": result.get("status"),
+        "url": result.get("url"),
+        "destination": sites.host_of(site),
+        # "gone" (already deleted on their site) and "already_draft" (we had already taken it
+        # down) are both SUCCESSES: the operator asked for the article not to be public and it
+        # is not. The UI says which, because "it was already down" is worth knowing.
+        "skipped": result.get("skipped"),
+        "hard": bool(hard),
+    }

@@ -833,9 +833,20 @@ test("blog-stage composes EVERY write control from the gate contract, not from a
   );
 
   for (const action of ALL_ACTIONS) {
-    const asks =
-      source.includes(`adminGateAllows("${action}", gateInput)`) ||
-      source.includes(`adminGateStanding("${action}", gateInput)`);
+    // THE INPUT IS MATCHED LOOSELY, THE CALL IS NOT, and the loosening is one case wide.
+    //
+    // This used to demand the literal identifier `gateInput`, which was exactly right while
+    // every act asked about the same record. `unpublish` does not: its clauses read the
+    // ARTICLE's destination and every other act's read the BRAND's, so blog-stage builds
+    // `unpublishGateInput` with that one field substituted. Pinning the identifier would have
+    // forced either a misleading name or a wrong fact, and neither is what this test is for.
+    //
+    // What it still pins is the thing that matters: the control ASKS THE CONTRACT rather than
+    // deciding for itself. A hand rolled boolean beside the bench still fails, which is the
+    // defect this assertion was written for.
+    const asks = new RegExp(
+      `adminGate(Allows|Standing)\\("${action}",\\s*\\w+\\)`,
+    ).test(source);
     assert.ok(
       asks,
       `\n\nblog-stage.tsx does not gate "${action}" on the contract.\n` +

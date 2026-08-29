@@ -871,7 +871,8 @@ def sent_state(client_slug, topic_slug):
     empty = {"sent_to_client": None, "sent_to_client_by": None,
              "client_approved": None, "client_approved_by": None,
              "changes_requested": 0, "change_round_open": False,
-             "published": None, "published_by": None, "cms_status": None}
+             "published": None, "published_by": None, "cms_status": None,
+             "cms_url": None, "published_to": None}
     tid = db.topic_id(client_slug, topic_slug)
     if tid is None:
         return empty
@@ -891,13 +892,21 @@ def sent_state(client_slug, topic_slug):
                              and c.parent_id is null
                              and t.sent_to_client_at is not null
                              and c.created_at > t.sent_to_client_at),
-                  t.published_at, t.published_by, t.cms_status
+                  -- cms_url AND published_to RIDE ALONG, and their absence was a live defect
+                  -- rather than an omission. blog-stage.tsx reads reviewState.published_to to
+                  -- decide whether an article went to a WEBSITE or to the Strategi CMS, and
+                  -- this SELECT was the only thing that could have supplied it: record.py
+                  -- WRITES published_to and the chip READS it, with nothing in between. So the
+                  -- field was always undefined, PublishedChip's toSite test was always false,
+                  -- and every article live on a client's own domain rendered as a grey
+                  -- "Posted to CMS" draft with no link to the page it is actually on.
+                  t.published_at, t.published_by, t.cms_status, t.cms_url, t.published_to
            from topics t where t.id = %s""",
         (tid,), fetch="one")
     if row is None:
         return empty
     (sent_at, sent_by, approved_at, approved_by, changes, round_open,
-     published_at, published_by, cms_status) = row
+     published_at, published_by, cms_status, cms_url, published_to) = row
     return {
         "sent_to_client": sent_at.isoformat() if sent_at else None,
         "sent_to_client_by": sent_by,
@@ -911,6 +920,11 @@ def sent_state(client_slug, topic_slug):
         "published": published_at.isoformat() if published_at else None,
         "published_by": published_by,
         "cms_status": cms_status,
+        # The article's OWN destination and url, never the brand's current ones. A brand that
+        # moves off WordPress after publishing must still label the article by the host it is
+        # actually on, which is why record.py stores published_to per topic and coalesces it.
+        "cms_url": cms_url,
+        "published_to": published_to,
     }
 
 
