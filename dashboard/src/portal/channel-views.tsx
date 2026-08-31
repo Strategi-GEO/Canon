@@ -37,14 +37,20 @@ import type { SortDir, SortKey } from "@/components/blogs/blogs-filter";
 import type { RepurposeChannel } from "@/types";
 
 /**
- * The client's LinkedIn / Medium tab. A near-mirror of the blog library and detail, minus
+ * The client's channel tab (LinkedIn, Medium, Bluesky, X). A near-mirror of the blog library
+ * and detail, minus
  * everything a channel post lacks (no score, no versions, no questions): the client sees the
  * posts the team sent them, in two buckets, and may request a change or approve, exactly as they
  * do a blog. The state vocabulary is the client half of lib/channel-state (Ready to post, Pending
- * comments, Approved, Posted). Medium is this file with channel="medium".
+ * comments, Approved, Posted). Every channel is this file with a different `channel` prop.
  */
 
-const CHANNEL_NAME: Record<RepurposeChannel, string> = { linkedin: "LinkedIn", medium: "Medium" };
+const CHANNEL_NAME: Record<RepurposeChannel, string> = {
+  linkedin: "LinkedIn",
+  medium: "Medium",
+  bluesky: "Bluesky",
+  x: "X",
+};
 
 // ---------------------------------------------------------------------------
 // The library: Ready to post / Posted

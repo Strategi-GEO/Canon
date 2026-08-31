@@ -1540,14 +1540,19 @@ export async function buildDetail(
 }
 
 // ---------------------------------------------------------------------------
-// Channel posts (LinkedIn / Medium) for the client portal. Deliberately OUTSIDE the topic fold:
+// Channel posts (LinkedIn / Medium / Bluesky / X) for the client portal. Deliberately OUTSIDE
+// the topic fold:
 // a channel post has three stamps and no versions/questions/blogState ladder, so the state is
 // derived inline. Client-visible == sent_to_client_at not null, exactly the sent-and-beyond set.
 // The client-safe boundary holds by construction: only the client's own suggestions are read
 // (author=eq.client), and error/edits/context/author_email are never selected.
 // ---------------------------------------------------------------------------
 
-const CHANNELS = new Set(["linkedin", "medium"]);
+// The channels a client may read. Mirrors server/repurpose.py CHANNELS, and deliberately holds
+// ALL FOUR: whether a channel is auto-generated on publish is an engine-side split (AUTO_CHANNELS)
+// and has no bearing on what a client is allowed to see, because a client only ever reads a piece
+// somebody already sent them. An unknown channel answers the same 404 as an out-of-scope brand.
+const CHANNELS = new Set(["linkedin", "medium", "bluesky", "x"]);
 
 type ChannelPostRow = {
   id: string;

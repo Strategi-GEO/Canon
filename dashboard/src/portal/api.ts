@@ -130,7 +130,8 @@ export const api = {
       { method: "POST", body },
     ),
 
-  // Channel posts (LinkedIn / Medium): the same review-loop wires as blogs, keyed additionally by
+  // Channel posts (LinkedIn, Medium, Bluesky, X): the same review-loop wires as blogs, keyed
+  // additionally by
   // channel. suggest and approve go through the portal's own Route Handlers, which call the
   // database's definer functions with the caller's JWT.
   channelList: (brand: string, channel: string, signal?: AbortSignal) =>

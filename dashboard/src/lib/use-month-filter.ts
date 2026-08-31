@@ -7,7 +7,7 @@ import type { RoadmapMonth } from "@/types";
 /**
  * THE MONTH A TAB IS SHOWING, owned in one place because three tabs now ask the same question.
  *
- * Blogs, LinkedIn and Medium all group by the month of the roadmap that planned the work, and
+ * Blogs and every channel tab group by the month of the roadmap that planned the work, and
  * every rule below has to be identical across them: which months exist, which one is the default,
  * and what happens when the one on screen stops existing. A second copy of "default to the latest
  * month, once" is a second copy that drifts, and the failure is silent, one tab quietly showing a

@@ -51,7 +51,7 @@ import threading
 
 import httpx
 
-from server import db
+from server import db, repurpose
 
 log = logging.getLogger(__name__)
 
@@ -268,6 +268,24 @@ _ANSWERS_SQL = """
 """
 
 
+def _channel_piece(channel):
+    """The channel's artifact name for a notification a person reads: "X thread", "Bluesky post".
+
+    THE RAW SLUG WAS BEING INTERPOLATED, and with two channels that read fine because the slug and
+    the name happened to differ only in case. It stopped being fine the moment a channel's slug was
+    not its name: "Acme approved a x post" is what the operator's inbox got. The label map is the
+    one place a channel's name lives, so this reads it rather than restating it.
+
+    THE ARTICLE MOVED INTO THE SENTENCE for the same reason. "a {channel} post" hardcodes "a", and
+    "an X thread" is unreachable from it whatever the label says; every caller here now says
+    "their <piece>", which is both true (the notification is about one brand's own piece) and
+    article-free. A channel the map has not heard of falls back to the slug, because a
+    notification that says something slightly odd is better than one that raises and is never
+    delivered.
+    """
+    return repurpose.CHANNEL_LABELS.get(channel, f"{channel} post")
+
+
 def _client_events() -> list[tuple[str, str, str, str]]:
     """Every client act currently on record, as (kind, dedupe_key, subject, body).
 
@@ -285,10 +303,11 @@ def _client_events() -> list[tuple[str, str, str, str]]:
             "suggestions are resolved or dismissed."))
 
     for key, brand, channel in db.q(_CHANGES_CHANNEL_SQL) or []:
+        piece = _channel_piece(channel)
         out.append((
             "changes_requested", key,
-            f"{brand} requested changes on a {channel} post",
-            f"{brand} has asked for changes on their {channel} post.\n\n"
+            f"{brand} requested changes on their {piece}",
+            f"{brand} has asked for changes on their {piece}.\n\n"
             "It is back with the team until the suggestions are resolved or dismissed."))
 
     for key, brand, topic in db.q(_APPROVED_SQL) or []:
@@ -300,10 +319,11 @@ def _client_events() -> list[tuple[str, str, str, str]]:
             "It is waiting on a CMS push."))
 
     for key, brand, channel in db.q(_APPROVED_CHANNEL_SQL) or []:
+        piece = _channel_piece(channel)
         out.append((
             "client_approved", key,
-            f"{brand} approved a {channel} post",
-            f"{brand} has approved their {channel} post. It is locked and ready to go out."))
+            f"{brand} approved their {piece}",
+            f"{brand} has approved their {piece}. It is locked and ready to go out."))
 
     for key, brand, topic in db.q(_ANSWERS_SQL) or []:
         out.append((

@@ -90,7 +90,7 @@ export function DeleteOrganisationDialog({
               <AlertDialogTitle>Delete {name}?</AlertDialogTitle>
               <AlertDialogDescription>
                 This permanently deletes {name} and everything under it: every blog with its
-                versions and comments, every LinkedIn and Medium post, the roadmap, all reports and
+                versions and comments, every channel post, the roadmap, all reports and
                 analyses, the uploaded resources, and its files on the machine running the engine.
                 It cannot be undone.
               </AlertDialogDescription>

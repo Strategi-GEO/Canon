@@ -53,7 +53,7 @@ CLIENT_ROOTS = [
     DASH / "lib" / "blog-state.ts",
     DASH / "components" / "shell" / "blog-state-tag.tsx",
     # The channel-post state machine + the shared tag chip, client surface for the same reason
-    # blog-state.ts is: the client LinkedIn/Medium views import them as values, so they ship in
+    # blog-state.ts is: the client channel views import them as values, so they ship in
     # the client bundle. channel-state.ts carries CLIENT_TAGS as well as ADMIN_TAGS, exactly like
     # blog-state.ts; state-tag-chip.tsx is the one chip both surfaces render.
     DASH / "lib" / "channel-state.ts",
@@ -240,7 +240,7 @@ CLIENT_WRITES = {
     "portal_suggest_change",
     "portal_approve_blog",
     # The channel-post review loop (032): the client requests a change on, and approves, a
-    # LinkedIn/Medium post. Called from app/api/channel/<brand>/<channel>/<topic>/{suggest,approve}.
+    # channel post. Called from app/api/channel/<brand>/<channel>/<topic>/{suggest,approve}.
     "portal_suggest_channel_change",
     "portal_approve_channel_post",
     # The client's own fact base, and the reason rule 6 no longer forbids a resources route:

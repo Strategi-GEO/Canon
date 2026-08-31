@@ -523,7 +523,7 @@ export const api = {
       { signal },
     ),
 
-  // Channel posts: the review lifecycle for a generated LinkedIn/Medium piece (its own track,
+  // Channel posts: the review lifecycle for a generated channel piece (its own track,
   // server/channel.py). The comment endpoints mirror the blog comment endpoints and return the
   // same BlogComment shape, so the review page reuses CommentableArticle unchanged.
   channelPath: (slug: string, channel: RepurposeChannel, topicSlug?: string) =>

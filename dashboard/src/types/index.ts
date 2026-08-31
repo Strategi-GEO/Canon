@@ -542,7 +542,18 @@ export type RunTopic = {
   terminal?: boolean;
 };
 
-export type RepurposeChannel = "linkedin" | "medium";
+/**
+ * Every channel a shipped blog can be repurposed into. THIS UNION IS THE REGISTRY: the label
+ * maps, the composer URLs and the client portal's name map are all `Record<RepurposeChannel, _>`,
+ * so adding a member here makes the compiler name every place that must learn about it. That is
+ * why there is no separate CHANNELS array on this side to fall out of step with the union.
+ *
+ * `bluesky` and `x` differ from the first two in exactly ONE way, and it is on the engine side,
+ * not here: a CMS publish auto-fires linkedin and medium (server/repurpose.py AUTO_CHANNELS) and
+ * never these two, which are select-then-Generate only. Every surface in this app treats all four
+ * identically.
+ */
+export type RepurposeChannel = "linkedin" | "medium" | "bluesky" | "x";
 
 export type RepurposeBody = {
   topic_slug: string;
@@ -638,7 +649,7 @@ export type RunSummary = {
   phase_started?: string | null;
   topics: RunTopic[];
   /**
-   * "blog" (a Create-Blogs run) or "repurpose" (a LinkedIn/Medium piece). Optional so an engine
+   * "blog" (a Create-Blogs run) or "repurpose" (a channel piece). Optional so an engine
    * one restart behind, which omits it, reads as "blog" and every existing reader is unchanged.
    */
   kind?: "blog" | "repurpose";

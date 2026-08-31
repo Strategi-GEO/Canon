@@ -75,7 +75,9 @@ function labelRank(label: string | null | undefined): [number, number, string] {
 }
 
 /**
- * The LinkedIn / Medium tab, two horizontal sub-tabs over ONE brand's work:
+ * THE ONE CHANNEL TAB. LinkedIn, Medium, Bluesky and X are all this component with a different
+ * `channel` prop; there is no per-channel component and a fifth channel must not add one. Two
+ * horizontal sub-tabs over ONE brand's work:
  *
  *  - NEW: every blog for the brand, each with its own blog-state tag plus a channel tag. A blog
  *    with no post yet is selectable (only a FINISHED blog is); tick any number and Generate turns
@@ -84,7 +86,11 @@ function labelRank(label: string | null | undefined): [number, number, string] {
  *  - CREATED: the generated posts themselves, each opening its own review page (comments ->
  *    resolve with Claude -> send to client -> mark posted).
  *
- * Medium is this component with channel="medium"; the two tabs are identical in every respect.
+ * THE FOUR TABS ARE IDENTICAL IN EVERY RESPECT THIS COMPONENT CAN SEE, and the one difference
+ * between them is deliberately not visible from here: a CMS publish auto-fires linkedin and
+ * medium (server/repurpose.py AUTO_CHANNELS) and never bluesky or x, so those two arrive here
+ * only through the Generate button this tab already offers. That is a fact about what fills the
+ * Created sub-tab, not about how it renders, so nothing in this file branches on it.
  */
 export function ChannelLibrary(props: {
   orgSlug: string;
@@ -423,12 +429,12 @@ export function ChannelLibrary(props: {
   /**
    * THREE ACTS, NOT FOUR, and the missing one is Post to CMS.
    *
-   * The CMS is the brand's own website, and a LinkedIn post goes to LinkedIn: pushing the same
+   * The CMS is the brand's own website, and a channel piece goes to its channel: pushing the same
    * article to the site twice is duplicate content, which is the thing the CMS gate exists to stop.
-   * Posting to the channel itself is not bulkable either, because neither LinkedIn nor Medium
-   * accepts a pre-filled body by URL, so PostToChannel copies the text and opens ONE composer.
-   * Eight of those is eight tabs and one clipboard. It stays on the review page, one post at a
-   * time, which is the only shape the platforms allow.
+   * Posting to the channel itself is not bulkable either, because no channel here accepts a
+   * pre-filled body by URL that PostToChannel can rely on, so it copies the text and opens ONE
+   * composer. Eight of those is eight tabs and one clipboard. It stays on the review page, one
+   * piece at a time, which is the only shape the platforms allow.
    */
   const pickedPosts = React.useMemo(
     () => sortedPosts.filter((p) => postsPicked.has(p.source_topic_slug)),

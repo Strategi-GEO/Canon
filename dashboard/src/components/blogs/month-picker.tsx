@@ -4,7 +4,7 @@ import type { RoadmapMonth } from "@/types";
 import { cn } from "@/lib/utils";
 
 /**
- * The month dropdown, shared by Blogs, LinkedIn and Medium.
+ * The month dropdown, shared by Blogs and every channel tab.
  *
  * Its own component for one rule rather than for tidiness: NEWEST FIRST. The engine returns months
  * ascending and the default lands on the latest, so an unsorted list puts the default at the

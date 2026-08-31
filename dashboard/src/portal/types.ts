@@ -202,7 +202,8 @@ export type ApproveBody = {
 };
 
 // ---------------------------------------------------------------------------
-// Channel posts (LinkedIn / Medium) as a client reads them. A subset of the admin machine: no
+// Channel posts (LinkedIn, Medium, Bluesky, X) as a client reads them. A subset of the admin
+// machine: no
 // score, no versions, no questions. The client sees only posts sent to them, in two buckets
 // (Ready to post / Posted), and may request a change or approve, exactly like a blog.
 // ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
-"""Repurpose a shipped blog into one channel-native piece (LinkedIn post, Medium article).
+"""Repurpose a shipped blog into one channel-native piece (LinkedIn post, Medium article,
+Bluesky post, X post).
 
 A repurpose run is a MUCH simpler cousin of a blog run, and it reuses the blog run's
 machinery on purpose so it shows up on every surface a blog run does:
@@ -33,7 +34,35 @@ from . import runner
 
 log = logging.getLogger("geo-factory")
 
-CHANNELS = ("linkedin", "medium")
+# EVERY channel a blog can be repurposed into. Adding one here is most of what a new channel
+# costs on this side: the routes, the record, the review loop and the portal all read this tuple
+# rather than naming a channel, so they inherit the new member without an edit.
+CHANNELS = ("linkedin", "medium", "bluesky", "x")
+
+# The channels the CMS publish hook fires AUTOMATICALLY, which is a STRICT SUBSET of CHANNELS and
+# is the whole reason the two constants are not one. A publish auto-spawns a LinkedIn post and a
+# Medium article because that is what the hook was built for; Bluesky and X are MANUAL ONLY, so
+# the operator ticks the blogs and presses Generate. Iterating CHANNELS in the hook would have
+# made "add a channel" silently mean "and fire it on every publish", which for a short-form
+# channel spends a session per published blog that nobody asked for. app._auto_repurpose_on_publish
+# is the one reader; every other surface reads CHANNELS, because a manual channel is a full
+# channel everywhere else: same record, same tabs, same client review, same delete.
+AUTO_CHANNELS = ("linkedin", "medium")
+
+# The human name of the artifact each channel produces, used in the lead prompt and in the
+# operator-facing copy the runner writes. A dict rather than a conditional for the reason the
+# tuple above is a tuple: the next channel is an entry, not a branch.
+CHANNEL_LABELS = {
+    "linkedin": "LinkedIn post",
+    "medium": "Medium article",
+    "bluesky": "Bluesky post",
+    # A blog repurposed for X is a THREAD and not one post: 280 characters cannot carry a
+    # long-form argument, so x-repurposer writes 5 to 9 posts into the single artifact. The word
+    # here is what the operator reads on a .docx cover and in every send and delete confirmation,
+    # so it names what they will actually be looking at. dashboard/src/lib/channel-state.ts
+    # CHANNEL_LABELS carries the same four words for the same reason.
+    "x": "X thread",
+}
 
 
 def synthetic_slug(source_topic_slug, channel):
@@ -49,12 +78,12 @@ def repurpose_dir(client_slug, source_topic_slug, channel, root=None):
 
 def _lead_prompt(client_slug, source_topic_slug, channel, out_dir):
     skill = f"{channel}-repurposer"
-    label = "LinkedIn post" if channel == "linkedin" else "Medium article"
+    label = CHANNEL_LABELS[channel]
     source = out_dir / "source.md"
     artifact = out_dir / "post.md"
     clients_dir = runner.REPO_ROOT / "clients" / client_slug
     return (
-        f"You are repurposing one finished client blog into a {label} for the client "
+        f"You are repurposing one finished client blog into the {label} for the client "
         f"`{client_slug}`.\n\n"
         f"The source blog is at:\n  {source}\nRead the whole file.\n\n"
         f"The client's binding configuration is under:\n  {clients_dir}/\n"
@@ -79,7 +108,7 @@ async def _sdk_session(client_slug, source_topic_slug, channel, out_dir):
     # fact and every source in the post it writes came out of a draft that was researched, gated,
     # link checked and scored on a machine that did have credentials. The engine now refuses a
     # blog session on a machine with no Firecrawl or DataForSEO credential, and without this the
-    # refusal would take working LinkedIn and Medium runs down with it over a credential this
+    # refusal would take every working channel run down with it over a credential this
     # session was never going to use. The tools still attach; only the refusal is skipped.
     options = runner._session_options(research=False)
     prompt = _lead_prompt(client_slug, source_topic_slug, channel, out_dir)
@@ -144,12 +173,12 @@ async def run_repurpose(client_slug, source_topic_slug, channel, source_body,
         async with runner.topic_slot(client_slug, synthetic, out_dir):
             runner.mark_running(run_id)
             append(str(out_dir), synthetic, stage="write", event="start", iter=1,
-                   status="running", note=f"repurpose to {channel}")
+                   status="running", note=f"repurpose to {CHANNEL_LABELS[channel]}")
             await _sdk_session(client_slug, source_topic_slug, channel, out_dir)
 
         if artifact.is_file() and artifact.stat().st_size > 0:
             append(str(out_dir), synthetic, stage="write", event="end", iter=1,
-                   status="done", note=f"{channel} draft ready")
+                   status="done", note=f"{CHANNEL_LABELS[channel]} ready")
         else:
             append(str(out_dir), synthetic, stage="write", event="end", iter=1,
                    status="failed", note="session produced no post.md")

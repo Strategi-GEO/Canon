@@ -3714,7 +3714,8 @@ async def api_generate(slug: str, body: GenerateRequest,
 
 
 # ---------------------------------------------------------------------------
-# Repurpose: a shipped blog -> one channel-native piece (LinkedIn post, Medium article).
+# Repurpose: a shipped blog -> one channel-native piece (LinkedIn post, Medium article,
+# Bluesky post, X thread).
 # A repurpose run reuses the blog run's registry, semaphore, status feed, SSE tail and stop
 # path (see server/repurpose.py), so it shows up as a running session and is stoppable exactly
 # like a blog run. It is generate -> review only: no eval, no ledger, no record.
@@ -3767,14 +3768,15 @@ async def api_repurpose(slug: str, body: RepurposeRequest,
     existing = channel_mod.get_post(slug, topic_slug, the_channel)
     if existing and existing["state"] in ("approved", "posted"):
         raise HTTPException(status_code=409,
-                            detail=f"this {the_channel} post is {existing['state']} and locked; "
-                                   f"it cannot be regenerated")
+                            detail=f"this {repurpose.CHANNEL_LABELS[the_channel]} is "
+                                   f"{existing['state']} and locked; it cannot be regenerated")
 
     # One live repurpose per (blog, channel): a second is refused, not run, so two clicks never
     # race two sessions onto one post.md.
     if repurpose.live_run_exists(slug, topic_slug, the_channel):
         raise HTTPException(status_code=409,
-                            detail=f"a {the_channel} repurpose for this blog is already running")
+                            detail=f"a repurpose of this blog into the "
+                                   f"{repurpose.CHANNEL_LABELS[the_channel]} is already running")
 
     run_id, topics = await repurpose.spawn(slug, topic_slug, the_channel, source_body)
     return {"run_id": run_id, "topics": topics}
@@ -3810,7 +3812,7 @@ async def api_repurpose_artifact(slug: str, topic_slug: str, channel: str,
 
 
 # ---------------------------------------------------------------------------
-# Channel posts: the review lifecycle for a generated LinkedIn/Medium piece, on its OWN track
+# Channel posts: the review lifecycle for a generated channel piece, on its OWN track
 # (server/channel.py, channel_posts + channel_post_comments). A separate cousin of the blog
 # review loop: no score, no eval, no questions, no ledger. generate -> created -> sent ->
 # client requests changes / approves -> posted. The comment machinery reuses blog_edit's
@@ -3867,7 +3869,12 @@ async def api_channel_download(slug: str, channel: str,
             status_code=404,
             detail=(f"none of the {len(wanted)} selected posts has text to download"
                     if wanted else "name the posts to download"))
-    label = "LinkedIn post" if ch == "linkedin" else "Medium article"
+    # The cover word, from the one map rather than a conditional: a ternary here silently
+    # labelled every channel that was not linkedin as a Medium article, so the first bundle
+    # of X threads would have come out reading "Medium article 1". Python cannot check this
+    # the way the dashboard's Record<RepurposeChannel, _> maps check their side, so the fix
+    # is to have exactly one place that knows a channel's name.
+    label = repurpose.CHANNEL_LABELS[ch]
     data = await asyncio.to_thread(docx_export.build_docx, pieces, label)
     return Response(
         content=data, media_type=docx_export.CONTENT_TYPE,
@@ -3902,8 +3909,9 @@ async def api_add_channel_comment(slug: str, channel: str, topic: str, body: Com
         raise HTTPException(status_code=404, detail="not generated")
     if repurpose.live_run_exists(slug, topic, ch):
         raise HTTPException(status_code=409,
-                            detail=f"a {ch} generation for this blog is live; edit once it "
-                                   f"finishes so the engine's own write is not raced")
+                            detail=f"a {repurpose.CHANNEL_LABELS[ch]} is being generated for this "
+                                   f"blog right now; edit once it finishes so the engine's own "
+                                   f"write is not raced")
     if await asyncio.to_thread(channel_mod.in_flight_count, slug, topic, ch) >= channel_mod.MAX_IN_FLIGHT:
         raise HTTPException(status_code=409,
                             detail=f"{channel_mod.MAX_IN_FLIGHT} changes are already in flight; wait "
@@ -3935,7 +3943,8 @@ async def api_resolve_channel_comment(slug: str, channel: str, topic: str, comme
     ch = _channel_topic_guard(slug, topic, channel, user)
     if repurpose.live_run_exists(slug, topic, ch):
         raise HTTPException(status_code=409,
-                            detail=f"a {ch} generation for this blog is live; resolve once it "
+                            detail=f"a {repurpose.CHANNEL_LABELS[ch]} is being generated for this "
+                                   f"blog right now; resolve once it "
                                    f"finishes")
     found = await asyncio.to_thread(channel_mod.get_comment, slug, topic, ch, comment_id)
     if found is None:
@@ -3983,7 +3992,8 @@ async def api_save_channel_content(slug: str, channel: str, topic: str, body: Co
         raise HTTPException(status_code=404, detail="not generated")
     if repurpose.live_run_exists(slug, topic, ch):
         raise HTTPException(status_code=409,
-                            detail=f"a {ch} generation for this blog is live; edit once it "
+                            detail=f"a {repurpose.CHANNEL_LABELS[ch]} is being generated for this "
+                                   f"blog right now; edit once it "
                                    f"finishes")
     text = body.body
     if not text.strip():
@@ -4045,8 +4055,9 @@ async def api_delete_channel_post(slug: str, channel: str, topic: str,
     ch = _channel_topic_guard(slug, topic, channel, user)
     if repurpose.live_run_exists(slug, topic, ch):
         raise HTTPException(status_code=409,
-                            detail=f"a {ch} generation for this blog is live; delete once it "
-                                   f"finishes so the engine's own write is not raced")
+                            detail=f"a {repurpose.CHANNEL_LABELS[ch]} is being generated for this "
+                                   f"blog right now; delete once it finishes so the engine's "
+                                   f"own write is not raced")
     await asyncio.to_thread(channel_mod.delete_post, slug, topic, ch)
     return None
 
@@ -4058,11 +4069,19 @@ async def _auto_repurpose_on_publish(slug, topic_slug):
     """Spawn a LinkedIn and a Medium post from the freshly published blog, skipping any channel
     that already has a post (never clobber a hand-made one) or one already generating. The blog's
     just-posted bytes ARE its current committed body, which is what a repurpose reads. Best-effort:
-    every failure is logged, never raised, so it can never turn a good publish into a failed one."""
+    every failure is logged, never raised, so it can never turn a good publish into a failed one.
+
+    AUTO_CHANNELS, NOT CHANNELS, AND THAT IS THE WHOLE DIFFERENCE BETWEEN THE TWO KINDS OF TAB.
+    Bluesky and X are in CHANNELS and are NOT in AUTO_CHANNELS, so they get every other surface a
+    channel has (their own tab, record, review loop, client portal view, delete) and are never
+    fired by a publish. Reading CHANNELS here would spend one SDK session per published blog per
+    short-form channel that no operator asked for, which is the opposite of the manual
+    select-then-Generate flow those two tabs exist to provide. A channel joins this loop by being
+    added to AUTO_CHANNELS deliberately, never by being added to CHANNELS."""
     body = await asyncio.to_thread(_resolve_blog_markdown, slug, topic_slug)
     if not body:
         return
-    for ch in repurpose.CHANNELS:
+    for ch in repurpose.AUTO_CHANNELS:
         if await asyncio.to_thread(channel_mod.post_id, slug, topic_slug, ch) is not None:
             continue
         if repurpose.live_run_exists(slug, topic_slug, ch):

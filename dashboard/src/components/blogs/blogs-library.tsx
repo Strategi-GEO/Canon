@@ -156,7 +156,7 @@ function Library({
     }
   }, [legacyPreview, blogHref, router]);
 
-  // Shared with the LinkedIn and Medium tabs, because all three group by the month of the
+  // Shared with every channel tab, because they all group by the month of the
   // roadmap that planned the work and every rule about which month is on screen has to match.
   const { months, month, setMonth, latestMonth, showPicker, label: monthLabel } =
     useMonthFilter(brandSlug);

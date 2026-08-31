@@ -11,8 +11,10 @@
 // used by the client catch-all page to render and by the shell to light the active nav, so
 // the two can never disagree about where the caller is.
 import {
+  AtSign,
   BriefcaseBusiness,
   ChartColumnIncreasing,
+  Cloud,
   Feather,
   FileText,
   LayoutDashboard,
@@ -44,6 +46,11 @@ export const BRAND_NAV: NavItem[] = [
   // and Posted, as query-param tabs within the view (not URL sections).
   { section: "/linkedin", label: "LinkedIn", icon: BriefcaseBusiness },
   { section: "/medium", label: "Medium", icon: Feather },
+  // Bluesky and X read exactly like the two rows above from a client's side. Whether a channel
+  // is auto-generated on publish or hand-picked by an operator is an engine-side distinction; a
+  // client sees only a piece that was sent to them for review, so the tabs are identical.
+  { section: "/bluesky", label: "Bluesky", icon: Cloud },
+  { section: "/x", label: "X", icon: AtSign },
   // The monthly performance report, but only the versions the team has shared. Same section
   // word and icon as the admin dashboard's Reports row, so a client reading over an operator's
   // shoulder sees the same tab.
@@ -60,12 +67,18 @@ const RESERVED = new Set(["admin", "login", "api", "_next", "favicon.ico"]);
  */
 // "resources" is deliberately absent: it is not a client section (migration 024), so
 // /{brand}/resources resolves to not-found rather than a page.
-const SECTIONS = new Set(["blogs", "roadmap", "reports", "linkedin", "medium"]);
+const SECTIONS = new Set(["blogs", "roadmap", "reports", "linkedin", "medium", "bluesky", "x"]);
 
 // Sections that carry a per-item detail URL, /{brand}/<section>/<topic>. Blogs open a single
-// article; linkedin and medium open a single post. Every other section is a flat page, so a third
+// article; every channel opens a single post. Every other section is a flat page, so a third
 // segment under it is not-found. This is the ONE guard the length-3 and length-4 arms consult.
-const TOPIC_SECTIONS = new Set(["blogs", "linkedin", "medium"]);
+//
+// "x" IS A ONE-LETTER SECTION WORD, and the collision it implies was already live for "blogs"
+// and "medium": a brand whose own slug is a section word is unreachable at /{org}/{brand}, since
+// the length-2 arm reads the second segment as a section before it reads it as a brand. Nothing
+// new is introduced here beyond making that pre-existing rule apply to a shorter word, and the
+// resolver's behaviour is unchanged.
+const TOPIC_SECTIONS = new Set(["blogs", "linkedin", "medium", "bluesky", "x"]);
 
 export type OrgLite = {
   slug: string;

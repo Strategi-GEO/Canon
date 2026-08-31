@@ -3,7 +3,8 @@ import { detail, failure, json } from "@/lib/server/http";
 import { buildChannelPosts } from "@/lib/server/portal-data";
 
 /**
- * A brand's channel posts (LinkedIn or Medium), grouped ready-to-post vs posted. Out-of-scope
+ * A brand's channel posts (any of LinkedIn, Medium, Bluesky, X), grouped ready-to-post vs
+ * posted. Out-of-scope
  * and nonexistent answer the same 404, so it cannot be an existence oracle for another org.
  */
 export async function GET(

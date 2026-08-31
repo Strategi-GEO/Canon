@@ -22,7 +22,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError, api } from "@/lib/api";
 import { brandHref } from "@/lib/orgs-context";
 import { HOSTED_READONLY } from "@/lib/hosted";
-import { channelLabel, channelTag } from "@/lib/channel-state";
+import { channelLabel, channelName, channelTag } from "@/lib/channel-state";
 import { useRuns } from "@/lib/runs-context";
 import { formatAbsolute, formatCount, formatRelative } from "@/lib/format";
 import { blogLabels, titleFromSlug } from "@/lib/blog-label";
@@ -230,7 +230,7 @@ export function ChannelReview(props: {
         <Button size="sm" variant="ghost" className="-ml-2 mb-3" asChild>
           <Link href={backHref}>
             <ArrowLeft data-icon="inline-start" aria-hidden />
-            {channel === "linkedin" ? "LinkedIn" : "Medium"}
+            {channelName(channel)}
           </Link>
         </Button>
 

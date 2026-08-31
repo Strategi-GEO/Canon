@@ -113,7 +113,7 @@ export function BlogsTable<T extends BlogTableRow>({
    * lifecycle is its own (lib/channel-state.ts: no score, no questions, no failure verdict), so
    * `stateOf` cannot describe it and BlogStateTag cannot render it. Everything else a row needs,
    * the number, the title link, the created stamp, the sort, the row rhythm, is identical, and the
-   * client's LinkedIn and Medium tabs had a hand-built card list precisely because of this one
+   * client's channel tabs had a hand-built card list precisely because of this one
    * cell. Passing the finished tag keeps the vocabulary with the data that owns it.
    *
    * Absent is the ordinary case: the tag comes from `stateOf` exactly as it always did. Where this

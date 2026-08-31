@@ -1,8 +1,10 @@
 // Map is aliased on principle: the bare name shadows the JS Map constructor, and a file that
 // later builds one would break in a way that reads as a typing error rather than an import.
 import {
+  AtSign,
   BriefcaseBusiness,
   ChartColumnIncreasing,
+  Cloud,
   Feather,
   FileText,
   FolderOpen,
@@ -43,6 +45,16 @@ export const BRAND_NAV: NavItem[] = [
   // filtered to blogs already pushed out, so they sit right after Blogs and before Repurpose.
   { section: "/linkedin", label: "LinkedIn", icon: BriefcaseBusiness },
   { section: "/medium", label: "Medium", icon: Feather },
+  // Bluesky and X are the same tab as the two above, built from the same ChannelLibrary, and
+  // differ in exactly one respect: a CMS publish never auto-generates them (AUTO_CHANNELS in
+  // server/repurpose.py). The operator ticks blogs and presses Generate. That difference is
+  // invisible from here, which is the point: they are ordinary channels everywhere but the hook.
+  //
+  // Icons are metaphors, not logos, matching the two rows above (a briefcase is not LinkedIn's
+  // mark either). Cloud reads as blue sky; the at-sign is the microblog handle. lucide's `X` is
+  // the CLOSE glyph and would read as a dismiss button in a nav, so it is deliberately not used.
+  { section: "/bluesky", label: "Bluesky", icon: Cloud },
+  { section: "/x", label: "X", icon: AtSign },
   // After Blogs because it consumes them: repurposing turns shipped blogs into other
   // formats, so it sits downstream of the library it will draw from.
   { section: "/repurpose", label: "Repurpose", icon: Recycle },

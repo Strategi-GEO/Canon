@@ -437,7 +437,7 @@ function isBlogTab(value: string | null): value is BlogTab {
 }
 
 /** A small count beside a tab label. Absent at zero: a tab that wants nothing says nothing.
- *  Exported so the LinkedIn and Medium tabs wear the same one rather than parentheses. */
+ *  Exported so every channel tab wears the same one rather than parentheses. */
 export function TabCount({ n, tone = "default" }: { n: number; tone?: "default" | "review" }) {
   if (n === 0) {
     return null;

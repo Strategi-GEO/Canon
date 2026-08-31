@@ -101,7 +101,34 @@ export function isRepurposable(state: BlogState): boolean {
   return REPURPOSABLE.has(state);
 }
 
-/** The channel's human label, for buttons and headings. */
+/**
+ * The channel's PLATFORM name, for a heading or a button that names where the piece is going
+ * ("Post to X", "Back to Bluesky"). A Record keyed on the union, so a fifth channel is a compile
+ * error here rather than a page that silently reads "Medium".
+ */
+const CHANNEL_NAMES: Record<RepurposeChannel, string> = {
+  linkedin: "LinkedIn",
+  medium: "Medium",
+  bluesky: "Bluesky",
+  x: "X",
+};
+
+/** The channel's ARTIFACT label, for buttons and headings that name the thing itself ("Send this
+ *  X thread to the client?"). Distinct from the platform name above: one names the destination,
+ *  the other names the deliverable, and the copy needs both. */
+const CHANNEL_LABELS: Record<RepurposeChannel, string> = {
+  linkedin: "LinkedIn post",
+  medium: "Medium article",
+  bluesky: "Bluesky post",
+  // A blog repurposed for X is a thread, not one post: the skill writes 5 to 9 posts into a
+  // single artifact, so the operator-facing word is the one that describes what they will read.
+  x: "X thread",
+};
+
 export function channelLabel(channel: RepurposeChannel): string {
-  return channel === "linkedin" ? "LinkedIn post" : "Medium article";
+  return CHANNEL_LABELS[channel];
+}
+
+export function channelName(channel: RepurposeChannel): string {
+  return CHANNEL_NAMES[channel];
 }

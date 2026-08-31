@@ -869,7 +869,9 @@ create table channel_posts (
   id              uuid primary key default gen_random_uuid(),
   client_id       uuid not null references clients(id) on delete cascade,
   source_topic_id uuid not null references topics(id) on delete cascade,
-  channel         text not null check (channel in ('linkedin','medium')),
+  -- Named to match migration 037, which widened this list on databases built before it.
+  channel         text not null constraint channel_posts_channel_allowed
+                    check (channel in ('linkedin','medium','bluesky','x')),
   body            text not null default '',
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now(),

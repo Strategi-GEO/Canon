@@ -1,5 +1,5 @@
 """Channel posts: a shipped blog repurposed into ONE channel-native piece (a LinkedIn post, a
-Medium article), on their OWN track.
+Medium article, a Bluesky post, an X post), on their OWN track.
 
 This is the SEPARATE-TRACK cousin of the blog review loop. It deliberately does not touch
 topics / blog_versions / blog_comments, so a channel post can never leak into a blog surface
@@ -31,7 +31,7 @@ from . import blog_edit, db, repurpose, runner
 
 log = logging.getLogger("geo-factory")
 
-CHANNELS = repurpose.CHANNELS  # ("linkedin", "medium")
+CHANNELS = repurpose.CHANNELS  # linkedin, medium, bluesky, x
 
 # Same shape as blog_edit: at most this many operator applies open at once, per post; one lock
 # serialises every apply in this process so two sessions never race one post's read-edit-write.

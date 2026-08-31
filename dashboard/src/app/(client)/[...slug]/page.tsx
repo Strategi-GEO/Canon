@@ -7,10 +7,22 @@ import { resolveClientRoute } from "@/portal/nav";
 import { usePortal } from "@/portal/portal-context";
 import { BlogDetail, BlogsLibrary, BrandOverview, OrgChooser } from "@/portal/views";
 import { ChannelLibraryView, ChannelPostDetailView } from "@/portal/channel-views";
+import type { RepurposeChannel } from "@/types";
 import { RoadmapView } from "@/portal/roadmap-view";
 import { ReportsView } from "@/portal/reports-view";
 import { detailText } from "@/portal/api";
 import { Button } from "@/components/ui/button";
+
+/**
+ * The nav sections that render a channel view. Derived from the RepurposeChannel union rather
+ * than written out, so a new channel cannot be added to the type, the nav and the portal data
+ * layer and then silently 404 here because this one arm was never widened. The cast below is
+ * sound for the same reason: membership in this set IS the proof that the section suffix is a
+ * channel.
+ */
+const CHANNEL_SECTIONS = new Set<string>(
+  (["linkedin", "medium", "bluesky", "x"] satisfies RepurposeChannel[]).map((c) => `/${c}`),
+);
 
 /**
  * The client portal's one page. Every client URL lands here, and the resolver classifies it
@@ -83,8 +95,8 @@ export default function ClientCatchAll() {
       <BlogsLibrary org={route.org} brand={route.brand} />
     );
   }
-  if (route.section === "/linkedin" || route.section === "/medium") {
-    const channel = route.section.slice(1) as "linkedin" | "medium";
+  if (CHANNEL_SECTIONS.has(route.section)) {
+    const channel = route.section.slice(1) as RepurposeChannel;
     return route.topic !== null ? (
       <ChannelPostDetailView
         key={`${route.brand}:${channel}:${route.topic}`}
