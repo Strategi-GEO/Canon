@@ -71,7 +71,7 @@ TYPES = {
 
 
 def wp_site(*, types=None, article_headers=None, archive=ARCHIVE_HTML, me_status=200,
-            post_meta=None):
+            post_meta=None, me_body=None, types_status=200):
     """A stub WordPress. `seen` records every request so a test can assert what was called.
 
     `post_meta` is the meta object an existing article hands back under context=edit, which is
@@ -84,12 +84,19 @@ def wp_site(*, types=None, article_headers=None, archive=ARCHIVE_HTML, me_status
         seen.append(f"{request.method} {request.url}")
         path = request.url.path
         if path.startswith("/wp-json/wp/v2/users/me"):
-            return httpx.Response(me_status, json={"name": "Editor"})
+            if me_body is not None:
+                return httpx.Response(me_status, **me_body)
+            return httpx.Response(me_status, json={"id": 7, "name": "Editor"})
         if (post_meta is not None and request.method == "GET"
                 and "context=edit" in (request.url.query or b"").decode()
                 and "_fields=meta" in (request.url.query or b"").decode()):
             return httpx.Response(200, json=[{"meta": post_meta}])
         if path.startswith("/wp-json/wp/v2/types"):
+            if types_status >= 400:
+                return httpx.Response(types_status, json={
+                    "code": "rest_cannot_view",
+                    "message": "Sorry, you are not allowed to edit posts in this post type.",
+                    "data": {"status": types_status}})
             return httpx.Response(200, json=types if types is not None else TYPES)
         if path == "/insights/q3-outlook/":
             return httpx.Response(
@@ -220,11 +227,83 @@ async def run_checks():
     except wordpress.ConnectError as exc:
         check("a non-https site is refused", "https" in str(exc), str(exc))
 
+    # ---- connect: a 2xx that never authenticated ---------------------------------------
+    # MEASURED ON A LIVE CLIENT SITE (ellychildcare.com, 2026-08-31). A hardening plugin 302'd
+    # /wp/v2/users/* to the home page, the transport follows redirects, and the credential check
+    # ended on a 200 carrying 368KB of the site's own HTML. Every later step then ran
+    # unauthenticated: types?context=edit answered 401 rest_cannot_view, _validate_type read that
+    # error body as a map of post types, found no rest_base, and connect blamed the POST TYPE for
+    # a login it had never actually verified. The operator was told their blog renders from
+    # 'posts' but WordPress will not accept posts into it, about a site whose /wp/v2/types lists
+    # post with rest_base "posts".
+    hidden_users = wp_site(me_body={
+        "text": "<!doctype html><html><body>the home page</body></html>",
+        "headers": {"Content-Type": "text/html; charset=UTF-8"}})[0]
+    try:
+        await wordpress.connect("https://acme.com/blog", CREDS, client=hidden_users)
+        check("a 200 that is not the user object is refused", False, "connect succeeded")
+    except wordpress.ConnectError as exc:
+        check("a 200 that is not the user object is refused", True)
+        check("and it names the hidden users endpoint, not the post type",
+              "users" in str(exc) and "post type" not in str(exc), str(exc))
+
+    # THE SITE SAYING IT OFFERS NO AUTHENTICATION AT ALL is the one worth naming outright: core
+    # adds `application-passwords` to the REST index only when the feature is available, so an
+    # empty list means no credential of this kind can ever work there. Without this the operator
+    # regenerates the password forever against a site that cannot accept one.
+    def no_app_passwords(request):
+        path = request.url.path
+        if path == "/wp-json/" or path == "/wp-json":
+            return httpx.Response(200, json={"name": "Acme", "authentication": []})
+        if path.startswith("/wp-json/wp/v2/users/me"):
+            return httpx.Response(401, json={"code": "rest_not_logged_in"})
+        return httpx.Response(200, text=ARCHIVE_HTML, headers={"Content-Type": "text/html"})
+
+    try:
+        await wordpress.connect(
+            "https://acme.com/blog", CREDS,
+            client=httpx.AsyncClient(transport=httpx.MockTransport(no_app_passwords)))
+        check("a site with application passwords off is refused", False, "connect succeeded")
+    except wordpress.ConnectError as exc:
+        check("a site with application passwords off says exactly that",
+              "application passwords" in str(exc).lower(), str(exc))
+
+    # A 401 on a site that DOES advertise application passwords keeps the stripped-header
+    # sentence, which is the one an operator can forward verbatim.
+    def stripped_header(request):
+        path = request.url.path
+        if path in ("/wp-json/", "/wp-json"):
+            return httpx.Response(200, json={
+                "authentication": {"application-passwords": {"endpoints": {"authorization": "x"}}}})
+        if path.startswith("/wp-json/wp/v2/users/me"):
+            return httpx.Response(401, json={"code": "rest_not_logged_in"})
+        return httpx.Response(200, text=ARCHIVE_HTML, headers={"Content-Type": "text/html"})
+
+    try:
+        await wordpress.connect(
+            "https://acme.com/blog", CREDS,
+            client=httpx.AsyncClient(transport=httpx.MockTransport(stripped_header)))
+        check("a rejected login is refused", False, "connect succeeded")
+    except wordpress.ConnectError as exc:
+        check("a rejected login names the Authorization header and the one-line fix",
+              "Authorization" in str(exc) and "htaccess" in str(exc), str(exc))
+        check("and it names LiteSpeed, which is where this was actually measured",
+              "CGIPassAuth" in str(exc), str(exc))
+
+    # A 401 from the TYPES read is about the site, never about the blog section.
+    client, _ = wp_site(types_status=401)
+    try:
+        await wordpress.connect("https://acme.com/blog", CREDS, client=client)
+        check("a 401 on types is refused", False, "connect succeeded")
+    except wordpress.ConnectError as exc:
+        check("a 401 on types blames the site, not the post type",
+              "401" in str(exc) and "post types it accepts" in str(exc), str(exc))
+
     # ---- connect: an empty site still connects -----------------------------------------
     # A brand-new client has nothing published, so there is no article to read a type off.
     # This must fall back rather than fail: it is the ordinary onboarding case.
     empty = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: (
-        httpx.Response(200, json={"name": "Editor"})
+        httpx.Response(200, json={"id": 7, "name": "Editor"})
         if r.url.path.startswith("/wp-json/wp/v2/users/me") else
         httpx.Response(200, json=TYPES)
         if r.url.path.startswith("/wp-json/wp/v2/types") else

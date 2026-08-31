@@ -177,19 +177,20 @@ async def connect(blog_url, creds, *, client=None):
     #    indistinguishable from a wrong password unless you say so.
     me = await _get(f"{rest_root}wp/v2/users/me?context=edit",
                     client=client, auth=auth, label=_host(blog_url))
-    if me.status_code in (401, 403):
-        raise ConnectError(
-            "WordPress rejected the login. If the username and application password are "
-            "definitely right, their server is stripping the Authorization header before "
-            "WordPress sees it. Ask whoever manages the site to add this line to .htaccess:  "
-            'SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1')
     if me.status_code == 404:
         raise ConnectError(
             "The WordPress REST API is not reachable on that site. It is usually turned off "
             "by a security plugin such as Wordfence, or blocked by the host. Ask whoever "
             "manages the site to allow requests to /wp-json/.")
-    if me.status_code >= 400:
-        raise ConnectError(f"WordPress answered {me.status_code} when checking the login.")
+    # A 2xx IS NOT PROOF OF ANYTHING. The transport follows redirects, and hardening plugins
+    # very commonly 302 /wp/v2/users/* to the home page to stop username enumeration, so the
+    # credential check used to end at a 200 carrying 368KB of the site's own HTML and call it a
+    # success. Every later step then ran unauthenticated: /wp/v2/types?context=edit answered
+    # 401, _validate_type read that error body as a types map, and connect blamed the POST TYPE
+    # for a credential that had never been checked. What proves an authenticated read is the
+    # user object coming back, so that is what is tested.
+    if _user_id(me) is None:
+        raise ConnectError(await _login_failure(rest_root, me, auth, client=client))
 
     # 3. Where the blog actually lives, read off the article's own discovery header.
     post_type, article_url = await _resolve_post_type(page, blog_url, client=client)
@@ -197,6 +198,15 @@ async def connect(blog_url, creds, *, client=None):
     # 4. Confirm the type is one we may publish into, and get its human label.
     types = await _get(f"{rest_root}wp/v2/types?context=edit",
                        client=client, auth=auth, label=_host(blog_url))
+    if types.status_code >= 400:
+        # An UNAUTHENTICATED read of this endpoint answers 401 rest_cannot_view, and the body is
+        # still JSON and still a dict, so _validate_type used to walk it, find no rest_base, and
+        # blame the post type. The credential check above now catches that case first; this is
+        # the belt on it, because the message here is about the SITE and not about a type.
+        raise ConnectError(
+            f"WordPress answered {types.status_code} when Canon asked which post types it "
+            f"accepts, so the blog section could not be confirmed. That is usually a security "
+            f"plugin restricting /wp-json/wp/v2/types.")
     resolved, type_label = _validate_type(types, post_type)
 
     # 5. Which section of the blog the operator pointed at, so new articles join it rather
@@ -268,6 +278,66 @@ async def _resolve_seo(rest_root, post_type, auth, *, client=None):
         if title_key in meta and desc_key in meta:
             return {"label": label_, "title_key": title_key, "desc_key": desc_key}
     return {}
+
+
+def _user_id(response):
+    """The id from a wp/v2/users/me body, or None if this is not one.
+
+    None covers every way the read can fail to be an authenticated user: HTML from a redirect,
+    a JSON error body, or a 2xx carrying something else entirely. The caller turns that into a
+    sentence; this only answers whether WordPress told us who we are.
+    """
+    if response.status_code >= 400:
+        return None
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    return body.get("id") if isinstance(body, dict) else None
+
+
+async def _login_failure(rest_root, me, auth, *, client=None):
+    """The most specific sentence available for a credential that did not authenticate.
+
+    THREE CAUSES LOOK IDENTICAL FROM ONE RESPONSE and send an operator to three different
+    people, so this spends one extra read to tell them apart. It runs ONLY on the failure path,
+    so a working connection still costs what it always did.
+    """
+    # 1. APPLICATION PASSWORDS SWITCHED OFF. The REST index lists the authentication schemes a
+    #    site actually offers, and core adds `application-passwords` to it only when
+    #    wp_is_application_passwords_available() is true. An empty list means no credential of
+    #    this kind can EVER work there, however correctly it was typed, which is worth saying
+    #    outright: the operator would otherwise regenerate the password forever.
+    try:
+        index = await _get(rest_root, client=client, label=_host(rest_root))
+        schemes = (index.json() or {}).get("authentication") if index.status_code < 400 else None
+    except (TransportError, ValueError, AttributeError):
+        schemes = None
+    if isinstance(schemes, (dict, list)) and not schemes:
+        return ("This site has application passwords switched off, so no username and password "
+                "can connect it. That is usually a security plugin, and sometimes the host. Ask "
+                "whoever manages the site to re-enable application passwords, then generate a "
+                "new one and try again.")
+
+    # 2. THE USERS ENDPOINT IS BLOCKED. A hardening plugin redirects /wp/v2/users/* away to stop
+    #    username enumeration, so the answer is the site's own HTML with a 200 on it. The
+    #    credential may be perfectly good; nothing here can tell, because the one endpoint that
+    #    would say is the one being hidden.
+    kind = (me.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if me.status_code < 400 and kind and kind != "application/json":
+        return ("A security plugin on that site is hiding /wp-json/wp/v2/users/, which is how "
+                "Canon checks a login, so the credential could not be verified. Ask whoever "
+                "manages the site to allow that endpoint for logged-in requests.")
+
+    # 3. THE HEADER NEVER ARRIVED, which is the classic one and the only one with a one-line fix
+    #    an operator can forward verbatim. LiteSpeed and any PHP running as CGI/FastCGI drop
+    #    Authorization unless told not to, and it is indistinguishable from a wrong password
+    #    from out here.
+    return ("WordPress rejected the login. If the username and application password are "
+            "definitely right, their server is stripping the Authorization header before "
+            "WordPress sees it. Ask whoever manages the site to add this line to .htaccess:  "
+            'SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1'
+            "  (on LiteSpeed the setting is CGIPassAuth On).")
 
 
 async def _resolve_post_type(page, blog_url, *, client=None):
@@ -381,9 +451,18 @@ def _validate_type(response, post_type):
     if post_type:
         entry = by_base.get(post_type)
         if entry is None:
+            # WITH NO TYPES AT ALL, the response was not a type map: an error body is a dict too,
+            # and reading one as "your post type is not registered" is how a stripped credential
+            # came to be reported as a broken blog section. connect() refuses both of those
+            # before this point, so the two cases are split here rather than sharing a sentence.
+            if not by_base:
+                raise ConnectError(
+                    "WordPress did not list any post types Canon could read, so the blog "
+                    "section could not be confirmed. That is usually a permissions or security "
+                    "plugin restriction rather than anything about the blog itself.")
             raise ConnectError(
-                f"Their blog renders from '{post_type}', but that is not something this "
-                f"WordPress will accept posts into over the API.")
+                f"Their blog renders from '{post_type}', but this WordPress does not offer it "
+                f"over the API. It lists: {', '.join(sorted(by_base))}.")
         if entry.get("hierarchical"):
             raise ConnectError(
                 f"'{post_type}' is a page type, not a blog type. Canon does not create pages "
