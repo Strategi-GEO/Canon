@@ -353,7 +353,7 @@ def _org_config_value(organisation_name):
 
 # ---------------------------------------------------------------------------
 # The org and client slug namespaces overlap, and the guard below outlived its
-# reason
+# ORIGINAL reason and found a bigger one
 # ---------------------------------------------------------------------------
 # orgs.slug and clients.slug are each `not null unique` in SEPARATE tables
 # (supabase/schema.sql), so the record happily holds an org called "acme" and an
@@ -362,24 +362,32 @@ def _org_config_value(organisation_name):
 # is a grouping, a client is a brand, and the two are joined by org_id and never
 # by name.
 #
-# THE ONE PLACE IT WAS DANGEROUS IS GONE, AND THE GUARD IS DELIBERATELY KEPT.
-# A brand with org_id null is its own single-brand org, synthesised on read by
-# _client_from_row above, and server/cms/routes.py used to turn that synthesised
-# slug into the environment variable STRATEGI_CMS_WRITE_KEY_<ORG>. A brand "acme"
-# with no org of its own therefore asked for exactly the variable the real org
-# "acme" asked for and was handed that org's key; the Strategi CMS derived the
-# destination tenant FROM THE KEY and the payload was forbidden from carrying
-# org_id, so neither side of the request could notice a draft landing in another
-# client's CMS, and both reported success. Migration 038 removed that destination
-# and server/cms/client.py with it, so nothing in the tree now resolves anything
-# from a synthesised org slug and the collision is once again harmless.
+# THE ORIGINAL REASON IS GONE AND A LARGER ONE WAS UNDER IT THE WHOLE TIME.
+# This was written about the CMS write key: a brand with org_id null is its own
+# single-brand org, synthesised on read by _client_from_row above, and
+# server/cms/routes.py turned that synthesised slug into the environment variable
+# STRATEGI_CMS_WRITE_KEY_<ORG>. A brand "acme" with no org of its own asked for
+# exactly the variable the real org "acme" asked for and was handed that org's
+# key; the Strategi CMS derived the destination tenant FROM THE KEY, so a draft
+# landed in another client's CMS and neither side could notice. Migration 038
+# removed that destination and server/cms/client.py with it, so that particular
+# harm is unreachable.
 #
-# IT IS LEFT STANDING ON PURPOSE. Deleting it LOOSENS what an operator may name
-# things, which is a decision with its own consequences and not a tidy-up to
-# smuggle into a publishing change; and the invariant is cheap, holds on write
-# only, and forbids nothing anybody has wanted to do. Whoever removes it should
-# do so as its own change, having checked that no later feature resolved anything
-# from a synthesised org slug in the meantime.
+# THE CLIENT PORTAL IS WHY THE INVARIANT STILL MATTERS, and it is a WORSE failure
+# than the one the comment used to name. `org_membership` derives its org_slug as
+# COALESCE(orgs.slug, clients.slug), which IS this synthesis, and every client
+# portal RLS policy in supabase/schema.sql joins `org_members om on om.org_slug =
+# m.org_slug`. So a real org and a self-org brand sharing a slug produce the SAME
+# org_slug in that view, and ONE portal grant reaches both tenants: the client
+# logs in and reads a stranger's brand, its blogs, its comments and its roadmap.
+# Measured on the live record inside a rolled-back transaction: creating an org
+# `vilvah` beside the existing self-org brand `vilvah`, with one unrelated brand
+# of its own, made a single grant on `vilvah` return BOTH brands.
+#
+# A misrouted CMS draft was one article in the wrong tenant. This is standing
+# read access to another client's whole workspace, so the guard is not merely
+# kept, it is load-bearing, and the refusal messages below name the portal rather
+# than a key that no longer exists.
 #
 # The invariant the guards below keep is one sentence: NO CLIENT WITH org_id NULL
 # MAY SHARE ITS SLUG WITH AN orgs ROW. Note what it deliberately does NOT forbid.
@@ -406,6 +414,11 @@ def _self_org_clients(org_slug):
 def _refuse_org_slug_collision(org_slug, for_client=None):
     """Refuse an org whose slug a self-org brand already answers to.
 
+    THE HARM IS A SHARED CLIENT-PORTAL LOGIN. See the section comment above: the
+    `org_membership` view derives org_slug as COALESCE(orgs.slug, clients.slug),
+    and every portal RLS policy joins `org_members` on that value, so a collision
+    hands one grant read access to two unrelated tenants.
+
     `for_client` is the brand being written in this same operation, and it is
     exempt for a concrete reason: it is about to STOP being a self-org brand,
     because create_client and update_client both point its org_id at this very
@@ -421,10 +434,9 @@ def _refuse_org_slug_collision(org_slug, for_client=None):
     if colliding:
         raise InvalidClient(
             f"the organisation slug {org_slug!r} is already the slug of the brand "
-            f"{colliding[0]!r}, which has no organisation of its own. The two would "
-            f"resolve the same CMS write key, so one brand's blog would publish into "
-            f"the other's CMS. Rename the organisation, or give that brand this "
-            f"organisation first."
+            f"{colliding[0]!r}, which has no organisation of its own. The two would share "
+            f"one client-portal login, so whoever signs in would read both. Rename the "
+            f"organisation, or give that brand this organisation first."
         )
 
 
@@ -489,7 +501,8 @@ def _carry_org_grants(client_slug, old_org_slug, new_org_slug):
 
 def _refuse_self_org_collision(client_slug):
     """The same invariant from the other side: a brand may not BECOME a self-org
-    brand whose slug an orgs row already owns.
+    brand whose slug an orgs row already owns. Same harm, same view: one
+    client-portal grant would reach this brand and that org's brands alike.
 
     This fires on the two writes that leave org_id null: onboarding a brand with
     the organisation field blank, and clearing an existing brand's organisation
@@ -499,21 +512,29 @@ def _refuse_self_org_collision(client_slug):
     if _org_row_exists(client_slug):
         raise InvalidClient(
             f"the brand slug {client_slug!r} is already an organisation slug, so a brand "
-            f"with no organisation of its own would resolve that organisation's CMS write "
-            f"key and publish into its CMS. Give this brand an explicit organisation, or "
-            f"rename the organisation holding that slug."
+            f"with no organisation of its own would share that organisation's client-portal "
+            f"login and each could read the other. Give this brand an explicit organisation, "
+            f"or rename the organisation holding that slug."
         )
 
 
 def synthesised_org_collides(client_slug):
     """True when THIS brand's SYNTHESISED org is also a real org's slug. The safety net.
 
-    The two guards above stop the collision being written from now on. They do
-    nothing about a collision already sitting in the record, and they cannot: a
-    row written before they existed was legal when it was written. This is the
+    NOTHING CALLS THIS, AND THAT IS A GAP RATHER THAN DEAD WEIGHT. It was the
     read-time half of the fix, called by server/cms/routes.py immediately before a
-    key is resolved, and it is the half that has to hold, because that call is the
-    last moment anything in the system can still tell the two orgs apart.
+    per-org CMS write key was resolved. Commit 5d80403 replaced those keys with one
+    shared key, which removed the call and left this function orphaned; migration
+    038 then removed the CMS entirely. So it has had no caller for a long time and
+    its old docstring went on claiming one.
+
+    THE JOB IT DID STILL NEEDS DOING, at a different door. The two write guards
+    above stop a collision being CREATED from now on; they do nothing about one
+    already sitting in the record, and they cannot, because a row written before
+    they existed was legal when it was written. The harm has moved from the CMS to
+    the client portal (see the section comment above), so the read-time check that
+    matters now is on the portal grant path rather than on a publish. Whoever wires
+    that up should call this, or delete it and say why.
 
     A brand with an explicit org is never a collision here, however its slug reads,
     for the same reason the write guard exempts it: the org_id is the operator's

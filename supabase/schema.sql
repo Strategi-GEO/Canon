@@ -199,10 +199,14 @@ create index clients_org on clients (org_id);
 -- CMS derived the destination tenant FROM THE KEY. A brand `acme` with no org of its own was
 -- handed the real org `acme`'s key, one client's blog landed in another client's CMS, and
 -- neither side could notice, because the payload was forbidden from carrying a contradicting
--- org_id. Migration 038 removed that destination, so nothing resolves anything from a
--- synthesised org slug any more and the invariant now guards a danger that is gone. It is left
--- standing deliberately: dropping it LOOSENS what an operator may name things, which is its own
--- decision rather than a tidy-up, and server/clients.py says so above `_self_org_clients`.
+-- org_id. Migration 038 removed that destination, so THAT harm is unreachable, and a larger one
+-- was underneath it the whole time: `org_membership` below derives org_slug as
+-- COALESCE(orgs.slug, clients.slug), which is this same synthesis, and every client-portal RLS
+-- policy in this file joins `org_members om on om.org_slug = m.org_slug`. A real org and a
+-- self-org brand sharing a slug therefore share ONE portal grant, and each client reads the
+-- other's brand. A misrouted draft was one article in the wrong tenant; this is standing read
+-- access to another client's whole workspace. server/clients.py argues it in full above
+-- `_self_org_clients`.
 --
 -- IT IS NOT A UNIQUE INDEX and no index can express it. An index spans one table and these
 -- slugs live in two, and the invariant is not "the two namespaces are disjoint": a brand `acme`
