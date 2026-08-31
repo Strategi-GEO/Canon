@@ -151,6 +151,17 @@ jobs:
       # later than the contract says it does, it opens a real connection for a client that was
       # never allowed to spend anything, and against a DSN that parses but does not answer it
       # does not fail, it hangs for the pool timeout first.
+      #
+      # channel_check JOINS THEM ON THE SAME TERMS, measured the same way: on a `git archive HEAD`
+      # tree with no server/.env and DATABASE_URL unset, 45/45, exit 0. It imports
+      # server.repurpose for the two tuples and otherwise only reads source files, and neither
+      # import opens a pool, which is the whole of what the paragraphs above ask of a suite here.
+      #
+      # IT GUARDS A RELEASE INVARIANT NOTHING ELSE DOES. bluesky and x are full channels on every
+      # surface and are absent from the CMS publish hook's auto set, which is two constants
+      # differing by two entries: exactly the shape a later reader tidies into one. Doing that
+      # would spawn two extra SDK sessions per published blog, on the two tabs whose whole point
+      # is that the operator picks the blogs by hand, and nothing else in this repo would go red.
       - name: Python guard checks
         run: |
           set -euo pipefail
@@ -159,3 +170,4 @@ jobs:
           python tests/env_check.py
           python tests/queue_check.py
           python tests/silent_topic_check.py
+          python tests/channel_check.py
