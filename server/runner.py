@@ -156,14 +156,34 @@ _FACTS_LOCKS = {}
 _SLOTS = {}
 _SLOT_SEQ = 0
 
-# Tunable so an operator whose blogs legitimately run long can move it without a rebuild. The
-# default is deliberately generous: the longest silent gap a healthy blog has is inside ONE stage,
-# and no stage of a real session has ever approached 45 minutes.
+# Tunable so an operator whose blogs legitimately run long can move it without a rebuild.
+#
+# THE DEFAULT IS SET BY THE ACCOUNT'S USAGE WINDOW, NOT BY HOW LONG A STAGE TAKES, and that is why
+# it moved from 45 minutes to 120. The figure it replaces was argued from "no stage of a real
+# session has ever approached 45 minutes", which is TRUE AND IS NOT THE QUESTION: this watchdog
+# does not cancel slow stages, it cancels SILENT SLOTS, and the longest silence a HEALTHY blog
+# produces is not one of its own stages at all. It is the one imposed on every session at once,
+# from outside, when the Claude account's usage window is exhausted or the machine suspends.
+#
+# MEASURED, on the acviss run of 2026-08-17. All ten topics went totally silent from 16:40 to
+# 17:50, seventy minutes, not one status line between them, then resumed and ran to a verdict:
+# two shipped at 90 and 92, and three had already died at exactly 16:40:00 with "session died in
+# 2s having written no status line", which is this file's own signature for an exhausted window.
+# At 2700 a watchdog that fired on schedule would have cancelled all seven survivors at 17:25 and
+# recorded them as wedged.
+#
+# A THRESHOLD SHORTER THAN A QUOTA STALL DOES NOT CATCH WEDGED SESSIONS, IT DESTROYS RATE-LIMITED
+# ONES, and it does so to every brand at once, because a usage limit is account-wide and a suspend
+# is machine-wide: the very failure that makes many slots go quiet together is the failure this
+# number must not mistake for many wedges. The cost of the larger figure is bounded and one-sided.
+# A genuinely wedged slot is now held for two hours instead of forty-five minutes before the queue
+# takes it back, which is slower; the old figure did not buy that speed, it bought a coin flip on
+# whether a recoverable blog survived its own account's rate limit.
 def _stall_timeout():
     try:
-        return max(300, int(os.environ.get("GEO_STALL_TIMEOUT") or 2700))
+        return max(300, int(os.environ.get("GEO_STALL_TIMEOUT") or 7200))
     except ValueError:
-        return 2700
+        return 7200
 
 
 # Between the cancel and the forced release. A cancel that is going to work, works in seconds.
@@ -2424,7 +2444,20 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
     #
     # A NEW GUARD GOES ABOVE THIS LINE ONLY IF IT READS DISK OR ARGUMENTS AND NEEDS NO TERMINAL
     # LINE. Anything that reads the record belongs at or below this call.
-    refusal = _approved_refusal(client_slug, topic_slug, "a generate run")
+    # TO_THREAD AND NOT A BARE CALL, which is what the docstring has always asked for and what
+    # this line did not do. _approved_refusal walks blog_edit.approved_at into server/db.py
+    # pool(), so it is BLOCKING psycopg. Called bare it ran on the EVENT LOOP while this topic
+    # held its queue slot, which means a database that answers slowly froze the whole engine and
+    # not just this blog: every other topic's acquire, every SSE stream, the HTTP API, and the
+    # stall watchdog whose entire job is to notice a slot that has stopped moving. The one
+    # mechanism that could report the freeze was inside it.
+    #
+    # THIS BECOMES run_topic's FIRST AWAIT, so a stop can now land here where it previously could
+    # not, and that is already covered rather than newly broken: run_batch's CancelledError arm
+    # sweeps every topic that never reached a verdict and writes its terminal stopped line, which
+    # is the same arm that already covers a topic cancelled while parked on TOPIC_SEMAPHORE.
+    refusal = await asyncio.to_thread(
+        _approved_refusal, client_slug, topic_slug, "a generate run")
     if refusal is not None:
         _restate_verdict_line(
             out_dir, topic_slug,
@@ -3182,7 +3215,10 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=Non
     # cancellation point outside the arm that handles cancellation, and a stop landing on it
     # would leave this topic with no terminal line and its watch view heartbeating forever.
     # _restate_verdict_line is synchronous for the same reason and reads only disk.
-    refusal = _approved_refusal(client_slug, topic_slug, "a revise")
+    # TO_THREAD for the reason run_topic's copy states in full: this is a blocking psycopg call,
+    # and a bare one runs it on the event loop while a queue slot is held.
+    refusal = await asyncio.to_thread(
+        _approved_refusal, client_slug, topic_slug, "a revise")
     if refusal is not None:
         _restate_verdict_line(
             out_dir, topic_slug,
