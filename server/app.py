@@ -2659,7 +2659,7 @@ def _require_not_approved(slug, topic_slug, act):
     It runs beside _require_done rather than inside it because the two say different things and
     send the operator to different places. Not-done means the pipeline is not finished with the
     blog yet; approved means it is finished with it permanently, and the only act left is the
-    CMS push. A blog can be done and approved at once, so both checks run. On the edit and
+    publish. A blog can be done and approved at once, so both checks run. On the edit and
     comment doors this one goes second, because done is the more basic fact and its message is
     the more useful one for a topic that is neither. On the SEND door it goes first, because the
     promotion sits between the two there and an approved row must be refused before a done
@@ -3605,7 +3605,8 @@ async def api_generate(slug: str, body: GenerateRequest,
             status_code=409,
             detail=f"{len(locked)} selected row(s) are locked because the client approved "
                    f"them: {', '.join(locked)}. An approved article cannot be regenerated; "
-                   f"posting it to the CMS is the only act left. Deselect them and resubmit.",
+                   f"publishing it to their site is the only act left. Deselect them and "
+                   f"resubmit.",
         )
 
     # THE SEND LOCK, and it is the approved lock's other half rather than a new kind of rule.

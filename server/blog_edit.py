@@ -122,13 +122,14 @@ def locked_detail(approved, act):
     """The refusal every locked write path reads back, in one place so they all agree.
 
     Carries the DATE because the operator's next question is always "approved when", and they
-    should not have to open another surface to answer it. Names the CMS push because it is the
+    should not have to open another surface to answer it. Names the publish because it is the
     one act an approval leaves open: it changes no bytes, so it cannot make the record assert
-    something the client never signed off on. `act` is the caller's own name for what it was
+    something the client never signed off on. It also names the act the approval AUTHORISES,
+    which is the useful direction to send somebody: publishing waits for exactly this stamp. `act` is the caller's own name for what it was
     asked to do, so the sentence describes the refused act rather than a generic write.
     """
     return (f"the client approved this article on {approved:%d %b %Y}, so it is locked and "
-            f"{act} is not available on it. Posting it to the CMS is the only act left.")
+            f"{act} is not available on it. Publishing it to their site is the only act left.")
 
 
 def _refuse_if_approved(client_slug, topic_slug, act):
