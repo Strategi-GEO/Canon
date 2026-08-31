@@ -13,7 +13,7 @@ When you create an organisation, Canon mints its portal login at the same moment
 The email is the organisation slug at `portal.strategi.is`, so an org slugged `acme` gets `acme@portal.strategi.is`. The password is generated and shown in that dialog with a copy button beside it. The only way out of the dialog is **I have saved it**, and it cannot be clicked away by accident, because the password is genuinely not retrievable afterwards.
 
 !!! warning "The password is shown exactly once"
-    Nothing can read it back. The engine keeps a copy in `.env.portal-credentials` on the machine that minted it, and that file is the only durable record. If it is lost, the login has to be reset from the engine rather than looked up.
+    Nothing can read it back. The engine keeps a copy in `.env.portal-credentials` at the root of the Canon folder on the machine that minted it, and that file is the only durable record. If it is lost, the login has to be reset from the engine rather than looked up.
 
 **Adding a second brand to an organisation does not mint a second login.** The one login covers every brand in that org, because access is granted at the org and fans out to each brand under it. So a client with four brands signs in once and switches between them inside the portal.
 
@@ -71,7 +71,7 @@ When an organisation has several brands, a **Brand** picker sits above the nav a
 
 ## What a client can see, and what they never see
 
-An article reaches the portal in exactly six states. Everything else is either absent or folded to one calm word.
+An article reaches the portal in six states, and those six carry seven tags: a round of comments reads differently once every note in it is addressed. Everything else is either absent or folded to one calm word.
 
 | The client's tag | What it means | Where it appears |
 |---|---|---|
@@ -83,14 +83,14 @@ An article reaches the portal in exactly six states. Everything else is either a
 | **Approved** | They approved it, and it is locked | **Approved** |
 | **Published** | It is live on their site | **Approved** |
 
-Anything else the record can say is shown as **In progress** with the sentence "Our team is working on this article", and no article body at all. A blog sitting in internal review does not appear in their portal in any form. A failed, died or stopped blog never appears either.
+Anything else the record can say is folded to **In progress**, with the tooltip "Our team is working on this article" and no article body at all. Those rows are narrower than they look: an article stays visible while it is back with your team only when the client has already answered a question on it. An article they never touched does not appear at all, in internal review, failed, died or stopped.
 
 !!! danger "A held blog appears without you sending it"
     An article the run held on a question shows up in the client's **Needs answers** tab as soon as the question exists. You do not press anything, and the client sees the current draft alongside the question so they can answer in context. The draft is captioned as not final.
 
     If that is not what you want a client reading, answer the question yourself from your own bench before they get to it.
 
-Never on the client wire, in any state: the score, the iteration count, the evaluator, the dossier, `eval.md`, any internal error text, and the raw roadmap CSV. Comment failures are hidden too: an apply that failed reads to the client exactly like one still being worked on.
+Never on the client wire, in any state: the score, the iteration count, the evaluator, the dossier, `eval.md`, and any internal error text. Nothing on the portal downloads a file either, not the roadmap sheet and not a report. Comment failures are hidden too: an apply that failed reads to the client exactly like one still being worked on.
 
 ## Roles
 
@@ -119,11 +119,11 @@ Two of those are worth reading twice.
 
 **Send again resets their approval.** The dialog says so before you press it. If a client has approved and you send once more, they have to approve the new version.
 
-**They read the newest version continuously.** While an article is out with a client, you do not re-send after every fix. They see each resolved comment land as you make it. The one time **Send again** appears is at the end of a round of comments, once every note is addressed, and pressing it is what closes the round.
+**They read the newest version continuously.** While an article is out with a client, you do not re-send after every fix. They see each resolved comment land as you make it. **Send again** appears only once a round of comments is open and every note in it is addressed, and pressing it is what closes the round.
 
 ## What a client can do back to you
 
-Three acts, and each one lands on your side without an email.
+Three acts. Each one reaches you on your own screens: the **Notifications** bell in the dashboard counts it, and where email is configured the engine mails you as well.
 
 ### Answer a question
 
@@ -132,7 +132,7 @@ They open the article in **Needs answers**, read the draft on the left and the q
 Submitting hands the article back to you. Their tag becomes **Answered**, and the article shows up on your bench as **Answers submitted** for you to rerun.
 
 !!! note "Nothing runs on its own when they answer"
-    On default configuration, an answer does not start a revise by itself. The pickup sweep ships disabled, so the rerun happens when you press it. That is why the portal tells the client their answers are "with our editorial team" rather than promising work is under way.
+    On default configuration, an answer does not start a revise by itself. The pickup sweep ships disabled, so the rerun happens when you press **Rerun with their answers**. That is why the portal tells the client their answers are "with our editorial team" rather than promising work is under way.
 
 ### Request a change
 
@@ -151,7 +151,7 @@ The approval names the version they read. If you send a newer version while thei
 !!! danger "An approval locks the article for everyone, you included"
     Once a client approves, the database refuses every new version of that article, from the portal, from your dashboard and from the engine. No edit, no rerun, no upload. Comments are refused from both sides too.
 
-    The only acts left are posting it and, where the destination supports it, taking it back down. If an approved article is wrong, the fix is a new topic, not an edit.
+    The only acts left are posting it and, where the destination supports it, taking it back down with **Unpublish from {site}**. If an approved article is wrong, the fix is a new topic, not an edit.
 
 Approval also gates the live publish: posting to a client's own website is refused until they have approved, because that press is the final release. Posting to the Strategi CMS files a draft for our editors and needs no approval. See [Publishing](../guide/publishing.md).
 
@@ -170,6 +170,7 @@ Approval also gates the live publish: posting to a client's own website is refus
 ## Related pages
 
 - [The Blogs tab](../guide/blogs.md), the operator side of the same articles
+- [What each status means](../concepts/blog-states.md), your own vocabulary for the states above
 - [Reviewing and editing](../guide/reviewing.md), where client notes and questions land
 - [Publishing](../guide/publishing.md), and why approval gates a live push
 - [Social channels](../guide/channels.md), the four channel tabs

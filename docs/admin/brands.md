@@ -4,7 +4,7 @@ Everything Canon writes belongs to a **brand**. This page covers creating one, w
 
 ## Organisations and brands
 
-An **organisation** is the agency's client, the company you invoice. A **brand** is the thing Canon writes for: one website, one set of facts, one roadmap.
+An **organisation** is the agency's client, the company you invoice. A **brand** is the thing Canon writes for: one website, one set of facts, one roadmap. See [Organisations and brands](../concepts/organisations-and-brands.md) for how the two levels fit together.
 
 Most organisations run a single brand, and Canon treats that as the normal case. Where an organisation runs several, each brand keeps its own canonical facts, its own resources and its own roadmap, and shares none of them with its siblings. That separation is deliberate. Shared facts would let a writer cite one brand's verified figures inside another brand's article.
 
@@ -28,12 +28,12 @@ Fill in three things:
 | **This organisation has multiple brands** | Leave it off for the usual case. Tick it to reveal **First brand name** and name the brand separately from the organisation. |
 | **Brand website** | The brand's live site, including `https://`. |
 
-Press **Add organisation**. A toast confirms it and Canon takes you to the new brand.
+Press **Add organisation**. A toast confirms it. Canon then takes you to the new brand, after the client login dialog below when the organisation is new.
 
 If you type a name that already exists, the line under the field says so and names how many brands that organisation holds. Your new brand is filed under it rather than creating a near duplicate.
 
 !!! note "There is no industry or description to fill in"
-    The form states this itself: "The description and the industry are detected automatically from the brand website once you add the organisation." There is no field for either, and neither is edited later.
+    The form states this itself: "The description and the industry are detected automatically from the brand website once you add the organisation, so there is nothing to pick or write here." There is no field for either, and neither is edited later.
 
 ## What happens the moment the brand exists
 
@@ -82,9 +82,9 @@ Canon keeps a folder per brand on the machine running the engine, at `clients/<s
 
 | File | In plain language | Who manages it |
 | --- | --- | --- |
-| `client.md` | The brand brief: name, website, market, and which industry reference the writer must read. Built from what you typed on the form. | Canon writes it. Your edits to **Domain**, **Market** and **Organisation** in **Settings** rewrite it. |
+| `client.md` | The brand brief: name, website, market, and which industry reference the writer must read. | Canon writes it when the brand is created, and writes the **Market** from [Settings](../guide/settings.md) into it before every run. |
 | `canonical-facts.md` | The binding fact base. Verified facts, verified URLs, and the do-not-claim list every article is scored against. | Canon builds it on the first blog run. The dashboard shows it and can delete it. Editing it is a job on the engine machine. |
-| `gates.json` | The mechanical rules: the word band, the permitted entity names, the banned phrases. The gate script reads this and fails a draft that breaks them. | Canon writes it at creation. There is no screen for it. |
+| `gates.json` | The mechanical rules: the word band, the permitted entity names, the banned phrases. The gate script reads this and fails a draft that breaks them. | Canon writes it at creation and lays it down again from the record before every run. There is no screen for it. |
 | `roadmap.csv` | The content plan: one row per topic, with what the piece covers and the prompts it must answer. | The [Content Roadmap](../guide/roadmap.md) tab. |
 
 Canon writes two more small files beside them, `description.md` and `custom-instructions.md`, from the brand description and from **Custom blog instructions** in [Settings](../guide/settings.md).
@@ -99,11 +99,11 @@ A brand with no fact base does not get refused. The first time you press **Gener
 
 If the build fails, the whole run fails and no blog is written. That is deliberate: the alternative is twenty articles quietly written against a fact base that was never there.
 
-A fact base that a person has started and marked with the word `PLACEHOLDER` is a different case, and it does refuse. The brand's card and its **Overview** carry an amber note reading "canonical-facts.md still contains the token PLACEHOLDER and has not been reviewed", under the line "This client cannot generate real blogs until its canonical facts are reviewed". Finish the review on the engine machine and the note goes.
+A fact base that a person has started and marked with the word `PLACEHOLDER` is a different case, and it does refuse. The brand's card and its **Overview** carry an amber note reading "canonical-facts.md still contains the token PLACEHOLDER and has not been reviewed", above the line "This client cannot generate real blogs until its canonical facts are reviewed". Finish the review on the engine machine and the note goes.
 
 ### Building it
 
-There is no button that builds a fact base. A blog run builds it, which means there is exactly one way it can happen and no second way to disagree with the first.
+There is no button that builds a fact base. A blog run builds it, which means there is exactly one way it can happen and no second way to disagree with the first. See [Runs, the queue, and stopping work](runs-and-queue.md) for what a run does around it.
 
 The session reads, in this order: the files you uploaded to [Resources](../guide/resources.md), then the live site, then keyword data for the brand's market. It writes verified facts, verified URLs, known conflicts and their resolution, a do-not-claim list, and a section of claims it found but could not confirm, which blogs are forbidden to cite.
 

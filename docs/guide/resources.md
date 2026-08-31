@@ -22,7 +22,7 @@ Canon builds the brand's fact base mostly from these files. What is not in them,
 
 The top of the page is a dashed box reading "Drop files here, or pick them yourself. 25 MB per file." Drag files onto it, or press **Choose files** and pick them.
 
-Files go up one at a time, and each one gets its own row while it does. The row ends on **uploaded** or on **refused**, with the reason for a refusal printed underneath it.
+Each file you drop gets its own row, and they go up one at a time. A row ends on **uploaded** or on **refused**, with the reason for a refusal printed underneath it.
 
 One refused file never cancels the ones behind it. Drop six documents and you learn which of the six landed, not that "the upload failed".
 

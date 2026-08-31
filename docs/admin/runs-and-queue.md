@@ -39,13 +39,13 @@ Every door into the engine takes one slot out of that same number:
 - a channel post (LinkedIn, Medium, Bluesky or X)
 
 !!! info "Busy never means refused"
-    Nothing is ever turned away because the engine is working. A blog over the limit waits, and starts the moment a slot frees, in the order it arrived. The button on the Blogs page tells you this by changing its own word: it reads **Generate** when the engine is idle and **Add to queue** when something is already running. The act is identical either way.
+    Nothing is ever turned away because the engine is working. A blog over the limit waits, and starts the moment a slot frees, in the order it arrived. The button on the **New** tab tells you this by changing its own word: it reads **Generate** when the engine is idle and **Add to queue** when something is already running. The act is identical either way.
 
 Because the queue spans every brand, the reason your blog is waiting is very often somebody else's blog. That is why the queue table has a **Brand** column and tags rows that are not yours as **other brand**.
 
 ## Reading the Queue table
 
-The **Queue** table sits under the blog table on the **Blogs** page. It renders nothing when nothing is in flight, so an empty page means an idle engine rather than a broken one.
+The **Queue** table sits on the **New** tab of the **Blogs** page, under the roadmap rows you pick from. It renders nothing when nothing is in flight, so an empty page means an idle engine rather than a broken one. See [The Blogs tab](../guide/blogs.md) for the rest of that page.
 
 The line above it reads something like:
 
@@ -63,10 +63,10 @@ The counts leave out anything that is zero, and the elapsed on the end measures 
 
 Rows never move. The table sorts by **#** and stays there, so a blog taking a slot or finishing changes its own cells and nothing jumps.
 
-Click the arrow at the left of any row to expand it. You get the five stage marks, the score at each iteration, and the engine's own note.
+Click anywhere on a row to expand it. You get the five stage marks, the score at each iteration, the stage clock beside the total, and the engine's own note.
 
 !!! note "Channel posts take a slot but have no row here"
-    A LinkedIn post or an X thread being written is holding one of the same slots your blogs are waiting for. They are not listed in this table, because they are not blogs and the row's stop control cannot reach them. If the queue looks emptier than the wait suggests, that is usually why.
+    A LinkedIn post or an X thread being written is holding one of the same slots your blogs are waiting for. They are not listed in this table, because they are not blogs and the row's stop control cannot reach them. If the queue looks emptier than the wait suggests, that is usually why. See [Social channels](../guide/channels.md).
 
 ## The stages a blog goes through
 
@@ -81,6 +81,8 @@ Click the arrow at the left of any row to expand it. You get the five stage mark
 | `eval` | The draft is being scored against the rubric. |
 | `revise` | The score missed the bar, so the listed fixes are being applied to the existing draft. |
 
+Once a blog lands, the **Stage** cell stops naming a stage and shows the verdict instead. On a blog this browser was not streaming it reads **Finished**, which says the topic settled without guessing which way, and the blog's own page carries the verdict.
+
 A blog past its first attempt carries a chip reading `iter 2`, `iter 3` or `iter 4`. Four is the cap.
 
 There is no progress bar and no percentage anywhere in Canon, deliberately. A blog can pass on its first evaluation or be revised up to four times, so there is no total to measure against. The **Since** column and the stage name beside it are the honest numbers.
@@ -91,7 +93,7 @@ There is no progress bar and no percentage anywhere in Canon, deliberately. A bl
 
     A small status control on the right of the topbar reads "**1 session running, 2 queued**". It appears only when something is live, so an idle Canon has nothing there.
 
-    Click it and a panel opens listing every session in the engine, in the order they will be worked, with the brand name, how many blogs each holds, and a clock reading `waiting 6m` or `running 12m`. Clicking a row takes you to that brand.
+    Click it and a panel titled **Sessions** opens, listing every session in the engine, in the order they will be worked. Each row carries the brand name, its slug, **Queued** or **Running**, how many blogs it holds, and a clock reading `waiting 6m` or `running 12m`. Clicking a row takes you to that brand's **New** tab.
 
 === "The notifications bell"
 
@@ -103,11 +105,11 @@ There is no progress bar and no percentage anywhere in Canon, deliberately. A bl
 
     A brand with a live session gets a card on its **Overview**. The heading names the phase, and the counts beside it sum to the whole batch: running, queued, shipped, in review, failed, stopped.
 
-    **Open the run view** takes you to the queue. Once the session ends the card keeps its closing summary and offers **Read the blogs** instead, plus an X to dismiss it.
+    **Open the run view** takes you to the brand's **New** tab, where the queue table is. Once the session ends the card keeps its closing summary and offers **Read the blogs** instead, plus an X to dismiss it.
 
 ## Stopping one topic
 
-Every row in the **Queue** table has a stop control on the right. It means two different things and the engine decides which at the moment you press it.
+Every row in the **Queue** table that has not landed carries a stop control on the right. It means two different things and the engine decides which at the moment you press it.
 
 === "A queued row"
 
@@ -148,7 +150,7 @@ A stopped blog is never added to the brand's ledger of shipped work, and it neve
 !!! note "A finished blog is never un-shipped by a stop"
     A blog that reached its verdict microseconds before you pressed **Stop** keeps that verdict. The engine only writes a stop line where no verdict exists yet, so there is no window in which stopping a brand takes a shipped article back.
 
-There is one exception to the word **Stopped**. If the evaluator had already written its questions when the stop landed, the blog is recorded as held for your answer rather than as stopped, because a question that was asked is not un-asked by somebody pressing stop. You answer it exactly as you would any other held blog.
+There is one exception to the word **Stopped**. If the evaluator had already written its questions when the stop landed, the blog is recorded as held for your answer rather than as stopped, because a question that was asked is not un-asked by somebody pressing stop. You answer it exactly as you would any other held blog, on the blog's own page. See [Reviewing and editing a blog](../guide/reviewing.md).
 
 ## When the engine stops on its own
 
@@ -156,6 +158,6 @@ Two safety mechanisms can end work you did not end. Both exist because of real f
 
 **A blog that goes silent loses its slot.** Canon treats a blog as healthy for as long as it keeps writing progress lines, however long that takes. If a blog writes nothing at all for two hours, the engine cancels it, and if the cancel is ignored for another two minutes it takes the slot back and marks the topic finished with the note "the session stopped responding and did not answer a cancel, so the engine reclaimed its queue slot". The blog reads **Did not finish**, and the fix is to generate it again.
 
-**Two dead sessions in a row halt everything.** If two blog sessions in a row die within seconds having written nothing, the engine stops opening new sessions for every brand for fifteen minutes. The usual cause is the Claude account's usage window being exhausted. Any session that writes a single line clears it at once, and after the cooldown one topic is allowed through to test the water.
+**Two dead sessions in a row halt everything.** If two blog sessions in a row die inside a minute having written nothing, the engine stops opening new sessions for every brand for fifteen minutes. The usual cause is the Claude account's usage window being exhausted. Any session that writes a single line clears it at once, and after the cooldown one topic is allowed through to test the water.
 
 Nothing on screen names that second one. What you see is blogs not starting. If the queue is full of waiting rows and nothing has moved for a while, that is the case to check for.

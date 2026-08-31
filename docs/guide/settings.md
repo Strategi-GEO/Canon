@@ -9,7 +9,7 @@ This page covers both, brand first.
 
 ## The brand Settings tab
 
-Open a brand and press **Settings**. The heading reads "What the engine knows about *brand*", and four cards sit under it.
+Open a brand and press **Settings**. The heading reads "What the engine knows about *brand*", and five cards sit under it.
 
 ### Description
 
@@ -26,7 +26,7 @@ The card opens by naming the brand's slug and stating that it is permanent. The 
 | **Organisation** | Which organisation this brand sits under. Type to filter the ones that exist, or type a new name to create one. The line under the box tells you which of the two is about to happen before you save. |
 | **Domain** | The brand's live site. It wins over internal documents on any conflict, so it is what the researcher fetches first. |
 | **Market** | Where this brand sells and in what language, for example `India, English`. |
-| **CMS client slug** | The slug the Strategi CMS knows this brand by, used only to route **Post to CMS**. Leave it blank to route by the brand's own slug. |
+| **CMS client slug** | The slug the Strategi CMS knows this brand by, used only to route **Post to CMS**. What you type is lower-cased and hyphenated before it is sent. Leave it blank to route by the brand's own slug. |
 | Industry | Read only. Detected from the brand website when the brand was added. It picks the industry reference the writer loads. |
 
 **Save changes** stays disabled until you actually change something, and Canon sends only the fields you touched, so a save in one browser tab cannot overwrite a change made in another.
@@ -38,11 +38,11 @@ Moving a brand to a different organisation rewrites one field and renames nothin
 
 ### Blog destination
 
-Where this brand's finished blogs are published. Until one is set, the **Post** control on every blog for the brand stays off, because there is nowhere for an article to go.
+Where this brand's finished blogs are published. Until one is set, the **Post** control on every blog for the brand stays disabled, because there is nowhere for an article to go.
 
 The card holds the whole connection flow: **Their blog page** with a **Detect** button, a **Platform** dropdown, whatever credentials the chosen platform needs, and **Connect**. Once connected it shows a green chip naming the destination, with **Change** and **Disconnect** beside it.
 
-Nothing is stored until the engine has authenticated against the site, so there is no separate Save. A saved but unverified credential would put a live **Post** button in front of you that fails on a real article, on a client's real website.
+Nothing is stored until the engine has proved the credential against the site, so there is no separate Save. A saved but unverified credential would put a live **Post** button in front of you that fails on a real article, on a client's real website. The Strategi CMS is the one destination with no address and no credential to prove, so choosing it is stored straight away.
 
 The two destinations are not the same act, and one of them publishes live. Read [Publishing](publishing.md) before you connect anything.
 

@@ -16,16 +16,18 @@ These are the tags your team sees on the **Blogs** tab and on a blog's own page.
 | **Generating** | A run is live on this article. | The engine | Nothing to the article. You can stop the run. |
 | **Has questions** | The evaluator asked something only a person can answer. Held at any score. | You or the client | **Answer**. |
 | **Answers submitted** | The client answered, and the rerun those answers are owed has not landed yet. | You | **Rerun with their answers**, then edit, comment and send. |
-| **Internal review** | It passed and it is on your team's bench. | You | Edit, comment, **Send to client**, **Post to CMS**. |
-| **With client** | Sent for review. | The client | **Post to CMS** only. Nothing that changes the bytes. |
-| **Changes requested** | The client asked for something since the last send. | You | Edit, comment, **Post to CMS**. |
-| **Approved** | The client accepted these exact bytes. Locked. | Nobody | **Post to CMS**, or **Post to WordPress**. |
-| **Published** | It is in the CMS, or live on the client's site. | Nobody | **Unpublish**. |
-| **Below bar** | Scored 80 to 89. Under the bar, close enough that a rerun is worth it. | You | Edit, comment, **Send to client**, **Post to CMS**, **Retry this topic**. |
+| **Internal review** | It passed and it is on your team's bench. | You | Edit, comment, **Send to client**, post it. |
+| **With client** | Sent for review. | The client | Post it. Nothing that changes the bytes. |
+| **Changes requested** | The client asked for something since the last send. | You | Edit, comment, post it. |
+| **Approved** | The client accepted these exact bytes. Locked. | Nobody | Post it. |
+| **Published** | It is in the CMS, or live on the client's site. | Nobody | **Unpublish**, on a brand that publishes to its own site. |
+| **Below bar** | Scored 80 to 89. Under the bar, close enough that a rerun is worth it. | You | Edit, comment, **Send to client**, post it, **Retry this topic**. |
 | **Failed** | The run finished without a shippable draft and had nothing to ask. | You | The same bench as **Below bar**. |
 | **Did not finish** | The run reached no verdict at all. | You | Read or annotate what an earlier attempt left. Generate the topic again. |
 | **Stopped** | Someone ended the run before it reached a verdict. | You | Generate again to resume. |
 | **Unknown** | No readable status line for this article. | You | Generate the topic again. |
+
+The post button names the brand's destination, so it reads **Post to CMS** on a Strategi CMS brand and **Post to Wordpress** on a brand that publishes to its own site. See [Organisations and brands](organisations-and-brands.md#where-a-brands-blogs-publish).
 
 ## Each one in full
 
@@ -41,7 +43,7 @@ A run owns the article right now. Every door is shut while that is true, includi
 
 This outranks everything else. An article that was sent, came back with change requests, and is being rerun reads **Generating** while that run is live, because the true answer is that the engine is working on it.
 
-Watch it in the **Queue** under the table, where the **Stage** column names which of the five stages it is on.
+Watch it in the **Queue** under the topic list on the **New** tab, where the **Stage** column names which stage a blog is on.
 
 ### Has questions
 
@@ -74,7 +76,7 @@ This is where you read it properly, edit anything you want changed, and decide w
 
 Sent. The client is reading the exact version that was pinned when you sent it, and they owe you an approval or a change request.
 
-**Your team has no editing controls here on purpose.** An edit at this point changes the article underneath someone mid review. **Post to CMS** is the deliberate exception, because filing a CMS draft alters nothing the client is reading.
+**Your team has no editing controls here on purpose.** An edit at this point changes the article underneath someone mid review. Posting is the deliberate exception, because filing a CMS draft alters nothing the client is reading.
 
 ### Changes requested
 
@@ -97,7 +99,7 @@ The article has been pushed out: filed as a draft in the Strategi CMS, or publis
 
 Pressing Post again updates the same article rather than creating a second one. If somebody edited it on their own site after your last push, Canon declines to overwrite it and tells you. If an editor has already moved a CMS draft past draft, the CMS keeps their version and reports it as skipped, which is a success and not something to retry.
 
-The one control left is **Unpublish**, which acts on our own push rather than on the article. It is the way out of a mistaken publish that does not need somebody logging in to the client's own site.
+On a brand that publishes to its own site, one control is left: **Unpublish from *site***. It acts on our own push rather than on the article, and it is the way out of a mistaken publish that does not need somebody logging in to the client's own site. A Strategi CMS draft has no such control, because a CMS draft is not live anywhere to take down.
 
 ### Below bar and Failed
 
@@ -107,7 +109,7 @@ Both are the same verdict: the run finished and the score missed 90. The split i
 
 **Failed** is anything under that, in red, or a run that scored nothing at all.
 
-Both get the full bench: edit it, comment on it, **Send to client**, **Post to CMS**. Retrying is not a button on the bench, because a retry is a run: the row stays selectable on the **New** tab, and a blog's page carries a **Retry this topic** link that takes you there with the row already ticked.
+Both get the full bench: edit it, comment on it, **Send to client**, post it. Retrying is not a button on the bench, because a retry is a run: the row stays selectable on the **New** tab, and a blog's page carries a **Retry this topic** link that takes you there with the row already ticked.
 
 **Sending one is your call and it is recorded as yours.** Canon appends a new verdict naming the operator and the score, so the trail reads "failed at 87, then a person sent it". The evaluator's number is never rewritten.
 
@@ -176,4 +178,4 @@ Canon does not post to the social platforms for you. **Mark as posted** records 
 
 Any blog carrying a finished, scored draft. That includes **Below bar** and **Failed** blogs, because the draft an evaluator scored is exactly what send and edit already operate on.
 
-Five states are not repurposable and their rows are shown with their own tag rather than hidden: **Generating** (no settled draft), **Answers submitted** (a correction is mid flight), **Has questions** (somebody owes an answer before the draft can be trusted), **Stopped**, and **Unknown**.
+Six states are not repurposable and their rows are shown with their own tag rather than hidden: **Generating** (no settled draft), **Answers submitted** (a correction is mid flight), **Has questions** (somebody owes an answer before the draft can be trusted), **Did not finish**, **Stopped**, and **Unknown**.

@@ -40,7 +40,7 @@ This is where most of your time goes. It has three tabs across the top.
 
 === "Ready to post"
 
-    Finished articles waiting for you to read and approve.
+    Finished articles waiting for you to read and approve. A row tagged **In progress** is one the team is still working on, and it opens with a short note instead of an article.
 
 === "Approved"
 
@@ -63,7 +63,7 @@ After that the article goes back to the team, and your answers stay on the page 
 
 ## Reading an article
 
-Open anything under **Ready to post**. You get the finished article, a note at the top telling you where it stands, and an **Approve** button.
+Open anything under **Ready to post** that is not tagged **In progress**. You get the finished article, a note at the top telling you where it stands, and an **Approve** button.
 
 While an article is with you, this page always shows the newest version. If you ask for a change and the team makes it, refreshing shows you the updated text. There is no second link and no new email.
 
@@ -81,7 +81,7 @@ Write it the way you would say it out loud. "This figure is wrong, it should be 
 Your note goes to the team with that exact passage attached, so nobody has to guess what you meant.
 
 !!! tip "Your typing is safe"
-    Once you have started writing, clicking elsewhere in the article does not wipe your note. **Cancel** clears it, Escape closes the card, and Cmd+Enter (Ctrl+Enter on Windows) sends it.
+    Once you have started writing, selecting other text in the article does not wipe your note. **Cancel** clears it, Escape closes the card, and Cmd+Enter (Ctrl+Enter on Windows) sends it.
 
 ### Following your notes
 
