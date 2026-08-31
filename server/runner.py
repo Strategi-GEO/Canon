@@ -2452,12 +2452,34 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
     # stall watchdog whose entire job is to notice a slot that has stopped moving. The one
     # mechanism that could report the freeze was inside it.
     #
-    # THIS BECOMES run_topic's FIRST AWAIT, so a stop can now land here where it previously could
-    # not, and that is already covered rather than newly broken: run_batch's CancelledError arm
-    # sweeps every topic that never reached a verdict and writes its terminal stopped line, which
-    # is the same arm that already covers a topic cancelled while parked on TOPIC_SEMAPHORE.
-    refusal = await asyncio.to_thread(
-        _approved_refusal, client_slug, topic_slug, "a generate run")
+    # THIS IS run_topic's FIRST AWAIT, SO IT CARRIES ITS OWN CANCEL ARM, and the arm is the whole
+    # reason the to_thread is allowed to stay. An earlier version of this comment claimed
+    # run_batch's CancelledError sweep already covered it. IT DOES NOT COVER THIS CALL, in two
+    # ways that tests/stop_check.py pins: run_topic is callable on its own (a CLI, a test, and
+    # every direct caller), where there is no batch and therefore no sweep at all; and the sweep
+    # is a property of ONE caller, so resting a cancellation invariant on it makes every future
+    # caller of run_topic silently responsible for a rule stated nowhere near them.
+    #
+    # THE ARM WRITES THE SAME LINE THE SWEEP WOULD, through the same guarded writer, so a topic
+    # that reached `done` microseconds earlier keeps `done` and a batch that also sweeps finds the
+    # line already there and skips. Then it RE-RAISES: a cancel is never swallowed here, exactly
+    # as run_batch and run_topic's own later arm do not swallow one.
+    #
+    # NOT A REVERT TO THE BARE CALL. _approved_refusal walks blog_edit.approved_at into
+    # server/db.py pool(), so it is BLOCKING psycopg, and called bare it ran on the EVENT LOOP
+    # while this topic held its queue slot: a database that answers slowly froze every other
+    # topic's acquire, every SSE stream, the HTTP API, and the stall watchdog whose entire job is
+    # to notice a slot that has stopped moving. Both properties are wanted, and one small arm buys
+    # both, where the bare call bought neither.
+    try:
+        refusal = await asyncio.to_thread(
+            _approved_refusal, client_slug, topic_slug, "a generate run")
+    except asyncio.CancelledError:
+        _stop_line_if_unterminated(
+            client_slug, topic_slug, out_dir, baseline,
+            "the operator stopped this brand before this topic reached a verdict",
+            root=run_dir_root)
+        raise
     if refusal is not None:
         _restate_verdict_line(
             out_dir, topic_slug,
@@ -3211,14 +3233,58 @@ async def revise_topic(client_slug, topic_slug, run_id=None, *, run_dir_root=Non
     # RE-STATED, NOT REPLACED, for the reason above: the done this topic already earned goes back
     # on the feed with the refusal as its note, so the stream closes and the verdict does not move.
     #
-    # SYNCHRONOUS, for the reason run_topic spells out: an await outside the try is a
-    # cancellation point outside the arm that handles cancellation, and a stop landing on it
-    # would leave this topic with no terminal line and its watch view heartbeating forever.
-    # _restate_verdict_line is synchronous for the same reason and reads only disk.
-    # TO_THREAD for the reason run_topic's copy states in full: this is a blocking psycopg call,
-    # and a bare one runs it on the event loop while a queue slot is held.
-    refusal = await asyncio.to_thread(
-        _approved_refusal, client_slug, topic_slug, "a revise")
+    # TO_THREAD WITH ITS OWN CANCEL ARM, for the reason run_topic's copy states in full: this is a
+    # blocking psycopg call and a bare one runs it on the event loop while a queue slot is held,
+    # while an unguarded await outside the try is a cancellation point outside the arm that
+    # handles cancellation, which leaves this topic with no terminal line and its watch view
+    # heartbeating forever. The arm is what lets both be true at once.
+    #
+    # THE EXPOSURE IS WORSE HERE THAN IN run_topic AND THE ARM IS NOT OPTIONAL. A revise has no
+    # batch above it: app._revise_task catches `Exception`, and CancelledError is a
+    # BaseException, so a cancel landing on this await unwinds through _revise_task and out with
+    # nothing written anywhere. stop_client cancels a revise exactly like any other run, so this
+    # is an ordinary press and not an exotic race.
+    #
+    # THE ARM RE-STATES, IT DOES NOT STOP, AND run_topic's COPY DOES THE OPPOSITE ON PURPOSE. Both
+    # arms answer "this session wrote nothing, what closes the stream", and they answer differently
+    # because a generate and a revise stand in different places when a stop lands here.
+    #
+    # A revise is driven at a topic that ALREADY FINISHED, so the line on disk is a verdict this
+    # revise had not yet earned the right to change, and this window is before the slot, before
+    # register_revise_run, before the snapshot: nothing has been touched, so the original artifact
+    # set is intact and that verdict is still exactly true. Writing `stopped` over it is the
+    # demotion this function's own cancel arm spends thirty lines preventing, and it is
+    # PERMANENT: every reader takes the last terminal line, the CMS gate refuses anything that is
+    # not done, and a re-answer 409s as stale, so one word here leaves the operator no door on a
+    # blog that shipped at 96. A generate arrives with no such verdict to protect, which is why
+    # its arm writes the stop line and this one does not.
+    #
+    # A LINE IS STILL NOT OPTIONAL. app.py registers the run BEFORE creating this task, so the
+    # watch view is already open with a tail_offset past the old verdict, and appending nothing
+    # leaves the operator staring at a revise they stopped themselves, heartbeating at running.
+    # That is the same reasoning, and the same fix, as the cancel arm further down.
+    #
+    # WITH NOTHING TERMINAL ON THE FEED, `stopped` IS THE HONEST WORD, and it is reached through
+    # the shared writer so the questions carve-out applies here as everywhere else: a revise
+    # driven at a topic that never finished has no verdict to keep, and a form that reads current
+    # when the stop lands still holds the blog. Baseline 0 because no line in the file belongs to
+    # this session, which is the same thing the `if` above it has just established.
+    try:
+        refusal = await asyncio.to_thread(
+            _approved_refusal, client_slug, topic_slug, "a revise")
+    except asyncio.CancelledError:
+        if _terminal_line(_read_status(out_dir)) is not None:
+            _restate_verdict_line(
+                out_dir, topic_slug,
+                "the operator stopped this revise before it started, so this topic keeps the "
+                "verdict it already earned, re-stated here so a watching stream can close",
+            )
+        else:
+            _stop_line_if_unterminated(
+                client_slug, topic_slug, out_dir, 0,
+                "the operator stopped this revise before it started",
+                root=run_dir_root)
+        raise
     if refusal is not None:
         _restate_verdict_line(
             out_dir, topic_slug,
