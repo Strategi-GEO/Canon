@@ -45,7 +45,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import db
+from . import clients, db
 from .seed_admin import _auth_admin, _create_auth_user, _lookup_user_id
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -158,7 +158,27 @@ def main() -> None:
     existing = _read_existing(CREDENTIALS_FILE)
 
     org_entries = []
+    # Orgs this run REFUSED to mint a login for, so the exit code can say so. See the skip below.
+    collided = []
     for slug, name in orgs:
+        # A GRANT IS THE MOMENT A COLLISION STOPS BEING INERT. `org_membership` derives org_slug
+        # as COALESCE(orgs.slug, clients.slug), so a slug that is both an org and a brand with no
+        # org of its own resolves to one string, and one grant on it reads both tenants. The write
+        # guards and the constraint triggers forbid that state being created; neither can reach
+        # one already in the record, which is what this catches.
+        #
+        # SKIPPED AND NOT EXITED, because this is the BATCH tool: dying mid-loop would leave the
+        # orgs before it provisioned, the ones after it not, and no record of which. Every other
+        # org still gets its login, the refusal is printed where an operator reading the run will
+        # see it, and the process exits NON-ZERO at the end so a script cannot read this as
+        # success.
+        try:
+            clients.refuse_grant_on_collision(slug)
+        except clients.InvalidClient as refused:
+            print(f"REFUSED {slug}: {refused}")
+            collided.append(slug)
+            continue
+
         email = f"{slug}@{args.domain}"
         section = f"org:{slug}"
         prior = existing[section]["password"] if existing.has_option(section, "password") else None
@@ -221,6 +241,15 @@ def main() -> None:
 
     _write_file(CREDENTIALS_FILE, admin_entries, org_entries)
     print(f"credentials recorded in {CREDENTIALS_FILE.name} (local only, never committed)")
+
+    # NON-ZERO AFTER THE FILE IS WRITTEN, in that order deliberately: every login this run DID
+    # mint is real and its password exists in exactly one place, so failing before recording it
+    # would lose the credential to make a point about a different org.
+    if collided:
+        sys.exit(
+            f"{len(collided)} organisation(s) were refused a login because their slug is also a "
+            f"brand with no organisation of its own, and one grant would read both: "
+            f"{', '.join(collided)}. Every other login above is minted and recorded.")
 
 
 if __name__ == "__main__":

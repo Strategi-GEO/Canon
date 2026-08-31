@@ -518,38 +518,57 @@ def _refuse_self_org_collision(client_slug):
         )
 
 
-def synthesised_org_collides(client_slug):
-    """True when THIS brand's SYNTHESISED org is also a real org's slug. The safety net.
+def org_slug_collides(org_slug):
+    """True when this ORG SLUG denotes TWO tenants rather than one. The read-time net.
 
-    NOTHING CALLS THIS, AND THAT IS A GAP RATHER THAN DEAD WEIGHT. It was the
-    read-time half of the fix, called by server/cms/routes.py immediately before a
-    per-org CMS write key was resolved. Commit 5d80403 replaced those keys with one
-    shared key, which removed the call and left this function orphaned; migration
-    038 then removed the CMS entirely. So it has had no caller for a long time and
-    its old docstring went on claiming one.
+    THE PREDICATE IS BOTH SIDES PRESENT AT ONCE: an `orgs` row carrying this slug, AND a live
+    brand carrying it with no org of its own. Either alone is ordinary and safe. Together they
+    are the collision, because `org_membership` derives org_slug as
+    COALESCE(orgs.slug, clients.slug), so both resolve to this one string and a single
+    `org_members` grant on it reaches both tenants.
 
-    THE JOB IT DID STILL NEEDS DOING, at a different door. The two write guards
-    above stop a collision being CREATED from now on; they do nothing about one
-    already sitting in the record, and they cannot, because a row written before
-    they existed was legal when it was written. The harm has moved from the CMS to
-    the client portal (see the section comment above), so the read-time check that
-    matters now is on the portal grant path rather than on a publish. Whoever wires
-    that up should call this, or delete it and say why.
+    WHY A READ-TIME CHECK EXISTS AT ALL, when two write guards and two database triggers already
+    forbid the state. None of them can reach a collision that was already in the record: a
+    constraint trigger is checked only on rows written after it exists, and a row written before
+    the guards was legal when it was written. Migration 017 says exactly this and points at this
+    function as the net.
 
-    A brand with an explicit org is never a collision here, however its slug reads,
-    for the same reason the write guard exempts it: the org_id is the operator's
-    own statement about which tenant the brand belongs to.
+    WHERE IT IS CALLED, AND WHY THAT MOVED. It used to be called by server/cms/routes.py
+    immediately before a per-org CMS write key was resolved, because that was the last moment
+    anything could tell the two tenants apart. Commit 5d80403 replaced those keys with one shared
+    key, which removed the call and left this orphaned for months; migration 038 then removed the
+    CMS entirely. The harm moved with it: a collision no longer misroutes a draft, it hands one
+    client-portal login read access to another client's whole workspace. So the last moment that
+    matters is now the moment a GRANT IS WRITTEN, and the two doors that write one call this:
+    portal_login.provision_one and seed_org_users. Nothing calls it on a publish, because a
+    publish no longer resolves anything from an org slug.
+
+    IT TAKES AN ORG SLUG, WHERE THE OLD ONE TOOK A CLIENT SLUG. Same predicate, asked from the
+    side that now needs the answer: the grant doors hold an org slug and have no brand in hand.
     """
-    row = db.q(
-        """select c.org_id is null,
-                  exists (select 1 from orgs o where o.slug = c.slug)
-           from clients c
-           where c.slug = %s and c.deleted_at is null""",
-        (client_slug,), fetch="one")
-    if row is None:
+    org_slug = str(org_slug or "").strip()
+    if not org_slug:
         return False
-    synthesised, org_exists = row
-    return bool(synthesised) and bool(org_exists)
+    return bool(_org_row_exists(org_slug)) and bool(_self_org_clients(org_slug))
+
+
+def refuse_grant_on_collision(org_slug):
+    """Raise InvalidClient if a portal grant on this slug would reach two tenants.
+
+    THE SENTENCE IS THE POINT, which is why this is not left to each caller. Both grant doors are
+    provisioning tools an operator runs, and "refused" teaches nobody anything: the fix is to give
+    the brand an explicit organisation or rename one of the two, and neither is guessable from a
+    bare failure.
+    """
+    if not org_slug_collides(org_slug):
+        return
+    brand = _self_org_clients(org_slug)[0]
+    raise InvalidClient(
+        f"the slug {org_slug!r} is BOTH an organisation and the brand {brand!r}, which has no "
+        f"organisation of its own. One client-portal login on that slug would read both, so no "
+        f"login is minted for it. Give that brand an explicit organisation, or rename one of "
+        f"the two, then run this again."
+    )
 
 
 def _upsert_org(org_config, for_client=None):

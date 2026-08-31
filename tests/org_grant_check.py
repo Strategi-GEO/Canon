@@ -147,12 +147,78 @@ def no_move_is_no_write():
           run([("acme", "acme")], None, "acme") == [])
 
 
+class CollisionDB:
+    """Answers the two reads the read-time collision net makes, and nothing else.
+
+    `orgs` is the set of orgs.slug values; `self_orgs` is the set of LIVE clients.slug values
+    carrying org_id null. The collision is both sides holding the same string, because
+    org_membership derives org_slug as coalesce(orgs.slug, clients.slug) and one org_members
+    grant on it would then read two tenants.
+    """
+
+    def __init__(self, orgs=(), self_orgs=()):
+        self.orgs = set(orgs)
+        self.self_orgs = set(self_orgs)
+
+    def q(self, sql, params=(), fetch="all"):
+        text = " ".join(sql.split())
+        if text.startswith("select 1 from orgs where slug = %s"):
+            return True if params[0] in self.orgs else None
+        if text.startswith("select slug from clients where slug = %s"):
+            return [(params[0],)] if params[0] in self.self_orgs else []
+        raise AssertionError(f"unstubbed query: {text}")
+
+
+def collision_holds_the_grant_door():
+    """A slug that is BOTH an org and a self-org brand must not be granted a portal login.
+
+    THE HARM IS A SHARED LOGIN, not a misrouted publish. The write guards and the constraint
+    triggers stop the collision being created; neither can reach one already in the record,
+    because a constraint trigger is checked only on rows written after it exists. This net is
+    what catches that, at the last moment it is still inert: a collision nobody holds a grant on
+    leaks nothing.
+    """
+    print("the read-time collision net at the grant door")
+    saved = clients.db
+    try:
+        clients.db = CollisionDB(orgs={"acme"}, self_orgs={"acme"})
+        check("both sides present is a collision", clients.org_slug_collides("acme"))
+        try:
+            clients.refuse_grant_on_collision("acme")
+            check("and the grant is refused", False, "it returned")
+        except clients.InvalidClient as refused:
+            check("and the grant is refused", True)
+            check("the refusal names the portal, not a CMS key that no longer exists",
+                  "portal" in str(refused).lower() and "cms" not in str(refused).lower(),
+                  str(refused))
+            check("it names the brand, so the operator knows which two collided",
+                  "acme" in str(refused))
+
+        # EITHER SIDE ALONE IS ORDINARY AND MUST NOT REFUSE. An org with no same-named self-org
+        # brand is every real org; a self-org brand with no same-named orgs row is every brand
+        # that never joined one. Refusing those would block the common case to guard the rare.
+        clients.db = CollisionDB(orgs={"acme"}, self_orgs=set())
+        check("an org with no colliding brand is clean", not clients.org_slug_collides("acme"))
+        clients.refuse_grant_on_collision("acme")
+
+        clients.db = CollisionDB(orgs=set(), self_orgs={"acme"})
+        check("a self-org brand with no orgs row is clean",
+              not clients.org_slug_collides("acme"))
+        clients.refuse_grant_on_collision("acme")
+
+        clients.db = CollisionDB(orgs={"acme"}, self_orgs={"acme"})
+        check("an empty slug asks the record nothing", not clients.org_slug_collides(""))
+    finally:
+        clients.db = saved
+
+
 if __name__ == "__main__":
     self_org_into_org()
     into_an_org_that_has_brands()
     org_back_to_self_org()
     the_old_grant_survives_while_live()
     no_move_is_no_write()
+    collision_holds_the_grant_door()
     print()
     if FAILED:
         print(f"{len(FAILED)} check(s) failed")

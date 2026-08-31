@@ -231,7 +231,12 @@ create index clients_org on clients (org_id);
 --
 -- NEITHER TRIGGER VALIDATES EXISTING ROWS. Postgres checks a trigger only on rows written after
 -- it exists, so a collision already in the record survives and is caught at read time by
--- server/clients.py's `synthesised_org_collides`, immediately before a key is resolved.
+-- server/clients.py's `org_slug_collides`, through `refuse_grant_on_collision`, at the two doors
+-- that write an `org_members` row: portal_login.provision_one and seed_org_users. That is the
+-- last moment a collision is still inert, because a collision nobody holds a grant on leaks
+-- nothing. It used to be checked immediately before a per-org CMS write key was resolved; commit
+-- 5d80403 replaced those keys with one shared key and 038 removed the CMS, so the door moved with
+-- the harm (039).
 create or replace function refuse_org_slug_collision() returns trigger
   language plpgsql security definer set search_path = public as $$
 declare
@@ -250,8 +255,9 @@ begin
       message = format(
         'the organisation slug %L is already the slug of the brand %L, which has no '
         'organisation of its own', new.slug, v_brand),
-      detail  = 'The two would resolve the same CMS write key, so one brand''s blog would '
-                'publish into the other''s CMS and neither side of the request could notice.',
+      detail  = 'org_membership derives org_slug as coalesce(orgs.slug, clients.slug), so both '
+                'would resolve to this one slug and a single client-portal grant on it would '
+                'read both tenants.',
       hint    = 'Rename the organisation, or give that brand this organisation first.';
   end if;
   return null;
@@ -271,9 +277,10 @@ begin
       errcode = '23514',
       message = format(
         'the brand slug %L is already an organisation slug, so a brand with no organisation '
-        'of its own would resolve that organisation''s CMS write key', new.slug),
-      detail  = 'The brand would publish into that organisation''s CMS, and neither side of '
-                'the request could notice, because the CMS derives the tenant from the key.',
+        'of its own would share that organisation''s client-portal login', new.slug),
+      detail  = 'org_membership derives org_slug as coalesce(orgs.slug, clients.slug), so this '
+                'brand and that organisation''s brands would resolve to one slug and each '
+                'client could read the other.',
       hint    = 'Give this brand an explicit organisation, or rename the organisation holding '
                 'that slug. If this is an undelete, the collision was inert only while the '
                 'brand was deleted.';

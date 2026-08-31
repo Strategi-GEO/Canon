@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 
+from . import clients as clients_mod
 from . import db
 from .seed_admin import _auth_admin, _lookup_user_id
 from .seed_org_users import (
@@ -116,6 +117,22 @@ def provision_one(org_slug: str, org_name: str, domain: str = DEFAULT_DOMAIN) ->
         raise PortalLoginError(
             "SUPABASE_URL / SUPABASE_SECRET_KEY are not configured, so no portal login can be "
             "minted. Run `python -m server.seed_org_users --org <slug>` once they are set.")
+
+    # A GRANT IS THE MOMENT A COLLISION STOPS BEING INERT, so it is refused here rather than
+    # left to the write guards. `org_membership` derives org_slug as
+    # COALESCE(orgs.slug, clients.slug), so a slug that is both an org and a self-org brand
+    # resolves to one string and this one grant would read both tenants. Two Python guards and
+    # two constraint triggers already forbid that state being CREATED; none of them can reach a
+    # collision already in the record, which is the case this catches.
+    #
+    # BEFORE THE GoTrue CALL, so a refusal leaves no user behind. The brand is already written by
+    # the time this runs (provisioning is a side effect of creating one), so the caller keeps the
+    # brand and reports that the login could not be minted, which is the honest outcome: better a
+    # brand with no login than one login two clients share.
+    try:
+        clients_mod.refuse_grant_on_collision(org_slug)
+    except clients_mod.InvalidClient as refused:
+        raise PortalLoginError(str(refused)) from refused
 
     email = f"{org_slug}@{domain}"
     uid = _lookup_user_id(email)
