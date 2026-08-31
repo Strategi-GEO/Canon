@@ -924,14 +924,14 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     file: "server/cms/routes.py",
     symbol: "api_publish_blog",
     kind: "python",
-    // Moved a second time when publishing began stamping the send. A push to the client's own
-    // CMS puts the article live on their site, so leaving sent_to_client null after it hid an
+    // Moved a second time when publishing began stamping the send. A push puts the article live
+    // on the client's own site, so leaving sent_to_client null after it hid an
     // article the client could already read: blogState drops `published` when there is no send.
     // The stamp SATISFIES that guard rather than bypassing it, since published-without-a-send
     // becomes unreachable instead of merely tolerated. Best-effort and after record_publish, so
     // no bookkeeping failure can report a landed publish as a failed one.
     //
-    // Moved a THIRD time when the route began writing the CMS metadata. NO REFUSAL CHANGED, and
+    // Moved a THIRD time when the route began writing the SEO metadata. NO REFUSAL CHANGED, and
     // that is the reconciliation rather than an excuse for the hash: the route now calls
     // gate.assert_publishable itself before spending a model session, which duplicates a 409 arm
     // it already had (publish_route_gate_refused_before_metadata records it), and appends the
@@ -943,19 +943,31 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     // TWO REFUSALS WERE ADDED AND BOTH ARE CLAUSES, not exemptions: publish_destination_configured
     // and publish_client_approved, each resting on its own function in server/cms/gate.py. One
     // exemption was added, publish_route_unknown_destination, for the case a page provably cannot
-    // decide, which is whether THIS BUILD carries a driver for the stored platform. Nothing here
-    // decides who may publish that did not decide it before, and the gate is still called twice
-    // and waived nowhere. Re-recorded once more within the same change when promote_if_failed's
-    // `act` string began naming the destination, so a promotion line cannot describe a CMS push
-    // that was really a website one. NO REFUSAL MOVED: that argument is a note in the trail.
-    fingerprint: "52a77fa6ddeb0793",
+    // decide, which is whether THIS BUILD carries a driver for the stored platform.
+    //
+    // Moved a FIFTH time when the Strategi CMS stopped being a destination (migration 038). THE
+    // FORK IS GONE AND WITH IT TWO REFUSALS, NEITHER OF WHICH WAS A CLAUSE: the missing-write-key
+    // 503 went with server/cms/client.py, and the second _status_for mapping went with the CMS
+    // upstream it mapped. ONE REFUSAL CHANGED SHAPE WITHOUT CHANGING MEANING: a stored platform
+    // this build has no driver for used to surface as sites.UnknownDestination caught one frame
+    // later, and is now refused explicitly before anything is promoted or spent, which is the
+    // same fact publish_route_unknown_destination was always exempt for. NOTHING WAS ADDED that
+    // decides who may publish: the SEO metadata this route now generates for a website is
+    // best-effort polish with no refusal in it, and the gate is still called twice and waived
+    // nowhere. Re-recorded once more within the same change when record.remote_article gained
+    // the destination argument: NO REFUSAL MOVED, and what it fixes is a silent wrong-write
+    // rather than a permission. cms_post_id holds one id and cannot say which system issued it,
+    // so a Strategi CMS id handed to a brand that has since connected WordPress used to PATCH an
+    // unrelated wp/v2 post of that number. Scoping the lookup to the destination makes the push
+    // CREATE, which is the truth.
+    fingerprint: "c62bd1241c72e97a",
     gates: ["publish"],
     what:
-      "Pushes one shipped blog to the CMS as a draft, synchronously, because the operator is " +
-      "watching. It resolves the brand and the topic, delegates the real gate to " +
-      "server/cms/gate.py, resolves the one shared write key, maps the CMS's own failure back " +
-      "to a status that blames the right party, and then stamps the send so the client's portal " +
-      "shows the article they can already read on their site.",
+      "Publishes one shipped blog live on the client's own website, synchronously, because the " +
+      "operator is watching. It resolves the brand, the topic and the destination, delegates " +
+      "the real gate to server/cms/gate.py, maps the site's own failure back to a status that " +
+      "blames the right party, and then stamps the send so the client's portal shows the " +
+      "article they can already read on their own domain.",
     exemptions: [
       {
         id: "publish_route_client_unknown",
@@ -1028,40 +1040,17 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
           "disk at the moment of pushing and not predictable from any fact this page holds.",
       },
       {
-        id: "publish_route_no_cms_key",
-        raises: "detail=cms_client.missing_key_detail()",
-        why:
-          "THE ENGINE'S CONFIGURATION, not the article. Whether the one shared CMS write key is " +
-          "set is resolved from the process environment and server/.env at the moment of the " +
-          "push, and no read this page makes reports it. A clause would answer `unknowable` for " +
-          "every article on every brand and, failing closed, would remove the Publish control " +
-          "from a correctly configured machine because the page cannot see a file it has no " +
-          "business reading. The 503 names the file and the resolution order, which is the " +
-          "sentence an operator can act on.",
-      },
-      {
-        id: "publish_route_cms_upstream",
-        raises: "status_code=_status_for(cause.status)",
-        why:
-          "The CMS's own failure, mapped rather than flattened: a revoked key answers 503 and an " +
-          "unreachable host answers 502. It is a fact about another service at one instant and " +
-          "not a condition the record can be in, so nothing here could withhold a control on it. " +
-          "The website destination's TransportError maps through the identical call for the " +
-          "identical reason: a client's WordPress being down or having revoked our application " +
-          "password is a fact about their server this second, not a state of the record.",
-      },
-      {
         id: "publish_route_site_upstream",
         raises: "status_code=_status_for(cause.status)",
         why:
-          "The client's OWN website failing, mapped through the identical call as the CMS's " +
-          "own failure for the identical reason: a revoked application password answers 503 " +
-          "and an unreachable host answers 502. It is a fact about their server this second, " +
-          "not a state of the record, so no clause could withhold a control on it.",
+          "The client's OWN website failing, mapped rather than flattened: a revoked application " +
+          "password answers 503 and an unreachable host answers 502. It is a fact about their " +
+          "server this second, not a state of the record, so no clause could withhold a control " +
+          "on it.",
       },
       {
         id: "publish_route_unknown_destination",
-        raises: "status_code=409, detail=str(cause))",
+        raises: "is set to publish to",
         why:
           "A brand whose stored destination names a platform THIS BUILD has no driver for: a " +
           "downgrade, or a blob written by a newer version. It is a fact about which code is " +
@@ -1069,7 +1058,10 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
           "and a page cannot render a control conditioned on its own engine's version. 409 " +
           "rather than 500 because the record is fixable from Settings and nothing crashed. " +
           "publish_destination_configured covers the case a page CAN see, which is a brand with " +
-          "no destination at all.",
+          "no destination at all. Raised explicitly now rather than caught from sites.push, " +
+          "which is a shape change and not a new refusal: the CMS used to be the other side of " +
+          "that branch, and with it gone a driverless kind can be refused before anything is " +
+          "promoted or spent.",
       },
     ],
   },
@@ -1083,14 +1075,19 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     kind: "python",
     // UNCHANGED THROUGH MIGRATION 035, and worth saying because that migration added two
     // refusals to this module: assert_destination and assert_client_approved are their own
-    // sources above, each with its own clause, and neither is folded into this function. What
-    // "only a blog the engine shipped may reach the CMS" means did not move by a syllable.
-    fingerprint: "6c0e709494aba15e",
+    // sources above, each with its own clause, and neither is folded into this function.
+    //
+    // ITS ONE REFUSAL WAS RE-WORDED, NOT MOVED, when the Strategi CMS was removed. The test still
+    // reads `if status != "done":` and still admits exactly one status; what changed is the
+    // sentence it raises, because "may reach the CMS, because a draft there is directly
+    // approvable" described a destination that no longer exists. The ground is now the stronger
+    // one it always had underneath: the push publishes the article live.
+    fingerprint: "145a859bef37c070",
     gates: ["publish"],
     what:
-      "The only-push-finished-blogs check, and the only thing standing between an unvetted draft " +
-      "and a CMS post an editor can approve. It refuses a topic with no committed body, a topic " +
-      "with no status feed, and any status that is not exactly 'done'.",
+      "The only-publish-finished-blogs check, and the only thing standing between an unvetted " +
+      "draft and a live article on a client's public site. It refuses a topic with no committed " +
+      "body, a topic with no status feed, and any status that is not exactly 'done'.",
     exemptions: [
       {
         id: "publish_no_body",
@@ -1110,51 +1107,66 @@ export const GATE_SOURCES: Record<GateSourceId, GateSource> = {
     ],
   },
   // WHERE A BLOG GOES, AND WHETHER IT MAY GO THERE YET. Both arrived with migration 035, which
-  // ended the era of one destination: a brand now publishes either to the Strategi CMS or to its
-  // OWN website, and the two are not the same act. Neither refusal existed before, and both are
-  // decidable from facts a page already carries, so both are clauses rather than exemptions.
+  // ended the era of one destination. Migration 038 then removed the Strategi CMS, so the only
+  // destination left is the client's own website and both refusals sit on every publish there is.
+  // Both are decidable from facts a page already carries, so both are clauses.
   assert_destination: {
     file: "server/cms/gate.py",
     symbol: "assert_destination",
     kind: "python",
-    fingerprint: "fea3ca810d7b84ba",
+    // Re-recorded when 038 landed: the CONDITION is unchanged (`if not kind:`) and the refusal is
+    // reworded, because "choose where its blogs publish" described a dropdown with two entries
+    // and there is one act now, connecting the client's website. It is also no longer the rare
+    // case: 038 cleared every brand that was on the CMS, so this is the ordinary state of a brand
+    // nobody has connected yet and it is the whole of what disables the Post button for them.
+    fingerprint: "0d99799654d7c4ee",
     gates: ["publish"],
     what:
-      "Refuses a publish for a brand with no destination configured. Before 035 an unconfigured " +
-      "brand silently posted to the Strategi CMS, which made 'not configured' a state nothing " +
-      "could name; every brand that existed then was backfilled, so this can only fire on one " +
-      "created since, which is exactly the one that needs asking.",
+      "Refuses a publish for a brand with no website connected. Before 035 an unconfigured brand " +
+      "silently posted to the Strategi CMS, which made 'not configured' a state nothing could " +
+      "name; 038 removed that destination and cleared every brand on it, so this is now the " +
+      "ordinary state of a brand nobody has set up and the reason its Post button is disabled.",
     exemptions: [],
   },
-  // THE RETRACTION'S OWN DESTINATION CHECK, and it is a SEPARATE source from assert_destination
-  // rather than a reuse, because the two answer different questions about the same field.
-  // assert_destination asks whether a destination is configured at all; this asks whether that
-  // destination is one an article can be taken DOWN from. The Strategi CMS passes the first and
-  // fails the second: its whole write surface is POST /api/v1/ingest, and /api/v1/posts answers
-  // DELETE and PATCH with 405, so nothing can retract what was filed there.
+  // THE RETRACTION'S OWN DESTINATION CHECK, and it is STILL a separate source from
+  // assert_destination rather than a reuse, though 038 left the two testing the same emptiness.
+  // It carried a second arm for the Strategi CMS, whose whole write surface was POST
+  // /api/v1/ingest so nothing could retract what was filed there; that destination is gone and
+  // the arm is DELETED rather than left as an unreachable branch. What remains is one refusal
+  // with the retraction's own sentence, correct called on its own rather than correct only when
+  // assert_destination ran first, which is why it is not folded away.
   assert_site_destination: {
     file: "server/cms/gate.py",
     symbol: "assert_site_destination",
     kind: "python",
-    fingerprint: "d87e4ede85a418ac",
+    // Re-recorded when 038 deleted its second arm. ONE REFUSAL WAS REMOVED, and its clause was
+    // removed with it (unpublish_destination_is_a_site is gone from ALL_GATE_CLAUSES): a clause
+    // over a branch that cannot be taken would grey the Unpublish control on a fact no record can
+    // hold any more.
+    fingerprint: "c5446c215c785c5a",
     gates: ["unpublish"],
     what:
-      "Refuses an unpublish for a brand whose articles are not on a website this engine can " +
-      "reach: no destination at all, or the Strategi CMS, where an article went as a draft " +
-      "that was never public and which exposes no retraction endpoint.",
+      "Refuses an unpublish for a brand with no website connected, so there is nothing to take " +
+      "the article down from.",
     exemptions: [],
   },
   assert_client_approved: {
     file: "server/cms/gate.py",
     symbol: "assert_client_approved",
     kind: "python",
-    fingerprint: "7ce90f86d0f0b1d3",
+    // Re-recorded when 038 removed the Strategi CMS from its exempt list. THE REFUSAL DID NOT
+    // MOVE and its condition is still `if approved_at is None:`; what changed is WHICH
+    // destinations reach it. The CMS was exempt because a push there filed a draft an editor of
+    // ours reviewed, so it released nothing to anybody. Every destination this build has
+    // publishes live, so approval is no longer a clause one path skips. An EMPTY destination is
+    // still outside it, and that is not an exemption: assert_destination refuses it one line
+    // earlier with the sentence an operator can act on.
+    fingerprint: "12162743f86506fa",
     gates: ["publish"],
     what:
       "Refuses a publish to a client's OWN WEBSITE until that client has approved the article. " +
-      "Scoped to a website destination and deliberately not applied to the Strategi CMS: a CMS " +
-      "push files a draft an editor of ours reviews, so it releases nothing, while a website " +
-      "push puts the article live on the client's domain and is the final release.",
+      "A push puts the article live on their domain, which is the final release, and the thing " +
+      "that authorises a final release in this app is the client's own approval.",
     exemptions: [],
   },
   cms_record_blog: {
@@ -1732,10 +1744,10 @@ const DISMISS_NOT_APPLYING_ENGINE: GateClause = {
 const PUBLISH_TOPIC_IS_DONE: GateClause = {
   id: "publish_topic_is_done",
   source: "assert_publishable",
-  line: 229,
+  line: 217,
   condition: 'if status != "done":',
   raises: "not done. Only a blog the engine shipped",
-  refusal: "409 only a blog the engine shipped may reach the CMS",
+  refusal: "409 only a blog the engine shipped may go live on a client's site",
   transient: false,
   // THE GATE IS UNCHANGED AND STILL DEMANDS THE LITERAL "done". What changed is what reaches
   // it: blog_edit.promote_if_failed runs FIRST and promotes a failed topic on the
@@ -1844,13 +1856,14 @@ const FORM_ANSWERED_FOR_REVISE: GateClause = {
 
 /** Every clause this contract knows, so the drift test can walk them without walking the doors. */
 /**
- * NOWHERE TO PUBLISH, WHICH IS A STATE THAT ONLY BECAME NAMEABLE WITH MIGRATION 035.
+ * NO WEBSITE CONNECTED, WHICH IS THE ORDINARY STATE OF AN UNSET-UP BRAND SINCE MIGRATION 038.
  *
- * Until then every brand posted to the Strategi CMS whether anyone had chosen it or not, so the
+ * Before 035 every brand posted to the Strategi CMS whether anyone had chosen it or not, so the
  * Post button was always live and an operator could not tell a brand deliberately on the CMS from
- * one nobody had set up. The migration backfilled every existing brand, so an empty destination
- * means a brand created since and never configured, and the honest control for it is a disabled
- * button naming the setting rather than a press that 409s.
+ * one nobody had set up. 035 made the state nameable and 038 removed the CMS outright, clearing
+ * every brand that was on it, so an empty destination is now the COMMON case rather than the rare
+ * one and this clause is the whole of what disables the button for it. The honest control is a
+ * disabled button naming the setting, not a press that 409s.
  *
  * `unknowable` on an absent field, not `pass`: a page that does not carry the destination must not
  * assert there is one. It fails closed, like every other unread fact on this page.
@@ -1858,10 +1871,10 @@ const FORM_ANSWERED_FOR_REVISE: GateClause = {
 const PUBLISH_DESTINATION_CONFIGURED: GateClause = {
   id: "publish_destination_configured",
   source: "assert_destination",
-  line: 232,
+  line: 248,
   condition: "if not kind:",
-  raises: "No blog destination is set for",
-  refusal: "409 no blog destination is configured for this brand",
+  raises: "has no website connected, so there is nowhere to publish",
+  refusal: "Connect the client's website in Settings before publishing",
   transient: false,
   decide: ({ record }) =>
     record.destination === undefined ? "unknowable" : record.destination ? "pass" : "refuse",
@@ -1892,10 +1905,10 @@ const PUBLISH_DESTINATION_CONFIGURED: GateClause = {
 const UNPUBLISH_HAS_A_DESTINATION: GateClause = {
   id: "unpublish_has_a_destination",
   source: "assert_site_destination",
-  line: 249,
+  line: 270,
   condition: "if not kind:",
-  raises: "has no publishing destination set, so there is nothing to take",
-  refusal: "409 no blog destination is configured for this brand",
+  raises: "so there is nothing to take",
+  refusal: "409 no website is connected for this brand",
   transient: false,
   decide: ({ record }) =>
     record.destination === undefined ? "unknowable" : record.destination ? "pass" : "refuse",
@@ -1905,54 +1918,33 @@ const UNPUBLISH_HAS_A_DESTINATION: GateClause = {
   },
 };
 
-const UNPUBLISH_DESTINATION_IS_A_SITE: GateClause = {
-  id: "unpublish_destination_is_a_site",
-  source: "assert_site_destination",
-  line: 254,
-  condition: 'if kind == sites.STRATEGI_CMS:',
-  raises: "went to the Strategi CMS as a draft, not to a website",
-  refusal: "409 this article is not on a website this engine can take it down from",
-  transient: false,
-  decide: ({ record }) =>
-    record.destination === undefined
-      ? "unknowable"
-      : record.destination && record.destination !== "strategi-cms"
-        ? "pass"
-        : "refuse",
-  witness: {
-    passes: withRecord({ destination: "wordpress" }),
-    refuses: withRecord({ destination: "strategi-cms" }),
-  },
-};
-
 /**
- * THE CLIENT'S OWN APPROVAL, AND ONLY WHERE PUBLISHING MEANS THEIR LIVE WEBSITE.
+ * THE CLIENT'S OWN APPROVAL, WHICH NOW SITS ON EVERY PUBLISH THERE IS.
  *
- * The asymmetry is the clause. A push to the Strategi CMS files a DRAFT that an editor of ours
- * reviews, so it releases nothing to anybody, and the bench has always offered it from internal
- * review onwards. A push to the CLIENT'S OWN SITE publishes the article live on their domain: it
- * is the final release, and the thing that authorises a final release in this app is the client's
- * approval. So the CMS keeps the behaviour it has always had and a website destination gains a
- * condition, rather than one rule being bent to cover two acts that differ in what they DO.
+ * It used to be an asymmetry: a push to the Strategi CMS filed a DRAFT that an editor of ours
+ * reviewed, so it released nothing to anybody and the bench offered it from internal review
+ * onwards, while a push to the client's own site published the article live on their domain.
+ * Migration 038 removed the first destination, so every push is the second kind and this clause
+ * is a condition on publishing rather than a condition on one path.
  *
  * BOTH FACTS MUST BE PRESENT TO DECIDE. An unknown destination cannot say whether this clause
- * even applies, and a known website destination with an unread approval cannot say whether it
- * passes; either way the answer is `unknowable` and the control is withheld with a sentence.
+ * even applies, and a known destination with an unread approval cannot say whether it passes;
+ * either way the answer is `unknowable` and the control is withheld with a sentence.
  */
 const PUBLISH_CLIENT_APPROVED: GateClause = {
   id: "publish_client_approved",
   source: "assert_client_approved",
-  line: 253,
+  line: 298,
   condition: "if approved_at is None:",
   raises: "has not been approved by the client yet",
   refusal: "409 posting publishes it live on their website, so it waits for the client",
   transient: false,
   decide: ({ record }) => {
     if (record.destination === undefined) return "unknowable";
-    // The CMS, and a brand with nothing configured, are both outside this clause: the first
-    // because its push releases nothing, the second because DESTINATION_CONFIGURED refuses it
-    // first and a second refusal over the same emptiness would say the wrong sentence.
-    if (record.destination === "" || record.destination === "strategi-cms") return "pass";
+    // A brand with nothing configured is outside this clause, and it is not an exemption:
+    // DESTINATION_CONFIGURED refuses it first, and a second refusal over the same emptiness
+    // would say the wrong sentence to an operator whose real problem is an unconnected site.
+    if (record.destination === "") return "pass";
     return record.client_approved ? "pass" : "refuse";
   },
   witness: {
@@ -1983,7 +1975,6 @@ export const ALL_GATE_CLAUSES: readonly GateClause[] = [
   PUBLISH_TOPIC_IS_DONE,
   PUBLISH_DESTINATION_CONFIGURED,
   UNPUBLISH_HAS_A_DESTINATION,
-  UNPUBLISH_DESTINATION_IS_A_SITE,
   PUBLISH_CLIENT_APPROVED,
   FORM_EXISTS_FOR_ANSWERS,
   FORM_NOT_STALE_FOR_ANSWERS,
@@ -2123,7 +2114,7 @@ export const ADMIN_GATE_DOORS: Record<AdminAction, readonly GateDoor[]> = {
     {
       id: "unpublish_from_site",
       what: "take the article back off the client's own website",
-      clauses: [UNPUBLISH_HAS_A_DESTINATION, UNPUBLISH_DESTINATION_IS_A_SITE],
+      clauses: [UNPUBLISH_HAS_A_DESTINATION],
     },
   ],
 };

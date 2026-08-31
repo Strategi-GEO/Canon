@@ -70,8 +70,14 @@ TYPES = {
 }
 
 
-def wp_site(*, types=None, article_headers=None, archive=ARCHIVE_HTML, me_status=200):
-    """A stub WordPress. `seen` records every request so a test can assert what was called."""
+def wp_site(*, types=None, article_headers=None, archive=ARCHIVE_HTML, me_status=200,
+            post_meta=None):
+    """A stub WordPress. `seen` records every request so a test can assert what was called.
+
+    `post_meta` is the meta object an existing article hands back under context=edit, which is
+    the only place a site says which SEO plugin keys it will actually accept from us. None means
+    the listing 404s, which is the site-with-nothing-published case.
+    """
     seen = []
 
     def handler(request):
@@ -79,6 +85,10 @@ def wp_site(*, types=None, article_headers=None, archive=ARCHIVE_HTML, me_status
         path = request.url.path
         if path.startswith("/wp-json/wp/v2/users/me"):
             return httpx.Response(me_status, json={"name": "Editor"})
+        if (post_meta is not None and request.method == "GET"
+                and "context=edit" in (request.url.query or b"").decode()
+                and "_fields=meta" in (request.url.query or b"").decode()):
+            return httpx.Response(200, json=[{"meta": post_meta}])
         if path.startswith("/wp-json/wp/v2/types"):
             return httpx.Response(200, json=types if types is not None else TYPES)
         if path == "/insights/q3-outlook/":
@@ -113,6 +123,39 @@ async def run_checks():
           site["rest_root"] == "https://acme.com/wp-json/", site.get("rest_root"))
     check("connect writes nothing to the site",
           all(entry.startswith("GET ") for entry in seen), str(seen))
+    check("a site whose SEO keys are not exposed resolves none, rather than guessing",
+          site["seo"] == {}, str(site.get("seo")))
+
+    # ---- connect: the SEO plugin is READ off the site's own schema ----------------------
+    # INSTALLED IS NOT WRITABLE. WordPress accepts a meta key over REST only where something
+    # registered it with show_in_rest, and Yoast's are protected and unregistered by default, so
+    # a plugin detected from the page HTML would be a promise this engine could not keep. What
+    # comes back under context=edit is the whole of what can be written.
+    client, _ = wp_site(post_meta={"_yoast_wpseo_title": "", "_yoast_wpseo_metadesc": "",
+                                   "_thumbnail_id": 0})
+    yoast = await wordpress.connect("https://acme.com/blog", CREDS, client=client)
+    check("a writable Yoast is resolved and named",
+          yoast["seo"] == {"label": "Yoast SEO", "title_key": "_yoast_wpseo_title",
+                           "desc_key": "_yoast_wpseo_metadesc"}, str(yoast.get("seo")))
+    check("the operator can SEE which plugin, on the card and the button",
+          "Yoast SEO" in wordpress.label(yoast), wordpress.label(yoast))
+
+    client, _ = wp_site(post_meta={"rank_math_title": "", "rank_math_description": ""})
+    rank = await wordpress.connect("https://acme.com/blog", CREDS, client=client)
+    check("Rank Math is resolved the same way", rank["seo"]["label"] == "Rank Math")
+
+    # BOTH KEYS OR NEITHER: a half-filled SEO record reads to whoever audits the site as somebody
+    # having started and stopped, rather than as a field this engine never fills.
+    client, _ = wp_site(post_meta={"_yoast_wpseo_metadesc": ""})
+    half = await wordpress.connect("https://acme.com/blog", CREDS, client=client)
+    check("a plugin exposing only half its pair resolves nothing", half["seo"] == {})
+
+    # AIOSEO keeps its fields in its own table rather than in post meta, so there is no key here
+    # to write and a site running it must resolve nothing rather than be lied to.
+    client, _ = wp_site(post_meta={"_aioseo_title": "", "footnotes": ""})
+    other = await wordpress.connect("https://acme.com/blog", CREDS, client=client)
+    check("a plugin that keeps its fields outside post meta resolves nothing",
+          other["seo"] == {})
 
     # A site whose blog IS the default post type must still resolve, without special-casing.
     client, _ = wp_site(article_headers={
@@ -302,12 +345,14 @@ asyncio.run(run_checks())
 # ---------------------------------------------------------------------------
 # The registry and the payload adapter: pure, no network
 # ---------------------------------------------------------------------------
-check("the CMS is a kind with no driver, so routes.py branches on it",
-      sites.driver_for(sites.STRATEGI_CMS) is None)
 check("wordpress has a driver", sites.driver_for("wordpress") is wordpress)
 check("an unknown kind has no driver", sites.driver_for("geocities") is None)
-check("published_to for the CMS is its name, not a host",
-      sites.host_of({"kind": sites.STRATEGI_CMS}) == "strategi-cms")
+# The Strategi CMS was a kind with no driver, which routes.py branched on. Migration 038 removed
+# it, so a driverless kind is now a refusal and never a second path; this pins that it stayed
+# removed, because reinstating it as a silent None is exactly how the branch would come back.
+check("the removed CMS is just an unknown kind now",
+      sites.driver_for("strategi-cms") is None
+      and "strategi-cms" not in [k["kind"] for k in sites.KINDS])
 check("published_to for a website is its host",
       sites.host_of({"kind": "wordpress", "url": "https://acme.com/x"}) == "acme.com")
 
@@ -325,6 +370,7 @@ PAYLOAD = {
     "excerpt": "A summary",
     "suggested_slug": "q3-outlook",
     "meta_title": "Q3 Outlook 2026",
+    "meta_description": "What Q3 holds for Acme.",
     "tags": ["Acme"],
     "category_name": "Finance",
 }
@@ -339,6 +385,58 @@ check("taxonomy the destination cannot take is dropped rather than sent",
       "tags" not in adapted and "category_name" not in adapted, str(sorted(adapted)))
 check("the adapter passes the scored title through unchanged",
       adapted["title"] == "Q3 Outlook")
+# The SEO pair is CARRIED now, where taxonomy still is not. The driver decides whether the site
+# has anywhere to put them; the adapter's job is to stop dropping them on the floor.
+check("the SEO title reaches the driver", adapted["meta_title"] == "Q3 Outlook 2026")
+check("the SEO description reaches the driver",
+      adapted["meta_description"] == "What Q3 holds for Acme.")
+
+
+# ---------------------------------------------------------------------------
+# The SEO fields: resolved at connect from the site's own schema, filled never overwritten
+# ---------------------------------------------------------------------------
+YOAST = {"seo": {"label": "Yoast SEO", "title_key": "_yoast_wpseo_title",
+                 "desc_key": "_yoast_wpseo_metadesc"}}
+check("a site with a writable plugin gets both fields",
+      wordpress._seo_meta(YOAST, adapted)
+      == {"_yoast_wpseo_title": "Q3 Outlook 2026",
+          "_yoast_wpseo_metadesc": "What Q3 holds for Acme."})
+check("a site with no writable plugin gets nothing, exactly as before",
+      wordpress._seo_meta({}, adapted) == {})
+# An empty string would BLANK a value the site may already hold, which is the one thing an SEO
+# write must never do, so a field the payload did not produce is omitted rather than sent empty.
+check("a missing description is omitted, not sent blank",
+      wordpress._seo_meta(YOAST, {**adapted, "meta_description": ""})
+      == {"_yoast_wpseo_title": "Q3 Outlook 2026"})
+
+
+class _Existing:
+    def __init__(self, meta):
+        self._meta = meta
+
+    def json(self):
+        if self._meta is None:
+            raise ValueError("not json")
+        return {"meta": self._meta}
+
+
+PAIR = {"_yoast_wpseo_title": "New", "_yoast_wpseo_metadesc": "New desc"}
+check("an empty field on their site is filled",
+      wordpress._unfilled_seo(_Existing({"_yoast_wpseo_title": "",
+                                         "_yoast_wpseo_metadesc": ""}), PAIR) == PAIR)
+check("a field somebody wrote on their site is left alone",
+      wordpress._unfilled_seo(_Existing({"_yoast_wpseo_title": "Theirs",
+                                         "_yoast_wpseo_metadesc": ""}), PAIR)
+      == {"_yoast_wpseo_metadesc": "New desc"})
+check("whitespace is not a written value",
+      wordpress._unfilled_seo(_Existing({"_yoast_wpseo_title": "   ",
+                                         "_yoast_wpseo_metadesc": "  "}), PAIR) == PAIR)
+# Fill-if-empty, never fill-unless-proven-full: a post whose meta cannot be read is one this
+# function cannot prove is empty, so it writes nothing.
+check("an unreadable post is not written over",
+      wordpress._unfilled_seo(_Existing(None), PAIR) == {})
+check("a post with no meta object at all is not written over",
+      wordpress._unfilled_seo(_Existing("nonsense"), PAIR) == {})
 
 
 print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failed")

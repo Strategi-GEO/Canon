@@ -44,9 +44,8 @@ export type Client = {
    * custom_instructions: the hosted mirror never selects it, so it can be "" there. Absent-safe
    * with `?? ""` at every read.
    */
-  cms_client: string;
   /**
-   * WHERE THIS BRAND'S BLOGS PUBLISH, as a bare kind: "strategi-cms", "wordpress", or "" when
+   * WHERE THIS BRAND'S BLOGS PUBLISH, as a bare kind: "wordpress", or "" when
    * nothing is configured (migration 035). The Post control reads exactly this, through the
    * gate contract's `destination`, and an empty string is a REAL value meaning nobody has set
    * this brand up: 035 backfilled every brand that already existed, so "" is a brand created
@@ -166,7 +165,6 @@ export type CreateClientBody = {
    * collected at create, but modelled here so UpdateClientBody (a Partial of this) can PATCH it.
    * Empty string clears it and the payload falls back to the brand slug; omitted means "not sent".
    */
-  cms_client?: string;
 };
 
 export type UpdateClientBody = Partial<CreateClientBody>;
@@ -1049,19 +1047,18 @@ export type PublishResult = {
   post_id: string | null;
   slug: string | null;
   /**
-   * The destination's own word for the article. "draft" on a fresh CMS push, where the CMS owns
-   * the lifecycle and the engine never sets it; "publish" on a client's own website, where the
-   * article goes live because the client already approved it in the portal.
+   * The destination's own word for the article. "publish" on every push this build makes: the
+   * article goes live because the client already approved it in the portal. Older records can
+   * hold "draft", which is what a Strategi CMS push left behind before that destination went.
    */
   status: string | null;
-  /** The published article's URL, on a website destination. Null from the CMS, which has none. */
+  /** The published article's URL, as the site itself reported it. */
   url?: string | null;
-  /** Where it went: "strategi-cms" or a host like "acme.com". */
+  /** Where it went: a host like "acme.com", or "strategi-cms" on a record predating its removal. */
   destination?: string | null;
   created: boolean;
   updated: boolean;
   skipped: string | null;
-  preview_token: string | null;
 };
 
 /**
@@ -1276,7 +1273,8 @@ export type BlogReviewState = {
    */
   cms_url?: string | null;
   /**
-   * WHERE this article went: "strategi-cms", or a host like "acme.com". clients.site_kind says
+   * WHERE this article went: a host like "acme.com", or "strategi-cms" on a record written
+   * before that destination was removed. clients.site_kind says
    * where the brand publishes NOW, which is a different question the moment a brand is moved
    * from the CMS to its own website: without this, every article it ever published would read
    * as having gone to the new place.
@@ -1293,7 +1291,7 @@ export type BlogReviewState = {
  */
 export type SiteConnection = {
   configured: boolean;
-  /** "strategi-cms", "wordpress", or "" when nothing is set up. */
+  /** "wordpress", or "" when no website is connected. */
   kind: string;
   /** One line naming the destination, e.g. "acme.com (Insights)". "" when unconfigured. */
   label: string;

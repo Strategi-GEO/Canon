@@ -23,17 +23,22 @@ import { HOSTED_READONLY } from "@/lib/hosted";
 import type { BlogStatus, PublishResult } from "@/types";
 
 /**
- * Posts one finished blog to the Strategi CMS, as a draft for a human to review.
+ * Publishes one finished blog live on the client's own website.
+ *
+ * ONE DESTINATION NOW. This button used to mean two different acts depending on the brand: an
+ * internal draft filed into the Strategi CMS, or a live article on a client's public domain. The
+ * CMS is gone, so it always means the second, which is why the label names the platform and the
+ * dialog says the word live.
  *
  * THIS COMPONENT IS NOT THE GUARD. The engine refuses any blog whose terminal status is not
- * "done" and answers 409, and that refusal is what actually keeps an unvetted piece away
- * from an editor who could approve it. Everything here is courtesy: disabling the button
- * saves a round trip and, more usefully, says why. A stale tab pressing anyway gets the
- * server's no.
+ * "done", any brand with no website connected, and any article the client has not approved, and
+ * answers 409. Those refusals are what actually keep an unvetted piece off a client's site.
+ * Everything here is courtesy: disabling the button saves a round trip and, more usefully, says
+ * why. A stale tab pressing anyway gets the server's no.
  *
- * The browser sends a brand and a topic. It never builds the payload and never holds the
- * write key: the engine reads the blog off its own disk, so what lands in the CMS is the
- * artifact that passed the evaluator rather than whatever a page had in memory.
+ * The browser sends a brand and a topic. It never builds the payload and never holds the site
+ * credential: the engine reads the blog off its own record, so what goes live is the artifact
+ * that passed the evaluator rather than whatever a page had in memory.
  */
 export function PublishAction({
   brandSlug,
@@ -51,7 +56,7 @@ export function PublishAction({
   /**
    * The evaluator's number, and the publish door genuinely reads it now, which is why this
    * prop exists at all. `publish_promotes_scored_draft` decides on it: a FAILED blog reaches
-   * the CMS by being promoted first (server/blog_edit.py promote_if_failed), and the one
+   * the site by being promoted first (server/blog_edit.py promote_if_failed), and the one
    * thing that promotion cannot waive is a draft no evaluator ever scored. Passing the status
    * alone would answer that clause by ABSENCE and grey the button on every failed blog,
    * including the scored ones this door exists for. blockedReason's own note spells out why a
@@ -59,8 +64,8 @@ export function PublishAction({
    */
   score: number | null;
   /**
-   * WHERE THIS BRAND PUBLISHES: "strategi-cms", "wordpress", "" for nothing configured, or
-   * undefined while the brand record is still loading.
+   * WHERE THIS BRAND PUBLISHES: "wordpress", "" for no website connected, or undefined while
+   * the brand record is still loading.
    *
    * IT IS A PROP RATHER THAN A LOOKUP because blockedReason owes the gate every fact its
    * clauses read, and two of them read this one. The note on blockedReason spells out why a
@@ -70,7 +75,7 @@ export function PublishAction({
    */
   destination?: string;
   /**
-   * Fired once the CMS has taken the article, so the page can re-read the record.
+   * Fired once the site has taken the article, so the page can re-read the record.
    *
    * IT EXISTS BECAUSE THE PUSH NOW MOVES THE STATE. `published` used to require a send stamp
    * beside the push, so posting from internal review changed no state, moved no tag and needed
@@ -78,14 +83,14 @@ export function PublishAction({
    * admin bench empties, and neither happens until something re-reads the record.
    *
    * NO ARGUMENT, DELIBERATELY. The send door hands its caller the review state its POST
-   * answered with, because that POST answers with exactly that. This one answers with the CMS's
-   * own shape (post id, slug, draft status), which carries no published_at, so there is nothing
+   * answered with, because that POST answers with exactly that. This one answers with the site's
+   * own shape (post id, slug, status, url), which carries no published_at, so there is nothing
    * truthful to pass and a caller that got a synthesised stamp would render this browser's
    * clock as a database fact.
    *
-   * FIRED ON `skipped` TOO. That result means a human already moved the post past draft in the
-   * CMS, which is the strongest possible evidence the article is out the door: the engine still
-   * stamps published_at, so the record moved and the page has to follow.
+   * FIRED ON `skipped` TOO. That result means somebody edited the article on their own site
+   * since our last push, which is the strongest possible evidence it is out the door: the engine
+   * still stamps published_at, so the record moved and the page has to follow.
    */
   onPublished?: () => void;
 }) {
@@ -94,7 +99,7 @@ export function PublishAction({
   const [error, setError] = React.useState<ApiError | null>(null);
   const [result, setResult] = React.useState<PublishResult | null>(null);
 
-  // The CMS push runs through the engine, which holds the write key. The hosted build has
+  // The push runs through the engine, which holds the site credential. The hosted build has
   // no engine behind it, so the button does not exist there at all.
   if (HOSTED_READONLY) {
     return null;
@@ -107,10 +112,10 @@ export function PublishAction({
   }
 
   const blocked = blockedReason(status, score, destination);
-  // The domain, so an operator reads WHERE the article is going before they press. "Post to
-  // CMS" was unambiguous while there was one destination and is a trap now: the same button on
-  // two brands can mean an internal draft or a live article on a client's public website.
-  const target = destination && destination !== "strategi-cms" ? hostOf(destination) : "CMS";
+  // The platform, so an operator reads WHERE the article is going before they press. There is
+  // one kind of destination now and every press publishes live, so the fallback is the generic
+  // word rather than a second destination's name.
+  const target = destination ? platformName(destination) : "their site";
 
   if (blocked) {
     return (
@@ -175,10 +180,10 @@ export function PublishAction({
 
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Post this blog to the CMS?</AlertDialogTitle>
+          <AlertDialogTitle>Publish this blog on {target}?</AlertDialogTitle>
           <AlertDialogDescription>
-            This sends the blog to the Strategi CMS as a draft. It is not published and it does
-            not reach the client: an editor reviews it there and decides.
+            This publishes the article live on the client&apos;s own website, where anyone can
+            read it. It is the final step, which is why it waits for the client&apos;s approval.
           </AlertDialogDescription>
         </AlertDialogHeader>
 
@@ -186,18 +191,22 @@ export function PublishAction({
           <p className="font-medium text-foreground">What goes across</p>
           <ul className="mt-1.5 flex flex-col gap-1 text-xs leading-relaxed text-muted-foreground">
             <li>
-              The draft exactly as the evaluator scored it, plus its sources and its target
-              prompts. Nothing is rewritten on the way, so the article an editor opens is the
-              one in the blog.md tab.
+              The draft exactly as the evaluator scored it, plus its sources. Nothing is
+              rewritten on the way, so the article a reader opens is the one in the blog.md tab.
             </li>
             <li>
-              Posting again updates the same draft rather than making a second one. If an editor
-              has already moved the post past draft, the CMS keeps their version and says so.
+              It joins the same section of their blog as their existing articles, and the byline
+              is theirs: the article posts as the WordPress user whose application password
+              connected the site.
             </li>
             <li>
-              The byline, SEO title, description, category and tag go with it, all derived from
-              the draft itself rather than written fresh, so they carry the same vetting the
-              article passed. A reviewer can edit any of them in the CMS.
+              Publishing again updates the same article rather than making a second one. If
+              somebody edited it on their site since the last push, their version is kept and
+              the app says so instead of overwriting it.
+            </li>
+            <li>
+              The SEO title and description go with it where their SEO plugin accepts them, and
+              a field somebody has already filled in on their side is never overwritten.
             </li>
           </ul>
         </div>
@@ -221,7 +230,7 @@ export function PublishAction({
             {posting ? (
               <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
             ) : null}
-            Post as draft
+            Publish
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -238,7 +247,7 @@ export function PublishAction({
  * `publish_topic_is_done` clause with that source line recorded verbatim beside it. A restatement
  * is silent when it is wrong, and this one was already wrong in the way every restatement of a
  * closed list is wrong: a status nobody enumerated fell through all three arms and returned null,
- * which reads as "nothing blocks this" and offers a Post to CMS the gate answers with a 409.
+ * which reads as "nothing blocks this" and offers a Publish the gate answers with a 409.
  *
  * A FOURTH ARM WOULD HAVE BEEN THE SAME BUG WITH A LONGER LIST. The list is not short by
  * accident, it is short because it is a hand copy of a rule that is not a list at all: the gate
@@ -249,7 +258,7 @@ export function PublishAction({
  * status alone was safe because the publish door held exactly one clause and that clause read the
  * status. That stopped being true the moment a failed blog became publishable: the door gained
  * `publish_promotes_scored_draft`, which reads the SCORE, because the promotion that lets a
- * sub-90 draft reach the CMS (server/blog_edit.py promote_if_failed) cannot waive a draft no
+ * sub-90 draft reach a client's site (server/blog_edit.py promote_if_failed) cannot waive a draft no
  * evaluator ever scored.
  *
  * THE OLD SHAPE WOULD HAVE FAILED SILENTLY AND IN THE WORST DIRECTION. Every field of a record is
@@ -290,22 +299,20 @@ function blockedReason(
  * `site_kind` is a PLATFORM ("wordpress"), not a host, because that is the one thing the client
  * record can carry without the credential riding along: the stored destination holds a write
  * credential for a live website, so the engine extracts only the kind in SQL and the URL never
- * reaches this surface. A platform name is what there is, and "Post to WordPress" says the thing
- * that matters, which is that this press publishes on the client's own site rather than into our
- * CMS. The exact host is on the settings card and on the chip after the push, both of which read
- * it from somewhere that legitimately has it.
+ * reaches this surface. The exact host is on the settings card and on the chip after the push,
+ * both of which read it from somewhere that legitimately has it.
  */
-function hostOf(kind: string): string {
+function platformName(kind: string): string {
   return kind.charAt(0).toUpperCase() + kind.slice(1);
 }
 
-/** The CMS reports three outcomes and they are not the same event to an operator. */
+/** The site reports three outcomes and they are not the same event to an operator. */
 function describeResult(result: PublishResult): string {
   if (result.skipped) {
-    return "Already past draft in the CMS, so it was left alone";
+    return "Someone edited this on their site, so it was left alone";
   }
   if (result.updated) {
-    return "Existing draft updated";
+    return "The live article was updated";
   }
-  return "Draft created in the CMS";
+  return "Published on the client's site";
 }

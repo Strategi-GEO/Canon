@@ -66,7 +66,7 @@ Answering it starts one rerun that applies your answers. The clarified draft alw
 
 ### Can I edit a blog after I send it to the client?
 
-Not while they are reading it. Once you press **Send to client**, the client is reading exact pinned bytes, so editing would change the article underneath someone mid-review. The only act left on that bench is posting to the CMS, which changes nothing they are reading.
+Not while they are reading it. Once you press **Send to client**, the client is reading exact pinned bytes, so editing would change the article underneath someone mid-review. There is no act left on that bench that changes the bytes.
 
 Editing comes back the moment the client asks for changes, which is what that state is for. After the client **approves**, nobody edits it again, you included: the approval stamp records that the client accepted those exact words, so an edit after it would make the record assert something they never agreed to.
 
@@ -74,7 +74,7 @@ Editing comes back the moment the client asks for changes, which is what that st
 
 Because they have not approved it.
 
-Canon has two publishing destinations and they are not the same act. Posting to the **Strategi CMS** files a draft that one of our own editors reviews, so it releases nothing and the door is open from internal review onwards. Posting to the **client's own website** publishes the article live on their domain, which is the final release, so it waits for their sign-off.
+Publishing puts the article live on the **client's own website**, which is the final release, so it waits for their sign-off. Canon once had a second destination, a draft filed with our own editors, which released nothing and opened from internal review onwards; that destination has been removed, so every publish is now the final release.
 
 Which destination a brand uses is set on the brand, in **Settings** under **Blog destination**. A brand with no destination configured cannot post at all. See [Publishing a blog](../guide/publishing.md).
 

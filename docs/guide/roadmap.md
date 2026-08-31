@@ -173,7 +173,7 @@ Files are named `<brand-slug>-month-<n>-roadmap.xlsx` or `.csv`, and both are bu
 Deleting is per month, from the trash icon beside that month in the preview sidebar. There is no delete button on the toolbar, because a brand no longer holds only one roadmap.
 
 !!! danger "Deleting a month deletes that month's blogs with it"
-    Every blog written from that month's roadmap goes: its draft, its evaluation, its research and its history. That includes blogs already sent to a client or posted to a CMS. This cannot be undone.
+    Every blog written from that month's roadmap goes: its draft, its evaluation, its research and its history. That includes blogs already sent to a client or published on their site. This cannot be undone.
 
     A post already live on a client's own website is **not** taken down. Only this app's record of it goes.
 

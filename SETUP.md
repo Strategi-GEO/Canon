@@ -117,35 +117,23 @@ Claude login pays for generations, the dashboard login identifies you in the
 app. The menu also shows which Claude account this machine is logged in to,
 as "Claude account: you@company.com".
 
-## Posting blogs to the client CMS (optional)
+## Publishing blogs to a client's website (optional)
 
-Finished blogs have a **Post to CMS** button in the preview drawer, which sends
-the blog to `client.strategi.is` as a draft for an editor to approve. That button
-needs a write key, and there is **one key per client org**, never one shared key.
-Ask your admin for the key for each brand you will be posting.
+Canon publishes a finished, client-approved blog straight onto the client's own WordPress. There
+is nothing to configure in `server/.env` for it: the credential lives on the brand, not on the
+machine.
 
-Put each key in the same `server/.env` file the installer created, one line per
-org, then restart Canon from the menu:
+Open the brand, go to **Settings → Blog destination**, and connect their site. You need their
+blog page address, a WordPress username with Editor or Administrator access, and an Application
+Password for that user (*Users → Profile → Application Passwords*, name it `Canon`). Never ask
+for their WordPress password, their hosting login, or FTP details.
 
-```
-STRATEGI_CMS_WRITE_KEY_BLR_BREWING=the-key-your-admin-sent
-STRATEGI_CMS_WRITE_KEY_VACATION_VILLAGE=a-different-key
-```
+The **Publish** button stays disabled until a website is connected, and it says so on hover.
 
-The variable name is `STRATEGI_CMS_WRITE_KEY_` followed by the org's slug in
-capitals, with any hyphens turned into underscores. No `export` keyword: this is
-a file of `NAME=value` lines, not a shell script. Add the lines to the file that
-is already there rather than replacing it, so the database values stay.
+This section used to describe `STRATEGI_CMS_WRITE_KEY_<ORG>` lines for posting drafts into the
+Strategi CMS. That destination is gone, and any such lines still sitting in your `server/.env`
+do nothing. They are harmless, and you can delete them.
 
-**Do not use `export` in your shell profile for this.** It works if you start
-Canon from a terminal and stops working the moment you start it by
-double-clicking, because apps opened from Finder do not read shell profiles. The
-file works on both.
-
-One key posts to exactly one client's CMS, so the wrong key in the wrong line
-files one client's blog into another client's site with nothing able to catch it.
-Treat these like the database values above: a key that lands in chat or a ticket
-has to be rotated for everybody.
 
 ## Troubleshooting
 

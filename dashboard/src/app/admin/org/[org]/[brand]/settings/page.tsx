@@ -79,11 +79,10 @@ function BrandSettings({ orgName, brand }: { orgName: string; brand: Client }) {
               orgName={orgName}
               onSaved={onSaved}
             />
-            {/* Directly under Identity, because the CMS routing slug it supersedes is a field
-                ON that card: where a brand's blogs go is one question, and splitting it across
-                two places is how the two come to disagree. Not keyed on a saved value like the
-                two forms around it, because it holds no draft to reset: it reads its own state
-                from the engine and re-reads after every change it makes. */}
+            {/* Directly under Identity, because where a brand's blogs go belongs beside who the
+                brand is. Not keyed on a saved value like the two forms around it, because it
+                holds no draft to reset: it reads its own state from the engine and re-reads
+                after every change it makes. */}
             <SiteConnectionCard slug={client.slug} onSaved={onSaved} />
             {/* Keyed on the saved value so a save resets the draft to what the engine now holds,
                 the same trick IdentityCard uses. */}
@@ -152,7 +151,6 @@ function IdentityCard({
 }) {
   const [domain, setDomain] = React.useState(client.domain);
   const [market, setMarket] = React.useState(client.market ?? "");
-  const [cmsClient, setCmsClient] = React.useState(client.cms_client ?? "");
   const [organisation, setOrganisation] = React.useState(orgName);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<ApiError | null>(null);
@@ -160,7 +158,6 @@ function IdentityCard({
   const dirty =
     domain !== client.domain ||
     market !== (client.market ?? "") ||
-    cmsClient !== (client.cms_client ?? "") ||
     organisation !== orgName;
 
   async function save(event: React.FormEvent) {
@@ -173,7 +170,6 @@ function IdentityCard({
       await updateClient(client.slug, {
         ...(domain !== client.domain ? { domain: domain.trim() } : {}),
         ...(market !== (client.market ?? "") ? { market: market.trim() } : {}),
-        ...(cmsClient !== (client.cms_client ?? "") ? { cms_client: cmsClient.trim() } : {}),
         ...(organisation !== orgName ? { organisation_name: organisation.trim() } : {}),
       });
       toast.success("Saved");
@@ -239,28 +235,6 @@ function IdentityCard({
               Where this brand sells and in what language. Keyword volumes are validated
               against this market and the researcher prefers sources local to it; without one,
               keyword validation is skipped on every blog.
-            </p>
-          </div>
-
-          {/* The CMS's own routing slug. Separate from the brand slug on purpose: the CMS may
-              register a brand under a slug that differs from the engine's ("bangalore-brewing-co"
-              for a brand the engine keys as "blr-brewing"), and Post to CMS routes by this value.
-              Blank routes by the brand slug, which is how every brand posted before this field. */}
-          <div>
-            <Label htmlFor="settings-cms-client">CMS client slug</Label>
-            <Input
-              id="settings-cms-client"
-              value={cmsClient}
-              onChange={(e) => setCmsClient(e.target.value)}
-              placeholder={client.slug}
-              autoComplete="off"
-              className="mt-1.5 font-mono"
-            />
-            <p className="mt-1 text-xs text-muted-foreground">
-              The slug the CMS knows this brand by, used only to route Post to CMS. Leave it blank
-              to route by this brand&apos;s own slug (<span className="machine">{client.slug}</span>
-              ). Set it when the CMS registered the brand under a different slug. What you type is
-              lower-cased and hyphenated before it is sent, so a name or a slug both work.
             </p>
           </div>
 

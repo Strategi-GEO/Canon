@@ -95,14 +95,14 @@ First, check whether it is actually stuck. Expand the row in the **Queue** table
 
 ## Posting is refused
 
-The post button reads **Post to CMS** on a brand that files drafts with our own editors, and **Post to WordPress** on a brand that publishes to its own website. Either way, these are the refusals it can come back with.
+**Publish** puts the article live on the client's own website. These are the refusals it can come back with.
 
 | The message says | What it means | Fix |
 | --- | --- | --- |
-| No CMS write key configured | This machine's engine has no write key at all. One shared key posts for every organisation | Add the line `STRATEGI_CMS_WRITE_KEY=<key>` to `server/.env`, then **Restart**. Ask your admin for the key |
-| No blog destination is set for *brand* | Nobody has chosen where this brand's blogs publish | Choose it in **Settings**, under **Blog destination**, then post again |
+| *brand* has no website connected | Nobody has connected the client's website for this brand | Connect it in **Settings**, under **Blog destination**, then publish again |
+| *brand* is set to publish to *something*, which this version of Canon cannot post to | The brand holds a destination this build has no driver for | Reconnect the client's website in **Settings** |
 | *topic* is `needs_review`, not done | The evaluator asked a question and the blog is held until it is answered | Answer the questions. There is no dismiss |
-| *topic* has not been approved by the client yet | The brand publishes to the client's own website, and posting there is the final release | Wait for the client to approve it in their portal. Posting to the Strategi CMS does not need approval, because a CMS draft is reviewed by an editor before it goes anywhere. See [Publishing a blog](../guide/publishing.md) |
+| *topic* has not been approved by the client yet | Publishing puts the article live on the client's own domain, which is the final release | Wait for the client to approve it in their portal. See [Publishing a blog](../guide/publishing.md) |
 
 ## Reading the logs
 

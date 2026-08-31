@@ -113,7 +113,7 @@ The portal does not know which role the signed-in account holds, so a viewer see
 | **Send to client** on a channel post | The post on that channel's **Ready to post** sub-tab |
 | **Send to client** on a report | That month becomes pickable on **Reports** |
 | Upload or generate a roadmap | The topics on **Content Roadmap**, at once |
-| **Post to CMS** or **Post to WordPress** | The tag flips to **Published**, and where the site returns an address, a **View live article** button |
+| **Publish** | The tag flips to **Published**, and where the site returns an address, a **View live article** button |
 
 Two of those are worth reading twice.
 
@@ -153,7 +153,7 @@ The approval names the version they read. If you send a newer version while thei
 
     The only acts left are posting it and, where the destination supports it, taking it back down with **Unpublish from {site}**. If an approved article is wrong, the fix is a new topic, not an edit.
 
-Approval also gates the live publish: posting to a client's own website is refused until they have approved, because that press is the final release. Posting to the Strategi CMS files a draft for our editors and needs no approval. See [Publishing](../guide/publishing.md).
+Approval also gates the publish: putting an article on a client's own website is refused until they have approved it, because that press is the final release. See [Publishing](../guide/publishing.md).
 
 ## Things that surprise operators
 

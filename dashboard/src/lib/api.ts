@@ -870,7 +870,7 @@ export const api = {
     }),
 
   /**
-   * Pushes one shipped blog to the Strategi CMS as a draft for a human to review.
+   * Publishes one shipped blog live on the client's own website.
    *
    * The browser sends a brand and a topic and NOTHING ELSE: no title, no body, no key. The
    * engine reads the blog off its own disk, refuses anything that is not `done`, and holds

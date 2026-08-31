@@ -21,12 +21,21 @@ closed:
      whole of gates.py, because most gate rules (word bands, paragraph shape, H2 mapping) are
      about an article and say nothing about a 148-character sentence.
 
-  2. THE TAG VOCABULARY. category_name and tags are get-or-create at the CMS with no read
-     endpoint, so a value that does not match is CREATED permanently. A model emitting
-     "Corporate Gifting" one run and "Corporate Gifts" the next leaves two tags nobody chose.
-     Every tag this brand has already been sent is stored and fed back into the prompt, and the
-     model is told to reuse an existing tag over coining a near-duplicate. The vocabulary grows
+  2. THE TAG VOCABULARY. category_name and tags were get-or-create at the Strategi CMS with no
+     read endpoint, so a value that did not match was CREATED permanently, and a model emitting
+     "Corporate Gifting" one run and "Corporate Gifts" the next left two tags nobody chose. Every
+     tag a brand had been sent was stored and fed back into the prompt so the vocabulary grew
      deliberately instead of drifting.
+
+THREE OF THE FIVE FIELDS ARE LIVE, AND TWO ARE GENERATED AND DROPPED. The one destination left is
+a client's own website, which takes `excerpt`, `meta_title` and `meta_description` and does NOT
+take taxonomy by name: WordPress wants term ids, and creating terms on a client's site is a write
+nobody asked for (sites.article_from_payload is where they are dropped). So `category_name` and
+`tags` are still asked for and still validated, and nothing sends them; `remember_tags` is
+therefore never called any more and the vocabulary stays empty. It is left in place rather than
+cut because the guards above are the expensive part to get right and a future destination that
+takes taxonomy by name would want them back, and because the cost of asking is a few tokens in a
+session that is already running.
 
 Neither guard makes the output vetted the way a draft is vetted. A reviewer still reads the
 fields in the CMS before the post goes live, and that is the actual backstop.

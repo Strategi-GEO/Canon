@@ -427,7 +427,7 @@ export function ChannelLibrary(props: {
     !allPostsPicked && visiblePostSlugs.some((s) => postsPicked.has(s));
 
   /**
-   * THREE ACTS, NOT FOUR, and the missing one is Post to CMS.
+   * THREE ACTS, NOT FOUR, and the missing one is Publish.
    *
    * The CMS is the brand's own website, and a channel piece goes to its channel: pushing the same
    * article to the site twice is duplicate content, which is the thing the CMS gate exists to stop.

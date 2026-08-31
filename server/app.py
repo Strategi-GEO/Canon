@@ -611,7 +611,6 @@ class UpdateClientRequest(BaseModel):
     # The CMS's own routing slug for this brand. Same modelled-here-AND-forwarded rule as the
     # others: drop either half and the Settings key vanishes silently. Empty string clears it and
     # the publish payload falls back to the brand slug; None means "not sent".
-    cms_client: Optional[str] = None
 
 
 def _read_client_or_404(slug, user=None):
@@ -688,7 +687,6 @@ async def api_update_client(slug: str, body: UpdateClientRequest,
             domain=body.domain,
             market=body.market,
             custom_instructions=body.custom_instructions,
-            cms_client=body.cms_client,
         )
     except clients_mod.UnknownClient as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -778,12 +776,6 @@ async def api_site_connect(slug: str, body: SiteConnectRequest,
     real article.
     """
     _read_client_or_404(slug, user)
-
-    # The one destination with no driver. It needs no credential and nothing to prove, so it
-    # is stored directly rather than pushed through a connect that would have nothing to do.
-    if body.kind == cms_sites.STRATEGI_CMS:
-        clients_mod.write_site(slug, {"kind": cms_sites.STRATEGI_CMS})
-        return {**clients_mod.site_summary(slug), "kinds": cms_sites.KINDS}
 
     if body.kind in cms_sites.UNSUPPORTED:
         raise HTTPException(status_code=422, detail=cms_sites.UNSUPPORTED[body.kind])

@@ -24,16 +24,29 @@ from .. import db
 log = logging.getLogger("geo-factory")
 
 
-def remote_article(client_slug, topic_slug):
-    """What the record knows about this article on the destination, or None if nothing.
+def remote_article(client_slug, topic_slug, destination):
+    """What the record knows about this article ON `destination`, or None if nothing.
 
     THE WHOLE OF RE-POST SAFETY, and it is why the driver needs no idempotency key of its own.
-    The Strategi CMS dedupes on payload.source_run_id, a uuid5 the CMS itself resolves; a
-    client's WordPress has no such concept, so "have we posted this before" has to be answered
-    from here. post_id null means create, post_id set means update that article.
+    A client's WordPress has no concept of one, so "have we posted this before" has to be
+    answered from here. post_id null means create, post_id set means update that article.
 
     pushed_at rides along because the driver compares it against the destination's own modified
     stamp: an article edited on their site AFTER our last push must not be silently overwritten.
+
+    `destination` IS REQUIRED AND IT IS A CORRECTNESS ARGUMENT, NOT A FILTER. cms_post_id holds
+    ONE id and the column cannot say which system issued it, so an id is only meaningful on the
+    destination that issued it. Hand a Strategi CMS post id to a brand that has since connected
+    WordPress and the driver does not fail: it PATCHes wp/v2/posts/<that number>, which is very
+    likely a real and completely unrelated article on the client's site, and publishing drafts or
+    overwrites it. Answering None instead makes a push CREATE, which is the truth (this article
+    has never been on this site) and is the only safe answer; and it makes an unpublish refuse
+    with the route's own "has never been posted to <host>" sentence.
+
+    A NULL published_to IS A MISMATCH, never a wildcard. Migration 035 added the column, so a null
+    is a record written before it, and every push before 035 went to the Strategi CMS. Treating it
+    as "matches whatever you ask" would reinstate exactly the confusion above for the oldest rows
+    in the record, which are the ones most likely to have moved destination since.
     """
     tid = db.topic_id(client_slug, topic_slug)
     if tid is None:
@@ -50,9 +63,11 @@ def remote_article(client_slug, topic_slug):
     #                               a client who edits the drafted post gets silently clobbered.
     #   coalesce with unpublished_at -> our flip falls inside the guard's own one-second slack and
     #                               a genuine client edit after it still fires. Correct both ways.
-    row = db.q("select cms_post_id, coalesce(published_at, unpublished_at) from topics "
-               "where id = %s", (tid,), fetch="one")
+    row = db.q("select cms_post_id, coalesce(published_at, unpublished_at), published_to "
+               "from topics where id = %s", (tid,), fetch="one")
     if row is None or not row[0]:
+        return None
+    if str(row[2] or "") != str(destination or ""):
         return None
     return {"post_id": str(row[0]), "pushed_at": row[1]}
 

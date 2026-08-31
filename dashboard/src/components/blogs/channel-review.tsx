@@ -281,7 +281,7 @@ export function ChannelReview(props: {
 
           {/* ONE ROW, AND IT IS THE WHOLE BENCH. Facts first, then the act the post is owed, then
               the always-available ones: the same left-to-right reading order blog-stage uses for
-              its published chip, send stamp, Post to CMS and Send. */}
+              its published chip, send stamp, Publish and Send. */}
           {post ? (
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <DeliveryAct

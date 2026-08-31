@@ -26,7 +26,6 @@ The card opens by naming the brand's slug and stating that it is permanent. The 
 | **Organisation** | Which organisation this brand sits under. Type to filter the ones that exist, or type a new name to create one. The line under the box tells you which of the two is about to happen before you save. |
 | **Domain** | The brand's live site. It wins over internal documents on any conflict, so it is what the researcher fetches first. |
 | **Market** | Where this brand sells and in what language, for example `India, English`. |
-| **CMS client slug** | The slug the Strategi CMS knows this brand by, used only to route **Post to CMS**. What you type is lower-cased and hyphenated before it is sent. Leave it blank to route by the brand's own slug. |
 | Industry | Read only. Detected from the brand website when the brand was added. It picks the industry reference the writer loads. |
 
 **Save changes** stays disabled until you actually change something, and Canon sends only the fields you touched, so a save in one browser tab cannot overwrite a change made in another.
@@ -42,7 +41,7 @@ Where this brand's finished blogs are published. Until one is set, the **Post** 
 
 The card holds the whole connection flow: **Their blog page** with a **Detect** button, a **Platform** dropdown, whatever credentials the chosen platform needs, and **Connect**. Once connected it shows a green chip naming the destination, with **Change** and **Disconnect** beside it.
 
-Nothing is stored until the engine has proved the credential against the site, so there is no separate Save. A saved but unverified credential would put a live **Post** button in front of you that fails on a real article, on a client's real website. The Strategi CMS is the one destination with no address and no credential to prove, so choosing it is stored straight away.
+Nothing is stored until the engine has proved the credential against the site, so there is no separate Save. A saved but unverified credential would put a live **Publish** button in front of you that fails on a real article, on a client's real website.
 
 The two destinations are not the same act, and one of them publishes live. Read [Publishing](publishing.md) before you connect anything.
 
@@ -70,7 +69,7 @@ One button, **Delete this brand**, and two locks in front of it.
 2. **Confirm.** Type the brand's slug exactly to enable **Delete *brand* forever**. **Back** returns you to the first step, and closing the dialog resets both.
 
 !!! danger "This cannot be undone"
-    It permanently deletes the brand's record and every blog with its versions and comments, every channel post, the roadmap, all reports and analyses, the uploaded resources, and the brand's files on the machine running Canon. Nothing is archived, and the dashboard cannot recover any of it. Articles already published to a client's website or to the CMS stay up, but Canon forgets that they exist.
+    It permanently deletes the brand's record and every blog with its versions and comments, every channel post, the roadmap, all reports and analyses, the uploaded resources, and the brand's files on the machine running Canon. Nothing is archived, and the dashboard cannot recover any of it. Articles already published to a client's website stay up, but Canon forgets that they exist.
 
 Canon refuses the delete while a run is live for that brand, and answers "a run is live for ...; stop it before deleting the brand". Stop the run first.
 

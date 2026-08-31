@@ -17,17 +17,17 @@ These are the tags your team sees on the **Blogs** tab and on a blog's own page.
 | **Has questions** | The evaluator asked something only a person can answer. Held at any score. | You or the client | **Answer**. |
 | **Answers submitted** | The client answered, and the rerun those answers are owed has not landed yet. | You | **Rerun with their answers**, then edit, comment and send. |
 | **Internal review** | It passed and it is on your team's bench. | You | Edit, comment, **Send to client**, post it. |
-| **With client** | Sent for review. | The client | Post it. Nothing that changes the bytes. |
-| **Changes requested** | The client asked for something since the last send. | You | Edit, comment, post it. |
-| **Approved** | The client accepted these exact bytes. Locked. | Nobody | Post it. |
-| **Published** | It is in the CMS, or live on the client's site. | Nobody | **Unpublish**, on a brand that publishes to its own site. |
-| **Below bar** | Scored 80 to 89. Under the bar, close enough that a rerun is worth it. | You | Edit, comment, **Send to client**, post it, **Retry this topic**. |
+| **With client** | Sent for review. | The client | Nothing that changes the bytes. |
+| **Changes requested** | The client asked for something since the last send. | You | Edit, comment, send again. |
+| **Approved** | The client accepted these exact bytes. Locked. | Nobody | **Publish** it. |
+| **Published** | Live on the client's own site. | Nobody | **Unpublish**. |
+| **Below bar** | Scored 80 to 89. Under the bar, close enough that a rerun is worth it. | You | Edit, comment, **Send to client**, **Publish**, **Retry this topic**. |
 | **Failed** | The run finished without a shippable draft and had nothing to ask. | You | The same bench as **Below bar**. |
 | **Did not finish** | The run reached no verdict at all. | You | Read or annotate what an earlier attempt left. Generate the topic again. |
 | **Stopped** | Someone ended the run before it reached a verdict. | You | Generate again to resume. |
 | **Unknown** | No readable status line for this article. | You | Generate the topic again. |
 
-The post button names the brand's destination, so it reads **Post to CMS** on a Strategi CMS brand and **Post to Wordpress** on a brand that publishes to its own site. See [Organisations and brands](organisations-and-brands.md#where-a-brands-blogs-publish).
+The publish button names the platform the brand's site runs on, so it reads **Publish on WordPress**. It appears only once the client has approved the article, because that press puts it live on their domain. See [Organisations and brands](organisations-and-brands.md#where-a-brands-blogs-publish).
 
 ## Each one in full
 
@@ -76,7 +76,7 @@ This is where you read it properly, edit anything you want changed, and decide w
 
 Sent. The client is reading the exact version that was pinned when you sent it, and they owe you an approval or a change request.
 
-**Your team has no editing controls here on purpose.** An edit at this point changes the article underneath someone mid review. Posting is the deliberate exception, because filing a CMS draft alters nothing the client is reading.
+**Your team has no editing controls here on purpose.** An edit at this point changes the article underneath someone mid review. Nothing on this bench changes the bytes.
 
 ### Changes requested
 
@@ -95,11 +95,11 @@ The approval stamp records that the client accepted this specific version, so an
 
 ### Published
 
-The article has been pushed out: filed as a draft in the Strategi CMS, or published live on the client's own site, depending on the brand's **Blog destination**.
+The article is live on the client's own website, where anyone can read it.
 
-Pressing Post again updates the same article rather than creating a second one. If somebody edited it on their own site after your last push, Canon declines to overwrite it and tells you. If an editor has already moved a CMS draft past draft, the CMS keeps their version and reports it as skipped, which is a success and not something to retry.
+Pressing **Publish** again updates the same article rather than creating a second one. If somebody edited it on their own site after your last push, Canon declines to overwrite it and tells you, which is a success and not something to retry.
 
-On a brand that publishes to its own site, one control is left: **Unpublish from *site***. It acts on our own push rather than on the article, and it is the way out of a mistaken publish that does not need somebody logging in to the client's own site. A Strategi CMS draft has no such control, because a CMS draft is not live anywhere to take down.
+One control is left: **Unpublish from *site***. It acts on our own push rather than on the article, and it is the way out of a mistaken publish that does not need somebody logging in to the client's own site.
 
 ### Below bar and Failed
 

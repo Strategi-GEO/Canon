@@ -21,7 +21,6 @@ import httpx
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from server.cms import client as cms_client  # noqa: E402
 from server.cms import gate, payload  # noqa: E402
 
 FAILURES = []
@@ -157,26 +156,11 @@ print("\nPayload: deterministic and allowlisted")
 built = payload.build_payload("acme", "second-home", BLOG, prompts="is it worth it\nbest age")
 
 check("schema version is the literal 1", built["ingest_schema_version"] == 1)
-# The routing slug: one shared key posts to every org, so the payload names the brand.
-check("client is the brand slug that routes the draft", built["client"] == "acme")
-# The CMS's own slug can differ from the engine's; when Settings records one, it routes instead.
-check(
-    "cms_client overrides the routing slug when set",
-    payload.build_payload("acme", "s", BLOG, cms_client="acme-on-the-cms")["client"]
-    == "acme-on-the-cms",
-)
-check(
-    "a blank cms_client falls back to the brand slug",
-    payload.build_payload("acme", "s", BLOG, cms_client="")["client"] == "acme"
-    and payload.build_payload("acme", "s", BLOG, cms_client="   ")["client"] == "acme",
-)
-# The override routes; it must NEVER move the idempotency key, which is the brand's stable
-# internal identity. Two posts of one blog dedupe whether or not a CMS slug is set.
-check(
-    "cms_client does not change source_run_id",
-    payload.build_payload("acme", "s", BLOG, cms_client="acme-on-the-cms")["source_run_id"]
-    == payload.build_payload("acme", "s", BLOG)["source_run_id"],
-)
+# The routing slug. It was overridable per brand while the Strategi CMS existed, because that
+# CMS could know a brand under a different slug and routed each draft by this field. The CMS is
+# gone (migration 038) and the website driver reads none of it, so the brand slug is the only
+# answer and there is no override left to test.
+check("client is the brand slug", built["client"] == "acme")
 check("title is the H1", built["title"] == "Buying a Second Home in Your 40s")
 check("H1 is not repeated in the body", not built["body_markdown"].startswith("# Buying"))
 check(
@@ -467,76 +451,16 @@ check(
 )
 
 
-# ---------------------------------------------------------------------------
-# The key: ONE shared key for every org, from the environment then server/.env
-# ---------------------------------------------------------------------------
-# One key posts to every org, because the CMS routes each draft by the `client` slug in the
-# payload (asserted above), not by the key. So resolve_key takes no org, an exported var wins
-# over server/.env, and an absent key resolves to None (a 503), never a guess.
-#
-# EVERY BYTE HERE IS FAKE. db.SERVER_DIR is pointed at a temp dir, so the real server/.env is
-# never opened and never printed, and the original SERVER_DIR and parsed config go back in the
-# finally. The file fallback is not a convenience: install.sh prompts for that file, the tray
-# app reads it, and a Finder-launched .app reads no shell profile, so on the supported
-# distribution server/.env is the ONLY door a write key comes through.
-print("\nKey resolution: one shared key, exported var wins over server/.env")
+# THE KEY RESOLUTION SECTION IS DELETED, and its subject with it. One shared
+# STRATEGI_CMS_WRITE_KEY resolved from the process environment then server/.env, and it existed
+# only to authenticate against the Strategi CMS. Migration 038 removed that destination and
+# server/cms/client.py went with it, so there is no key to resolve. What the section ALSO pinned
+# is not lost: that a secret read from server/.env never reaches os.environ and never reaches an
+# agent session is db.agent_env()'s own rule, and tests/env_check.py holds it over the allowlist
+# rather than over one variable that no longer exists.
 import os  # noqa: E402
 
 from server import db  # noqa: E402
-
-_saved_server_dir = db.SERVER_DIR
-_saved_cfg = dict(db._CFG)
-_tmp_env = tempfile.TemporaryDirectory()
-try:
-    os.environ.pop("STRATEGI_CMS_WRITE_KEY", None)
-    db.SERVER_DIR = Path(_tmp_env.name)  # holds no .env yet
-    db._CFG.clear()
-
-    check("no key anywhere resolves to None", cms_client.resolve_key() is None)
-
-    Path(_tmp_env.name, ".env").write_text(
-        "STRATEGI_CMS_WRITE_KEY=key-from-a-fake-dotenv\n", encoding="utf-8")
-    db._CFG.clear()
-    check(
-        "the one shared key resolves from server/.env",
-        cms_client.resolve_key() == "key-from-a-fake-dotenv",
-        "the file fallback is gone",
-    )
-
-    os.environ["STRATEGI_CMS_WRITE_KEY"] = "key-from-the-shell"
-    check(
-        "an exported key beats the file",
-        cms_client.resolve_key() == "key-from-the-shell",
-        "the file won, which lets a stale line beat a deliberate export",
-    )
-    os.environ.pop("STRATEGI_CMS_WRITE_KEY", None)
-    check(
-        "removing the export falls back to the file again",
-        cms_client.resolve_key() == "key-from-a-fake-dotenv",
-    )
-
-    # RULE 1 (server/db.py): a key read from the file must never reach os.environ, because
-    # agent_env() filters os.environ and cannot filter what was never in it. Resolving is the
-    # operation that would leak it, so the assertion is made straight after resolving.
-    cms_client.resolve_key()
-    check("resolving a file key exports nothing", "STRATEGI_CMS_WRITE_KEY" not in os.environ)
-    _agent_env = db.agent_env()
-    check(
-        "db.agent_env() carries no CMS key NAME",
-        not [k for k in _agent_env if "CMS" in k.upper()],
-        str(sorted(k for k in _agent_env if "CMS" in k.upper())),
-    )
-    check(
-        "db.agent_env() carries no CMS key VALUE under some other name",
-        "key-from-a-fake-dotenv" not in _agent_env.values(),
-    )
-finally:
-    db.SERVER_DIR = _saved_server_dir
-    db._CFG.clear()
-    db._CFG.update(_saved_cfg)
-    os.environ.pop("STRATEGI_CMS_WRITE_KEY", None)
-    _tmp_env.cleanup()
-
 
 # ---------------------------------------------------------------------------
 # The org/brand slug uniqueness guard: refused at WRITE time
@@ -590,126 +514,10 @@ finally:
     clients_mod._org_row_exists = _saved_org_row_exists
 
 
-# ---------------------------------------------------------------------------
-# The HTTP client: what retries, what does not, and what counts as success
-# ---------------------------------------------------------------------------
-print("\nHTTP client: retries, refusals, and the frozen case")
-
-
-async def run_http_checks():
-    calls = []
-
-    def created(request):
-        calls.append(request)
-        return httpx.Response(201, json={"post_id": "p1", "slug": "s", "status": "draft", "created": True})
-
-    async with stub_transport(created) as http:
-        result = await cms_client.push_draft({"title": "x"}, "k", client=http)
-    check("201 returns the CMS body", result["created"] is True)
-    check("the bearer key is sent", calls[0].headers["authorization"] == "Bearer k")
-    check("the body is JSON", json.loads(calls[0].content) == {"title": "x"})
-
-    def frozen(request):
-        return httpx.Response(200, json={"post_id": "p1", "status": "published", "skipped": "already advanced past draft"})
-
-    async with stub_transport(frozen) as http:
-        result = await cms_client.push_draft({}, "k", client=http)
-    check("a frozen post is a success, not an error", result["skipped"] == "already advanced past draft")
-
-    attempts = []
-
-    def flaky(request):
-        attempts.append(1)
-        if len(attempts) < 3:
-            return httpx.Response(429, headers={"Retry-After": "0"}, json={"error": "slow down"})
-        return httpx.Response(201, json={"post_id": "p2", "created": True})
-
-    async with stub_transport(flaky) as http:
-        result = await cms_client.push_draft({}, "k", client=http)
-    check("429 retries and then succeeds", result["post_id"] == "p2" and len(attempts) == 3)
-
-    server_errors = []
-
-    def dead(request):
-        server_errors.append(1)
-        return httpx.Response(503, json={"error": "down"})
-
-    async with stub_transport(dead) as http:
-        try:
-            await cms_client.push_draft({}, "k", client=http)
-            check("5xx eventually raises", False, "it returned")
-        except cms_client.CmsError as cause:
-            check("5xx eventually raises", cause.status == 503)
-    check(
-        "5xx retries to the attempt cap",
-        len(server_errors) == cms_client.MAX_ATTEMPTS,
-        str(len(server_errors)),
-    )
-
-    for status, label in ((422, "422"), (401, "401"), (403, "403"), (400, "400")):
-        permanent = []
-
-        def refuse(request, status=status, permanent=permanent):
-            permanent.append(1)
-            return httpx.Response(status, json={"error": f"{status} said no"})
-
-        async with stub_transport(refuse) as http:
-            try:
-                await cms_client.push_draft({}, "k", client=http)
-                check(f"{label} raises", False, "it returned")
-            except cms_client.CmsError as cause:
-                check(f"{label} raises with the CMS's own message", "said no" in str(cause))
-        check(f"{label} is never retried", len(permanent) == 1, str(len(permanent)))
-
-    try:
-        await cms_client.push_draft({}, None)
-        check("a missing key raises before any request", False, "it returned")
-    except cms_client.CmsError as cause:
-        check("a missing key raises before any request", "key" in str(cause).lower())
-
-    # An unresolvable host must NOT burn five retries: the name will not appear during a
-    # backoff, so retrying is 31 seconds of spinner ending in the same error.
-    import socket as _socket
-
-    dns_tries = []
-
-    def no_such_host(request):
-        dns_tries.append(1)
-        raise httpx.ConnectError("nodename nor servname provided") from _socket.gaierror(
-            8, "nodename nor servname provided, or not known"
-        )
-
-    async with stub_transport(no_such_host) as http:
-        try:
-            await cms_client.push_draft({}, "k", client=http)
-            check("an unresolvable host raises", False, "it returned")
-        except cms_client.CmsError as cause:
-            check("an unresolvable host raises", True)
-            check(
-                "the DNS error names the fix, not just the errno",
-                "does not resolve" in str(cause) and "STRATEGI_CMS_URL" in str(cause),
-                str(cause),
-            )
-    check("an unresolvable host is tried ONCE, not retried", len(dns_tries) == 1, str(len(dns_tries)))
-
-    # ...but a refused or reset connection is still worth retrying, and must stay retried.
-    refused_tries = []
-
-    def refused(request):
-        refused_tries.append(1)
-        raise httpx.ConnectError("connection refused")
-
-    async with stub_transport(refused) as http:
-        try:
-            await cms_client.push_draft({}, "k", client=http)
-        except cms_client.CmsError:
-            pass
-    check(
-        "a refused connection is still retried to the cap",
-        len(refused_tries) == cms_client.MAX_ATTEMPTS,
-        str(len(refused_tries)),
-    )
-
+# THE HTTP CLIENT SECTION IS DELETED with server/cms/client.py: its retries, its backoff and
+# its already-advanced-past-draft success were all the Strategi CMS ingest endpoint's contract.
+# The one destination left is a client's own website, whose transport is server/cms/http.py and
+# whose behaviour is pinned in tests/site_check.py and tests/unpublish_check.py.
 
 # ---------------------------------------------------------------------------
 # The five WRITTEN editorial fields, and the deterministic guards over them.
@@ -834,9 +642,6 @@ check("an em dash in written copy is substituted, not shipped",
 
 check("a reply that is not JSON at all is simply no metadata",
       meta_gen.parse_reply("I could not do that") is None)
-
-
-asyncio.run(run_http_checks())
 
 
 print(f"\n{CHECKS[0]} checks, {len(FAILURES)} failed")

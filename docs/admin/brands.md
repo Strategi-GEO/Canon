@@ -125,6 +125,6 @@ Beside it, **Delete** clears the fact base completely, after a confirm. The next
 The control is at the bottom of the brand's **Settings** tab, under **Danger zone**, and it is called **Delete this brand**. There is no separate delete for an organisation: an organisation exists only as long as it has brands, so deleting the last brand in one removes the organisation from the list with it.
 
 !!! danger "Deleting a brand destroys everything under it, with no undo"
-    It removes the brand's record and every blog with its versions and comments, every channel post, the roadmap, all reports and analyses, the uploaded resources, and the brand's files on the machine running Canon. Nothing is archived and nothing is recoverable from the dashboard. Published articles already live on a client's website or in the CMS are not taken down, but Canon forgets them.
+    It removes the brand's record and every blog with its versions and comments, every channel post, the roadmap, all reports and analyses, the uploaded resources, and the brand's files on the machine running Canon. Nothing is archived and nothing is recoverable from the dashboard. Published articles already live on a client's website are not taken down, but Canon forgets them.
 
 The full walkthrough of the two confirmation steps is on the [Settings](../guide/settings.md) page, beside the button itself.

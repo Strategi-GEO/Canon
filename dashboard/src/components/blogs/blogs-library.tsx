@@ -386,7 +386,7 @@ function Library({
    * WHAT THE FOUR BULK ACTS WILL ACTUALLY TOUCH, decided here because only this page holds the
    * facts each gate reads.
    *
-   * Send and Post to CMS run through `adminCan` AND `adminGateAllows`, the same pair blog-stage
+   * Send and Publish run through `adminCan` AND `adminGateAllows`, the same pair blog-stage
    * gates its own two buttons on, so a row the bar offers to send is a row the stage page would
    * also send. Restating either rule here is how the two screens start disagreeing about one
    * record, which is the defect gate-contract.ts exists to prevent.
@@ -485,15 +485,15 @@ function Library({
       },
       {
         key: "publish",
-        label: "Post to CMS",
+        label: "Publish",
         icon: Globe,
         eligible: eligible.publish,
-        skipped: "not in a state the CMS door accepts",
-        done: "Posted to the CMS",
+        skipped: "not in a state the publish door accepts",
+        done: "Published",
         confirm: {
-          title: `Post ${eligible.publish.length} to the CMS?`,
-          body: "Each one is pushed to the brand's site with its own excerpt, SEO title, description, category and tags. A blog already posted is updated in place.",
-          action: "Post them",
+          title: `Publish ${eligible.publish.length} on ${brandName}'s site?`,
+          body: "Each one goes live on the client's own website, with its own excerpt and, where their SEO plugin accepts them, its SEO title and description. A blog already published is updated in place.",
+          action: "Publish them",
         },
         runOne: (slug) => api.publishBlog(brandSlug, slug),
       },
@@ -739,7 +739,7 @@ function Library({
                   // this build refuses all of them, so a selection there could only ever lead to
                   // four buttons that answer 501.
                   // NO CHECKBOXES ON PUBLISHED, by instruction, and it is the right shape: the
-                  // article is live on the brand's site, so Send and Post to CMS are spent and a
+                  // article is live on the brand's site, so Send and Publish are spent and a
                   // bulk Delete over things a reader can currently open is not an act to make one
                   // click away. Editing or unpublishing one is still reachable from its own page.
                   //

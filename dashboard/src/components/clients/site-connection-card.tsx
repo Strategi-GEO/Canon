@@ -15,9 +15,8 @@ import type { SiteConnection, SiteField } from "@/types";
  * WHERE THIS BRAND'S BLOGS PUBLISH, and the credential that gets them there.
  *
  * IT LIVES IN SETTINGS RATHER THAN IN A TAB OF ITS OWN. A brand already carries ten tabs, and
- * this is one card of per-brand configuration sitting beside the others: the CMS routing slug it
- * supersedes is a field on the Identity card directly above. A tab would be navigation weight
- * bought for one form.
+ * this is one card of per-brand configuration sitting beside the others. A tab would be
+ * navigation weight bought for one form.
  *
  * THE FIELDS ARE THE ENGINE'S, NOT THIS FILE'S. Every credential input below is rendered from
  * what GET /site/fields returns for the chosen platform, so adding Shopify is a driver file in
@@ -293,13 +292,11 @@ function Connect({
     }
   }
 
-  // The CMS needs no address and no credential: it is one destination with one shared key the
-  // engine already holds, so requiring a URL for it would invent a question with no answer.
-  const isCms = kind === "strategi-cms";
-  const ready = isCms
-    ? true
-    : Boolean(kind) && Boolean(url.trim()) &&
-      fields.every((field) => (values[field.key] ?? "").trim().length > 0);
+  // Every destination is a real website with a real credential now, so there is no "needs
+  // nothing" case: an address and every field the platform asks for, or the button stays down.
+  const ready =
+    Boolean(kind) && Boolean(url.trim()) &&
+    fields.every((field) => (values[field.key] ?? "").trim().length > 0);
 
   return (
     <div className="mt-4 space-y-4">

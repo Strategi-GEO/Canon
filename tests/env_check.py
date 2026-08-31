@@ -121,18 +121,20 @@ try:
           f"new={sorted(new_keys)} changed={sorted(changed)}")
 
     # THE CMS WRITE KEYS MAY NEVER BE ALLOWLISTED, and this asserts it structurally
-    # rather than trusting the comment in db.py that says so. A write key files a draft
-    # straight into a client's live CMS, so it is a publishing credential no research or
-    # drafting session has any use for: the push happens in the server process, in
-    # server/cms/, long after every agent has exited.
+    # rather than trusting the comment in db.py that says so. A publishing credential
+    # writes to a client's live website, and no research or drafting session has any use
+    # for one: the push happens in the server process, in server/cms/, long after every
+    # agent has exited.
     #
-    # The check exists because of the shape a future bug report takes. Someone hits "no
-    # CMS write key configured", finds the key sitting in server/.env, notices agent_env()
-    # filtering the environment, and "fixes" it by adding STRATEGI_CMS_WRITE_KEY to this
-    # tuple. That hands every agent session a credential that writes to a client's site
-    # and buys nothing, because the pusher never reads its key from a child environment.
-    # Matching on the substring CMS rather than on the exact prefix is deliberate: the
-    # variable could be renamed and the same mistake would still be caught.
+    # THE VARIABLE THIS WAS WRITTEN ABOUT IS GONE, AND THE CHECK IS KEPT. It matched the
+    # substring CMS rather than the exact STRATEGI_CMS_WRITE_KEY prefix precisely so a
+    # rename would not slip past, and the Strategi CMS being removed (migration 038) is
+    # the largest rename there is. The failure it guards against still has a shape:
+    # somebody debugging a publish notices agent_env() filtering the environment and
+    # "fixes" it by naming a publishing credential here, handing every agent session write
+    # access to a client's site and buying nothing, because the pusher never reads a
+    # credential from a child environment. server/cms/ is still the only publishing code
+    # and this is still the only door into an agent's environment.
     cms_allowed = [k for k in db.AGENT_ENV_ALLOW if "CMS" in k.upper()]
     check("no AGENT_ENV_ALLOW entry is a CMS credential", not cms_allowed,
           ", ".join(cms_allowed))

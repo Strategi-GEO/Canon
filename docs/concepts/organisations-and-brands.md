@@ -79,16 +79,11 @@ If a brand has no fact base yet, the card says so, and the first blog run drafts
 
 ## Where a brand's blogs publish
 
-Each brand has exactly one destination, set on **Settings** under **Blog destination**. Two exist:
+Each brand publishes to its own website, connected on **Settings** under **Blog destination**. WordPress is the one platform with a driver today.
 
-| Destination | What pressing Post does | When it becomes available |
-| --- | --- | --- |
-| **Strategi CMS** | Files a draft for one of our editors to review. It releases nothing to anybody. | From internal review onwards. |
-| **WordPress**, the client's own site | Publishes the article live on their domain. | Only after the client has approved it. |
+Pressing **Publish** puts the article live on the client's domain, so it is the final release, and the only thing that authorises it is the client's own approval. The control does not appear before that.
 
-That difference is deliberate. A CMS draft is not a release, so it can go early. Publishing on the client's own site is the final release, and the only thing that authorises it is the client's own approval.
-
-A brand with no destination set has the Post control disabled, with the reason on hover. The **Blog destination** card says the same thing: "Until one is set, the Post control on every blog stays disabled: there is nowhere for an article to go."
+A brand with no website connected has the Publish control disabled, with the reason on hover: connect the client's website first. There is no fallback destination and nothing publishes anywhere by default. That is the state every brand starts in.
 
 ## Brand settings
 

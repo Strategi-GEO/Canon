@@ -158,7 +158,7 @@ def exists(slug):
 # blog version, which is the record's answer to what _blog_count used to glob off disk.
 _CLIENT_SELECT = """
     select c.slug, c.name, c.domain, c.industry, c.market, c.description,
-           c.custom_instructions, c.cms_client,
+           c.custom_instructions,
            -- THE KIND ONLY, EXTRACTED IN SQL, and never the blob. clients.site holds a write
            -- credential for a client's live website and this select answers to require_user,
            -- so the credential must not leave the database on this path at all. Masking it in
@@ -185,7 +185,7 @@ _CLIENT_SELECT = """
 
 def _client_from_row(row):
     (slug, name, domain, industry, market, description, custom_instructions,
-     cms_client, site_kind, created_at, has_roadmap, has_facts, resource_count, blog_count,
+     site_kind, created_at, has_roadmap, has_facts, resource_count, blog_count,
      org_slug, org_name) = row
     return {
         "slug": slug,
@@ -207,10 +207,6 @@ def _client_from_row(row):
         # Operator material: present on the engine's own record (owner connection), never on the
         # hosted authenticated read, which does not select this column.
         "custom_instructions": custom_instructions or "",
-        # The CMS's own routing slug for this brand, edited in Settings. Empty means the publish
-        # payload falls back to this brand's slug, which is how every brand posted before the
-        # column existed. Operator material: on the engine's own record, never the hosted read.
-        "cms_client": cms_client or "",
         # WHERE this brand's blogs publish, as a bare kind: "strategi-cms", "wordpress", or ""
         # when nothing is configured. The Post button reads exactly this: empty means no
         # destination, which the publish route refuses on with its own sentence rather than
@@ -356,8 +352,8 @@ def _org_config_value(organisation_name):
 
 
 # ---------------------------------------------------------------------------
-# The org and client slug namespaces overlap, and the CMS write key is the one
-# place where that is dangerous
+# The org and client slug namespaces overlap, and the guard below outlived its
+# reason
 # ---------------------------------------------------------------------------
 # orgs.slug and clients.slug are each `not null unique` in SEPARATE tables
 # (supabase/schema.sql), so the record happily holds an org called "acme" and an
@@ -366,16 +362,24 @@ def _org_config_value(organisation_name):
 # is a grouping, a client is a brand, and the two are joined by org_id and never
 # by name.
 #
-# The CMS write key is where it stops being harmless. A brand with org_id null is
-# its own single-brand org, synthesised on read by _client_from_row above, and
-# server/cms/routes.py turns that synthesised slug into the environment variable
-# STRATEGI_CMS_WRITE_KEY_<ORG>. So a brand "acme" with no org of its own asks for
-# exactly the variable the real org "acme" asks for, and it is handed that org's
-# key. server/cms/client.py spends twelve lines on why that particular outcome is
-# the worst one available: the CMS derives the destination org FROM THE KEY, the
-# payload is forbidden from carrying org_id, so neither side of the request can
-# notice that a draft went to the wrong tenant. One client's blog lands in
-# another client's CMS and both sides report success.
+# THE ONE PLACE IT WAS DANGEROUS IS GONE, AND THE GUARD IS DELIBERATELY KEPT.
+# A brand with org_id null is its own single-brand org, synthesised on read by
+# _client_from_row above, and server/cms/routes.py used to turn that synthesised
+# slug into the environment variable STRATEGI_CMS_WRITE_KEY_<ORG>. A brand "acme"
+# with no org of its own therefore asked for exactly the variable the real org
+# "acme" asked for and was handed that org's key; the Strategi CMS derived the
+# destination tenant FROM THE KEY and the payload was forbidden from carrying
+# org_id, so neither side of the request could notice a draft landing in another
+# client's CMS, and both reported success. Migration 038 removed that destination
+# and server/cms/client.py with it, so nothing in the tree now resolves anything
+# from a synthesised org slug and the collision is once again harmless.
+#
+# IT IS LEFT STANDING ON PURPOSE. Deleting it LOOSENS what an operator may name
+# things, which is a decision with its own consequences and not a tidy-up to
+# smuggle into a publishing change; and the invariant is cheap, holds on write
+# only, and forbids nothing anybody has wanted to do. Whoever removes it should
+# do so as its own change, having checked that no later feature resolved anything
+# from a synthesised org slug in the meantime.
 #
 # The invariant the guards below keep is one sentence: NO CLIENT WITH org_id NULL
 # MAY SHARE ITS SLUG WITH AN orgs ROW. Note what it deliberately does NOT forbid.
@@ -637,7 +641,7 @@ def create_client(name, domain, industry, description="",
 
 def update_client(slug, description=None, name=None, organisation_name=None,
                   domain=None, industry=None, custom_instructions=None,
-                  market=None, cms_client=None):
+                  market=None):
     """Update only what was passed. A None field is untouched, so a PATCH carrying one key
     cannot blank the others, and gates keys this function was not given survive."""
     cid = db.client_id(slug)
@@ -683,15 +687,6 @@ def update_client(slug, description=None, name=None, organisation_name=None,
     if market is not None:
         sets.append("market = %s")
         params.append(str(market).strip())
-    # The CMS's own routing slug, used as the publish payload's `client` when set. Slugified
-    # exactly like a brand slug so a typed name ("Bangalore Brewing Co") or a pasted slug
-    # ("bangalore-brewing-co") both land as the CMS expects, and a stray space or capital can
-    # never ship a slug the CMS then rejects. Empty clears it, and the payload falls back to the
-    # brand's own slug. Column only, like market: the publish path reads it from the record, and
-    # nothing on disk needs it.
-    if cms_client is not None:
-        sets.append("cms_client = %s")
-        params.append(slugify_client(cms_client))
     # READ BEFORE THE WRITE, because the answer is derived from the column being written and
     # is unrecoverable afterwards: once org_id moves, nothing on the record still says which
     # slug the portal was resolving this brand under a moment ago.

@@ -12,11 +12,12 @@ neutral body from the draft the evaluator scored) and everything downstream is t
 record (server/cms/record.py). A driver is the thin part in the middle that speaks one platform's
 HTTP, and that is the whole reason a second platform costs one file.
 
-`strategi-cms` IS A KIND HERE BUT HAS NO DRIVER, and the asymmetry is deliberate. That path
-already exists in full (cms/client.py, cms/payload.py, cms/meta_gen.py) and routes.py keeps
-calling it directly; it appears in this module only so a settings card can name it and so
-"which destination is this brand on" has one answer for every brand. Rewriting the working CMS
-path as a driver would be churn bought for symmetry.
+THERE IS NO LONGER A DESTINATION WITHOUT A DRIVER. `strategi-cms` used to be a kind here that
+had none, handled by a branch in routes.py, and it is gone: a brand publishes to its own website
+or it publishes nowhere. So `driver_for` returning None now means exactly one thing, that this
+build cannot reach the destination, and every caller may treat it as the error it is rather than
+as a second path. Historic articles still carry 'strategi-cms' in topics.published_to, which is a
+fact about where an article WENT and is never a destination anything writes again.
 """
 import re
 from urllib.parse import urlparse
@@ -27,16 +28,12 @@ from .http import send
 # ---------------------------------------------------------------------------
 # The registry
 # ---------------------------------------------------------------------------
-STRATEGI_CMS = "strategi-cms"
-
 DRIVERS = {
     wordpress.KIND: wordpress,
 }
 
-# Every destination a brand may be set to, for the settings dropdown. The CMS is first because
-# it is what every brand already uses.
+# Every destination a brand may be set to, for the settings dropdown.
 KINDS = [
-    {"kind": STRATEGI_CMS, "label": "Strategi CMS"},
     {"kind": wordpress.KIND, "label": wordpress.LABEL},
 ]
 
@@ -46,10 +43,11 @@ class UnknownDestination(Exception):
 
 
 def driver_for(kind):
-    """The module handling this kind, or None for the CMS and for nothing at all.
+    """The module handling this kind, or None when this build cannot reach it.
 
-    None is the CALLER'S branch, not an error: routes.py reads it as "use the existing CMS
-    path", which is the one destination that is not a driver.
+    None IS AN ERROR NOW, not a branch. While the Strategi CMS existed it meant "take the other
+    path"; there is no other path, so a None here is an unconfigured brand or a destination blob
+    written by a newer build, and both are refusals.
     """
     return DRIVERS.get(str(kind or "").strip())
 
@@ -62,22 +60,13 @@ def fields_for(kind):
 
 def label_for(site):
     """One line naming where this brand publishes, for a button and a card."""
-    kind = str((site or {}).get("kind") or "").strip()
-    if kind == STRATEGI_CMS:
-        return "Strategi CMS"
-    driver = driver_for(kind)
+    driver = driver_for((site or {}).get("kind"))
     return driver.label(site) if driver else ""
 
 
 def host_of(site):
-    """The destination's hostname, which is what the record stores as published_to.
-
-    'strategi-cms' rather than the CMS's host, because that destination is one system with one
-    name and its hostname is an implementation detail that has already moved once.
-    """
+    """The destination's hostname, which is what the record stores as published_to."""
     kind = str((site or {}).get("kind") or "").strip()
-    if kind == STRATEGI_CMS:
-        return STRATEGI_CMS
     return urlparse((site or {}).get("url") or "").netloc or kind
 
 
@@ -104,9 +93,7 @@ async def unpublish(site, remote, *, force=False, hard=False, client=None):
     UNPUBLISH IS AN OPTIONAL FIFTH NAME, resolved with getattr rather than assumed, and the
     optionality is the point. `fields`, `label`, `connect` and `push` are what a destination
     MUST have to be one at all; retraction is a capability some platforms simply do not offer,
-    and the Strategi CMS is the proof already in the tree (POST /api/v1/ingest is the whole of
-    its write surface, so an article filed there can only be taken down inside the CMS itself).
-    A driver that cannot retract stays a perfectly good driver and answers here instead of
+    and a driver that cannot retract stays a perfectly good driver and answers here instead of
     being unwritable, which is what a required fifth name would have made it.
     """
     kind = str((site or {}).get("kind") or "").strip()
@@ -199,17 +186,26 @@ def article_from_payload(payload):
     draft through cms/payload.py, which is pure by contract, so the only transformation here is
     markdown to HTML. No field is generated, rephrased, or asked of a model.
 
-    meta_title, meta_description, tags and category are deliberately dropped for a website
-    destination. Tags and categories are term IDs in WordPress rather than names, so sending
-    the CMS's brand tag would 400; and the SEO fields need a specific plugin's post meta, which
-    differs per site and is not knowable from here. A reviewer fills those in on their side in
-    seconds, which beats guessing and creating taxonomy nobody chose.
+    TAGS AND CATEGORY ARE STILL DROPPED. Both are term IDs in WordPress rather than names, so
+    sending a tag by name would 400, and creating taxonomy on a client's site is a write nobody
+    asked for. The section an article joins is pinned at connect time from an existing article
+    instead, which is the same question answered without inventing terms.
+
+    THE SEO FIELDS ARE NOT DROPPED ANY MORE. They used to be, on the ground that they need a
+    specific plugin's post meta "which differs per site and is not knowable from here". The
+    driver knows it now: connect() reads the site's own REST schema and pins the plugin's key
+    pair, so a site that has one gets the title and description the writer produced and a site
+    that has none is unaffected, exactly as before. They are passed as ordinary strings and the
+    driver decides whether there is anywhere to put them, which keeps this adapter free of any
+    one platform's meta layout.
     """
     return {
         "title": payload["title"],
         "body_html": to_html(payload["body_markdown"]),
         "excerpt": payload.get("excerpt") or "",
         "slug": payload.get("suggested_slug") or "",
+        "meta_title": payload.get("meta_title") or "",
+        "meta_description": payload.get("meta_description") or "",
     }
 
 

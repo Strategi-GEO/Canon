@@ -25,7 +25,7 @@ import type { UnpublishResult } from "@/types";
  *
  * RENDERED ONLY WHERE AN ARTICLE IS ACTUALLY ON A WEBSITE, and both halves of that are the
  * caller's job: the blog must be in the `published` state, and the destination must be a site
- * rather than the Strategi CMS. An article filed in the CMS went as a draft and was never
+ * at all. An article filed in the Strategi CMS went as a draft and was never
  * public, so a control offering to take it off a website would be describing something that
  * never happened.
  *

@@ -13,7 +13,7 @@ The facts come from the blog itself and from the brand's canonical facts. Nothin
 There are two doors, and they are not the same for every channel.
 
 !!! info "LinkedIn and Medium arrive on their own. Bluesky and X never do."
-    When you publish a blog with **Post to CMS** (or **Post to WordPress**, depending on where the brand publishes), Canon starts a LinkedIn post and a Medium article for that blog automatically. **Bluesky** and **X** are manual only. Nothing appears on those two tabs until you tick blogs and press **Generate**.
+    When you publish a blog to the client's site, Canon starts a LinkedIn post and a Medium article for that blog automatically. **Bluesky** and **X** are manual only. Nothing appears on those two tabs until you tick blogs and press **Generate**.
 
 The automatic run skips any channel that already has a post for that blog, so it never writes over a piece you made by hand, and it skips a blog that is already generating for that channel.
 

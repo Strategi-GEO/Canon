@@ -444,14 +444,13 @@ const ADMIN_ACTIONS: Record<BlogState, readonly AdminAction[]> = {
   // screen that is still ours, and it is the only door out of a mistaken publish that does not
   // require someone to log in to the client's own WordPress.
   //
-  // Offered on the STATE alone. Whether this particular brand's destination can retract is a
-  // server fact, so it rides the gate contract (UNPUBLISH_DESTINATION_IS_A_SITE) rather than
-  // being guessed here: a Strategi CMS article is published too, and there is nothing to take
-  // down from a CMS whose whole write surface is one ingest endpoint.
+  // Offered on the STATE alone. Whether this particular article is somewhere we can retract
+  // from is a server fact, so it rides the gate contract (UNPUBLISH_HAS_A_DESTINATION) rather
+  // than being guessed here.
   published: ["unpublish"],
   // The full admin-review bench plus BOTH exits, because a failed draft the operator has read
   // and likes is theirs to ship either way: `send` releases it to the client on their own
-  // authority, and `publish` posts it to the CMS. Neither waits for a rerun to reach 90. A
+  // authority, and `publish` puts it live on their site. Neither waits for a rerun to reach 90. A
   // failed draft is edited and Claude-polished exactly like a done one (the engine's
   // _require_reviewable accepts done|failed on the three editing routes). Both ship doors
   // append the same operator-authority `done` verdict to the trail, so the record always reads

@@ -1,10 +1,10 @@
 """The only-push-finished-blogs check.
 
-WHY THIS IS A SERVER-SIDE REFUSAL AND NOT A DISABLED BUTTON. A CMS draft is
-directly approvable by an editor, and the CMS cannot tell a blog that scored 96
-from one that hit the iteration cap at 82 and stopped: both arrive as a draft
-someone can click publish on. So an unvetted piece reaching the CMS is a piece
-that can reach the client. The button hiding itself is a courtesy to the
+WHY THIS IS A SERVER-SIDE REFUSAL AND NOT A DISABLED BUTTON. A push puts the
+article LIVE on the client's own website, and nothing downstream of this file can
+tell a blog that scored 96 from one that hit the iteration cap at 82 and stopped:
+both arrive as an article to publish. So an unvetted piece reaching a driver is a
+piece the public can read. The button hiding itself is a courtesy to the
 operator; THIS is the guard, and it must hold against a stale tab, a replayed
 request, and a hand-rolled curl.
 
@@ -25,13 +25,10 @@ runner parameter's fetch seams below, so they never touch the live record.
 """
 from .. import db
 from . import payload as payload_mod
-# sites, for STRATEGI_CMS alone. No cycle: sites imports wordpress and http and
-# never imports this module.
-from . import sites
 
 
 class PublishRefused(Exception):
-    """This blog is not in a state that may reach the CMS.
+    """This blog is not in a state that may reach the client's website.
 
     Carries `status` so the endpoint can name what it found. An operator told
     "refused" learns nothing; one told "this blog is needs_review" knows to go
@@ -81,11 +78,11 @@ def _record_blog(client_slug, topic_slug):
     reason, that every write after the approval "makes the record assert
     something the client never did: they approved v4, the article is now v6, and
     nothing on the page distinguishes the two". That same migration names
-    posting to the CMS as the ONE act the lock leaves open, on the ground that
+    posting to the destination as the ONE act the lock leaves open, on that
     it "changes nothing about the article". THAT GROUND ONLY HOLDS WHILE THE
     PUSH SHIPS THE APPROVED BYTES. A push anchored to the latest version would
     carry v6 out through the single door the lock deliberately left unlocked,
-    and it would arrive at the CMS under an approval describing v4, which is the
+    and it would go live under an approval describing v4, which is the
     precise assertion migration 013 exists to make impossible. So the
     latest-version rule is not merely unhelpful here, it is inverted, and the
     send pointer wins.
@@ -96,8 +93,8 @@ def _record_blog(client_slug, topic_slug):
     to know which of the two the operator means. Shipping the sent version
     publishes an article the record no longer holds as current; shipping the
     latest publishes bytes the client never saw. Both are wrong in a way nobody
-    downstream would ever notice, because the CMS receives a draft either way and
-    an editor cannot tell one from the other. So the refusal names both versions
+    downstream would ever notice, because the site receives an article either way
+    and a reader cannot tell one from the other. So the refusal names both versions
     and hands the decision to a person, which is the only correct owner of it.
     The same reasoning covers an approved topic with NO sent_version_id: nothing
     then proves which bytes the approval describes, and a guess is exactly what
@@ -220,7 +217,7 @@ def assert_publishable(runner, client_slug, topic_slug):
     if status != "done":
         raise PublishRefused(
             f"'{topic_slug}' is {status}, not done. Only a blog the engine shipped "
-            f"may reach the CMS, because a draft there is directly approvable.",
+            f"may reach a client's website, because the push publishes it live.",
             status=status,
         )
 
@@ -242,62 +239,61 @@ def assert_destination(site, client_slug):
     WHY "NO DESTINATION" IS A REFUSAL RATHER THAN A FALLBACK. Before migration 035 an
     unconfigured brand silently posted to the Strategi CMS, which made "not configured" a state
     nothing could name: the button was always live, and an operator could not tell a brand
-    that was deliberately on the CMS from one nobody had set up. Every existing brand was
-    backfilled to the CMS by that migration, so this can only fire on a brand created since,
-    which is exactly the one that needs asking.
+    that was deliberately on the CMS from one nobody had set up. The CMS is gone (migration 038
+    cleared every brand that was on it), so this is now the ORDINARY state of a brand nobody has
+    connected a website for, and it is the only thing standing between an unconnected brand and
+    a push with nowhere to go.
     """
     kind = str((site or {}).get("kind") or "").strip()
     if not kind:
         raise PublishRefused(
-            f"No blog destination is set for '{client_slug}'. Choose where its blogs publish "
-            f"in Settings, under Blog destination, before posting.",
+            f"'{client_slug}' has no website connected, so there is nowhere to publish. "
+            f"Connect the client's website in Settings, under Blog destination, first.",
             status="no_destination")
 
 
 def assert_site_destination(site, client_slug, topic_slug):
     """Refuse a retraction for a brand whose articles are not on a website we can reach.
 
-    A SEPARATE REFUSAL FROM assert_destination, because they answer different questions.
-    assert_destination asks "is a destination configured at all"; this asks "is that destination
-    one an article can be taken DOWN from", and the Strategi CMS passes the first and fails the
-    second. Its whole write surface is POST /api/v1/ingest: /api/v1/posts is GET-only and answers
-    DELETE and PATCH with 405, so nothing here can retract what was filed there.
+    A SEPARATE REFUSAL FROM assert_destination even though the two now test the same emptiness,
+    because they answer different questions and this one is correct called ON ITS OWN rather
+    than correct only when something else ran first. Its sentence is also the retraction's own:
+    "there is nothing to take down" is what an operator needs to read here, not "choose where
+    blogs publish".
 
-    The refusal is also the honest sentence for that path. An article pushed to the CMS went as a
-    DRAFT and was never public, so "remove it from the client's website" describes something that
-    never happened. If an editor has since taken it live in the CMS, the CMS is where it comes
-    back down.
+    IT USED TO CARRY A SECOND ARM, refusing a Strategi CMS article because that destination's
+    whole write surface was POST /api/v1/ingest and nothing could retract what was filed there.
+    The CMS is gone and no brand can be set to it, so the arm is deleted rather than left as an
+    unreachable branch.
     """
     kind = str((site or {}).get("kind") or "").strip()
     if not kind:
         raise PublishRefused(
-            f"'{client_slug}' has no publishing destination set, so there is nothing to take "
+            f"'{client_slug}' has no website connected, so there is nothing to take "
             f"'{topic_slug}' down from.",
             status="no_destination")
-    if kind == sites.STRATEGI_CMS:
-        raise PublishRefused(
-            f"'{topic_slug}' went to the Strategi CMS as a draft, not to a website, so there is "
-            f"nothing here to take down. If an editor has taken it live, unpublish it in the CMS.",
-            status="not_a_website")
 
 
 def assert_client_approved(site, client_slug, topic_slug, approved_at):
     """Raise PublishRefused unless the client has approved, for a website destination.
 
-    THE ASYMMETRY WITH THE CMS IS THE POINT, and it is not an oversight that the CMS path
-    skips this. A push to the Strategi CMS files a DRAFT that an editor of ours reviews, so it
-    releases nothing and the admin bench has always offered it from internal review onwards. A
-    push to the CLIENT'S OWN WEBSITE publishes the article live on their domain; it is the
-    final release, and the thing that authorises a final release in this app is the client's
-    own approval. So the clause is scoped to a website destination and the CMS keeps the
-    behaviour it has always had.
+    IT APPLIES TO EVERY CONFIGURED DESTINATION NOW, and that is what removing the Strategi CMS
+    changed here. The CMS was exempt because a push there filed a DRAFT that an editor of ours
+    reviewed, so it released nothing to anybody; a push to the CLIENT'S OWN WEBSITE publishes
+    the article live on their domain. Every destination this build has is the second kind, so
+    approval is no longer a clause one path skips: it is the condition on publishing at all.
+
+    THE EMPTY DESTINATION IS STILL OUTSIDE THIS CLAUSE, and it is not an exemption:
+    assert_destination refuses it one line earlier in the route, and a second refusal over the
+    same emptiness would say the wrong sentence to an operator whose real problem is that no
+    website is connected.
 
     THIS IS THE GUARD, AND THE HIDDEN BUTTON IS THE COURTESY, exactly as the module docstring
     says of the done check: the dashboard narrows the bench so the button does not appear
     before approval, and a stale tab, a replayed request or a hand-rolled curl still lands
     here.
     """
-    if str((site or {}).get("kind") or "").strip() in ("", "strategi-cms"):
+    if not str((site or {}).get("kind") or "").strip():
         return
     if approved_at is None:
         raise PublishRefused(
@@ -339,9 +335,5 @@ def build_for_publish(runner, ledger, client_slug, topic_slug, client=None, meta
         # gate's entity vocabulary and holds things like "ALPL 3 LLP", which is a legal
         # entity and has no business becoming a public tag on a client's blog.
         brand_name=client.get("name"),
-        # The CMS's own routing slug when Settings recorded one, else empty so the payload falls
-        # back to client_slug. This is what lets a brand the CMS knows under a different slug post
-        # without renaming the brand (which never changed the routing slug anyway).
-        cms_client=client.get("cms_client"),
         meta=meta,
     )

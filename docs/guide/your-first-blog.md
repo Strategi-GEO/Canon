@@ -169,7 +169,7 @@ On the blog's page you get three tabs: **Blog**, **Eval** and **Dossier**.
 When you are happy with it, press **Send to client**. That makes the article visible in the client portal exactly as it reads now, so read it first.
 
 !!! danger "Send and Post are outward facing"
-    **Send to client** shows the article to the client. **Post to CMS** files it in the Strategi CMS as a draft that one of our editors reviews. On a brand that publishes to its own website the button reads **Post to WordPress** instead, that press publishes the article live on the client's site, and it only opens once the client has approved it.
+    **Send to client** shows the article to the client. **Publish** puts it live on the client's own website. That press is the final release, so it only opens once the client has approved the article.
 
 If the blog missed the bar and you still want it to go out, **Send to client** is the same button and the same press. The engine records that a person sent it at that score rather than pretending it passed.
 

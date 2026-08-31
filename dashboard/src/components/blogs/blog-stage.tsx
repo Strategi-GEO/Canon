@@ -502,16 +502,17 @@ function StageBody({
   const canPublish = adminCan(state, "publish") && adminGateAllows("publish", gateInput);
   // UNPUBLISH NEEDS BOTH HALVES, and neither implies the other.
   //
-  // The STATE says an article of ours is published. The DESTINATION says whether it is on a
-  // website we can reach: an article pushed to the Strategi CMS is `published` too, and there
-  // is nothing there to take down, because that path's whole write surface is one ingest
-  // endpoint. The engine refuses it either way (gate.assert_site_destination), so this is the
-  // courtesy half -- but it is the half that decides whether an operator sees a button whose
-  // only possible outcome is a 409.
+  // The STATE says an article of ours is published. The DESTINATION says whether it went
+  // anywhere we can reach at all; the engine refuses it either way
+  // (gate.assert_site_destination), so this is the courtesy half, but it is the half that
+  // decides whether an operator sees a button whose only possible outcome is a 409.
   //
   // published_to is the ARTICLE's own host, not the brand's current destination. A brand moved
-  // from WordPress to the CMS still has old articles live on WordPress, and those are exactly
-  // the ones somebody needs to take down.
+  // between two websites still has old articles live on the first, and those are exactly the
+  // ones somebody needs to take down. The engine's own answer to that case is
+  // record.remote_article, which returns nothing for an article recorded against a destination
+  // the brand is no longer on, so the route refuses rather than replaying one system's post id
+  // at another.
   const publishedTo = reviewState.published_to ?? null;
   /**
    * ITS OWN GATE INPUT, AND THE ONE FIELD THAT DIFFERS IS THE WHOLE REASON.
@@ -793,7 +794,7 @@ function StageBody({
       </Button>
 
       {/* Title on top, then ONE action row beneath it. The buttons used to sit to the RIGHT of
-          the title (justify-between); they now stack below it so every act, Post to CMS, Send
+          the title (justify-between); they now stack below it so every act, Publish, Send
           and Retry, lives in a single row the operator scans left to right. */}
       <div>
         <div className="min-w-0">
@@ -886,7 +887,7 @@ function StageBody({
           ) : null}
           {/* GONE RATHER THAN GREYED wherever the state refuses them, both of these.
 
-              A disabled Post to CMS on an article the client has not approved yet, or a
+              A disabled Publish on an article the client has not approved yet, or a
               disabled Send on one they are reading right now, is a control an operator has to
               read and reject on every single visit, and the first thing they do about it is go
               hunting for the switch that turns it on. There is no switch: the answer is the
@@ -1559,7 +1560,7 @@ function ReviewStamp({ review }: { review: BlogReviewState }) {
     return null;
   }
   // A PUBLISHED article's send stamp is PLUMBING, and saying "Sent for client review" over it
-  // reports an act the operator did not choose. Post to CMS stamps the send so the portal has a
+  // reports an act the operator did not choose. Publish stamps the send so the portal has a
   // pinned version to serve (servedVersion reads it for `published`), which is the only reason
   // the timestamp exists on this path: posting is a RELEASE, and the client sees it under Posted,
   // never under Ready to post. Both chips rendered together and read as two different decisions.
@@ -1636,7 +1637,8 @@ function PublishedChip({
   cmsStatus: string | null;
   /** The article's own URL where it was published, or null when nothing recorded one. */
   url: string | null;
-  /** "strategi-cms", or a host like "acme.com". Null on everything published before 035. */
+  /** A host like "acme.com", or "strategi-cms" on a record written before that destination
+   *  was removed. Null on everything published before 035. */
   destination: string | null;
 }) {
   if (published === null) {

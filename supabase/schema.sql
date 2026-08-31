@@ -146,18 +146,20 @@ create table clients (
   -- NOT list it. sync.materialize_client lays it down at clients/<slug>/custom-instructions.md.
   custom_instructions text not null default '',
 
-  -- The CMS's own routing slug for this brand, when it differs from `slug` (migration 033). The
-  -- publish payload's `client` field routes each draft to the CMS; it uses this when set and
-  -- falls back to `slug` when blank. Operator material like custom_instructions: not in the
-  -- authenticated re-grant below, so the hosted mirror cannot read it.
+  -- DEAD SINCE MIGRATION 038, AND KEPT RATHER THAN DROPPED. It held the Strategi CMS's own
+  -- routing slug for this brand when it differed from `slug` (migration 033), and the publish
+  -- payload's `client` field routed each draft by it. That destination is gone, nothing reads
+  -- this column, and no surface writes it. The column stays because dropping it is destructive
+  -- and buys nothing: it is not in the authenticated re-grant below, so it reaches nobody.
   cms_client text not null default '',
 
   -- WHERE this brand's finished blogs are published, and the credential that gets them there
-  -- (migration 035). `{"kind": "strategi-cms"}` is the Strategi CMS, which every brand used
-  -- before this column existed; `{"kind": "wordpress", "url": ..., "user": ..., "password": ...,
-  -- "post_type": ...}` is the client's own website. An EMPTY object means no destination is
-  -- configured, which the publish route refuses on rather than falling back to anything: an
-  -- implicit fallback is what made "not configured" unnameable.
+  -- (migration 035). `{"kind": "wordpress", "url": ..., "user": ..., "password": ...,
+  -- "post_type": ..., "categories": ..., "seo": ...}` is the client's own website, and it is the
+  -- only shape there is: migration 038 removed `{"kind": "strategi-cms"}` and cleared every brand
+  -- still holding it. An EMPTY object means no website is connected, which the publish route
+  -- refuses on rather than falling back to anything: an implicit fallback is what made "not
+  -- configured" unnameable in the first place.
   --
   -- ONE jsonb, not a column per field, because the shape differs per platform and the column
   -- does not: adding a platform costs a driver file and no migration. `gates` is the precedent.
@@ -192,12 +194,15 @@ create index clients_org on clients (org_id);
 -- ---------------------------------------------------------------------------
 -- NO ROW IN clients WITH org_id NULL AND deleted_at NULL MAY HAVE A slug EQUAL TO ANY
 -- orgs.slug. server/clients.py argues the why at length above `_self_org_clients`, and the
--- shape of it is this: a brand with org_id null synthesises its own slug as its org,
--- server/cms/routes.py turns that synthesised slug into STRATEGI_CMS_WRITE_KEY_<ORG>, and the
--- CMS derives the destination tenant FROM THE KEY. A brand `acme` with no org of its own is
--- handed the real org `acme`'s key, one client's blog lands in another client's CMS, and
--- neither side can notice, because the payload is forbidden from carrying a contradicting
--- org_id.
+-- shape of it WAS this: a brand with org_id null synthesises its own slug as its org,
+-- server/cms/routes.py turned that synthesised slug into STRATEGI_CMS_WRITE_KEY_<ORG>, and the
+-- CMS derived the destination tenant FROM THE KEY. A brand `acme` with no org of its own was
+-- handed the real org `acme`'s key, one client's blog landed in another client's CMS, and
+-- neither side could notice, because the payload was forbidden from carrying a contradicting
+-- org_id. Migration 038 removed that destination, so nothing resolves anything from a
+-- synthesised org slug any more and the invariant now guards a danger that is gone. It is left
+-- standing deliberately: dropping it LOOSENS what an operator may name things, which is its own
+-- decision rather than a tidy-up, and server/clients.py says so above `_self_org_clients`.
 --
 -- IT IS NOT A UNIQUE INDEX and no index can express it. An index spans one table and these
 -- slugs live in two, and the invariant is not "the two namespaces are disjoint": a brand `acme`
@@ -572,9 +577,13 @@ create table topics (
   -- permalink structure is a per-site setting, so building it from cms_slug would be a guess.
   -- Every create call returns the real link in the same response, so the honest value is free.
   --
-  -- published_to is where THIS article went ('strategi-cms', or a host like 'acme.com').
-  -- clients.site says where the brand publishes NOW; without this, changing that would rewrite
-  -- the history of every article the brand ever published.
+  -- published_to is where THIS article went: a host like 'acme.com', or 'strategi-cms' on a row
+  -- written before migration 038 removed that destination. clients.site says where the brand
+  -- publishes NOW; without this, changing that would rewrite the history of every article the
+  -- brand ever published. It is also HALF OF RE-POST SAFETY: cms_post_id holds one id and cannot
+  -- say which system issued it, so server/cms/record.py answers with that id only when this
+  -- column matches the destination being pushed to. Without the pair, a Strategi CMS id would be
+  -- replayed as a wp/v2 post id against a client's own site.
   cms_url      text,
   published_to text,
 

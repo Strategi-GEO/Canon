@@ -120,13 +120,15 @@ try:
 except TransportError as e:
     check("no post id is refused before any request", e.status == 409, f"status {e.status}")
 
-for site, label, want in [({"kind": "strategi-cms"}, "strategi-cms", "not_a_website"),
-                          ({"kind": ""}, "unset", "no_destination")]:
-    try:
-        gate.assert_site_destination(site, "brand", "topic")
-        check(f"{label} is refused", False, "did not raise")
-    except gate.PublishRefused as e:
-        check(f"{label} is refused with a named reason", e.status == want, f"got {e.status}")
+# The Strategi CMS used to be the second arm here, refused because nothing could retract what
+# was filed through one ingest endpoint. Migration 038 removed it, so what is left is the one
+# refusal: a brand with no website connected has nothing to take an article down from.
+try:
+    gate.assert_site_destination({"kind": ""}, "brand", "topic")
+    check("an unconnected brand is refused", False, "did not raise")
+except gate.PublishRefused as e:
+    check("an unconnected brand is refused with a named reason",
+          e.status == "no_destination", f"got {e.status}")
 
 try:
     gate.assert_site_destination({"kind": "wordpress"}, "brand", "topic")

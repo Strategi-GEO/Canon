@@ -119,15 +119,19 @@ def config_value(name: str) -> str:
 # and then it is a hole nobody edited into existence. Everything an agent
 # session legitimately needs is named here; nothing else crosses.
 #
-# THE CMS WRITE KEYS (STRATEGI_CMS_WRITE_KEY_<ORG>) ARE DELIBERATELY ABSENT, and
-# the omission is load-bearing rather than an oversight nobody got to. A write
-# key files a draft straight into a client's live CMS, so it is a publishing
-# credential, and no research or drafting session has any use for one: the push
-# runs in THIS process, in server/cms/, long after every agent has exited. Naming
-# the prefix here would hand every agent session the ability to write to a
-# client's site and buy nothing at all in return. The keys reach
-# server/cms/client.py either through os.environ in this process or through
-# config_value() above, and neither route needs a line on this list.
+# NO PUBLISHING CREDENTIAL IS ON THIS LIST, and the omission is load-bearing
+# rather than an oversight nobody got to. A publishing credential writes to a
+# client's live website, and no research or drafting session has any use for one:
+# the push runs in THIS process, in server/cms/, long after every agent has
+# exited. Naming one here would hand every agent session the ability to write to
+# a client's site and buy nothing at all in return.
+#
+# THIS ONCE NAMED STRATEGI_CMS_WRITE_KEY_<ORG> as the example, and that variable
+# is gone with the Strategi CMS (migration 038). The rule is not: a client's
+# WordPress application password now lives in clients.site, which is a DATABASE
+# COLUMN rather than an environment variable, so it was never a candidate for
+# this list and cannot become one. tests/env_check.py holds the rule over the
+# allowlist itself, which is why it survives the variable it was written about.
 AGENT_ENV_ALLOW = (
     # Process basics
     "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TMPDIR", "TERM",

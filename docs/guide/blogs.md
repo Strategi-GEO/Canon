@@ -13,14 +13,14 @@ Every topic this brand has sits in exactly one of four tabs. The strip runs acro
 | **New** | Roadmap rows nothing has written yet, rows a run is working on right now, rows the sheet left incomplete, and rows whose last run ended **Failed** or **Below bar**, so rerunning is one list and one press. |
 | **Internal review** | A draft exists and it is on your team's bench. |
 | **Client review** | The client can see it. This includes a blog held for an answer, because the client can answer the evaluator's questions from their portal. It stays here until it is live. |
-| **Published** | It has been pushed to the CMS or to the client's own site. |
+| **Published** | It is live on the client's own site. |
 
 Each tab has its own empty message rather than a generic one:
 
 - **New**, when the sheet has rows but none of them are still runnable: "Every topic on this month's roadmap has been written. They are on the other tabs." When the sheet parsed with no rows at all it says so instead, and asks for a sheet with topics in it.
 - **Internal review**: "Nothing on the bench. A blog lands here the moment the engine scores it. Generate one from New, or look in Client review for the ones already sent."
 - **Client review**: "Nothing with the client. Nothing has been sent for this month. Tick a blog in Internal review and press **Send to client**."
-- **Published**: "Nothing published yet. A blog lands here once it is pushed to the CMS. Approved ones waiting for that push are in Client review."
+- **Published**: "Nothing published yet. A blog lands here once it goes live on the client's site. Approved ones waiting for that press are in Client review."
 
 If the brand has no blogs at all, the three article tabs show one card instead: "No blogs for *brand* yet", with a **Create blogs** button. With a month picker on screen the card names the month too.
 
@@ -88,7 +88,7 @@ One tag per row. Hover it and the tooltip names who owes the next act.
 | **With client** | Sent. They owe an approval or a change request. A row also reads this way once every comment in a round is addressed and the client is reading the updated article. |
 | **Changes requested** | The client asked for something. Resolve or dismiss each note. |
 | **Approved** | The client accepted these exact bytes. The article is locked and nobody edits it. |
-| **Published** | In the CMS, or live on the client's site. |
+| **Published** | Live on the client's site. |
 | **Below bar** | Scored 80 to 89. Under the bar and close enough that a rerun is worth it. Or send it if you have read it and are happy. |
 | **Failed** | The run finished without a shippable draft and had nothing to ask. |
 | **Did not finish** | The run reached no verdict at all. Nothing judged this article. Generate the topic again. |
@@ -124,7 +124,7 @@ Once you are moving through the list, the arrow keys work too. Before that they 
 
 Checkboxes appear on **New**, **Internal review** and **Client review**.
 
-They do not appear on **Published**. The article is live, so **Send to client** and **Post to CMS** are spent, and a bulk delete over something a reader can currently open is not an act to put one click away. Editing or taking down one published article is still reachable from its own page.
+They do not appear on **Published**. The article is live, so **Send to client** and **Publish** are spent, and a bulk delete over something a reader can currently open is not an act to put one click away. Editing or taking down one published article is still reachable from its own page.
 
 On **New**, rows are shown but locked where the engine would refuse them: a topic a run already owns, and a row missing its topic, scope or prompts. A locked checkbox is better than one that ticks and then quietly does nothing. A blog held for an answer is not listed on **New** at all; it sits in **Client review** until someone answers it.
 
@@ -155,12 +155,12 @@ Confirms first: "Send *N* to *brand*?", explaining that "Each one becomes visibl
 
 This is the only release door, at every score. A blog that missed the 90 bar goes out through this same button, and the engine records that a person sent it at that score. The trail reads "failed at 87, then a person sent it", never a silent pass.
 
-### Post to CMS
+### Publish
 
-Confirms first: "Post *N* to the CMS?", explaining that "Each one is pushed to the brand's site with its own excerpt, SEO title, description, category and tags. A blog already posted is updated in place." The confirm button reads **Post them**.
+Confirms first: "Publish *N* on *brand*'s site?", explaining that "Each one goes live on the client's own website, with its own excerpt and, where their SEO plugin accepts them, its SEO title and description. A blog already published is updated in place." The confirm button reads **Publish them**.
 
 !!! danger "Where this posts depends on the brand"
-    Posting to the Strategi CMS files a draft that one of our editors reviews, so it releases nothing to anybody. Posting to a brand's own website publishes the article live on their domain, and that door only opens once the client has approved it. On a blog's own page the button names the destination, for example **Post to WordPress**.
+    The press publishes the article live on the client's own domain, and that door only opens once the client has approved it. On a blog's own page the button names the platform, for example **Publish on WordPress**.
 
 ### Delete
 
@@ -202,9 +202,9 @@ The identifier, then the title. A pencil beside the title renames the blog. Unde
 
 Which of these appear depends on where the article is. A control the state refuses is absent rather than greyed, and the tag beside the title explains why in words.
 
-- A chip once the article has been pushed, reading **Posted to CMS**, **Live in the CMS**, or **Published on** *host* for a brand that publishes to its own site. **View on** *host* sits beside it where the record holds a link.
+- A chip once the article has been published, reading **Published on** *host*. **View on** *host* sits beside it where the record holds a link.
 - **Unpublish from** *host*, on an article live on a client's own site. Its dialog asks "Take this article off *host*?" and lists what stays and what you lose, including "Any link anyone already has to it breaks."
-- **Post to CMS**, or **Post to WordPress** on a brand that publishes to its own site.
+- **Publish**, naming the platform the brand's site runs on.
 - The send stamp: "Sent for client review *N* days ago", or "Approved *N* days ago". Hover for the exact time and the person.
 - **Send to client**, which reads **Send again** once the client already has a version.
 - **Retry this topic**, on a blog that failed or did not finish. It takes you to the **New** tab with that row already ticked.
@@ -267,6 +267,6 @@ The stop control means two different things and the engine decides which at the 
 
 ## If controls are missing
 
-On the hosted view of the record, the page reads and never writes. A note on the blog's own page says so: answering the evaluator, editing, asking Claude for a change, sending to the client and posting to the CMS all run in the Canon app on your own machine.
+On the hosted view of the record, the page reads and never writes. A note on the blog's own page says so: answering the evaluator, editing, asking Claude for a change, sending to the client and publishing all run in the Canon app on your own machine.
 
 If a control you expected is absent, check the **Status** tag first. Its tooltip names who owes the next act, and that is usually the whole explanation.

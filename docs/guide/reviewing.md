@@ -38,7 +38,7 @@ The blog page has three tabs across the top of the card.
 
 Under each tab, at the bottom, is the real path to the file on disk, like `outputs/acme/best-cafes-in-delhi/blog.md`. You can open that in Finder if you want the raw file.
 
-**Copy markdown** puts the raw markdown on your clipboard, ready to paste into a CMS. The download button beside it saves the same text as a `.md` file.
+**Copy markdown** puts the raw markdown on your clipboard, ready to paste anywhere. The download button beside it saves the same text as a `.md` file.
 
 ## Asking Claude for a change
 

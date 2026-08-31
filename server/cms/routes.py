@@ -4,11 +4,18 @@ POST /api/clients/{slug}/blogs/{topic_slug}/publish
 
 An APIRouter rather than handlers in app.py, so this whole feature attaches with
 one include_router line and detaches by deleting it. app.py keeps knowing nothing
-about the CMS beyond that line.
+about publishing beyond that line.
 
-The endpoint is a thin seam: gate, build, resolve key, POST, map the failure to a
-status. Every real decision lives in gate.py, payload.py and client.py, where it
-is testable without HTTP.
+THERE IS ONE DESTINATION SHAPE AND IT IS THE CLIENT'S OWN WEBSITE. This route used
+to fork: a driver for a brand on its own site, and a direct call into the Strategi
+CMS for everyone else. The CMS is gone, so the fork is gone with it, and a brand
+either has a driver or has nowhere to publish. That second case is a refusal, which
+is what assert_destination already said and what the Post button now shows as a
+disabled control naming the setting.
+
+The endpoint is a thin seam: gate, build, push, map the failure to a status. Every
+real decision lives in gate.py, payload.py and the driver, where it is testable
+without HTTP.
 """
 import logging
 
@@ -16,7 +23,6 @@ from fastapi import APIRouter, HTTPException, Request
 
 from .. import clients as clients_mod
 from .. import ledger, runner
-from . import client as cms_client
 from . import gate
 from . import http as sites_http
 from . import meta_gen
@@ -37,24 +43,24 @@ _after_publish = []
 
 
 def after_publish(fn):
-    """Register a coroutine fn(slug, topic_slug) to run after every successful CMS push."""
+    """Register a coroutine fn(slug, topic_slug) to run after every successful publish."""
     _after_publish.append(fn)
 
 
 def _status_for(upstream):
-    """The status this endpoint answers with, given the CMS's own status.
+    """The status this endpoint answers with, given the destination's own status.
 
-    Deliberately NOT a passthrough. The CMS's 401 means OUR key is bad, which is this
+    Deliberately NOT a passthrough. The site's 401 means OUR credential is bad, which is this
     engine's misconfiguration and not the browser's, so echoing 401 to the dashboard would
     read as "your session expired" and send an operator to log in somewhere. 503 says the
     engine is not configured to do this right now, which is the truth.
     """
     if upstream in (401, 403):
-        # A bad or read-only key. The operator cannot fix it from the UI, but naming it
+        # A bad or read-only credential. The operator cannot fix it from the UI, but naming it
         # sends whoever can to the right place immediately.
         return 503
     if upstream == 422:
-        # The CMS rejected our payload. Ours to fix, and 502 would blame the CMS for it.
+        # The site rejected our payload. Ours to fix, and 502 would blame the site for it.
         return 422
     if upstream == 429:
         return 429
@@ -64,10 +70,10 @@ def _status_for(upstream):
 
 @router.post("/api/clients/{slug}/blogs/{topic_slug}/publish")
 async def api_publish_blog(slug: str, topic_slug: str, request: Request):
-    """Push one shipped blog to the CMS as a draft.
+    """Publish one shipped blog live on the client's own website.
 
     Not 202: this is a single request the operator is watching, so it stays
-    synchronous and the answer is the CMS's own. Nothing is queued, and there is
+    synchronous and the answer is the site's own. Nothing is queued, and there is
     no background job to leave half-finished.
 
     `request` is here for ONE reason: the email that attributes the push, read off
@@ -101,19 +107,25 @@ async def api_publish_blog(slug: str, topic_slug: str, request: Request):
     except gate.PublishRefused as refused:
         raise HTTPException(status_code=409, detail=str(refused))
 
-    # None means the Strategi CMS, which is not a driver: that path is the original one below
-    # and stays byte for byte what it was.
+    # WHETHER THIS BUILD CAN REACH IT AT ALL. None is not a second path any more: it is a brand
+    # set to a destination this build has no driver for, refused before anything is promoted or
+    # spent. assert_destination already caught the EMPTY case with the sentence about connecting
+    # a website, so what reaches here is a non-empty kind with no driver, which is a downgrade or
+    # a blob written by a newer build.
     driver = sites.driver_for(site.get("kind"))
+    if driver is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{slug}' is set to publish to '{site.get('kind')}', which this version of "
+                   f"Canon cannot post to. Reconnect the client's website in Settings.")
 
     # A FAILED blog the operator chose to publish is promoted first, then pushed, and the gate
-    # below is NOT widened: assert_publishable still demands the literal `done`, because a CMS
-    # draft is directly approvable by an editor, so anything reaching the CMS can reach the
-    # client. What changes is that the operator takes responsibility for a draft that fell
-    # below the 90 bar and that they have READ, expressed as the appended `done` verdict naming
-    # them and the score, so the trail reads "failed at 81, then a person published it". Every
-    # other status falls through untouched to assert_publishable's own refusal. NO SEND HAPPENS
-    # HERE: posting to the CMS and releasing to the client are two acts and the operator picked
-    # this one, so the promotion line says so and sent_to_client stays null.
+    # below is NOT widened: assert_publishable still demands the literal `done`, because the push
+    # puts the article live on the client's public site. What changes is that the operator takes
+    # responsibility for a draft that fell below the 90 bar and that they have READ, expressed as
+    # the appended `done` verdict naming them and the score, so the trail reads "failed at 81,
+    # then a person published it". Every other status falls through untouched to
+    # assert_publishable's own refusal.
     #
     # blog_edit is imported INSIDE the function so this package still detaches whole: a module
     # scope import would execute on import of a package whose whole promise is that deleting it
@@ -123,34 +135,33 @@ async def api_publish_blog(slug: str, topic_slug: str, request: Request):
         blog_edit.promote_if_failed(
             slug, topic_slug, gate.blog_status(runner, slug, topic_slug),
             getattr(request.state, "admin_email", None) or "",
-            # The trail names WHERE, because the two acts differ in what they did: a CMS push
-            # filed a draft, and a website push put the article live on the client's domain.
-            # "published it to the CMS" on a WordPress brand would be a permanent line in the
-            # record describing something that did not happen.
-            act=f"published it to {sites.host_of(site)}" if driver
-                else "published it to the CMS")
+            # The trail names WHERE, because a permanent line in the record saying an article
+            # went somewhere it did not is not fixable later.
+            act=f"published it to {sites.host_of(site)}")
     except blog_edit.EditError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
-    # THE GATE RUNS FIRST AND FOR FREE, so a blog the CMS will refuse never costs a model call.
+    # THE GATE RUNS FIRST AND FOR FREE, so a blog the site will refuse never costs a model call.
     # assert_publishable raises before any token is spent; only a draft that will actually be
-    # sent earns its editorial metadata.
+    # published earns its editorial metadata.
     try:
         blog_md = gate.assert_publishable(runner, slug, topic_slug)
     except gate.PublishRefused as refused:
         raise HTTPException(status_code=409, detail=str(refused))
 
-    # The five editorial fields, written from the finished draft. {} on every failure path, and
-    # {} is ordinary: build_for_publish falls back to the derived excerpt, H1 title, TL;DR
-    # description, industry category and brand tag it has always produced, so a slow, absent or
-    # refusing model costs this push its polish and never the push.
+    # The written SEO title and description. {} on every failure path, and {} is ordinary:
+    # build_for_publish falls back to the derived H1 title and TL;DR description it has always
+    # produced, so a slow, absent or refusing model costs this push its polish and never the
+    # push.
     #
-    # SKIPPED ENTIRELY FOR A WEBSITE DESTINATION, which is a real saving and not a shortcut:
-    # sites.article_from_payload drops meta_title, meta_description, category and tags anyway
-    # (WordPress takes taxonomy as term IDs, not names, and its SEO fields belong to whichever
-    # plugin that site runs), so generating them would buy an operator a model session and a
-    # two-minute wait for five strings nobody sends.
-    meta = {} if driver else await meta_gen.generate(
+    # GENERATED FOR A WEBSITE NOW, WHERE IT ONCE WAS NOT. The old skip was sound while
+    # article_from_payload dropped these fields: WordPress SEO fields belong to whichever plugin
+    # the site runs, so there was nothing to send them to and generating them bought an operator
+    # a two-minute wait for strings nobody used. connect() now resolves that plugin's own meta
+    # keys off the site's REST schema, so on a site that has one there is somewhere for these to
+    # land and the piece publishes with its own title and description rather than the theme's
+    # fallback. On a site with no writable SEO plugin the driver drops them exactly as before.
+    meta = await meta_gen.generate(
         slug, blog_md,
         title_max=payload_mod.META_TITLE_MAX,
         desc_max=payload_mod.META_DESCRIPTION_MAX,
@@ -167,87 +178,33 @@ async def api_publish_blog(slug: str, topic_slug: str, request: Request):
     except PayloadError as bad:
         raise HTTPException(status_code=422, detail=str(bad))
 
-    # ---- The client's own website -------------------------------------------------------
-    # One call, and no discovery in it: the post type was resolved once when the brand was
-    # connected and is read straight off the stored destination. What the record already knows
-    # about this article there (its id, and when we last pushed) is what makes a second press
-    # an UPDATE rather than a duplicate, and what lets the driver refuse to overwrite an edit
-    # somebody made on their side afterwards.
-    if driver is not None:
-        try:
-            result = await sites.push(
-                site,
-                sites.article_from_payload(payload),
-                record.remote_article(slug, topic_slug),
-            )
-        except sites_http.TransportError as cause:
-            log.warning("site push failed for %s/%s (%s): %s",
-                        slug, topic_slug, cause.status or "unreachable", cause)
-            raise HTTPException(status_code=_status_for(cause.status), detail=str(cause))
-        except sites.UnknownDestination as cause:
-            # A brand set to a destination this build has no driver for: a downgrade, or a
-            # blob written by a newer version. 409 rather than 500, because the record is
-            # fixable from Settings and nothing crashed.
-            raise HTTPException(status_code=409, detail=str(cause))
-
-        log.info("site push ok for %s/%s: post %s at %s",
-                 slug, topic_slug, result.get("post_id"), result.get("url"))
-        return await _settle(slug, topic_slug, result, request,
-                             destination=sites.host_of(site))
-
-    # ---- The Strategi CMS ----------------------------------------------------------------
-    # One shared key posts to every org; the payload's `client` slug routes it. So there is no
-    # org to resolve here, and no synthesised-org collision to guard: the destination is the
-    # brand slug in the body, which is unique, not the key.
-    key = cms_client.resolve_key()
-    # The detail comes from cms_client because that module is the one that knows WHERE it
-    # looked. It reads the process environment first and server/.env second, and an operator
-    # who is told only "set it in the engine's environment" is told the one thing that does
-    # not work on the packaged app: a Finder-launched .app reads no shell profile, so an
-    # export never reaches the engine and the file is the only door. Composing the sentence
-    # here meant it could not name the file without this route knowing the resolution order,
-    # which is exactly the duplication that let the message go stale when the order changed.
-    if not key:
-        raise HTTPException(status_code=503, detail=cms_client.missing_key_detail())
-
+    # One call, and no discovery in it: the post type, the section and the SEO meta keys were
+    # all resolved once when the brand was connected and are read straight off the stored
+    # destination. What the record already knows about this article there (its id, and when we
+    # last pushed) is what makes a second press an UPDATE rather than a duplicate, and what lets
+    # the driver refuse to overwrite an edit somebody made on their side afterwards.
     try:
-        result = await cms_client.push_draft(payload, key)
-    except cms_client.CmsError as cause:
-        # The upstream status is MAPPED, not flattened. Every CmsError used to become a 502,
-        # which told an operator with a revoked key that the CMS was down: they would go and
-        # ask why the CMS was broken when the answer was their own credential. A 502
-        # is only honest when the CMS genuinely failed or was unreachable.
-        log.warning(
-            "CMS push failed for %s/%s (upstream %s): %s",
-            slug, topic_slug, cause.status or "unreachable", cause,
+        result = await sites.push(
+            site,
+            sites.article_from_payload(payload),
+            record.remote_article(slug, topic_slug, sites.host_of(site)),
         )
+    except sites_http.TransportError as cause:
+        log.warning("site push failed for %s/%s (%s): %s",
+                    slug, topic_slug, cause.status or "unreachable", cause)
         raise HTTPException(status_code=_status_for(cause.status), detail=str(cause))
 
-    log.info(
-        "CMS push ok for %s/%s: post %s",
-        slug, topic_slug, result.get("post_id"),
-    )
-
-    # THE TAG VOCABULARY GROWS ONLY ON A PUSH THE CMS ACCEPTED, which is why this sits after the
-    # error arm and not beside the generate call. category_name and tags are get-or-create with
-    # no read endpoint, so this file is the engine's only record of what that CMS actually holds;
-    # remembering a tag from a push that 4xx'd would teach the next run to reuse a tag nobody
-    # ever created. It cannot raise (see meta_gen.remember_tags): the article is already in the
-    # CMS by this line.
-    meta_gen.remember_tags(slug, payload.get("tags") or [])
-
-    return await _settle(slug, topic_slug, result, request, destination=sites.STRATEGI_CMS)
+    log.info("site push ok for %s/%s: post %s at %s",
+             slug, topic_slug, result.get("post_id"), result.get("url"))
+    return await _settle(slug, topic_slug, result, request, destination=sites.host_of(site))
 
 
 async def _settle(slug, topic_slug, result, request, *, destination):
     """Everything after a push the destination accepted: record, stamp, hooks, answer.
 
-    SHARED BY BOTH DESTINATIONS ON PURPOSE. Every line below is about an article that is
-    already published somewhere, and none of it depends on WHERE: the record stamps the same
-    columns, the send stamp closes the same guard, and the response is the same shape the
-    drawer has always rendered. Leaving two copies would let the CMS path and the website path
-    drift on which bookkeeping runs, which is exactly the class of difference nobody notices
-    until an article is missing from the portal.
+    ITS OWN FUNCTION THOUGH THERE IS ONE CALLER, because every line below is about an article
+    that is already published and none of it may raise. Keeping it apart from the route is what
+    makes that property readable: the route decides and pushes, this records.
 
     NOTHING HERE MAY RAISE ITS WAY OUT. The article is live by the time this is called, so a
     bookkeeping failure that surfaced as an error would report a landed publish as a failed
@@ -263,8 +220,8 @@ async def _settle(slug, topic_slug, result, request, *, destination):
         destination=destination,
     )
 
-    # PUBLISHING IS A RELEASE, SO IT STAMPS THE SEND. Pushing to the client's own CMS is the
-    # operator's most final act: the article is live on their site by this line. Leaving
+    # PUBLISHING IS A RELEASE, SO IT STAMPS THE SEND. It is the operator's most final act: the
+    # article is live on the client's own site by this line. Leaving
     # sent_to_client null after it meant the portal hid an article the client could already read,
     # because blogState drops `published` whenever there is no send.
     #
@@ -273,8 +230,8 @@ async def _settle(slug, topic_slug, result, request, *, destination):
     # front of a client who was never sent it. Stamping the send makes that state unreachable
     # instead of tolerated: after this line there is no way to be published without a send.
     #
-    # Best-effort and AFTER the record, for the same reason record_publish is: the article is in
-    # the CMS, and no bookkeeping failure may report a successful publish as a failed one. A
+    # Best-effort and AFTER the record, for the same reason record_publish is: the article is
+    # live, and no bookkeeping failure may report a successful publish as a failed one. A
     # refused stamp (an open client suggestion, an approved article) leaves the publish standing
     # and the operator can still send from the stage page.
     # blog_edit imported inside the function, and asyncio with it, for the reason stated where
@@ -292,7 +249,7 @@ async def _settle(slug, topic_slug, result, request, *, destination):
         log.exception("post-publish send stamp failed for %s/%s", slug, topic_slug)
 
     # After the record, fire any post-publish hooks (the channel auto-repurpose). Best-effort:
-    # the article is already in the CMS, so a hook failure is logged and never surfaced as a
+    # the article is already live, so a hook failure is logged and never surfaced as a
     # failed publish. Hooks only SPAWN work (they return once a run is scheduled), so this does
     # not hold the operator's request open on a generation.
     for hook in list(_after_publish):
@@ -303,12 +260,11 @@ async def _settle(slug, topic_slug, result, request, *, destination):
 
     # The destination's shape, flattened to what the drawer actually renders. `skipped` means
     # the article was left alone deliberately and the UI must show it as a success, never as a
-    # failed push to retry: on the CMS that is a human having advanced the post past draft, and
-    # on a client's website it is somebody having edited the article there since our last push.
+    # failed push to retry: somebody edited the article on their site since our last push.
     #
-    # `url` is the article's own address, which only a website destination returns; the CMS
-    # answers with a preview token instead. Both are optional and the drawer renders whichever
-    # it gets, so neither destination has to pretend to produce the other's field.
+    # `url` is the article's own address as the site reported it, never one built from a slug:
+    # permalink structure is a per-site setting, so a derived URL is wrong on a good fraction of
+    # sites.
     return {
         "post_id": result.get("post_id"),
         "slug": result.get("slug"),
@@ -318,7 +274,6 @@ async def _settle(slug, topic_slug, result, request, *, destination):
         "created": bool(result.get("created")),
         "updated": bool(result.get("updated")),
         "skipped": result.get("skipped"),
-        "preview_token": result.get("preview_token"),
     }
 
 
@@ -332,8 +287,8 @@ async def api_unpublish_blog(slug: str, topic_slug: str, request: Request,
 
     WHAT IT DOES NOT CHECK, AND WHY EACH ONE WOULD BE A BUG.
 
-      assert_publishable's literal-`done`. gate.py grounds that check on "an unvetted piece
-      REACHING the CMS is a piece that can reach the client": it is about what is delivered, and
+      assert_publishable's literal-`done`. gate.py grounds that check on an unvetted piece
+      reaching a driver being a piece the public can read: it is about what is delivered, and
       this delivers nothing. Applying it here inverts it. The commonest reason to press Unpublish
       is that the WRONG article is live, and a wrong article's status has usually moved since (a
       retry, a regeneration that ended failed). Refusing to retract because the blog is no longer
@@ -375,7 +330,7 @@ async def api_unpublish_blog(slug: str, topic_slug: str, request: Request,
 
     # What the record knows about this article on their site. None means nothing was ever
     # pushed there, which is a 409 and not a 404: the blog exists, it simply is not on a site.
-    remote = record.remote_article(slug, topic_slug)
+    remote = record.remote_article(slug, topic_slug, sites.host_of(site))
     if remote is None:
         raise HTTPException(
             status_code=409,

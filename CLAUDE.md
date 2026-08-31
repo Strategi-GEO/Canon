@@ -1013,10 +1013,10 @@ makes.** There is ONE release door, SEND TO CLIENT, offered at every score on an
 evaluator-scored committed draft, and nothing auto-releases: a 96 waits for that press exactly as
 an 87 does. Where the fold reads terminal `failed`, the send route promotes first and then sends,
 which is what `blog_edit.promote_if_failed` already does in front of `gate.build_for_publish` on
-the CMS door. There were TWO buttons ending in the same `blog_edit.mark_sent`,
+the PUBLISH door. There were TWO buttons ending in the same `blog_edit.mark_sent`,
 differing only in the score the dashboard offered each one for, so the operator had to know the
-bar to pick a door; the CMS door had already folded the promotion in and asked nothing, which left
-send as the inconsistent one. The engine still appends a new terminal `done` line whose note names
+bar to pick a door; the publish door had already folded the promotion in and asked nothing, which
+left send as the inconsistent one. The engine still appends a new terminal `done` line whose note names
 the operator and the score, commits it, appends the ledger row, and releases the blog in the same
 act. The evaluator's number is never rewritten: the trail reads failed at 87, then sent by a
 person, which is the same appended-correction idiom `_enforce_terminal_status` already uses. This
@@ -1032,21 +1032,31 @@ waived. It enters the ledger exactly as a 90+ ship does, so its roadmap row lock
 "failed row in the ledger" is an operator's send, not a defect. Below bar the blog also offers
 RETRY, which is an ADDITIONAL affordance and never a replacement for send.
 
-**THE POST DOOR NOW HAS TWO DESTINATIONS AND THEY ARE NOT THE SAME ACT.** A brand's destination
-is one field on its own record (`clients.site`, migration 035), and the door reads it. Posting to
-the STRATEGI CMS files a draft one of our editors reviews, so it releases nothing to anybody and
-the door opens from internal review onwards, exactly as it always has. Posting to the CLIENT'S OWN
-WEBSITE publishes the article LIVE on their domain, so it is the final release and the door opens
-only once THE CLIENT HAS APPROVED IT. That asymmetry is the rule and it is not an oversight in
-either direction: the thing that authorises a final release in this engine is the client's own
-approval, and a CMS draft is not a release. `server/cms/gate.py` `assert_client_approved` is
-where it is enforced, scoped to a website destination, and the dashboard's greyed button is the
-courtesy on top of it exactly as with every other refusal here. A brand with NO destination
-configured cannot post at all: before 035 an unconfigured brand silently posted to the CMS, which
-made "nobody set this up" a state nothing could name, so that migration stamped every brand that
-already existed and an empty destination now means a brand created since. **NO AGENT TOUCHES ANY
-OF THIS.** `server/cms/` is still deletable whole, still imported by nothing in the generation
-pipeline, and still hangs off one operator press.
+**THE POST DOOR HAS ONE DESTINATION, THE CLIENT'S OWN WEBSITE, AND EVERY PRESS IS A LIVE
+RELEASE.** A brand's destination is one field on its own record (`clients.site`, migration 035),
+and the door reads it. Publishing puts the article LIVE on the client's domain, so the door opens
+only once THE CLIENT HAS APPROVED IT: the thing that authorises a final release in this engine is
+the client's own approval. `server/cms/gate.py` `assert_client_approved` is where it is enforced,
+and the dashboard's greyed button is the courtesy on top of it exactly as with every other refusal
+here.
+
+**IT USED TO HAVE TWO, AND THE SECOND ONE IS THE REASON THAT CLAUSE WAS EVER SCOPED.** Posting to
+the STRATEGI CMS filed a draft one of our editors reviewed, so it released nothing to anybody and
+the door opened from internal review onwards. Migration 038 removed that destination, deleted
+`server/cms/client.py`, and cleared every brand still holding it, so the approval clause is no
+longer a condition one path skips. What used to be an asymmetry between two acts is now simply the
+condition on publishing.
+
+A brand with NO WEBSITE CONNECTED cannot publish at all, and that is now the ORDINARY state rather
+than a rare one: before 035 an unconfigured brand silently posted to the CMS, which made "nobody
+set this up" a state nothing could name; 035 named it and 038 made it the starting point for every
+brand nobody has connected. `assert_destination` is the whole of what disables the button, and the
+route refuses a non-empty kind this build carries no driver for BEFORE anything is promoted or
+spent.
+
+**NO AGENT TOUCHES ANY OF THIS.** `server/cms/` is still deletable whole, still imported by
+nothing in the generation pipeline, and still hangs off one operator press. The directory keeps
+its name because renaming it would touch every import for no behaviour.
 
 **A score is not a licence to ship past an open question.** Where the evaluator asked something
 current, the blog is HELD at ANY score, including 96, until the operator answers. Answering is a

@@ -175,8 +175,8 @@ executable: `cd dashboard && node --test tests/blog-state.test.ts`.
 | `internal_review` | Internal review | edit, comment, send | not visible | nothing |
 | `client_review` | With client | nothing | Ready to review | approve, suggest, reply |
 | `changes_requested` | Changes requested | edit, comment, send again | With our team | reply |
-| `approved` | Approved | **post to CMS only** | Approved | reply |
-| `published` | Published | post again | Published | nothing |
+| `approved` | Approved | **publish only** | Approved | reply |
+| `published` | Published | publish again, unpublish | Published | nothing |
 | `failed` / `stopped` | Failed / Stopped | nothing | not visible | nothing |
 
 Three things in that table are load-bearing:
@@ -371,17 +371,20 @@ Exit codes are three-valued so the runner can tell a bad draft from a bad setup:
 
 ## Where a brand's blogs publish
 
-Every brand has ONE destination, set in **Settings → Blog destination**. Two exist today:
+Every brand publishes to **its own website**, connected in **Settings → Blog destination**.
+WordPress is the one platform with a driver today.
 
-| destination | what a press does | when it opens |
-|---|---|---|
-| **Strategi CMS** | files a draft at `client.strategi.is` for one of our editors | from internal review onwards |
-| **The client's own WordPress** | publishes the article LIVE on their site | only after the client approves it |
+A brand with **no website connected** has the Post control disabled, with the reason on hover:
+connect the client's website first. There is no fallback destination and nothing publishes
+anywhere by default. Before migration 035 an unconfigured brand silently posted to the Strategi
+CMS, which made "nobody set this up" a state nothing could name; migration 038 removed that
+destination entirely and cleared every brand that was still on it, so an empty destination is
+now simply a brand nobody has set up.
 
-A brand with **no destination set** has the Post control disabled, with the reason on hover.
-Before migration 035 an unconfigured brand silently posted to the CMS, which made "nobody set
-this up" a state nothing could name; that migration stamped every brand that already existed
-with `strategi-cms`, so an empty destination is a brand created since.
+Shopify, Squarespace, Wix and Webflow are **detected and named as unconnectable** rather than
+half-offered. Each runs a real blog Canon cannot post to, and saying so at setup is the
+difference between an operator knowing and an operator promising a client something that cannot
+be built.
 
 ### Connecting a client's WordPress
 
@@ -397,7 +400,7 @@ Never ask for their WordPress password, their hosting or cPanel login, or FTP de
 them is needed.
 
 Paste those into the card, press **Detect** (which reads what platform the page runs on), then
-**Connect**. The engine makes four GETs and no writes, so it is safe to press repeatedly:
+**Connect**. The engine makes five GETs and no writes, so it is safe to press repeatedly:
 
 - the page itself, which declares the site's REST root
 - `wp/v2/users/me?context=edit`, which proves the credential AND that their host did not strip
@@ -406,6 +409,8 @@ Paste those into the card, press **Detect** (which reads what platform the page 
 - an article off that page, whose `Link: rel="alternate"` header **names the post type their
   blog actually renders from**
 - `wp/v2/types`, which refuses a page type or one WordPress will not show on the front end
+- one existing article under `context=edit`, whose `meta` keys say **which SEO plugin's fields
+  the site will actually accept from us**
 
 That third step is why this is not just "post to `/wp/v2/posts`". Plenty of client themes
 render their blog from a custom post type (`insights`, `news`), and posting to `posts` there
@@ -414,161 +419,105 @@ article sits in a section nobody renders. It is the only invisible failure in th
 the type is read from the site rather than assumed. A brand-new site with nothing published
 falls back to `posts` and says it is unverified.
 
+### The SEO title and description
+
+A client's site sets its `<title>` and meta description from whichever SEO plugin it runs, so an
+article published without them takes the theme's fallback: the H1 verbatim, and usually no
+description at all. Canon fills them where it can.
+
+**Writability is proven at connect time, never assumed.** WordPress accepts a meta key over REST
+only where something registered it with `show_in_rest`, and having the plugin installed does not
+mean anything did: Yoast's keys are protected and unregistered on a default install, so posting
+them is silently dropped and the article publishes looking fine with no SEO title on it. So
+connect reads one existing article back with `context=edit` and takes the keys the site's own
+schema returns. Four plugins are recognised:
+
+| Plugin | Keys |
+|---|---|
+| Yoast SEO | `_yoast_wpseo_title`, `_yoast_wpseo_metadesc` |
+| Rank Math | `rank_math_title`, `rank_math_description` |
+| SEOPress | `_seopress_titles_title`, `_seopress_titles_desc` |
+| The SEO Framework | `_genesis_title`, `_genesis_description` |
+
+Both keys of a pair or neither: a half-filled SEO record reads to whoever audits the site as
+somebody having started and stopped. **AIOSEO is deliberately absent** because it keeps its
+fields in its own database table rather than in post meta, so there is nothing here to write and
+a site running it resolves nothing rather than being lied to. A site with no writable pair
+publishes without SEO fields, exactly as every push did before this existed.
+
+The settings card and the Post button name the plugin they found, so whether a published article
+carries our title is visible without viewing the source of a live page.
+
+**A field somebody already filled in on their side is never overwritten.** On a first push the
+post is new and the pair is sent unconditionally. On an update the engine reads what the post
+holds and fills only what is empty, which is the same rule it keeps for the body: replacing a
+title an editor typed would silently discard a person's editorial decision. A post whose meta
+cannot be read is one the engine cannot prove is empty, so it writes nothing.
+
 ### Posting
 
-Press **Post to WordPress** on an approved blog. One HTTP call, no discovery: the post type was
-pinned at connect time. The article's real URL comes back in the same response and is stored,
-so the blog then shows **Published on acme.com 3 days ago** and a **View on acme.com** link.
+Press **Publish** on an approved blog. One HTTP call, no discovery: the post type, the section
+and the SEO keys were all pinned at connect time. The article's real URL comes back in the same
+response and is stored, so the blog then shows **Published on acme.com 3 days ago** and a **View
+on acme.com** link.
 
 Pressing again updates the same article rather than making a second one. If somebody edited it
 on their site after our last push, the engine **declines to overwrite** and reports it.
 
-## Posting a blog to the Strategi CMS
+### Only finished, approved blogs go
 
-An operator opens a finished blog in the Blogs library and presses **Post to CMS** in the
-preview drawer. The blog is sent to `client.strategi.is` as a **draft** for a human to review.
-It is never published and it never reaches the client: an editor approves it in the CMS.
+Two refusals stand in front of the button, both in `server/cms/gate.py`, and both are server
+side. The disabled button is a courtesy; these are the guard, and they hold against a stale tab,
+a replayed request and a hand-rolled curl.
 
-Everything for this lives in `server/cms/` and hangs off that one button. No part of the
-generation pipeline imports it, and deleting the directory plus the two `include_router`
-lines in `app.py` removes the feature whole.
+- **`done`, exactly.** Anything else answers 409 naming the state it found. A `needs_review`
+  blog is never published. A `failed` blog the operator has READ can go, by being promoted first
+  on their authority (the trail then reads "failed at 87, then a person published it"), and the
+  one thing that promotion cannot waive is a draft no evaluator ever scored.
+- **The client's own approval.** A push puts the article live on their public domain, which is
+  the final release, and the thing that authorises a final release here is the client saying so
+  in the portal. This used to be scoped to a website destination, because a Strategi CMS push
+  filed a draft an editor of ours reviewed and released nothing to anybody. There is no such
+  destination now, so approval sits on every publish there is.
 
-### Only finished blogs go
+### What lands on the site
 
-The engine refuses to post anything whose terminal status is not exactly `done`, and answers
-409 with the state it found. A `needs_review` blog is never pushed. That refusal is in
-`server/cms/gate.py` and it is the real guard: a CMS draft is directly approvable by an
-editor, so the CMS cannot tell a vetted piece from an unvetted one. The button greying itself
-out is a courtesy on top.
+The draft exactly as the evaluator scored it. The committed body is read off the record and
+converted to HTML byte for byte minus its H1, which becomes the `title`. There is no second
+model pass over the article: the transform in `server/cms/payload.py` is pure and deterministic,
+so the blog that passed the eval is the blog a reader opens. The TL;DR becomes the excerpt.
 
-### The write key
+- **The byline is theirs.** The article lands under the WordPress user whose application
+  password connected the site. `author` is deliberately never sent.
+- **The section is pinned.** Connect reads the categories off the exemplar article, so new
+  articles join the section the operator pointed at. This matters on a
+  `/%category%/%postname%/` site, where the category IS the URL: send nothing and the article
+  files under the site default, away from every other article. An article found stranded
+  entirely outside the pinned section is moved back; one that merely also carries the client's
+  own extra category is left alone.
+- **Tags are not sent.** WordPress takes taxonomy as term IDs rather than names, and creating
+  terms on a client's site is a write nobody asked for.
+- **The SEO title and description** go where the plugin accepts them, as above. They are written
+  by a short model session at push time from the finished draft, screened through `gates.py`'s
+  own banned-phrase and superlative lists before they are accepted, and they fall back to the
+  H1 and TL;DR on every failure path, so a slow or absent model costs a push its polish and
+  never the push.
 
-One key per client org, server-side only. Never in `gates.json`: that file is
-operator-visible and checked in, and a write credential in it is a credential in the repo.
-
-**There are two places to put a key, and `server/.env` is the one that works everywhere.**
-Add one line per org, no `export` keyword, and restart the engine:
-
-```
-STRATEGI_CMS_WRITE_KEY_BLR_BREWING=...        # one line per org, org slug uppercased
-STRATEGI_CMS_WRITE_KEY_VACATION_VILLAGE=...   # hyphens in the slug become underscores
-```
-
-The other place is the process environment, which still wins over the file:
-
-```
-export STRATEGI_CMS_WRITE_KEY_BLR_BREWING=...        # same variable name
-export STRATEGI_CMS_URL=...                          # optional, to point at a staging CMS
-```
-
-**Prefer the file unless you know why you are exporting.** An exported variable reaches the
-engine only when the engine was started from that same shell, which covers a terminal and
-covers `Start Canon.command` because a login shell sources your profile. It does NOT cover
-the tray app opened from Finder: macOS GUI apps read no shell profile, so on the packaged
-distribution an `export` line in `.zshrc` reaches the engine never. `server/.env` is read on
-every launch path.
-
-The exported variable wins where both exist, matching how `server/db.py` resolves its own
-three credentials. A var you exported into this process is a deliberate act aimed at this
-process; a file on disk is ambient, and letting a stale line in it override the key you just
-set is the harder of the two failures to diagnose.
-
-A key kept in `server/.env` is **less** exposed than an exported one, not more. `server/db.py`
-parses that file into a private dict and never into `os.environ`, and `agent_env()` builds
-every Claude subprocess environment by filtering `os.environ`, so a key in the file cannot
-reach an agent session at all. The `STRATEGI_CMS_WRITE_KEY_` prefix is deliberately absent
-from `AGENT_ENV_ALLOW`: a write key files drafts into a client's live CMS, the push happens in
-the server process long after every agent has exited, and no research or drafting session has
-any use for one.
-
-The endpoint defaults to `https://client.strategi.is/api/v1/ingest` and needs no config. If
-you override it, give the **full endpoint including `/api/v1/ingest`**, never a bare host:
-the value is POSTed to verbatim, and `https://client.strategi.is` on its own 307s to
-`/login`, so a host-only value would push a blog at the login page and never tell you.
-
-**There is no shared fallback key, deliberately.** The CMS decides which org a draft belongs
-to *from the key*, and the payload is forbidden from carrying `org_id`, so the key is the only
-thing routing a draft anywhere. A single shared variable would answer for every org: set it to
-BLR Brewing's key, press Post on a Vacation Village blog, and Vacation Village's content lands
-in BLR Brewing's CMS. Nothing in the request names the intended org, so neither side can catch
-it and the leak is silent. An org gets its own key or it gets a 503.
-
-With no key set for an org, the endpoint answers 503 naming the exact variable it wanted. That
-is a setup problem, not a CMS failure, and it says so. Put the variable it names into
-`server/.env` as a `NAME=value` line and restart the engine. Both places are checked before
-that 503 is raised, and both are checked for that org's variable alone, so a second place to
-look is never a second chance to answer with a neighbour's key.
-
-`server/cms/client.py` carries `missing_key_detail(org_slug)`, which returns that sentence
-plus the file to put the variable in and the reason an `export` is not enough on the packaged
-app. The endpoint should raise its 503 with that string rather than composing its own.
-
-A key is a per-org secret: a key pasted into a chat, a ticket, or a commit should be rotated
-rather than reused.
-
-### What lands in the CMS
-
-The draft exactly as the evaluator scored it. `blog.md` is read off disk and sent byte for
-byte minus its H1, which becomes the `title`. There is no second model pass: the transform in
-`server/cms/payload.py` is pure and deterministic, so the blog that passed the eval is the
-blog an editor opens. The TL;DR becomes the excerpt, the "Sources and References" section
-becomes the citations array, and the ledger's target prompts become `target_queries`.
-
-The byline, SEO fields, category and tag are built at push time and are **derived from the
-draft, never written fresh**. None of them is stored in `blog.md`; the artifact on disk is
-untouched by any of this.
-
-| Field | Where it comes from |
-|---|---|
-| `author_name` | `payload.AUTHOR_NAME`, currently **Prasanna Kumar** |
-| `meta_title` | The H1, cut at its colon seam or truncated to ~60 chars on a word boundary |
-| `meta_description` | The TL;DR, whole sentences only, targeting ~155 chars |
-| `category_name` | The client's industry, through a **closed map** (`INDUSTRY_CATEGORIES`) |
-| `tags` | One tag: the brand's display name |
-| `meta_*` for a draft with no TL;DR | Omitted. No guess. |
-
-**Why none of these is a model call**, which is the obvious "improvement" and is wrong: a meta
-description is published, client-facing copy. Every other client-facing word this engine ships
-passed `gates.py` (no superlatives, no banned phrases) and a hostile evaluator against
-`canonical-facts.md` (no ROI language, no unapproved claims). *Nothing downstream of the
-evaluator inspects a payload field.* So a model writing that field at push time is the one path
-in this factory that puts unvetted prose in front of a client: "Bangalore's best microbrewery",
-or a yield claim on a real-estate blog, would reach the CMS with no gate having seen it.
-Deriving from the H1 and TL;DR inherits all of that vetting, because those already passed it.
-
-Model-written **tags** fail for a second reason on top: get-or-create with no read endpoint
-means a model emitting "Microbreweries" one run and "Microbrewery" the next creates two
-permanent tags nobody chose.
-
-**Per-piece topic tags are deliberately not sent.** No honest source exists: the industry
-describes the client rather than the piece, the roadmap's `Format` ("Hub listicle") is internal
-jargon and does not survive to push time anyway, and `entity_names` holds legal entities like
-"ALPL 3 LLP" that have no business becoming public tags. The brand tag is sent because it is
-true by construction and earns its keep in a multi-brand org: Acme Group holds `acme-north` and
-`acme-south`, so one CMS receives both brands' drafts and the tag is what separates them.
-
-Two CMS behaviours shape all of the above, and neither is in the ingest spec:
-
-- **`author_name` is match-only and fails silently.** A name matching no author in the org is
-  not an error: the CMS quietly uses the org's default author. A typo in `AUTHOR_NAME`
-  therefore fails invisibly. If a draft lands under the wrong byline, fix the constant.
-- **`category_name` and `tags` are get-or-create, with no read endpoint.** An unrecognised
-  value is CREATED in the client's CMS and nothing can list what already exists. Both are
-  emitted from closed vocabularies for exactly that reason: a naive `.title()` on an industry
-  slug would permanently create "Technology Saas" in a real client's taxonomy.
-
-Posting is idempotent. `source_run_id` is `uuid5(NAMESPACE, "<client_slug>/<topic_slug>")`, so
-re-posting a blog updates its existing draft instead of making a second one. The brand prefix
-is deliberate: two brands in one org sharing a topic slug would otherwise derive the same id
-and overwrite each other. **Never change `payload.NAMESPACE`.** Every id shifts if it moves,
-orphaning every draft a reviewer is already holding; `tests/cms_check.py` pins the value.
-
-If an editor has already moved a post past draft, the CMS keeps their version and reports
-`skipped`. That is a success, not something to retry.
+**Re-post safety is answered from the record**, not from an idempotency key: a client's
+WordPress has no such concept. `topics.cms_post_id` holds the id of the article on their site
+and `published_to` holds which destination issued it, and `remote_article` answers only when the
+two agree. That second half is load-bearing: one id cannot say which system issued it, so a
+Strategi CMS id handed to a brand that has since connected WordPress would PATCH an unrelated
+`wp/v2` post of that number. Mismatched, the lookup answers nothing and the push CREATES, which
+is the truth.
 
 ```
-.venv/bin/python tests/cms_check.py     # offline, sends nothing over the network
+.venv/bin/python tests/site_check.py       # offline, sends nothing over the network
+.venv/bin/python tests/cms_check.py        # the payload builder and its guards
+.venv/bin/python tests/unpublish_check.py  # the retraction
+.venv/bin/python tests/wp_category_check.py
 ```
+
 
 ## Not built yet
 
