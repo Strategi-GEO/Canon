@@ -1,0 +1,8 @@
+# The docs site only. DELIBERATELY NOT in the repo's requirements.txt, which is what the engine
+# installs into its runtime on every teammate's machine: nobody running Canon needs a static
+# site generator, and adding 30 MB of it to that install would slow every first launch to
+# publish a website none of them build.
+#
+# Pinned, because the site is built by CI on every push to main and an unpinned theme means the
+# docs can change appearance on a day nobody touched them.
+mkdocs-material==9.7.7

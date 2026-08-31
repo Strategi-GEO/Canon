@@ -1,0 +1,91 @@
+# Builds docs/ with mkdocs-material and publishes it to GitHub Pages.
+#
+# TWO JOBS, NOT ONE, AND THE SPLIT IS THE POINT. `build` runs on every push to main AND on every
+# pull request that touches the docs, so a broken link is caught in review. `deploy` runs only on
+# main, because a pull request must never be able to publish itself to the live site.
+#
+# `mkdocs build --strict` IS THE TEST. mkdocs.yml sets strict: true, so a link to a page that
+# does not exist, a nav entry pointing at a missing file, or a page in docs/ that no nav entry
+# reaches all fail the build rather than becoming a 404 somebody finds months later. That is the
+# whole reason the docs live in this repo instead of a wiki: they are reviewed and checked like
+# code, in the same pull request as the change they describe.
+#
+# THE DEPENDENCY IS docs/requirements.txt, NOT requirements.txt. The repo's own requirements file
+# is what every teammate's machine installs to RUN Canon, and none of them build a website. See
+# the comment in docs/requirements.txt.
+#
+# BEFORE THE FIRST RUN, someone with admin on the repository has to set
+# Settings > Pages > Build and deployment > Source to "GitHub Actions". The configure-pages step
+# below asks for that automatically, but the repository setting is the authority and a first run
+# against a repo where Pages was never enabled will fail there with a permissions error.
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+# Least privilege by default; the deploy job widens it for itself alone.
+permissions:
+  contents: read
+
+# One live deploy at a time. `cancel-in-progress: false` because a half finished Pages deploy is
+# worse than a slightly stale one: cancelling mid-upload can leave the site serving a partial
+# build, so a queued run waits for the one ahead of it to finish properly.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      - name: Install MkDocs
+        run: pip install -r docs/requirements.txt
+
+      # The strict build. This is the step that fails a pull request.
+      - name: Build the site
+        run: mkdocs build --strict
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    # main only: a pull request builds and is checked, and publishes nothing.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # enablement: true asks the API to turn Pages on if it is off, so the first run does not
+      # need somebody to visit Settings first. It is a request, not a guarantee: where the
+      # repository forbids it the step fails here with a clear permissions error rather than
+      # deploying into a void, and an admin sets Settings > Pages > Source to "GitHub Actions".
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - id: deployment
+        uses: actions/deploy-pages@v4

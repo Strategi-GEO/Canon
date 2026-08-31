@@ -1,0 +1,115 @@
+# The Canon documentation site: docs/ rendered by mkdocs-material and published to GitHub Pages
+# by .github/workflows/docs.yml on every push to main.
+#
+# THE SOURCE IS docs/ IN THIS REPO, which is the whole reason this exists rather than a GitHub
+# Wiki. A wiki lives in a SEPARATE git repository, so a doc change cannot ride in the same commit
+# or pull request as the code change it describes, CI never sees it, and nobody reviews it. It
+# drifts quietly. Here a page is an ordinary file: it is reviewed in the pull request that
+# changes the behaviour it documents, and `strict: true` below turns a broken link into a failed
+# build rather than a 404 somebody finds months later.
+#
+# CLAUDE.md AND README.md DELIBERATELY STAY AT THE ROOT and are not pages here. CLAUDE.md is the
+# engine's binding contract, read by the agents themselves at a fixed path, and README.md is for
+# people changing the code. This site is for people USING Canon.
+site_name: Strategi Canon
+site_description: "The operator guide to Strategi Canon: writing, reviewing and publishing GEO blogs."
+site_url: https://strategi-geo.github.io/Canon/
+repo_url: https://github.com/Strategi-GEO/Canon
+repo_name: Strategi-GEO/Canon
+edit_uri: edit/main/docs/
+
+# A broken internal link fails the build. The nav below names every page, so a page added to
+# docs/ without a nav entry is also caught here rather than becoming unreachable.
+strict: true
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+  palette:
+    # The viewer's own system setting decides, with a toggle either way, so the site is readable
+    # in a dark room and in a bright one without anyone configuring anything.
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Match my system
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installing Canon: getting-started/install.md
+      - Starting Canon: getting-started/first-run.md
+      - Your first blog: guide/your-first-blog.md
+  - How Canon works:
+      - How a blog gets made: concepts/how-it-works.md
+      - Organisations and brands: concepts/organisations-and-brands.md
+      - What each status means: concepts/blog-states.md
+  - Using Canon:
+      - The Content Roadmap: guide/roadmap.md
+      - The Blogs tab: guide/blogs.md
+      - Reviewing and editing: guide/reviewing.md
+      - Publishing: guide/publishing.md
+      - Social channels: guide/channels.md
+      - Repurpose: guide/repurpose.md
+      - Reports: guide/reports.md
+      - Analysis: guide/analysis.md
+      - Resources: guide/resources.md
+      - Settings: guide/settings.md
+  - The client portal:
+      - Overview: client-portal/index.md
+      - A guide for your client: client-portal/for-clients.md
+  - Administration:
+      - Adding a brand: admin/brands.md
+      - Runs and the queue: admin/runs-and-queue.md
+  - Reference:
+      - Troubleshooting: reference/troubleshooting.md
+      - FAQ: reference/faq.md

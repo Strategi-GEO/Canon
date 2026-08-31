@@ -50,3 +50,6 @@ Start Canon (installed).command
 
 # Packaged skill zips are built from .claude/skills/<name>/; the folder is the source.
 *.skill
+
+# The mkdocs build output. The site is published by CI from docs/, never committed.
+site/
