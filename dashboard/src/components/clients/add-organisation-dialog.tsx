@@ -132,17 +132,21 @@ export function AddOrganisationDialog({
       toast.success(
         multiBrand ? `Added ${trimmedOrg} with ${brand.name}` : `Added ${brand.name}`,
       );
-      // Start the description draft the instant the brand exists, so the operator never has to
-      // type one or press Draft with Claude. The session lives in DescribeProvider above every
-      // route, so it survives closing this dialog and any redirect the caller runs.
-      void startDescribe(brand.slug);
       setOpen(false);
       // A fresh org gets its client login here, and the password is shown once. Hold the
       // redirect until the admin acknowledges it; a brand joining an existing org mints no login
       // (portal_login is null), so it proceeds straight through as before.
+      //
+      // THE DESCRIBE DRAFT IS HELD BACK WITH IT, and that is the point rather than tidiness. A
+      // settling draft calls useOrgs().refresh() (see describe-context), the refreshed list gives
+      // this org its first brand, and OrgPage's single-brand redirect then fires router.replace
+      // and unmounts the reveal mid-read. The password is shown exactly once and cannot be read
+      // back, so a navigation under that dialog loses it for good. Nothing is started until the
+      // admin has it.
       if (brand.portal_login) {
         setReveal({ credential: brand.portal_login, brand });
       } else {
+        void startDescribe(brand.slug);
         onCreated?.(brand);
       }
     } catch (cause) {
@@ -314,6 +318,9 @@ export function AddOrganisationDialog({
         const brand = reveal?.brand ?? null;
         setReveal(null);
         if (brand) {
+          // Deferred from submit: see the note there. Started before onCreated so the draft is
+          // already in flight by the time the redirect lands on the brand's page.
+          void startDescribe(brand.slug);
           onCreated?.(brand);
         }
       }}
