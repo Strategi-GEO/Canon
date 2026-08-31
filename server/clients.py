@@ -243,8 +243,22 @@ def list_orgs():
     Explicit orgs come from the orgs rows through the client join; every other brand is
     its own single-brand org, derived on read. The brand stays the engine's unit of work
     because one brand owns exactly one canonical_facts, entity-name set and roadmap.
+
+    AN ORG WITH NO BRANDS IS STILL LISTED, with an empty `brands`, and that is not a
+    completeness flourish. Grouping from the clients alone meant the LAST brand leaving an org
+    erased the org from every surface at once: it vanished from the switcher, its own page
+    answered "No such organisation", and the EmptyOrg card written for exactly this state was
+    unreachable code. The orgs row survived in the table with its client-portal grant still
+    live, so what the delete actually produced was an invisible tenant nobody could reach, add a
+    brand to, or delete. A brandless org is only ever the seconds-to-forever after its last
+    brand is dropped, so listing it is what gives that state a door.
+
+    Non-admins never see one: _scoped_orgs in server/app.py keeps an org only when a brand of
+    it survives the scope filter, and an org with no brands has none to survive.
     """
     grouped = {}
+    for slug, name in db.q("select slug, name from orgs", fetch="all") or []:
+        grouped[slug] = {"slug": slug, "name": name, "brands": []}
     for client in list_clients():
         # _fixture-unreviewed is a test fixture for the preflight refusal, not a brand
         # anyone writes for. It stays visible in GET /api/clients, which the existing
@@ -937,6 +951,49 @@ def delete_resource(slug, name):
     if path is not None and path.is_file():
         path.unlink()
     return bool(deleted)
+
+
+def hard_delete_org(org_slug):
+    """Delete an EMPTY organisation row. Refuses while any brand still belongs to it.
+
+    Refusing rather than cascading is deliberate. A brand is the engine's unit of work and
+    hard_delete_client puts each one behind a consent checkbox and a slug retype; letting one
+    org confirm stand in for all of them would drop several brands' blogs, roadmaps and
+    resources on a single press. clients.org_id is ON DELETE RESTRICT, so the database refuses
+    this too, but a 409 naming the brands is an answer an operator can act on where a foreign
+    key violation is not.
+
+    The org's client-portal login is NOT dropped here: that is a GoTrue write, it lives in
+    server/portal_login.py with the rest of the auth admin calls, and the caller runs it. This
+    function owns the record and nothing else.
+
+    Returns the deleted org's name, or None if the slug was already absent (idempotent)."""
+    name = db.q("select name from orgs where slug = %s", (org_slug,), fetch="val")
+    if name is None:
+        return None
+    assert_org_empty(org_slug)
+    db.q("delete from orgs where slug = %s", (org_slug,), fetch="none")
+    return name
+
+
+def assert_org_empty(org_slug):
+    """Raise InvalidClient naming the brands that still belong to org_slug, if any.
+
+    Split out of hard_delete_org so the REFUSAL can be taken before anything irreversible runs.
+    Deleting an org also revokes its client-portal login, and that revoke has to happen before
+    the row goes (see api_delete_org), which would otherwise put the destructive half of the
+    operation in front of the check that forbids it: a refused delete would still have destroyed
+    the login. hard_delete_org calls this too, so the function stays safe called alone.
+    """
+    brands = [row[0] for row in db.q(
+        """select c.slug from clients c join orgs o on o.id = c.org_id
+           where o.slug = %s and c.deleted_at is null order by c.slug""",
+        (org_slug,), fetch="all") or []]
+    if brands:
+        raise InvalidClient(
+            f"{org_slug!r} still holds {len(brands)} brand(s): {', '.join(brands)}. Delete each "
+            f"brand from its own Settings first; an organisation is a grouping and deleting one "
+            f"must never take its brands with it.")
 
 
 def hard_delete_client(slug):

@@ -565,6 +565,37 @@ async def api_org(org_slug: str, user: auth.Identity = Depends(auth.require_user
     raise HTTPException(status_code=404, detail=f"unknown organisation {org_slug!r}")
 
 
+@app.delete("/api/orgs/{org_slug}", status_code=204)
+async def api_delete_org(org_slug: str, user: auth.Identity = Depends(auth.require_admin)):
+    """Delete an EMPTY organisation and revoke its client portal login. Admin only.
+
+    409 while the org still holds brands, naming them: a brand carries the blogs, the roadmap and
+    the resources, and each one has its own two-gate delete in Settings. One org confirm standing
+    in for all of them would be the widest destructive press in the app.
+
+    THE GRANT GOES WITH THE ROW, and that ordering is the point rather than tidiness. Deleting
+    the orgs row alone leaves org_members holding a live grant on that slug, and org_membership
+    derives its org_slug as COALESCE(orgs.slug, clients.slug), so the next brand created with
+    that same slug and no org of its own would inherit the dead org's login and be readable by
+    whoever held it. The revoke runs FIRST for that reason: a failure then leaves an org nobody
+    deleted, which is recoverable, where the other order leaves a grant nobody can see.
+    """
+    if clients_mod.read_org(org_slug) is None:
+        raise HTTPException(status_code=404, detail=f"unknown organisation {org_slug!r}")
+    # BEFORE the revoke, which is irreversible. Taking the refusal after it would mean a 409 an
+    # operator reads as "nothing happened" while the org's portal login had already been
+    # destroyed. hard_delete_org re-checks; this is the one that runs in time.
+    try:
+        await asyncio.to_thread(clients_mod.assert_org_empty, org_slug)
+    except clients_mod.InvalidClient as refused:
+        raise HTTPException(status_code=409, detail=str(refused)) from refused
+    revoked = await asyncio.to_thread(portal_login.deprovision_one, org_slug)
+    await asyncio.to_thread(clients_mod.hard_delete_org, org_slug)
+    log.info("deleted organisation %s (revoked %d grant(s), auth user deleted: %s)",
+             org_slug, revoked["revoked"], revoked["deleted_user"])
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Onboarding: create and edit a client, and manage its Resources.
 # ---------------------------------------------------------------------------

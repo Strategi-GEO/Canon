@@ -122,7 +122,14 @@ Beside it, **Delete** clears the fact base completely, after a confirm. The next
 
 ## Deleting a brand
 
-The control is at the bottom of the brand's **Settings** tab, under **Danger zone**, and it is called **Delete this brand**. There is no separate delete for an organisation: an organisation exists only as long as it has brands, so deleting the last brand in one removes the organisation from the list with it.
+The control is at the bottom of the brand's **Settings** tab, under **Danger zone**, and it is called **Delete this brand**.
+
+Deleting the last brand in an organisation leaves the organisation behind, empty. That is not a leftover to ignore: the organisation still holds the client portal login, so it needs an answer either way. Its own page gives you both, and nothing else, because there is nothing else to do with it:
+
+- **Add brand** puts a new brand under it, keeping the organisation and the login the client already has.
+- **Delete organisation** removes it and revokes that login, so the password you sent the client stops working. One confirm, not two: an empty organisation holds no blogs, no roadmap and no resources, so the only thing being destroyed is the grouping and its login.
+
+Canon refuses to delete an organisation that still has brands, and names them. Each brand goes through its own two-step delete first.
 
 !!! danger "Deleting a brand destroys everything under it, with no undo"
     It removes the brand's record and every blog with its versions and comments, every channel post, the roadmap, all reports and analyses, the uploaded resources, and the brand's files on the machine running Canon. Nothing is archived and nothing is recoverable from the dashboard. Published articles already live on a client's website are not taken down, but Canon forgets them.

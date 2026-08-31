@@ -105,6 +105,91 @@ def _record_credential(org_slug: str, name: str, email: str, password: str) -> N
     _write_file(CREDENTIALS_FILE, admin_entries, org_entries)
 
 
+def _remove_credential(org_slug: str) -> None:
+    """Drop ONE org's block from .env.portal-credentials, preserving every other block.
+
+    The mirror of _record_credential, and it reuses that function's read/rebuild shape rather
+    than editing the file in place, so the admin section and every other org survive untouched
+    and the file lands 0600 through the same _write_file. A block left behind after the GoTrue
+    user is gone is worse than no block: it reads as a working login and is not one.
+    """
+    existing = _read_existing(CREDENTIALS_FILE)
+
+    admin_entries = []
+    org_entries = []
+    for section in existing.sections():
+        sec = existing[section]
+        if section.startswith("admin:"):
+            admin_entries.append({
+                "email": sec.get("email", section[len("admin:"):]),
+                "password": sec.get("password", "(held by operator)"),
+            })
+        elif section.startswith("org:"):
+            slug = section[len("org:"):]
+            if slug == org_slug:
+                continue
+            org_entries.append({
+                "slug": slug,
+                "name": sec.get("name", slug),
+                "email": sec.get("email", ""),
+                "password": sec.get("password", ""),
+            })
+
+    _write_file(CREDENTIALS_FILE, admin_entries, sorted(org_entries, key=lambda e: e["slug"]))
+
+
+def _user_email(uid: str) -> str:
+    """One GoTrue user's email, or "" when it cannot be read. Never raises: this is read to
+    DECIDE whether a delete is safe, and an unreadable answer must fail closed, not loudly."""
+    status, body = _auth_admin("GET", f"/auth/v1/admin/users/{uid}")
+    if status != 200 or not isinstance(body, dict):
+        return ""
+    return str(body.get("email") or "")
+
+
+def deprovision_one(org_slug: str, domain: str = DEFAULT_DOMAIN) -> dict:
+    """Revoke the portal login of an org being deleted: the grant, the GoTrue user, the block.
+
+    Returns {"revoked": int, "deleted_user": bool, "kept": [email, ...]}.
+
+    THE GoTrue DELETE IS GUARDED BY THE EMAIL, and the guard is the whole safety of this
+    function. org_members holds a user_id and nothing that says whose account it is, so a row
+    could name a real person an admin had granted by hand, or the admin's own account. Only a
+    user whose email is exactly the address provision_one mints, <org-slug>@<domain>, is a login
+    this engine created FOR this org and can therefore destroy with it. Anything else keeps its
+    account and only loses the grant, and is reported in `kept` so the caller can say so.
+    A user id whose email cannot be read is treated as somebody else's and kept.
+
+    ORDER MATTERS: the grant goes first. That revocation is the part that actually protects the
+    deleted org's data, so it must not be skipped because a later GoTrue call failed. Everything
+    after it is best effort for the same reason, and a failure to reach GoTrue leaves a dead
+    account behind, never a live grant.
+    """
+    rows = db.q("select user_id from org_members where org_slug = %s", (org_slug,),
+                fetch="all") or []
+    uids = [str(row[0]) for row in rows]
+    db.q("delete from org_members where org_slug = %s", (org_slug,), fetch="none")
+
+    deleted_user = False
+    kept: list[str] = []
+    if config_ready():
+        minted = f"{org_slug}@{domain}".lower()
+        for uid in uids:
+            email = _user_email(uid)
+            if email.lower() != minted:
+                kept.append(email or uid)
+                continue
+            status, _ = _auth_admin("DELETE", f"/auth/v1/admin/users/{uid}")
+            # 404 counts: the account is gone, which is the state this call is for.
+            if status in (200, 204, 404):
+                deleted_user = True
+    else:
+        kept.extend(uids)
+
+    _remove_credential(org_slug)
+    return {"revoked": len(uids), "deleted_user": deleted_user, "kept": kept}
+
+
 def provision_one(org_slug: str, org_name: str, domain: str = DEFAULT_DOMAIN) -> dict:
     """Mint (or adopt) the portal login for one org and record its credentials.
 

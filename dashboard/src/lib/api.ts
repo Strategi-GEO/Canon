@@ -282,6 +282,12 @@ export const api = {
 
   org: (slug: string, signal?: AbortSignal) => request<Org>(`/api/orgs/${slug}`, { signal }),
 
+  /**
+   * Delete an EMPTY organisation and revoke its client portal login. 409 while it still holds
+   * brands, naming them: each brand is deleted from its own Settings, behind its own two gates.
+   */
+  deleteOrg: (slug: string) => request<null>(`/api/orgs/${slug}`, { method: "DELETE" }),
+
   industries: (signal?: AbortSignal) =>
     request<IndustriesResponse>("/api/industries", { signal }),
 

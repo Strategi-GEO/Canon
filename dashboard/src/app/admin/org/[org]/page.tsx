@@ -2,10 +2,24 @@
 
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Building2 } from "lucide-react";
+import { Building2, Loader2, Trash2 } from "lucide-react";
+import { toast } from "sonner";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { EngineDown } from "@/components/clients/engine-error";
+import { EngineDown, FieldError } from "@/components/clients/engine-error";
+import { ApiError, api } from "@/lib/api";
+import { HOSTED_READONLY } from "@/lib/hosted";
 import { NotFoundCard } from "@/components/shell/brand-route";
 import { BrandCard } from "@/components/clients/brand-card";
 import { AddBrandDialog } from "@/components/clients/add-brand-dialog";
@@ -104,9 +118,14 @@ function OrgSkeleton() {
 }
 
 /**
- * An org with no brands is reachable only in the seconds after its last brand is deleted off
- * disk, because the grouping is derived from the clients that exist. It still needs a real
- * answer rather than a blank page.
+ * An org with no brands: what is left after its last brand is deleted, and the ONLY page that
+ * can act on that state. It offers the two things an operator can want here and there is no
+ * third: put a brand back under it, or delete the organisation.
+ *
+ * This card was unreachable code until list_orgs (server/clients.py) began listing brandless
+ * orgs. Grouping orgs from the clients alone meant the last brand leaving took the org off every
+ * surface at once, while the row and its live portal grant stayed in the database, so what a
+ * brand delete actually produced was an invisible tenant with no door.
  */
 function EmptyOrg({ org, onCreated }: { org: Org; onCreated: () => void }) {
   const router = useRouter();
@@ -123,7 +142,7 @@ function EmptyOrg({ org, onCreated }: { org: Org; onCreated: () => void }) {
             An organisation is a grouping over brands and holds no facts of its own. Nothing
             can be written until a brand exists under it.
           </p>
-          <div className="mt-5 flex justify-center">
+          <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
             <AddBrandDialog
               organisations={[org.name]}
               defaultOrganisationName={org.name}
@@ -133,10 +152,93 @@ function EmptyOrg({ org, onCreated }: { org: Org; onCreated: () => void }) {
                 router.push(brandHref(org.slug, brand.slug));
               }}
             />
+            {/* An engine write, so the hosted read-only build offers it no more than it offers
+                Add brand. Routing home rather than refreshing in place: this page is about an
+                org that no longer exists by the time the dialog closes. */}
+            {HOSTED_READONLY ? null : (
+              <DeleteOrganisationCardDialog
+                org={org}
+                onDeleted={() => {
+                  onCreated();
+                  router.replace("/");
+                }}
+              />
+            )}
           </div>
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+/**
+ * The confirm for deleting an EMPTY organisation. ONE gate, not the brand delete's two, and the
+ * asymmetry is the honest one: an empty org holds no blogs, no roadmap and no resources, so the
+ * only thing this destroys is the grouping and its client portal login. A slug retype in front
+ * of that would be ceremony teaching operators to type through confirms that do matter.
+ *
+ * The login is named rather than implied. It is the one consequence that reaches outside this
+ * machine: whoever the client is, their password stops working the moment this is pressed.
+ */
+function DeleteOrganisationCardDialog({ org, onDeleted }: { org: Org; onDeleted: () => void }) {
+  const [open, setOpen] = React.useState(false);
+  const [submitting, setSubmitting] = React.useState(false);
+  const [error, setError] = React.useState<ApiError | null>(null);
+
+  async function remove() {
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.deleteOrg(org.slug);
+      toast.success(`Deleted ${org.name}`);
+      setOpen(false);
+      onDeleted();
+    } catch (cause) {
+      // 409 means a brand appeared under it since this page loaded, and the engine's sentence
+      // names which. It belongs on screen verbatim rather than as "could not delete".
+      setError(cause instanceof ApiError ? cause : new ApiError(0, String(cause), null));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <AlertDialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setError(null);
+      }}
+    >
+      <AlertDialogTrigger asChild>
+        <Button variant="outline" size="sm">
+          <Trash2 data-icon="inline-start" aria-hidden />
+          Delete organisation
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete {org.name}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            It holds no brands, so nothing written is lost. This removes the organisation and
+            revokes its client portal login, so the password sent to the client stops working. It
+            cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {error ? <FieldError error={error} /> : null}
+        <AlertDialogFooter>
+          <AlertDialogCancel size="sm" disabled={submitting}>
+            Cancel
+          </AlertDialogCancel>
+          <Button size="sm" variant="destructive" disabled={submitting} onClick={() => void remove()}>
+            {submitting ? (
+              <Loader2 className="animate-spin" data-icon="inline-start" aria-hidden />
+            ) : null}
+            Delete organisation
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 

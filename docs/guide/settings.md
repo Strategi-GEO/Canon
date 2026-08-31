@@ -73,7 +73,7 @@ One button, **Delete this brand**, and two locks in front of it.
 
 Canon refuses the delete while a run is live for that brand, and answers "a run is live for ...; stop it before deleting the brand". Stop the run first.
 
-There is no separate delete for an organisation. An organisation exists only as long as it has brands, so deleting the last brand in one takes the organisation off the list with it.
+Deleting the last brand in an organisation leaves the organisation itself, now empty, with the client portal login still on it. Its page then offers the only two things left to do: **Add brand**, or **Delete organisation**, which also revokes that login. Canon refuses to delete an organisation that still has brands, and names the ones in the way.
 
 ## The app Settings
 
