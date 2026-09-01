@@ -106,7 +106,7 @@ Click a row, or the arrow at its left, to expand it. You get the five stage mark
 
 ### How long it takes
 
-This table carries no progress bar and no percentage, and that is deliberate. A blog can pass on its first evaluation or be revised up to four times, so there is no total to measure against. What is honest is the **Since** column and the stage name beside it.
+This table carries no progress bar and no percentage, and that is deliberate. A blog can pass on its first evaluation or go round the loop up to four times, so there is no total to measure against. What is honest is the **Since** column and the stage name beside it.
 
 Research legitimately sits still for minutes. That is normal, not a stall.
 

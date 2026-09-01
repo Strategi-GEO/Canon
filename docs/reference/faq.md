@@ -33,7 +33,7 @@ The bar is 90, and there is nothing between. A blog at 82 is tagged **Below bar*
 You have two doors and they are both legitimate:
 
 - **Retry this topic** takes you to the **New** tab with that row already ticked, so the run starts when you press **Generate**. A rerun can never make the blog worse: if it ends lower, the engine restores the earlier verdict exactly as it was.
-- **Send to client** releases the draft you have read, on your authority. Canon records this honestly: the trail reads failed at 82, then sent by a person, with your name and the score on it.
+- **Send to client** releases the draft you have read, on your authority. Canon records this honestly: the trail reads failed at 82, then a done verdict saying a person sent it. The evaluator's number is never rewritten, and the send stamp records who pressed it.
 
 Read the draft before you choose. The whole reason a sub-90 blog waits for a person is so a person reads it.
 

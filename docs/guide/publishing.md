@@ -11,7 +11,7 @@ Every brand publishes to **its own website**. There is no internal destination a
 !!! warning "Publishing is live and public the moment you press it"
     There is no second confirmation on their side. The article appears on their blog index, their feed and their sitemap, and anyone with the URL can read it. This is why the control does not appear until the client has approved the article: their approval is what authorises the release. You can take it back down (see below), and taking it down does not undo the fact that it was public.
 
-Publishing is also treated as a release, so the press stamps the article as sent. If the client had not been sent it yet, it appears in their portal from that moment, tagged **Published**, with a **View live article** button.
+Publishing moves the client's view too. Their portal tag flips to **Published**, with a **View live article** button. They had already been sent the article and approved it, because that approval is what opened this door.
 
 ??? info "The Strategi CMS was removed"
     Canon used to offer a second destination: a draft filed at `client.strategi.is` for one of our editors to review. That destination is gone. Every brand that was on it has had its destination cleared, so those brands show **no website connected** until somebody connects one. Articles that were published to the CMS keep saying so on their own chip, because that is where they really went.
@@ -95,7 +95,7 @@ The draft exactly as the evaluator scored it, converted to HTML. Nothing is rewr
 
 ### Publishing several at once
 
-In the [Blogs](blogs.md) tab, tick the rows you want and use **Publish** in the selection bar. It runs the same door one row at a time, and any blog the door will not accept is left out of the batch rather than failing it.
+In the [Blogs](blogs.md) tab, tick the rows you want and use **Publish** in the selection bar. It runs the same per-blog door for every ticked row at once, and any blog the door will not accept is left out of the batch rather than failing it.
 
 ### When the Publish control is not there
 
@@ -124,7 +124,7 @@ What happens: the article goes back to a draft on their site. Anyone opening its
 !!! warning "Unpublishing costs you the ranking, and the link"
     Search drops the page over the following days, and it does not come back at the same rank when you publish again. AI engines keep citing the URL for weeks after the page stops answering. Any link anyone already has to it breaks. The client's approval, the score and the ledger entry all survive: taking an article off a site does not undo the send or the approval.
 
-If somebody has edited the article on the client's site since Canon published it, the first press is refused with the date, and the dialog stays open. The button then reads **Take it down anyway**. Pressing again goes through. That second press exists because hiding somebody's edit without telling you first is the thing worth preventing, not the hiding itself. Nothing they wrote is deleted either way.
+If somebody has edited the article on the client's site since Canon published it, the first press is refused, and the dialog stays open. The button then reads **Take it down anyway**. Pressing again goes through. That second press exists because hiding somebody's edit without telling you first is the thing worth preventing, not the hiding itself. Nothing they wrote is deleted either way.
 
 Two outcomes are reported as successes rather than failures: the article was already down, or somebody had already deleted it on their side. Both mean what you asked for is true, and the record now agrees with their site.
 

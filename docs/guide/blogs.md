@@ -54,7 +54,7 @@ On **Internal review**, **Client review** and **Published** the columns are:
 | --- | --- |
 | Checkbox | Ticks the row for the bulk bar. Absent on **Published**. |
 | **#** | The blog's identifier. |
-| **Title** | The article's H1. Click it to open the blog. |
+| **Title** | The blog's name: what you renamed it to, otherwise the roadmap topic, falling back to the article's H1. Click it to open the blog. |
 | **Created** | Relative time. Hover for the exact stamp. |
 | **Score** | The evaluator's number. |
 | **Status** | Where the article is. |
@@ -124,7 +124,7 @@ Once you are moving through the list, the arrow keys work too. Before that they 
 
 Checkboxes appear on **New**, **Internal review** and **Client review**.
 
-They do not appear on **Published**. The article is live, so **Send to client** and **Publish** are spent, and a bulk delete over something a reader can currently open is not an act to put one click away. Editing or taking down one published article is still reachable from its own page.
+They do not appear on **Published**. The article is live, so **Send to client** and **Publish** are spent, and a bulk delete over something a reader can currently open is not an act to put one click away. Taking one down is still reachable from its own page: **Unpublish from** *host* is the only control the action row carries there. Editing is not, because the bytes are live and the client approved them.
 
 On **New**, rows are shown but locked where the engine would refuse them: a topic a run already owns, and a row missing its topic, scope or prompts. A locked checkbox is better than one that ticks and then quietly does nothing. A blog held for an answer is not listed on **New** at all; it sits in **Client review** until someone answers it.
 
@@ -160,7 +160,7 @@ This is the only release door, at every score. A blog that missed the 90 bar goe
 Confirms first: "Publish *N* on *brand*'s site?", explaining that "Each one goes live on the client's own website, with its own excerpt and, where their SEO plugin accepts them, its SEO title and description. A blog already published is updated in place." The confirm button reads **Publish them**.
 
 !!! danger "Where this posts depends on the brand"
-    The press publishes the article live on the client's own domain, and that door only opens once the client has approved it. On a blog's own page the button names the platform, for example **Publish on WordPress**.
+    The press publishes the article live on the client's own domain, and that door only opens once the client has approved it. On a blog's own page the button names the platform, for example **Post to Wordpress**.
 
 ### Delete
 
@@ -204,9 +204,9 @@ Which of these appear depends on where the article is. A control the state refus
 
 - A chip once the article has been published, reading **Published on** *host*. **View on** *host* sits beside it where the record holds a link.
 - **Unpublish from** *host*, on an article live on a client's own site. Its dialog asks "Take this article off *host*?" and lists what stays and what you lose, including "Any link anyone already has to it breaks."
-- **Publish**, naming the platform the brand's site runs on.
+- **Post to** *platform*, naming the platform the brand's site runs on. It reads **Post to their site** on a brand with no website connected, and **Posted to** *platform* once the press has landed.
 - The send stamp: "Sent for client review *N* days ago", or "Approved *N* days ago". Hover for the exact time and the person.
-- **Send to client**, which reads **Send again** once the client already has a version.
+- **Send to client**, on an article that has not been handed over yet. Once it is with the client there is no second send: they read your latest saved version continuously.
 - **Retry this topic**, on a blog that failed or did not finish. It takes you to the **New** tab with that row already ticked.
 
 ### The answer strip

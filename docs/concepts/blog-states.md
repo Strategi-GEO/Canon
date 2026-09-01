@@ -16,18 +16,18 @@ These are the tags your team sees on the **Blogs** tab and on a blog's own page.
 | **Generating** | A run is live on this article. | The engine | Nothing to the article. You can stop the run. |
 | **Has questions** | The evaluator asked something only a person can answer. Held at any score. | You or the client | **Answer**. |
 | **Answers submitted** | The client answered, and the rerun those answers are owed has not landed yet. | You | **Rerun with their answers**, then edit, comment and send. |
-| **Internal review** | It passed and it is on your team's bench. | You | Edit, comment, **Send to client**, post it. |
+| **Internal review** | It passed and it is on your team's bench. | You | Edit, comment, **Send to client**. |
 | **With client** | Sent for review. | The client | Nothing that changes the bytes. |
-| **Changes requested** | The client asked for something since the last send. | You | Edit, comment, send again. |
+| **Changes requested** | The client asked for something since the last send. | You | Edit, comment. The client keeps reading your latest version, so there is no second send. |
 | **Approved** | The client accepted these exact bytes. Locked. | Nobody | **Publish** it. |
 | **Published** | Live on the client's own site. | Nobody | **Unpublish**. |
-| **Below bar** | Scored 80 to 89. Under the bar, close enough that a rerun is worth it. | You | Edit, comment, **Send to client**, **Publish**, **Retry this topic**. |
+| **Below bar** | Scored 80 to 89. Under the bar, close enough that a rerun is worth it. | You | Edit, comment, **Send to client**, **Retry this topic**. |
 | **Failed** | The run finished without a shippable draft and had nothing to ask. | You | The same bench as **Below bar**. |
 | **Did not finish** | The run reached no verdict at all. | You | Read or annotate what an earlier attempt left. Generate the topic again. |
 | **Stopped** | Someone ended the run before it reached a verdict. | You | Generate again to resume. |
 | **Unknown** | No readable status line for this article. | You | Generate the topic again. |
 
-The publish button names the platform the brand's site runs on, so it reads **Publish on WordPress**. It appears only once the client has approved the article, because that press puts it live on their domain. See [Organisations and brands](organisations-and-brands.md#where-a-brands-blogs-publish).
+The publish button names the platform the brand's site runs on, so it reads **Post to Wordpress**. Canon refuses the press until the client has approved the article, because it puts the article live on their domain. See [Organisations and brands](organisations-and-brands.md#where-a-brands-blogs-publish).
 
 ## Each one in full
 
@@ -82,7 +82,7 @@ Sent. The client is reading the exact version that was pinned when you sent it, 
 
 The client asked for something since the last send. Resolve or dismiss each comment, and the client keeps reading the latest version as you go, so a resolved comment reaches them without a second delivery.
 
-Once every comment in the round is addressed, the tag changes to **With client** with the note "Every comment in this round is addressed and the client is reading the updated article." The underlying state has not changed, only the label, which is what keeps the **Send to client** button available so you can close the round.
+Once every comment in the round is addressed, the tag changes to **With client** with the note "Every comment in this round is addressed and the client is reading the updated article." The underlying state has not changed, only the label, so the article stays with the client and your editing and comment controls stay available. There is no second send to press: the round ends when they approve.
 
 ### Approved
 
@@ -109,9 +109,9 @@ Both are the same verdict: the run finished and the score missed 90. The split i
 
 **Failed** is anything under that, in red, or a run that scored nothing at all.
 
-Both get the full bench: edit it, comment on it, **Send to client**, post it. Retrying is not a button on the bench, because a retry is a run: the row stays selectable on the **New** tab, and a blog's page carries a **Retry this topic** link that takes you there with the row already ticked.
+Both get the same bench: edit it, comment on it, **Send to client**. Posting is not a way out of either, because every push waits for the client's approval and an article at this stage has not been sent to them, let alone approved. Retrying is not a button on the bench, because a retry is a run: the row stays selectable on the **New** tab, and a blog's page carries a **Retry this topic** link that takes you there with the row already ticked.
 
-**Sending one is your call and it is recorded as yours.** Canon appends a new verdict naming the operator and the score, so the trail reads "failed at 87, then a person sent it". The evaluator's number is never rewritten.
+**Sending one is your call and it is recorded as yours.** Canon appends a new done verdict saying a person sent it, so the trail reads "failed at 87" and then that send. The evaluator's number is never rewritten, and who pressed send is recorded on the blog itself.
 
 ### Did not finish
 

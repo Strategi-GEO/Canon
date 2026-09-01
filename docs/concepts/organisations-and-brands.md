@@ -46,11 +46,11 @@ Two buttons, and which you want depends on whether the client already exists in 
     - **This organisation has multiple brands**: a checkbox, off by default. Turn it on and a **First brand name** field appears, so the brand can be named separately from the organisation.
     - **Brand website**: the live site of the first brand.
 
-    Adding an organisation creates its first brand at the same time. There is no such thing as an empty organisation.
+    Adding an organisation creates its first brand at the same time, so you cannot create an empty one. An organisation can still end up empty later, wherever it is a grouping in its own right rather than one brand standing alone: deleting its last brand leaves the organisation behind, still holding the client's portal login, and its page then offers exactly two doors, **Add brand** and **Delete organisation**. A brand that stands alone as its own organisation is different, because there is no separate organisation to leave behind: deleting the brand takes the grouping and its login with it.
 
 === "Another brand for a client you already have"
 
-    Press **Add brand**, from the organisation's page, from the sidebar, or from the organisation switcher, where it reads **Add brand to *organisation***. It asks for the **Name**, the **Organisation**, the **Domain** and the **Market**.
+    Press **Add brand**, from the organisation's page, from the sidebar, or from the organisation switcher, where it reads **Add brand to *organisation***. It asks for the **Name**, the **Organisation** and the **Domain**. Opened from the organisation's own page it also asks for the **Market**; the sidebar and switcher rows open a page that does not, and a brand created there takes the house default market.
 
     Typing the name of an organisation that already exists files the brand under it rather than creating a near duplicate.
 
@@ -81,9 +81,9 @@ If a brand has no fact base yet, the card says so, and the first blog run drafts
 
 Each brand publishes to its own website, connected on **Settings** under **Blog destination**. WordPress is the one platform with a driver today.
 
-Pressing **Publish** puts the article live on the client's domain, so it is the final release, and the only thing that authorises it is the client's own approval. The control does not appear before that.
+Pressing **Publish** puts the article live on the client's domain, so it is the final release, and the only thing that authorises it is the client's own approval. The engine is what enforces that: press it before the client has approved and the push is refused with "has not been approved by the client yet".
 
-A brand with no website connected has the Publish control disabled, with the reason on hover: connect the client's website first. There is no fallback destination and nothing publishes anywhere by default. That is the state every brand starts in.
+A brand with no website connected cannot publish. Pressing it is refused with "has no website connected, so there is nowhere to publish", naming the setting to fill in. There is no fallback destination and nothing publishes anywhere by default. That is the state every brand starts in.
 
 ## Brand settings
 
@@ -96,7 +96,7 @@ A brand with no website connected has the Publish control disabled, with the rea
 - A **Danger zone**, for deleting.
 
 !!! warning "Moving a brand to a different organisation changes who can see it"
-    The client portal login belongs to the organisation, not to the brand. Move a brand and its articles appear under the new organisation's login and disappear from the old one's, from the moment the move is saved.
+    The client portal login belongs to the organisation, not to the brand. Move a brand into an organisation that already holds other brands and its articles appear under that organisation's login and leave the old one's, from the moment the move is saved. Move it into an organisation of its own, or clear the Organisation field so it stands alone, and Canon carries the existing login across with it, so the same person keeps their access.
 
 ## The client's login
 

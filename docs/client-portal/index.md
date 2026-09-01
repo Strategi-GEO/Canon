@@ -106,7 +106,6 @@ The portal does not know which role the signed-in account holds, so a viewer see
 |---|---|
 | A run ends held on a question | The article in **Needs answers**, tagged **Waiting on you**, with the draft and the questions |
 | **Send to client** on a blog | The article in **Ready to post**, tagged **Ready to review**, with **Approve** live |
-| **Send again** on a blog | The updated article, and any approval they had already given is cleared |
 | **Resolve with Claude** on their note | The note's line changes to "Resolved by the team", and the article updates in place |
 | Dismiss their note | The note's line changes to "Reviewed, no change" |
 | Rename a blog | The new title, everywhere |
@@ -115,11 +114,11 @@ The portal does not know which role the signed-in account holds, so a viewer see
 | Upload or generate a roadmap | The topics on **Content Roadmap**, at once |
 | **Publish** | The tag flips to **Published**, and where the site returns an address, a **View live article** button |
 
-Two of those are worth reading twice.
+Two things there are worth reading twice.
 
-**Send again resets their approval.** The dialog says so before you press it. If a client has approved and you send once more, they have to approve the new version.
+**They read the newest version continuously.** While an article is out with a client, you never re-send it. There is no second send for a blog: once it is with them they are reading your latest saved version, so each resolved comment lands on their screen as you make it, and what ends the round is their approval.
 
-**They read the newest version continuously.** While an article is out with a client, you do not re-send after every fix. They see each resolved comment land as you make it. **Send again** appears only once a round of comments is open and every note in it is addressed, and pressing it is what closes the round.
+**An approval cannot be undone by sending again.** An approved article offers no send at all: the button is gone from the article page, the bulk bar skips it, and the engine refuses the call behind them. If the wrong version was approved, the way forward is a new topic, not a re-send.
 
 ## What a client can do back to you
 

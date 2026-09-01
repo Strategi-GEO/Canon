@@ -76,7 +76,7 @@ The link pass may fix or remove a link. It may not add a new claim or a new sour
 
 ## 5. The evaluator, and the score
 
-The evaluator is deliberately hostile and deliberately blind. It sees three things: the finished draft, the scoring rubric, and the brand's canonical facts. It never sees the dossier, the writer's reasoning, or any earlier evaluation, so it cannot be talked into a score by the same reasoning that produced the draft.
+The evaluator is deliberately hostile and deliberately blind. It sees the finished draft, the scoring rubric, the brand's canonical facts, the brand's standing instructions and anything you typed for this run, and any answers you have already filed. It never sees the dossier, the writer's reasoning, or any earlier evaluation, so it cannot be talked into a score by the same reasoning that produced the draft. It reads your instructions and your answers so it does not mark the article down for obeying them: a claim the writer cut because you said it was wrong would otherwise read as missing detail.
 
 It grades 14 dimensions and normalises them to a number out of 100, then writes that number and a fix list, with each item labelled by area: **Sourcing**, **Structure**, **Draft** or **Mechanics**. Because the gates and the link pass both ran before it, the article it scores is the article you will read.
 
@@ -110,7 +110,7 @@ Some gaps no rewrite can close, because the missing thing is a fact only a perso
 
 A held article does not ship at any score. A 96 with an open question waits exactly as an 84 does, because a question means the evaluator could not tell whether the article is true, and a piece that might be false does not go out because it scored well. There is no dismiss and no proceed anyway.
 
-The questions are capped at five, and each one has to be answerable in about ten seconds without opening the draft. Either your team or the client can answer, and answering starts one surgical revise: the answers are applied to the existing draft, the checks rerun, and a fresh evaluator scores it.
+The questions are capped at five, and each one has to be answerable in about ten seconds without opening the draft. Either your team or the client can answer. When your team answers from the dashboard, one surgical revise starts straight away: the answers are applied to the existing draft, the checks rerun, and a fresh evaluator scores it. When the client answers from their portal, the answers are recorded and an operator presses the rerun to start that same revise, because the run spends this machine's quota.
 
 **The clarified article ships even if it scores lower.** A truthful answer often forces a claim to be cut, which costs factual density and therefore points. The lower score is the truth costing points, not the article getting worse, so the clarified version is the one that stands.
 

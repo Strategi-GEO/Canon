@@ -30,7 +30,7 @@ Fill in three things:
 
 Press **Add organisation**. A toast confirms it. Canon then takes you to the new brand, after the client login dialog below when the organisation is new.
 
-If you type a name that already exists, the line under the field says so and names how many brands that organisation holds. Your new brand is filed under it rather than creating a near duplicate.
+If you type a name that already exists, the line under the field says so and names how many brands that organisation holds. Tick **This organisation has multiple brands** to file your new brand under it. Left unticked, the brand would take the organisation's own name, and Canon refuses that as a duplicate rather than creating a near twin of a brand you already have.
 
 !!! note "There is no industry or description to fill in"
     The form states this itself: "The description and the industry are detected automatically from the brand website once you add the organisation, so there is nothing to pick or write here." There is no field for either, and neither is edited later.
@@ -124,14 +124,18 @@ Beside it, **Delete** clears the fact base completely, after a confirm. The next
 
 The control is at the bottom of the brand's **Settings** tab, under **Danger zone**, and it is called **Delete this brand**.
 
-Deleting the last brand in an organisation leaves the organisation behind, empty. That is not a leftover to ignore: the organisation still holds the client portal login, so it needs an answer either way. Its own page gives you both, and nothing else, because there is nothing else to do with it:
+What is left behind depends on how the brand was filed. Where the organisation was named separately from its brands, by ticking **This organisation has multiple brands** when it was added or by naming one in the brand's **Settings**, deleting its last brand leaves the organisation behind, empty. That is not a leftover to ignore: the organisation still holds the client portal login, so it needs an answer either way. Its own page gives you both, and nothing else, because there is nothing else to do with it:
 
 - **Add brand** puts a new brand under it, keeping the organisation and the login the client already has.
 - **Delete organisation** removes it and revokes that login, so the password you sent the client stops working. One confirm, not two: an empty organisation holds no blogs, no roadmap and no resources, so the only thing being destroyed is the grouping and its login.
+
+Where the brand is its own organisation, which is the usual case, there is nothing left to visit. Deleting the brand takes the organisation with it and revokes the client portal login in the same act, so no organisation page remains.
 
 Canon refuses to delete an organisation that still has brands, and names them. Each brand goes through its own two-step delete first.
 
 !!! danger "Deleting a brand destroys everything under it, with no undo"
     It removes the brand's record and every blog with its versions and comments, every channel post, the roadmap, all reports and analyses, the uploaded resources, and the brand's files on the machine running Canon. Nothing is archived and nothing is recoverable from the dashboard. Published articles already live on a client's website are not taken down, but Canon forgets them.
+
+    Where the brand is its own organisation, which is what the usual single-brand add creates, deleting it also revokes that organisation's client portal login and deletes the account Canon minted for it, so the email and password you sent the client stop working. A brand that belongs to an organisation you named separately leaves that organisation and its login alone.
 
 The full walkthrough of the two confirmation steps is on the [Settings](../guide/settings.md) page, beside the button itself.

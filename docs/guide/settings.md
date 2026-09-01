@@ -33,7 +33,7 @@ The card opens by naming the brand's slug and stating that it is permanent. The 
 !!! warning "Leave the market set"
     Keyword volumes are validated against the market, and the researcher prefers sources local to it. A brand with an empty market has keyword validation skipped on every blog. Change it only when the brand genuinely sells somewhere else.
 
-Moving a brand to a different organisation rewrites one field and renames nothing. The brand keeps its slug, its facts, its resources and its roadmap, and its client portal login follows it, so nobody is locked out.
+Moving a brand to a different organisation rewrites one field and renames nothing. The brand keeps its slug, its facts, its resources and its roadmap. Its client portal login follows it only when the organisation it moves into holds no other brand, which covers a brand joining an organisation of its own and a brand leaving one to stand alone again. Move it into an organisation that already has brands and no login is carried across, because that organisation's own login already reaches the arriving brand: send the client that one instead.
 
 ### Blog destination
 
@@ -43,7 +43,7 @@ The card holds the whole connection flow: **Their blog page** with a **Detect** 
 
 Nothing is stored until the engine has proved the credential against the site, so there is no separate Save. A saved but unverified credential would put a live **Publish** button in front of you that fails on a real article, on a client's real website.
 
-The two destinations are not the same act, and one of them publishes live. Read [Publishing](publishing.md) before you connect anything.
+There is one destination, the client's own website, and every press puts the article live on their domain. Read [Publishing](publishing.md) before you connect anything.
 
 ### Custom blog instructions
 
@@ -70,6 +70,8 @@ One button, **Delete this brand**, and two locks in front of it.
 
 !!! danger "This cannot be undone"
     It permanently deletes the brand's record and every blog with its versions and comments, every channel post, the roadmap, all reports and analyses, the uploaded resources, and the brand's files on the machine running Canon. Nothing is archived, and the dashboard cannot recover any of it. Articles already published to a client's website stay up, but Canon forgets that they exist.
+
+    Where the brand is its own organisation, deleting it also revokes that organisation's client portal login and deletes the account Canon minted for it, so the password you sent the client stops working. A brand that belongs to a named organisation leaves that organisation's login alone, even when it is the last brand in it.
 
 Canon refuses the delete while a run is live for that brand, and answers "a run is live for ...; stop it before deleting the brand". Stop the run first.
 

@@ -181,7 +181,7 @@ Deleting is per month, from the trash icon beside that month in the preview side
 
 The confirm names the month and its topic count, and lists all of the above before you press. The buttons are **Keep it** and **Delete Month 3 Roadmap**.
 
-The app never edits your sheet. It can add a month, and it can delete one whole. It never rewrites a cell or writes a status back into your file.
+The app never writes a status back into your sheet, and it never touches a row you did not reject. Rewriting the rows you tick is the one edit it makes, and the sheet as it stood before the rewrite is archived first. Beyond that it can only add a month or delete one whole.
 
 ## Why the tab locks while a run is live
 
