@@ -842,15 +842,36 @@ async def api_site_disconnect(slug: str, user: auth.Identity = Depends(auth.requ
 @app.delete("/api/clients/{slug}", status_code=204)
 async def api_delete_client(slug: str, user: auth.Identity = Depends(auth.require_admin)):
     """HARD delete a brand: its record (cascading every blog, channel post, roadmap sheet and
-    resource), the per-client report, analysis and membership rows that do NOT cascade off it, and
-    its scratch on disk. IRREVERSIBLE and admin-only; the dashboard gates it behind a consent
-    checkbox and a slug retype. Refused with 409 while a run is live for the brand, so a delete
-    never races a session writing the very topics it is dropping."""
+    resource), its client-portal login where the brand is its own organisation, and its scratch on
+    disk. IRREVERSIBLE and admin-only; the dashboard gates it behind a consent checkbox and a slug
+    retype. Refused with 409 while a run is live for the brand, so a delete never races a session
+    writing the very topics it is dropping.
+
+    THE GRANT GOES WITH THE ROW, the same rule api_delete_org states and for the same harm.
+    `org_members` grants by ORG SLUG and carries no foreign key, so nothing cascades it. A brand
+    with no organisation of its own answers to its OWN slug, and this delete is a HARD one, so the
+    slug is reusable the moment it commits. Leaving the grant behind means the next brand created
+    with that name inherits it: api_create_client mints nothing when has_login is already true, so
+    the operator is never told, and the old holder keeps read and answer access to a workspace that
+    is not theirs. self_org_slug is what decides, and it returns None for a brand whose slug an
+    orgs row owns, because that login is shared with sibling brands this delete must not touch.
+
+    RESOLVED BEFORE THE DELETE, and that ordering is load-bearing twice over. effective_org_slug
+    reads org_membership, which filters `deleted_at is null`, so the slug is unreadable once the
+    row is gone and a revoke resolved afterwards would silently revoke nothing. It also matches
+    api_delete_org's reason: a failure here leaves a brand nobody deleted, which is recoverable,
+    where the other order leaves a grant nobody can see."""
     _client_or_404(slug, user)
     if _client_has_live_run(slug):
         raise HTTPException(
             status_code=409,
             detail=f"a run is live for {slug!r}; stop it before deleting the brand")
+    own_org = await asyncio.to_thread(clients_mod.self_org_slug, slug)
+    if own_org:
+        revoked = await asyncio.to_thread(portal_login.deprovision_one, own_org)
+        log.info("deleting brand %s revoked its own portal login (%d grant(s), auth user "
+                 "deleted: %s, kept: %s)", slug, revoked["revoked"], revoked["deleted_user"],
+                 ", ".join(revoked["kept"]) or "none")
     await asyncio.to_thread(clients_mod.hard_delete_client, slug)
     return None
 

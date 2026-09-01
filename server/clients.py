@@ -469,6 +469,29 @@ def effective_org_slug(client_slug):
                 (client_slug,), fetch="val")
 
 
+def self_org_slug(client_slug):
+    """The org slug this brand ALONE answers to, or None when the slug is not its to give up.
+
+    A brand with no organisation of its own IS its own org: `org_membership` derives org_slug as
+    COALESCE(orgs.slug, clients.slug), so a grant on that slug reaches this brand and nothing
+    else. Deleting the brand therefore has to take the grant with it, exactly as deleting an org
+    does, or the slug is left holding a live client-portal login with no brand behind it. That
+    leftover is not inert: a brand delete is a HARD delete, so the slug is immediately reusable,
+    and `api_create_client` skips minting a login whenever `has_login` is already true. The next
+    brand created with that name would silently inherit the deleted brand's login, its password
+    and its `commenter` grant, which the portal admits for answer writes.
+
+    None where an `orgs` row owns the slug, and that exclusion is the whole safety of this
+    function. A brand named the same as its explicit organisation resolves to THAT org's slug,
+    whose login is shared with every sibling brand, so revoking it here would lock out brands
+    this delete never touched. api_delete_org owns that one, behind its own emptiness check.
+    """
+    org_slug = effective_org_slug(client_slug)
+    if org_slug != client_slug or _org_row_exists(org_slug):
+        return None
+    return org_slug
+
+
 def _carry_org_grants(client_slug, old_org_slug, new_org_slug):
     """Move a brand's client login with it when its org changes.
 
@@ -1001,12 +1024,24 @@ def hard_delete_client(slug):
 
     Deleting the clients row cascades topics (and their blog_versions, blog_comments,
     review_notes, status_events), channel_posts (and channel_post_comments), roadmap_sheets,
-    roadmap_rows, roadmap_uploads, client_resources, client_members and ledger_entries. THREE
-    tables carry a client_id but NO ON DELETE CASCADE back to clients (verified against the FK
-    graph), so a bare clients delete would ORPHAN them: client_reports, client_analyses and
-    org_membership are removed explicitly, in the SAME transaction, before the row goes. The
-    scratch tree on disk (clients/<slug>/ and outputs/<slug>/) is removed best-effort afterwards,
-    because it is re-derivable from the record for a live brand and inert for a deleted one.
+    roadmap_rows, roadmap_uploads, client_resources, client_members and ledger_entries. EVERY
+    table carrying a client_id cascades off clients: ten by a direct FK and five more through
+    topics(id, client_id) and channel_posts(id, client_id). The two explicit deletes below are
+    belt and braces against a database whose applied FKs have drifted from schema.sql, and they
+    are NOT load-bearing. They were justified for years by the opposite claim, that these tables
+    carried no cascade, and that false reading of the FK graph is what put a third delete here
+    against org_membership. org_membership is a VIEW over clients left join orgs, so its row
+    vanishes with the clients row and Postgres refuses the delete outright ("cannot delete from
+    view"), which rolled the whole transaction back: every brand delete was a 500 and NOTHING was
+    ever deleted. The scratch tree on disk (clients/<slug>/ and outputs/<slug>/) is removed
+    best-effort afterwards, because it is re-derivable from the record for a live brand and inert
+    for a deleted one.
+
+    THE ONE THING THAT DOES NOT CASCADE IS NOT A TABLE WITH A client_id. `org_members` grants by
+    ORG SLUG and carries no foreign key at all, so a self-org brand's client-portal grant survives
+    this function. Revoking it is the CALLER's job, exactly as it is on the org path: see
+    self_org_slug above and api_delete_client, which resolves the slug before this runs because
+    org_membership goes blind the moment the row is gone.
 
     Returns the deleted brand's name, or None if the slug was already absent (idempotent)."""
     cid = db.client_id(slug)
@@ -1016,7 +1051,6 @@ def hard_delete_client(slug):
     with db.tx() as cur:
         cur.execute("delete from client_reports where client_id = %s", (cid,))
         cur.execute("delete from client_analyses where client_id = %s", (cid,))
-        cur.execute("delete from org_membership where client_id = %s", (cid,))
         cur.execute("delete from clients where id = %s", (cid,))
     _purge_client_scratch(slug)
     return name

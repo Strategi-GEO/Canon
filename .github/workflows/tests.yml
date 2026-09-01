@@ -171,3 +171,9 @@ jobs:
           python tests/queue_check.py
           python tests/silent_topic_check.py
           python tests/channel_check.py
+          # Both guard the brand DELETE path, which was a 500 on every press until 2026-08-31 and
+          # therefore had never once committed. view_write_check is repo-wide (no server code may
+          # write to a view); brand_delete_check pins which portal grant that now-live delete
+          # takes with it, and every case where it must take none.
+          python tests/view_write_check.py
+          python tests/brand_delete_check.py
