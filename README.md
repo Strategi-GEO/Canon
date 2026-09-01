@@ -6,9 +6,10 @@ generate. The backend runs two blogs at a time by default (`GEO_CONCURRENCY`); e
 researched, written, mechanically gated, link-verified, and scored by a hostile evaluator
 until it hits the bar of 90, which is the only bar: at or above 90 it ships, below 90 it does
 not.
-Output is plain local .md files under `outputs/<slug>/`, which the app previews in
-the browser. Six non-technical people share one deployment; the UI is a single HTML file
-served by the same process at `/`.
+Output is plain local .md files under `outputs/<slug>/`, committed back to the record and
+previewed in the browser. The interface is the Next app under `dashboard/`, which talks to
+this engine cross-origin and is the same codebase Vercel serves read-only to clients; the
+single-file UI still served at `/` on port 8000 is the legacy one.
 
 The engine is brand-agnostic. `CLAUDE.md` in this repo is the engine contract (HOW a blog
 is made); everything about WHO it is for lives under `clients/<slug>/`.
@@ -55,13 +56,23 @@ of them already on the machine.
 cd geo-factory
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m playwright install chromium   # PDF reports only, best effort
+(cd dashboard && npm install)
 ```
 
 You also need the **Claude Code CLI and Node** on the machine. The Python
 `claude-agent-sdk` does not talk to the API directly: it spawns the `claude` CLI as a Node
-subprocess, so any container image needs Node plus the CLI on PATH. The runner passes its
-whole environment through to that subprocess for exactly this reason (PATH, auth vars, and
-the MCP credentials `.mcp.json` interpolates must all survive).
+subprocess, so any container image needs Node plus the CLI on PATH. The dashboard builds on
+Node 20.18.1, which is what `engines.node` pins for Vercel; `npm test` inside `dashboard/`
+needs Node 23.6.0 or newer, because those suites are TypeScript run straight through
+`node --test` and an older Node dies on a parse error that reads like a broken repo.
+
+**The runner does NOT pass its whole environment to that subprocess.** `db.agent_env()` in
+`server/db.py` is an ALLOWLIST, and only the variables named on it cross into a session.
+Anything else you export is invisible to every agent, deliberately: an `allowed_tools` list is
+a skip-the-prompt list and not a sandbox, so a variable this process holds is a variable a
+session can read. `tests/env_check.py` plants a canary secret and fails the build if either
+half of that regresses.
 
 ### Billing warning: the CLI may spend a personal subscription
 
@@ -72,27 +83,66 @@ subscription quota, and runs start failing when it is exhausted. A shared deploy
 should set `ANTHROPIC_API_KEY` so usage is billed to the org's API account and not to
 whoever happened to log the CLI in.
 
-Start the app with `./run.sh` (engine plus dashboard together) or, for just the server on
-port 8000, `scripts/dev-serve.sh`:
+Start the app with `./run.sh` (the engine on 8000 and the Next dashboard on 3000 together)
+or, for the engine alone, `scripts/dev-serve.sh`:
 
 ```
 ./run.sh
 ```
 
-Open http://127.0.0.1:8000, pick a client, tick rows, generate, and watch the live stages.
-**Every client runs the full agent chain and spends real Claude and MCP quota**, so leave a
-run alone until it finishes.
+Open **http://localhost:3000**, sign in, pick a client, tick rows, generate, and watch the
+live stages. Port 8000 is the engine API; it also serves a legacy single-file UI at `/`, but
+`dashboard/` is the interface that is maintained, and every data route on 8000 needs a
+signed-in identity (`server/auth.py`), so an anonymous poll of it answers 401. **Every client
+runs the full agent chain and spends real Claude and MCP quota**, so leave a run alone until
+it finishes.
 
-A run needs these environment variables (names are exactly what `server/runner.py`
-reads):
+### Where a variable goes, and why the two places are not interchangeable
 
-| Variable | Required | What it does |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | strongly recommended | Consumed by the `claude` CLI subprocess the SDK spawns. Without it the CLI falls back to its own login; see the billing warning above. |
-| `GEO_MODEL`, `GEO_MAX_TURNS`, `GEO_MAX_BUDGET_USD`, `GEO_RETRIES` | no | Model override, turn cap (default 250), per-session budget cap, died-session retries (default 1). |
-| `GEO_CONCURRENCY` | no | Blog sessions in flight repo-wide, whichever door opened them (default 2). It saves no tokens per blog; it changes what you OWN when the usage limit lands. At 5-wide a real run produced twelve half-finished blogs and zero shipped. At 2-wide the same quota buys a handful of FINISHED blogs and leaves the rest untouched, and an untouched topic retries clean where a half-done one does not. |
+- **`server/.env`** is parsed into a module-private dict by `server/db.py` and, as a rule,
+  NEVER into `os.environ` (RULE 1 in that file). At startup `db.export_agent_credentials()`
+  lifts out of that dict only the keys named in `AGENT_ENV_ALLOW`, because `.mcp.json`
+  interpolates `${FIRECRAWL_API_KEY}` out of the CHILD environment and a key that stops in the
+  private dict reaches no agent at all. A shell export always wins over the file.
+- **A shell export** is the only way to set a knob that is neither on that allowlist nor read
+  through `db.config_value`. Putting `GEO_STALL_TIMEOUT` in `server/.env` silently does
+  nothing.
 
-Plus the MCP credentials for one of the two transports below.
+The "Set in" column below answers this per variable. `server/.env` also means "works in a
+packaged desktop install", where there is no shell to export from.
+
+### Engine credentials (`server/.env`)
+
+| Variable | Required | Set in | What it does |
+|---|---|---|---|
+| `DATABASE_URL` | yes | `server/.env` | Postgres DSN for the psycopg pool. `db_configured()` keys off it, and without it the engine has no record at all. |
+| `SUPABASE_URL` | yes | `server/.env` | Project URL. Auth (the GoTrue proxy) and Storage. |
+| `SUPABASE_SECRET_KEY` | yes | `server/.env` | Service key. `server/auth.py` proxies login, refresh and logout with it. It never reaches a browser and never reaches an agent. |
+| `SUPABASE_JWT_SECRET` | no | `server/.env` | HS256 fallback for a legacy shared-secret project only. It never competes with a live JWKS; ES256 against the cached JWKS is the normal path. |
+| `RESEND_API_KEY` | no | `server/.env` | Admin email notifications. Absent, every send is a no-op that logs and nothing else breaks. |
+| `RESEND_FROM` | no | `server/.env` | Sender address. It falls back to `Canon <onboarding@resend.dev>`, which Resend delivers ONLY to the address owning the account, so set it before anyone else expects mail. |
+
+The first three are `_OWN_CREDENTIALS` in `db.py`: `config_value()` raises rather than hand
+them to a caller outside that module, and none of them is on the agent allowlist, so an agent
+session cannot read the database whatever else it is given.
+
+### Model and engine knobs
+
+| Variable | Default | Set in | What it does |
+|---|---|---|---|
+| `ANTHROPIC_API_KEY` | unset | either | Consumed by the `claude` CLI subprocess the SDK spawns. Without it the CLI falls back to its own login; see the billing warning above. `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` are on the allowlist too, for a gateway or a token-authenticated CLI. |
+| `GEO_MODEL` | CLI default | either | Model override for every agent session, blog and report alike. |
+| `GEO_MAX_TURNS` | `250` | either | Per-session turn cap. |
+| `GEO_MAX_BUDGET_USD` | unset | either | Per-session USD budget cap. |
+| `GEO_RETRIES` | `1` | either | Retries for a session that DIED without writing a status line. Not revise iterations, which the contract caps at 4. |
+| `GEO_DASHBOARD_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | either | Comma separated, and it REPLACES the default CORS list rather than adding to it. Set it whenever the dashboard is on another port, or its preflight is refused and every fetch plus the SSE run feed dies with nothing in the engine to turn. |
+| `GEO_CONCURRENCY` | `2` | either | Blog sessions in flight repo-wide, whichever door opened them: a Create-tab batch, a retry, a repurpose, an answer-driven revise. It saves no tokens per blog; it changes what you OWN when the usage limit lands. At 5-wide a real run produced twelve half-finished blogs and zero shipped. At 2-wide the same quota buys a handful of FINISHED blogs and leaves the rest untouched, and an untouched topic retries clean where a half-done one does not. Read through `db.config_value` as well as `os.environ`, because `TOPIC_SEMAPHORE` is built at MODULE IMPORT, before the startup export runs. Floored at 1 (a 0 admits nobody, forever, silently); a garbage value falls back to 2 rather than refusing to boot. |
+| `GEO_STALL_TIMEOUT` | `7200` (2 hours) | **shell only** | Seconds a slot may go without its `status.jsonl` growing before the watchdog cancels it and, two minutes later, reclaims the slot and writes the topic's terminal `failed` line. Floored at 300. A threshold shorter than a quota stall does not catch wedged sessions, it destroys rate-limited ones, and it does so to every brand at once. |
+| `GEO_ANSWERS_PICKUP` | `0` | **shell only** | `1` turns on the hands-off sweep that dispatches the answer-driven revise a client portal's answers are owed, at startup and every five minutes. OFF by default because the primary path is the operator's own click, so a person chooses the moment this machine's quota is spent. |
+
+`GEO_CONCURRENCY`, `GEO_STALL_TIMEOUT` and `GEO_ANSWERS_PICKUP` are not on `AGENT_ENV_ALLOW`
+and are never handed to an agent. The other `GEO_*` knobs are on it, which is also what makes
+them settable from `server/.env`.
 
 ### MCP transports: stdio (default) or HTTP
 
@@ -100,17 +150,18 @@ Firecrawl and DataForSEO reach the agents over MCP, and `runner._resolve_mcp_ser
 picks the transport at dispatch:
 
 1. **stdio, via `.mcp.json` (the default).** The repo ships a project-scoped `.mcp.json`
-   declaring both servers as stdio commands (`npx -y firecrawl-mcp` and
-   `npx -y dataforseo-mcp-server@latest`), so it needs `npx` on PATH. The runner passes
+   declaring both servers as stdio commands at PINNED versions (`npx -y firecrawl-mcp@3.22.4`
+   and `npx -y dataforseo-mcp-server@2.9.11`), so it needs `npx` on PATH. The runner passes
    `mcp_servers={}` and lets the CLI load that file, which works because the session sets
    `setting_sources=["project"]` and leaves `strict_mcp_config` at its default of `False`
    (setting it `True` would suppress the file). Credentials come from the environment:
 
-   | Variable | Server |
-   |---|---|
-   | `FIRECRAWL_API_KEY` | firecrawl |
-   | `DATAFORSEO_USERNAME` | dataforseo |
-   | `DATAFORSEO_PASSWORD` | dataforseo |
+   | Variable | Set in | Server |
+   |---|---|---|
+   | `FIRECRAWL_API_KEY` | either | firecrawl |
+   | `FIRECRAWL_API_URL` | either | firecrawl, for a self-hosted instance |
+   | `DATAFORSEO_USERNAME` | either | dataforseo |
+   | `DATAFORSEO_PASSWORD` | either | dataforseo |
 
    **`.mcp.json` holds no secrets.** Every credential in it is written as `${VAR_NAME}`
    interpolation, which the Claude Code CLI expands from the environment at spawn time.
@@ -130,9 +181,60 @@ picks the transport at dispatch:
    session.
 
 With neither transport available, a real run raises `RunnerConfigError` at dispatch naming
-both options. That failure is deliberately loud: a session missing Firecrawl would not
-notice and stop, it would invent sources. `runner.check_real_mode_ready()` reports the same
-thing without spawning anything, so the API can refuse at submit time.
+both options, and `runner._stdio_mcp_config_ok` refuses BEFORE a session opens rather than
+after. That failure is deliberately loud: a session missing Firecrawl would not notice and
+stop, it would invent sources. It also cannot be inferred from the repo, because `.mcp.json`
+is checked in, so on a machine holding no key at all the file used to say the research tools
+were available while every fetch came back 401. `runner.check_real_mode_ready()` reports the
+same thing without spawning anything, so the API can refuse at submit time. A repurpose
+session is exempt: it rewrites an already shipped blog and fetches nothing.
+
+### Optional Analysis-tab tools
+
+The monthly Analysis report merges up to six tools and degrades gracefully. An absent key is a
+tool that simply is not there, and its scorecard renders "Not connected". Firecrawl and
+DataForSEO are the floor and come from the section above; these three add the rest:
+
+| Variable | Set in | Tool |
+|---|---|---|
+| `SEOGETS_API_KEY` | `server/.env` | SEO Gets, as a remote HTTP MCP server. The `sg_mcp_` key IS the bearer token (Settings, then API & MCP Keys) and needs a Core or Pro plan. |
+| `CLARITY_API_KEY` | `server/.env` | Microsoft Clarity, via `@microsoft/clarity-mcp-server` over stdio. The Data.Export JWT is passed as a CLI arg, which is what that server expects. Limits are tight: about 10 requests a day, 3 days, 3 dimensions. |
+| `BING_WEBMASTER_API_KEY` | `server/.env` | Bing Webmaster. There is no official MCP, so rather than run an unvetted community package the agent calls `https://ssl.bing.com/webmaster/api.svc/json` directly with this key. |
+
+Those three are injected into the ANALYSIS session alone (`server/analysis_gen.py`), never
+written into `.mcp.json` and never handed to a blog session. Alongside them the allowlist
+carries `GSC_MCP_URL`/`GSC_MCP_AUTH`, `GA4_MCP_URL`/`GA4_MCP_AUTH`, `BING_MCP_URL`/
+`BING_MCP_AUTH`, `CLARITY_MCP_URL`/`CLARITY_MCP_AUTH` and `SEOGETS_MCP_URL`/`SEOGETS_MCP_AUTH`
+for Search Console, GA4, Bing, Clarity and SEO Gets reached over HTTP MCP instead.
+`tests/analysis_mcp_check.py` pins the wiring.
+
+**NO PUBLISHING CREDENTIAL IS ON THE ALLOWLIST, and the omission is load-bearing.** A client's
+WordPress application password lives in the `clients.site` DATABASE COLUMN, not in an
+environment variable, and the push runs in this process in `server/cms/` long after every
+agent has exited. Naming one on the allowlist would hand every research session the ability to
+write to a client's live site and buy nothing in return.
+
+### Dashboard (`dashboard/.env.local`)
+
+The same codebase runs two ways: LOCAL talks to the FastAPI engine, HOSTED (Vercel,
+read-only) answers from same-origin Route Handlers. See `dashboard/README-VERCEL.md`.
+
+| Variable | Mode | What it does |
+|---|---|---|
+| `NEXT_PUBLIC_API_BASE` | local dev | The engine, `http://127.0.0.1:8000`. Use 127.0.0.1 and NOT localhost: `run.sh` binds uvicorn to IPv4 only while macOS resolves localhost to `::1` first, so the browser hits nothing and the dashboard renders "Cannot reach the engine" on a healthy engine. Left unset in development it defaults to localhost:8000. Deliberately UNSET on the hosted deployment. |
+| `NEXT_PUBLIC_HOSTED_READONLY` | hosted | `true` hides every control that needs the live engine and keeps the base at `""`, so fetches hit the same-origin `/api` Route Handlers. |
+| `SUPABASE_URL` | hosted | Server-side, for those Route Handlers only. |
+| `SUPABASE_ANON_KEY` | hosted | The ANON (publishable) key, safe server-side here; RLS scopes every row. The SECRET key is never used anywhere in the dashboard. |
+| `CANON_STANDALONE` | build | `1` before `next build` emits `.next/standalone/server.js`, so the packaged desktop app serves an already-compiled dashboard instead of running `next dev`. Off by default, so the Vercel build is unchanged. |
+
+### Desktop tray app (`canon_app/`)
+
+| Variable | What it does |
+|---|---|
+| `CANON_SUPABASE_URL` | Overrides the bundled sign-in endpoint, so a build can be pointed at another project without editing the committed secrets file. |
+| `CANON_SUPABASE_ANON_KEY` | The matching anon key for that override. |
+| `CANON_NO_DASHBOARD` | `1` runs the engine only, the same as the CLI's `--no-dashboard`. |
+| `CANON_NO_BROWSER` | `1` starts without opening a browser, the same as `--no-browser`. |
 
 For debugging a single row without the web UI (this spends real quota like any other run):
 
@@ -140,24 +242,27 @@ For debugging a single row without the web UI (this spends real quota like any o
 .venv/bin/python -m server.runner --client <slug> --row 0
 ```
 
-Static config checks, which spawn no CLI and generate no blog:
+Static checks, which spawn no CLI and generate no blog:
 
 ```
-.venv/bin/python tests/config_check.py
+.venv/bin/python tests/config_check.py    # transport, SDK options, field names still on the SDK
+.venv/bin/python tests/env_check.py       # the allowlist, and a canary secret that must not cross
+(cd dashboard && npm test)                # the TypeScript suites, Node >= 23.6.0
 ```
 
 ## RUN EXACTLY ONE UVICORN WORKER
 
-**Never pass `--workers N` with N above 1.** The client lock (one client's queue at a
-time) and the 5-topic semaphore are plain `asyncio` in-process primitives at the top of
-`server/runner.py`. With N workers you get N independent copies of both, the concurrency
-cap silently becomes 5N, and nothing in the logs tells you. The same applies to the
-in-memory run registry that backs `/api/runs` and the SSE endpoint: a second worker holds
-a second, disjoint registry. The app logs a warning about this at startup; the warning
-cannot detect the misconfiguration, it can only remind you.
+**Never pass `--workers N` with N above 1.** `TOPIC_SEMAPHORE` (the `GEO_CONCURRENCY` blog
+queue), the per-client `facts_lock`, and the slot watchdog are plain `asyncio` in-process
+primitives at the top of `server/runner.py`. With N workers you get N independent copies of
+each, the concurrency cap silently becomes N times `GEO_CONCURRENCY`, two runs for one brand
+can build `canonical-facts.md` at the same time, and nothing in the logs tells you. The same
+applies to the in-memory run registry that backs `/api/runs`, `/api/queue` and the SSE
+endpoint: a second worker holds a second, disjoint registry. The app logs a warning about
+this at startup; the warning cannot detect the misconfiguration, it can only remind you.
 
 This is single-process by design. Scaling out is listed under "Not built yet" because it
-would require moving both primitives and the registry out of process, and nothing here
+would require moving those primitives and the registry out of process, and nothing here
 does that.
 
 ## Blog states
@@ -521,11 +626,15 @@ is the truth.
 
 ## Not built yet
 
-Honest list, verified against the code as of 2026-08-05:
+Honest list, verified against the code as of 2026-09-01:
 
-- **No auth.** No login, no tokens, no user identity anywhere in `app.py`. Six trusted
-  operators behind whatever network boundary you put in front of it. There is no CORS
-  middleware on purpose (same-origin UI), but that is not authentication.
+- ~~**No auth.**~~ FIXED. `server/auth.py` proxies Supabase Auth server-side and verifies
+  access tokens LOCALLY (ES256 against the cached project JWKS, so a request costs one
+  signature check and not a GoTrue round trip). Every data route takes `require_user` or
+  `require_admin`, identity carries an admin bit plus org and per-brand grants cached about
+  45 seconds, and a non-admin sees only the brands their grants name. CORS is configured too:
+  the dashboard is cross-origin now, and `GEO_DASHBOARD_ORIGINS` sets the allowed list.
+  `tests/auth_check.py` and `tests/org_grant_check.py` pin it.
 - **No persistence of the run registry.** `runner.RUNS` is an in-memory dict. The
   status.jsonl files survive a restart; the run list and its SSE endpoints do not, so
   `/api/runs/{id}/events` 404s for runs started before the restart even though every line
@@ -542,13 +651,14 @@ Honest list, verified against the code as of 2026-08-05:
 - **No CSV write-back, BY DESIGN.** The roadmap is read-only input; progress and terminal
   status live in the output dirs, never in the CSV.
 - **No multi-worker or multi-host scaling, BY DESIGN.** See the single-worker warning.
-- **Real-mode run not validated end to end yet** at the time of writing. The concurrency
-  plumbing has recorded evidence in `tests/concurrency-proof.md`. The real path (SDK
-  sessions, live MCP servers, live Firecrawl and DataForSEO) is written, preflighted, and
-  statically checked by `tests/config_check.py`, but no real blog has been generated.
-  `config_check.py` verifies
-  the transport resolves, the options the SDK gets are the intended ones, and every field
-  name still exists on the installed SDK; it cannot verify the credentials work.
+- ~~**Real-mode run not validated end to end.**~~ FIXED, and the evidence is on disk: 65
+  blogs under `outputs/` carry a real `blog.md`, 64 of them a scored `eval.md`. What that
+  proved is written up in the two engine-quota notes in `CLAUDE.md`: the 95 bar was
+  arithmetically unreachable, a 12-blog run at 5-wide exhausted the account in two hours and
+  shipped nothing, and the bar, the writer's rubric read, and `GEO_CONCURRENCY` all changed
+  because of it. `tests/config_check.py` still runs first and spawns nothing: it verifies the
+  transport resolves, that the options the SDK gets are the intended ones, and that every
+  field name still exists on the installed SDK. It cannot verify the credentials work.
 - **The queue is `GEO_CONCURRENCY` BLOGS, not one session, and brands DO interleave.**
   `TOPIC_SEMAPHORE` in `runner.py` is the single gate every blog session passes: a Create-tab
   batch, a retry, an answer-driven revise and a repurpose each take one slot, so two brands can
