@@ -15,9 +15,16 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AddOrganisationDialog } from "@/components/clients/add-organisation-dialog";
-import { addBrandHref, brandHref, brandLocationHref, orgHref, useOrgs } from "@/lib/orgs-context";
+import {
+  addBrandHref,
+  brandHref,
+  brandLocationHref,
+  orgHref,
+  useActiveOrg,
+  useOrgs,
+} from "@/lib/orgs-context";
 import { HOSTED_READONLY } from "@/lib/hosted";
-import { parseBrandPath, parseOrgPath } from "@/components/shell/nav";
+import { parseBrandPath } from "@/components/shell/nav";
 import { useCommandPalette } from "@/components/shell/command-palette";
 import { useModLabel } from "@/lib/use-hotkey";
 import { cn } from "@/lib/utils";
@@ -49,9 +56,11 @@ export function OrgSwitcher({ onNavigate }: { onNavigate?: () => void }) {
   // shape the palette open below uses, so a Dialog never fights the popover for focus.
   const [addOrgOpen, setAddOrgOpen] = React.useState(false);
 
-  const orgSlug = parseOrgPath(pathname);
   const brandSlug = parseBrandPath(pathname)?.brand ?? null;
-  const activeOrg = orgs.find((org) => org.slug === orgSlug) ?? null;
+  // The same resolution the sidebar's nav uses, so the label, the tick and the brand list below
+  // always name one organisation. It also holds on /admin/new?org=, where the path names none and
+  // the trigger used to read "Select an organisation" over a form addressed to a specific org.
+  const activeOrg = useActiveOrg();
 
   if (loading) {
     return <Skeleton className="h-12 w-full" />;
@@ -142,7 +151,7 @@ export function OrgSwitcher({ onNavigate }: { onNavigate?: () => void }) {
                     <OrgRows
                       key={org.slug}
                       org={org}
-                      activeOrgSlug={orgSlug}
+                      activeOrgSlug={activeOrg?.slug ?? null}
                       activeBrandSlug={brandSlug}
                       onGo={go}
                     />

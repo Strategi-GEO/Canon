@@ -1,15 +1,23 @@
 "use client";
 
+import * as React from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Box, Plus, Settings } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { BRAND_NAV, isActiveSection, parseBrandPath, parseOrgPath } from "@/components/shell/nav";
+import { BRAND_NAV, isActiveSection, parseBrandPath } from "@/components/shell/nav";
 import { OrgSwitcher } from "@/components/shell/org-switcher";
 import { BrandSwitcher } from "@/components/shell/brand-switcher";
 import { SettingsDialog } from "@/components/shell/settings-dialog";
 import { AddOrganisationDialog } from "@/components/clients/add-organisation-dialog";
-import { addBrandHref, brandHref, brandLocationHref, orgHref, useOrgs } from "@/lib/orgs-context";
+import {
+  addBrandHref,
+  brandHref,
+  brandLocationHref,
+  orgHref,
+  useActiveOrg,
+  useOrgs,
+} from "@/lib/orgs-context";
 import { HOSTED_READONLY } from "@/lib/hosted";
 import { cn } from "@/lib/utils";
 import type { Org } from "@/types";
@@ -127,7 +135,16 @@ function BrandNav({
  * The brands themselves are the nav here, because picking one is the only thing this page is
  * for.
  */
-function OrgBrandNav({ org, onNavigate }: { org: Org; onNavigate?: () => void }) {
+function OrgBrandNav({
+  org,
+  addingBrand,
+  onNavigate,
+}: {
+  org: Org;
+  /** Standing on this org's own add-brand form, which is a row of this nav. */
+  addingBrand?: boolean;
+  onNavigate?: () => void;
+}) {
   return (
     <nav aria-label="Brands" className="flex flex-col gap-0.5">
       <p className="px-2.5 pt-1 pb-1.5 text-[0.6875rem] font-medium tracking-wide text-muted-foreground uppercase">
@@ -143,7 +160,12 @@ function OrgBrandNav({ org, onNavigate }: { org: Org; onNavigate?: () => void })
           {brand.name}
         </NavRow>
       ))}
-      <NavRow href={addBrandHref(org.name)} onNavigate={onNavigate} icon={Plus}>
+      <NavRow
+        href={addBrandHref(org.name)}
+        active={addingBrand}
+        onNavigate={onNavigate}
+        icon={Plus}
+      >
         Add brand
       </NavRow>
     </nav>
@@ -212,7 +234,11 @@ function NavSkeleton() {
  */
 function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
-  const { orgs, loading, findOrg } = useOrgs();
+  const { orgs, loading } = useOrgs();
+  // Covers the org in the path AND the one /admin/new?org= is adding a brand to, so the column
+  // stays on that organisation for the whole of the add-brand flow instead of resetting to the
+  // org list the moment the form opens.
+  const activeOrg = useActiveOrg();
 
   if (loading) {
     return <NavSkeleton />;
@@ -220,13 +246,17 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
 
   const parts = parseBrandPath(pathname);
   if (parts) {
-    return <BrandNav parts={parts} org={findOrg(parts.org)} onNavigate={onNavigate} />;
+    return <BrandNav parts={parts} org={activeOrg} onNavigate={onNavigate} />;
   }
 
-  const orgSlug = parseOrgPath(pathname);
-  const org = orgSlug ? findOrg(orgSlug) : null;
-  if (org) {
-    return <OrgBrandNav org={org} onNavigate={onNavigate} />;
+  if (activeOrg) {
+    return (
+      <OrgBrandNav
+        org={activeOrg}
+        addingBrand={pathname === "/admin/new"}
+        onNavigate={onNavigate}
+      />
+    );
   }
 
   return <OrgListNav orgs={orgs} onNavigate={onNavigate} />;
@@ -239,11 +269,17 @@ export function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
       <div className="px-4 pt-5 pb-4">
         <Wordmark />
       </div>
+      {/* Both read the active org, which reads the query string, and useSearchParams suspends.
+          The boundaries keep that cost here and give each one the shape it stands in for. */}
       <div className="px-2.5 pb-3">
-        <OrgSwitcher onNavigate={onNavigate} />
+        <React.Suspense fallback={<Skeleton className="h-12 w-full" />}>
+          <OrgSwitcher onNavigate={onNavigate} />
+        </React.Suspense>
       </div>
       <div className="flex-1 overflow-y-auto px-2.5 pb-4">
-        <SidebarNav onNavigate={onNavigate} />
+        <React.Suspense fallback={<NavSkeleton />}>
+          <SidebarNav onNavigate={onNavigate} />
+        </React.Suspense>
       </div>
       {/* Pinned to the bottom, DESKTOP APP ONLY. On the hosted Vercel build HOSTED_READONLY is
           true and there is no local app to version or update, so the gear simply does not render

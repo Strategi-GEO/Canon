@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError } from "@/lib/api";
 import { HOSTED_READONLY } from "@/lib/hosted";
-import { brandLocationHref, useOrgs } from "@/lib/orgs-context";
+import { brandLocationHref, useActiveOrg, useOrgs } from "@/lib/orgs-context";
 import { useDescribe } from "@/lib/describe-context";
 import { FieldError } from "@/components/clients/engine-error";
 import { createClient } from "@/components/clients/wire";
@@ -136,8 +136,10 @@ function OrganisationBootstrap() {
  */
 function AddBrandToOrgForm({ joiningOrg }: { joiningOrg: string }) {
   const router = useRouter();
-  const { refresh, orgs } = useOrgs();
+  const { refresh } = useOrgs();
   const { start: startDescribe } = useDescribe();
+  // The same org the sidebar and the switcher are showing, resolved once for all three.
+  const existingOrg = useActiveOrg();
 
   const [name, setName] = React.useState("");
   const [domain, setDomain] = React.useState("");
@@ -145,7 +147,6 @@ function AddBrandToOrgForm({ joiningOrg }: { joiningOrg: string }) {
   const [error, setError] = React.useState<ApiError | null>(null);
 
   const trimmedName = name.trim();
-  const existingOrg = orgs.find((org) => org.name.toLowerCase() === joiningOrg.toLowerCase());
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -225,7 +226,7 @@ function AddBrandToOrgForm({ joiningOrg }: { joiningOrg: string }) {
               {nameError ? <FieldError error={nameError} /> : null}
             </div>
 
-            <OrgLocked orgName={joiningOrg} known={existingOrg !== undefined} />
+            <OrgLocked orgName={joiningOrg} known={existingOrg !== null} />
 
             <div>
               <Label htmlFor="new-domain">Brand website</Label>

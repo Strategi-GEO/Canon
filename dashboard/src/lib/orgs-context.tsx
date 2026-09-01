@@ -1,7 +1,9 @@
 "use client";
 
 import * as React from "react";
+import { usePathname, useSearchParams } from "next/navigation";
 import { ApiError, api } from "@/lib/api";
+import { resolveActiveOrg } from "@/components/shell/nav";
 import { LAST_ORG_KEY } from "@/lib/config";
 import type { Client, ClientsResponse, Org, OrgsResponse } from "@/types";
 
@@ -207,6 +209,22 @@ export function useOrgs(): OrgsState {
     throw new Error("useOrgs must be used inside OrgsProvider");
   }
   return ctx;
+}
+
+/**
+ * The organisation the operator is currently standing in, for every surface that has to stay on
+ * it: the sidebar's brand list, the org switcher's label and tick, and the add-brand form's own
+ * "this org already exists" line. ONE resolution, so those three can never disagree about which
+ * org is selected, which is exactly how /admin/new?org= used to reset the column while the form
+ * beside it was addressed to a specific org.
+ *
+ * useSearchParams suspends, so every caller mounts under a Suspense boundary.
+ */
+export function useActiveOrg(): Org | null {
+  const pathname = usePathname();
+  const joiningOrg = useSearchParams().get("org") ?? "";
+  const { orgs } = useOrgs();
+  return resolveActiveOrg(orgs, pathname, joiningOrg);
 }
 
 /* Route helpers. The route is the authority for the active org and brand, so these build

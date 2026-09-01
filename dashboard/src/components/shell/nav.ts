@@ -15,6 +15,7 @@ import {
   Telescope,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import type { Org } from "@/types";
 
 export type NavItem = {
   /** The path suffix under /org/<org>/<brand>. Empty string is the brand overview. */
@@ -91,6 +92,35 @@ export function parseBrandPath(pathname: string): BrandRouteParts | null {
 export function parseOrgPath(pathname: string): string | null {
   const match = /^\/admin\/org\/([^/]+)/.exec(pathname);
   return match ? match[1] : null;
+}
+
+/**
+ * The organisation a route is standing in, resolved against the list that actually exists.
+ *
+ * The PATH is the authority wherever it names one. /admin/new?org=<name> is the one route that
+ * names an org WITHOUT one, because adding a brand happens off the org's own path, and the query
+ * is then the only thing saying which org the brand is joining. Without this fallback the sidebar
+ * and the switcher read that route as "no org" and reset to the org list mid flow, so the operator
+ * fills in a brand form with no sight of the organisation they are filling it in for.
+ *
+ * ?org= carries the NAME rather than a slug, matching addBrandHref and the engine's own matching,
+ * so the fallback compares names case insensitively. A name no org answers to is the org-first
+ * flow creating one, and null is the honest answer there: there are no brands to show yet.
+ */
+export function resolveActiveOrg(
+  orgs: Org[],
+  pathname: string,
+  joiningOrg: string,
+): Org | null {
+  const slug = parseOrgPath(pathname);
+  if (slug !== null) {
+    return orgs.find((org) => org.slug === slug) ?? null;
+  }
+  const wanted = joiningOrg.trim().toLowerCase();
+  if (wanted === "") {
+    return null;
+  }
+  return orgs.find((org) => org.name.toLowerCase() === wanted) ?? null;
 }
 
 export function isActiveSection(current: string, section: string): boolean {
