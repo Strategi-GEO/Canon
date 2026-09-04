@@ -122,9 +122,20 @@ packaged desktop install", where there is no shell to export from.
 | `RESEND_API_KEY` | no | `server/.env` | Admin email notifications. Absent, every send is a no-op that logs and nothing else breaks. |
 | `RESEND_FROM` | no | `server/.env` | Sender address. It falls back to `Canon <onboarding@resend.dev>`, which Resend delivers ONLY to the address owning the account, so set it before anyone else expects mail. |
 
-The first three are `_OWN_CREDENTIALS` in `db.py`: `config_value()` raises rather than hand
-them to a caller outside that module, and none of them is on the agent allowlist, so an agent
-session cannot read the database whatever else it is given.
+`DATABASE_URL`, `SUPABASE_URL` and `SUPABASE_SECRET_KEY` are the three `install.sh` prompts
+for, and `secrets_bootstrap.REQUIRED_KEYS` is the same three. They are also `_OWN_CREDENTIALS`
+in `db.py`: `config_value()` raises rather than hand them to a caller outside that module, and
+none of them is on the agent allowlist, so an agent session cannot read the database whatever
+else it is given.
+
+**THERE IS NO `SUPABASE_ANON_KEY` HERE, AND THAT IS NOT AN OMISSION.** `server/auth.py`
+`_gotrue_token` sends the SECRET key as the `apikey` header on every login, refresh and logout,
+server-side only, and that is the whole reason the frontend needs a Supabase key of no kind:
+the browser talks only to this engine, never to GoTrue. An anon key would be a fourth
+credential to distribute that nothing would read. Two other surfaces DO use one and both are
+their own tables below: the HOSTED dashboard, whose Route Handlers query Supabase directly
+under RLS, and the desktop tray app, which signs an operator in before any secret is on the
+machine.
 
 ### Model and engine knobs
 
@@ -229,12 +240,25 @@ read-only) answers from same-origin Route Handlers. See `dashboard/README-VERCEL
 
 ### Desktop tray app (`canon_app/`)
 
-| Variable | What it does |
-|---|---|
-| `CANON_SUPABASE_URL` | Overrides the bundled sign-in endpoint, so a build can be pointed at another project without editing the committed secrets file. |
-| `CANON_SUPABASE_ANON_KEY` | The matching anon key for that override. |
-| `CANON_NO_DASHBOARD` | `1` runs the engine only, the same as the CLI's `--no-dashboard`. |
-| `CANON_NO_BROWSER` | `1` starts without opening a browser, the same as `--no-browser`. |
+| Variable | Default | What it does |
+|---|---|---|
+| `CANON_SUPABASE_URL` | from `bootstrap.json` | Overrides the bundled sign-in endpoint, so a build can be pointed at another project without editing the committed file. |
+| `CANON_SUPABASE_ANON_KEY` | from `bootstrap.json` | The matching PUBLIC anon key for that override. This is the one place an anon key is used: `secrets_bootstrap.password_login` signs the operator in with it BEFORE any secret exists on the machine, then fetches the real `server/.env`. A blank pair reads as "not configured" and the app falls back to the file path with no prompt. |
+| `CANON_ENGINE_PORT` | `8000` | Engine port. For testing; the packaged app expects 8000. |
+| `CANON_DASHBOARD_PORT` | `3000` | Dashboard port. For testing. |
+| `CANON_NO_DASHBOARD` | unset | `1` runs the engine only, the same as the CLI's `--no-dashboard`. |
+| `CANON_NO_BROWSER` | unset | `1` starts without opening a browser, the same as `--no-browser`. |
+
+### Desktop build only (`canon_app/fetch_runtimes.py`)
+
+The bundled runtimes are PINNED so a build is reproducible, and these three override the pins.
+Bump them deliberately: a silent runtime bump is a silent change to what every recipient runs.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `NODE_VERSION` | `24.18.0` | The Node fetched into `build_assets/runtimes/node/`. |
+| `PYTHON_VERSION` | `3.12.13` | The CPython fetched into `build_assets/runtimes/python/`. |
+| `PBS_RELEASE` | `20260718` | The python-build-standalone release tag that CPython comes from. |
 
 For debugging a single row without the web UI (this spends real quota like any other run):
 
