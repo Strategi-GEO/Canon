@@ -175,7 +175,7 @@ function RoadmapPreviewDialog({ brand, brandName }: { brand: string; brandName: 
           <DialogTitle>The content roadmaps for {brandName}</DialogTitle>
           <DialogDescription>
             Every month {brandName} has planned, newest first. Pick a month to see its sheet.
-            Columns 1, 2 and 5 are the brief the factory reads by position; every other column
+            Columns 1, 2 and 8 are the brief the factory reads by position; every other column
             reaches the writer as guidance, under its own header.
           </DialogDescription>
         </DialogHeader>
@@ -188,16 +188,18 @@ function RoadmapPreviewDialog({ brand, brandName }: { brand: string; brandName: 
 }
 
 /**
- * The grid's cells, from the client wire instead of the raw CSV: positions 0, 1 and 4 are the
+ * The grid's cells, from the client wire instead of the raw CSV: positions 0, 1 and 7 are the
  * brief (topic, covers, prompts), every other column is that row's extra under its own header.
- * Prompts re-join on newlines because that is how the sheet itself carries several in one cell.
+ * Prompts sit at 7 because the house sheet is ten columns wide and keeps the justification
+ * figures, the live numbers that argue the row, between the scope and the prompts. Prompts
+ * re-join on newlines because that is how the sheet itself carries several in one cell.
  */
 function toGrid(roadmap: PortalRoadmap): string[][] {
   return roadmap.rows.map((row) =>
     roadmap.columns.map((column, index) => {
       if (index === 0) return row.topic;
       if (index === 1) return row.covers;
-      if (index === 4) return row.prompts.join("\n");
+      if (index === 7) return row.prompts.join("\n");
       return row.extras[column] ?? "";
     }),
   );

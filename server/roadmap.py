@@ -5,8 +5,15 @@ without a circular import. csv module only: cells contain commas and newlines
 inside quotes, so ad-hoc splitting corrupts rows.
 
 THE BINDING THREE ARE POSITIONAL AND FIXED: column 1 -> topic, column 2 ->
-covers, column 5 -> prompts. Those three are the brief, and position is how they
+covers, column 8 -> prompts. Those three are the brief, and position is how they
 are found.
+
+Prompts moved from column 5 to column 8 when the house sheet grew from six columns
+to TEN, so the justification data points (keyword volume, AI search volume, cost
+per click, keyword difficulty, query volume, query intent) sit together between the
+scope and the prompts where a client reads them as one argument. Nothing else about
+the mechanism changed: the brief is still found by position and everything else is
+still labelled by its header.
 
 Why position and not header detection for those three: the operator's sheets are
 positionally stable and they upload a fresh one every run, so header text is
@@ -37,11 +44,36 @@ from . import db
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# The house sheet, in order. This IS row 1 of every roadmap the engine writes, and the
+# operator-facing refusal below quotes it verbatim so a rejected upload names its own fix.
+#
+# Columns 4 to 7 and 9 to 10 ARE the justification: the live figures that argue the row to the
+# client. There is deliberately no prose "Justification" column beside them. One was tried and
+# removed, because a sentence explaining a number sits next to the number it explains, and a
+# column whose content is an argument about the other columns is a column that goes stale the
+# moment any of them is re-pulled. The figures make the case; the report the session writes is
+# where the prose about them lives.
+#
+# They are extras like any other column, forwarded to the writer under their own headers as
+# guidance, and none of them is ever a fact the draft may cite.
+COLUMNS = (
+    "Content Topic",
+    "What the Piece Covers",
+    "Content Type",
+    "Keyword Volume",
+    "AI Search Volume",
+    "Cost Per Click",
+    "Keyword Difficulty",
+    "Target Prompts",
+    "Query Volume",
+    "Query Intent",
+)
+
 # 0-indexed positions. The contract, in one place.
 COL_TOPIC = 0
 COL_COVERS = 1
-COL_PROMPTS = 4
-MIN_COLUMNS = COL_PROMPTS + 1  # a narrower file cannot carry prompts at all
+COL_PROMPTS = 7
+MIN_COLUMNS = len(COLUMNS)  # a narrower file cannot carry prompts at all
 
 REQUIRED_FIELDS = ("topic", "covers", "prompts")
 
@@ -82,7 +114,7 @@ def split_prompts(cell):
     receive clean query strings.
 
     The pipe is the second separator because generated roadmaps use it: the
-    generation prompt (server/prompts/roadmap-generation.md) specifies column 5
+    generation prompt (server/prompts/roadmap-generation.md) specifies column 8
     as three prompts joined by " | ", and on newlines alone the whole cell parsed
     as ONE prompt. That is silent and total: the row keeps working, the piece is
     written against a single run-on query instead of three, and nothing reports
@@ -104,7 +136,7 @@ def _cell(raw_row, position):
 
 
 def _extras(raw_row, columns):
-    """Every column that is not 1, 2 or 5, paired with its own header. Blanks are dropped.
+    """Every column that is not 1, 2 or 8, paired with its own header. Blanks are dropped.
 
     The three binding fields are found BY POSITION and everything else is labelled BY ITS
     HEADER, and mixing those two mechanisms is the bug this function exists to prevent.
@@ -114,8 +146,10 @@ def _extras(raw_row, columns):
     mapping is positional; it is perfectly reliable for saying what a column the engine does
     not otherwise understand is CALLED, which is all this needs it for.
 
-    A blank cell is dropped rather than passed as an empty label, because "Format:" with
-    nothing after it tells a writer only that someone forgot to fill it in.
+    A blank cell is dropped rather than passed as an empty label, because "Content Type:" with
+    nothing after it tells a writer only that someone forgot to fill it in. That is why a blank
+    Cost Per Click costs the writer nothing: the sheet had no live figure for it, and an empty
+    label would read as one.
     """
     extras = []
     for position, value in enumerate(raw_row):
@@ -129,6 +163,54 @@ def _extras(raw_row, columns):
         # a label in a writer's brief that appears nowhere in the operator's sheet.
         extras.append({"label": label or f"column {position + 1}", "value": text})
     return extras
+
+
+def _check_binding_headers(columns, source):
+    """Refuse a sheet whose header says the brief is somewhere other than where it is read.
+
+    THE MAPPING IS STILL PURELY POSITIONAL and this does not change that by a syllable: nothing
+    here looks up a column by its name, and the three positions are the same three constants
+    whatever the header says. This is a GUARD, not a lookup. The two are different acts and
+    conflating them is what the module docstring warns against.
+
+    It exists because the width check alone stopped being enough the moment the contract grew.
+    A six-column sheet is refused by width, loudly, and an operator sees why. A TEN-column
+    sheet laid out to the OLD contract is not: it is exactly the right width, so it parses
+    silently and every row's prompts cell is read out of the position that now holds Target
+    Prompts on the new sheet and held nothing meaningful on the old one. That is the failure the
+    whole positional design is afraid of, arriving through the one door the width check leaves
+    open, and it costs a run before anyone notices.
+
+    Only the BINDING THREE are checked. The other eight headers are the extras' labels, and
+    labels are the half of the contract that is deliberately loose: an operator's own sheet may
+    call the demand figure whatever they call it, and the writer is handed the header they typed.
+    Checking those would refuse sheets that are correct.
+
+    THE REFUSAL TEXT IS ONE LINE ON PURPOSE. It reaches the operator through EngineErrorNote,
+    a plain <p> with no whitespace-pre-line, so any newline in it collapses to a space in the
+    browser and a message laid out in paragraphs arrives as a run-on. It reads as prose because
+    that is the only shape the surface it lands on can render.
+
+    A wholly blank header row is skipped rather than refused. The parser reads row 1 as the
+    header ALWAYS, so an upload with an empty leading row has no header text to check, and that
+    sheet is already refused by width unless it is genuinely the contract's width. Refusing it
+    here would only turn a sheet the splice path can still rewrite into one nothing can read.
+    """
+    if not any(cell.strip() for cell in columns):
+        return
+    wrong = []
+    for position in (COL_TOPIC, COL_COVERS, COL_PROMPTS):
+        found = columns[position].strip() if position < len(columns) else ""
+        if found.casefold() != COLUMNS[position].casefold():
+            wrong.append(f"column {position + 1} should be {COLUMNS[position]!r} "
+                         f"but reads {found!r}")
+    if wrong:
+        raise BadUpload(
+            f"{source} is wide enough but is not laid out to the roadmap contract: "
+            f"{'; '.join(wrong)}. The engine reads the brief BY POSITION, so a sheet whose "
+            f"columns sit elsewhere would be read as though they did not. "
+            f"Row 1 must read: {', '.join(COLUMNS)}."
+        )
 
 
 def _build_rows(raw_rows, columns):
@@ -157,9 +239,9 @@ def _build_rows(raw_rows, columns):
             "topic_slug": slugify(topic),
             "complete": not missing,
             "missing": missing,
-            # Registered, not dropped. An extra is never part of `missing`: a sheet that planned
-            # no Format is a sheet that planned no Format, and refusing to write the row over it
-            # would make a column the engine invented into a blocker the operator never asked for.
+            # Registered, not dropped. An extra is never part of `missing`: a sheet with no live
+            # Cost Per Click figure is a sheet DataForSEO had no figure for, and refusing to write
+            # the row over it would make a blank cell the contract calls honest into a blocker.
             "extras": _extras(raw, columns),
         })
     return rows
@@ -178,10 +260,14 @@ def _parse_rows(raw_rows, source):
     width = max(len(row) for row in raw_rows)
     if width < MIN_COLUMNS:
         raise BadUpload(
-            f"{source} has {width} column(s); at least {MIN_COLUMNS} are required "
-            f"because the roadmap mapping reads column 1 (Content Topic), "
-            f"column 2 (What the Piece Covers) and column 5 (Target Prompts)"
+            f"{source} has {width} column(s) and the roadmap contract is {MIN_COLUMNS}. "
+            f"Row 1 must read: {', '.join(COLUMNS)}. "
+            f"The engine reads column 1 (Content Topic), column 2 (What the Piece Covers) and "
+            f"column 8 (Target Prompts) BY POSITION, so a narrower sheet cannot carry the brief. "
+            f"A sheet written to the old six-column contract is one of these: download a current "
+            f"roadmap, or generate one, to start from the right shape."
         )
+    _check_binding_headers(columns, source)
 
     rows = _build_rows(raw_rows[1:], columns)
     return {"columns": columns, "rows": rows, "warnings": []}
@@ -375,9 +461,18 @@ def index_by_slug(client_slug):
     """
     try:
         payload = load_roadmap(client_slug)
-    except RoadmapNotFound:
+    except (RoadmapNotFound, BadUpload):
         # Not an error. A client with no roadmap has blogs with no row to point at, and every
         # caller already has to handle the blog whose row was deleted anyway.
+        #
+        # BadUpload joined it when the column contract changed, and the case is a real one rather
+        # than defensive padding: this function is on the BLOGS path (_blog_history reaches it),
+        # and a sheet stored under an older contract raises here on every read until
+        # scripts/widen_roadmaps.py has run. Letting that escape turned "your roadmap needs
+        # migrating" into an unhandled 500 that made every blog for the brand unreachable,
+        # shipped ones included, and said nothing an operator could act on. The Roadmap tab still
+        # answers 400 with the message naming the fix, so nothing is concealed by degrading here:
+        # a sheet the parser refuses joins to no row, which is exactly what an empty map means.
         return {}
     return {row["topic_slug"]: row["index"] for row in payload["rows"] if row.get("topic_slug")}
 
@@ -446,11 +541,11 @@ def has_roadmap(client_slug):
 def _read_raw(client_slug):
     """The roadmap as raw CSV rows, header included, EVERY column intact.
 
-    Deliberately not parse_csv. The parser keeps only columns 1, 2 and 5 because those are the
-    only ones the engine reads, so a view built from parsed rows would silently hide the
-    operator's other columns: their volume, their intent, their own status notes. Those columns
-    are theirs, and the fact that the factory has no use for them does not mean the operator
-    has none.
+    Deliberately not parse_csv. The parser reads columns 1, 2 and 8 as the brief and keeps
+    every other column as a labelled extra, so a view built from parsed rows would present the
+    operator's own sheet back to them in the engine's order rather than theirs. Those columns
+    are theirs, and the fact that the factory reads them as guidance rather than as a brief
+    does not mean the operator wants them rearranged.
     """
     raw_csv, _filename, _modified = _fetch_sheet(client_slug)
     return _csv_rows(raw_csv)

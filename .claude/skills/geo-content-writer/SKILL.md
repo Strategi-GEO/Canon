@@ -43,16 +43,24 @@ From the brief and `client.md`, extract:
 roadmap row is the plan, and the lead passes every column of it that is not the topic, the
 scope or the prompts, each under the sheet's own header. Two of them decide the piece:
 
-- **`Format`** IS the intended format above. Do not infer one when the sheet states one. A
+- **`Content Type`** IS the intended format above. Do not infer one when the sheet states one. A
   `Comparison anchor` is a multi-way comparison other pieces hang off, and writing it as a
   general explainer breaks the roadmap's structure, not just this article: the spokes that link
   into it arrive at a page that never made the comparison they promised.
-- **`Search Intent`** frames the language. `Commercial` means a buyer deciding, so the piece
-  names entities and gets to the decision. `Informational` means someone learning, so it earns
-  the citation by being the clearest source. `Navigational` means someone checking who this
-  brand is.
+- **`Query Intent`** frames the language. It is a live search-intent classification of the row's
+  PRIMARY target prompt, not a read of the cell as a whole, which matters because that cell
+  deliberately holds three prompts of differing intent. `Commercial` means a buyer deciding, so
+  the piece names entities and gets to the decision. `Informational` means someone learning, so
+  it earns the citation by being the clearest source. `Navigational` means someone checking who
+  this brand is.
 
-Every other label is context, and the same rule holds: follow it, do not argue with it.
+The rest of the row is the JUSTIFICATION, the figures that argued this topic onto the sheet:
+`Keyword Volume`, `AI Search Volume`, `Cost Per Click`, `Keyword Difficulty` and `Query Volume`.
+There is no prose justification cell to read: the figures ARE the argument, because a sentence
+explaining a number belongs beside the number it explains. They ride along under their own
+headers as context, telling you what demand this piece is aimed at and which phrasing is worth
+reaching for. Every other label works the same way, and the same rule holds: follow it, do not
+argue with it.
 
 **Guidance is never a fact and never a source.** A volume, an estimate or a funnel stage in the
 brief shapes which phrasing an H2 reaches for. It NEVER appears in the draft, it can NEVER be

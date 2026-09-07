@@ -46,3 +46,11 @@ playwright>=1.48
 # have. Pure Python, no transitive dependencies. The Strategi CMS path does not need it and the
 # import is function-local, so an install without it still publishes to the CMS.
 markdown>=3.6
+
+# .claude/skills/roadmap-generation/scripts/build_roadmap.py validates a roadmap against the
+# eleven-column contract and writes it. The CSV is written with the stdlib and always lands; the
+# styled .xlsx beside it is the client-facing copy and is the only thing openpyxl is for, so the
+# script catches ImportError and says so rather than failing a roadmap that is already correct.
+# Same best-effort shape as playwright above, and for the same reason: a missing pretty copy must
+# never cost a run that produced the real artifact.
+openpyxl>=3.1

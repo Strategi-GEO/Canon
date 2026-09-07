@@ -1265,7 +1265,7 @@ export type PortalRoadmapRow = {
   topic: string;
   covers: string;
   prompts: string[];
-  /** Extra planning columns under their own sheet headers (Format, Search Intent, ...). */
+  /** Extra planning columns under their own sheet headers (Content Type, Query Intent, ...). */
   extras: Record<string, string>;
   /** Delivered rows link into the library; planned rows are just the plan. */
   delivered: boolean;
@@ -1285,6 +1285,23 @@ export type PortalRoadmap = {
    */
   columns: string[];
   rows: PortalRoadmapRow[];
+};
+
+/**
+ * One roadmap_rows record as PostgREST returns it. `extras` is a jsonb ARRAY of {label, value}
+ * pairs, which is what server/roadmap.py _extras writes and what supabase/schema.sql defaults to
+ * '[]', NEVER a header-keyed object. Typing it as one and reading it with Object.entries handed
+ * back ["0", {...}] pairs, so every extra was keyed by a numeric string and valued
+ * "[object Object]"; the preview grid looks each column up BY HEADER, found nothing, and rendered
+ * every figure column of the client's own sheet as an empty cell.
+ */
+type RoadmapRowRecord = {
+  row_index: number;
+  topic: string | null;
+  covers: string | null;
+  prompts: string[] | null;
+  extras: { label: string; value: string }[] | null;
+  topic_slug: string | null;
 };
 
 /**
@@ -1315,20 +1332,20 @@ export async function buildRoadmap(
   if (month !== undefined && sheets.length === 0) {
     return null;
   }
-  const sheetFilter = month !== undefined ? `&sheet_id=eq.${sheets[0].id}` : "";
+  // ONE sheet supplies BOTH the rows and the header row they are rendered under. Without a
+  // month this branch filtered rows by client_id ALONE, so every month's rows arrived in one
+  // grid, sorted by row_index and interleaved, under the latest month's header: month 1's cells
+  // landed in month 2's columns. A brand with no sheet at all is still an empty roadmap rather
+  // than a 404, because that is the tab's empty state; a month that names no sheet is the 404.
+  const sheet = sheets[0] ?? null;
   const [rows, ledger, sentRows] = await Promise.all([
-    pg<{
-      row_index: number;
-      topic: string | null;
-      covers: string | null;
-      prompts: string[] | null;
-      extras: Record<string, unknown> | null;
-      topic_slug: string | null;
-    }[]>(
-      token,
-      `roadmap_rows?select=row_index,topic,covers,prompts,extras,topic_slug` +
-        `&client_id=eq.${brand.client_id}${sheetFilter}&order=row_index.asc`,
-    ),
+    sheet === null
+      ? Promise.resolve<RoadmapRowRecord[]>([])
+      : pg<RoadmapRowRecord[]>(
+          token,
+          `roadmap_rows?select=row_index,topic,covers,prompts,extras,topic_slug` +
+            `&client_id=eq.${brand.client_id}&sheet_id=eq.${sheet.id}&order=row_index.asc`,
+        ),
     pg<LedgerRow[]>(
       token,
       `ledger_entries?select=topic,topic_slug,generated_at&client_id=eq.${brand.client_id}`,
@@ -1353,14 +1370,14 @@ export async function buildRoadmap(
   return {
     brand: brand.client_slug,
     brand_name: brand.client_name,
-    columns: sheets[0]?.columns ?? [],
+    columns: sheet?.columns ?? [],
     rows: rows.map((row) => {
       const slug = row.topic_slug ?? null;
       const entry = slug !== null ? (shipped.get(slug) ?? null) : null;
       const extras: Record<string, string> = {};
-      for (const [key, value] of Object.entries(row.extras ?? {})) {
-        if (value !== null && value !== undefined && String(value).trim() !== "") {
-          extras[key] = String(value);
+      for (const { label, value } of row.extras ?? []) {
+        if (label !== "" && String(value ?? "").trim() !== "") {
+          extras[label] = String(value);
         }
       }
       return {

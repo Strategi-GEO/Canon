@@ -449,10 +449,21 @@ create table roadmap_rows (
   -- `covers` is KEPT and surfaced to the operator. Never assert contiguity.
   row_index int not null check (row_index >= 0),
 
+  -- The BINDING THREE, read out of the sheet BY POSITION. server/roadmap.py holds the contract
+  -- and these comments only mirror it, so trust that module where the two disagree. Prompts sit
+  -- at 7 rather than 4 since the house sheet grew to ten columns and the justification figures
+  -- (keyword volume, AI search volume, cost per click, keyword difficulty) took positions 3 to 6
+  -- between the scope and the prompts.
   topic     text not null,     -- COL_TOPIC   = 0
   covers    text not null,     -- COL_COVERS  = 1
-  prompts   text[] not null,   -- COL_PROMPTS = 4
-  extras    jsonb not null default '[]'::jsonb,   -- surplus columns, keyed by header
+  prompts   text[] not null,   -- COL_PROMPTS = 7
+
+  -- Every surplus column, as a JSON ARRAY of {"label","value"} objects in sheet order. NOT an
+  -- object keyed by header, which this comment used to claim: a sheet may carry two columns
+  -- under one header, or a column under none, and an object cannot hold either. The label is
+  -- the sheet's own header text, because that is the half of the contract deliberately left
+  -- loose, and it is what the writer is handed the value under.
+  extras    jsonb not null default '[]'::jsonb,
 
   -- Computed in Python with the app's own roadmap.slugify(), never re-derived in
   -- SQL: a second implementation of a slug rule is a second thing to drift.

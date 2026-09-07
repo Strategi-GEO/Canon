@@ -1,3 +1,3 @@
-Article Subject,Scope And Angle,Est. Searches,Funnel Stage,AI Queries To Win,Workflow State
-A Topic That Must Never Run,"A single row that exists so the roadmap parses, never so it runs.",~10,Informational,"""This topic never runs""
-""Preflight refuses this client""",pending
+Content Topic,What the Piece Covers,Est. Searches,Workflow State,AI Search Volume,Cost Per Click,Keyword Difficulty,Target Prompts,Query Volume,Funnel Stage
+A Topic That Must Never Run,"A single row that exists so the roadmap parses, never so it runs.",~10,pending,,,,"""This topic never runs""
+""Preflight refuses this client""",,Informational

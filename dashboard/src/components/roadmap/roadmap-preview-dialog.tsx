@@ -105,7 +105,7 @@ export function RoadmapPreviewDialog({
           <DialogTitle>The content roadmaps for {brandName}</DialogTitle>
           <DialogDescription>
             Every month {brandName} has planned, newest first. Pick a month to see its sheet as it
-            sits on disk. Columns 1, 2 and 5 are the brief the factory reads by position; every
+            sits on disk. Columns 1, 2 and 8 are the brief the factory reads by position; every
             other column reaches the writer as guidance, under the header you gave it.
             {review !== undefined
               ? " On the latest month, tick the topics that miss, say what is wrong, and a research session replaces exactly those rows; you can start another batch while one runs."

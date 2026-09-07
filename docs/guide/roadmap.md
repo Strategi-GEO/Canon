@@ -8,32 +8,45 @@ Uploading or generating a roadmap starts no writing at all. It parses the sheet 
 
 ## What one row tells the factory
 
-A roadmap sheet is a CSV with at least five columns. The first row is always treated as the header and is skipped, so your topics start on row 2.
+A roadmap sheet is a CSV with ten columns. The first row is always treated as the header and is skipped, so your topics start on row 2.
 
 | Column | Name | What the factory does with it |
 |---|---|---|
 | 1 | Content Topic | The subject, and the article's headline. Read **by position**. |
 | 2 | What the Piece Covers | The scope and the angle. Read **by position**. |
-| 3 | Format | Passed to the writer as guidance, labelled with your header text. |
-| 4 | Search Intent | Passed to the writer as guidance, labelled with your header text. |
-| 5 | Target Prompts | The AI-search questions the piece must be cited for. Read **by position**. |
+| 3 | Content Type | Passed to the writer as guidance, labelled with your header text. |
+| 4 | Keyword Volume | Monthly Google volume for the row's primary keyword. Guidance. |
+| 5 | AI Search Volume | Volume for the same keyword on the AI layer. Guidance. |
+| 6 | Cost Per Click | What the keyword costs in paid search. Guidance. |
+| 7 | Keyword Difficulty | How hard the keyword is to rank for. Guidance. |
+| 8 | Target Prompts | The AI-search questions the piece must be cited for. Read **by position**. |
+| 9 | Query Volume | Volume for the primary target prompt. Guidance. |
+| 10 | Query Intent | A live search-intent classification of the **primary** target prompt. Guidance. |
 
-Columns 1, 2 and 5 are found by their position and nothing else. The engine does not read your header text to work out which column is the topic, so those three columns must never move.
+Columns 1, 2 and 8 are found by their position and nothing else. The engine does not read your header text to work out which column is the topic, so those three columns must never move.
 
-Every other column is kept, not thrown away. It reaches the writer under the header you gave it, so a `Format` of `Comparison anchor` and a `Search Intent` of `Commercial` are real instructions about the shape of the piece and the frame of its language.
+Columns 4 to 7 and 9 to 10 are the justification: the live figures that argue the row to your client. They travel with the row they argue for, which is why they sit between the scope and the prompts.
 
-A sheet may be wider than five columns, and a roadmap the factory generates is: it writes six, with `Est. Monthly Volume` sixth. That column sits after the prompts precisely so columns 1, 2 and 5 keep their places, and it reaches the writer as guidance under its own header.
+There is no prose Justification column, and a sheet does not need one. "Justification" is the name of that group of figures, and the figures are the argument: a sentence explaining a number belongs beside the number it explains, and a column arguing about the other columns goes stale the moment any of them is re-pulled. Where a roadmap was generated, the prose lives in the agent's report instead.
+
+Query Intent is not a restatement of the prompts. It is a live search-intent call on the row's primary target prompt, not somebody's read of the cell, which matters because that cell deliberately holds three prompts of differing intent. It is also what the commercial-versus-topical mix of the sheet is counted from.
+
+Every other column is kept, not thrown away. It reaches the writer under the header you gave it, so a `Content Type` of `Comparison anchor` and a `Query Intent` of `Commercial` are real instructions about the shape of the piece and the frame of its language. None of the figures is ever a fact the article may quote.
+
+A sheet may be wider than ten columns, and anything past the tenth reaches the writer as guidance under its own header, exactly like the rest.
 
 !!! warning "Position matters more than the header name"
-    If **Target Prompts** is not the fifth column, the writer is handed whatever text is there instead, and nothing warns you. A sheet with fewer than five columns is refused on upload, with a message naming how many columns were found.
+    Columns 1, 2 and 8 must sit where the table says, because that is where the engine reads them. A sheet with fewer than ten columns is refused on upload, with a message naming how many columns were found.
+
+    A sheet that is ten columns wide but laid out to an older shape is refused too. Width alone cannot catch it, so the engine also checks that columns 1, 2 and 8 are headed `Content Topic`, `What the Piece Covers` and `Target Prompts`, and the refusal names which one is wrong. There is one layout and the old ones are not read: rebuild the sheet, or download a current one to start from.
 
 ### A worked example row
 
 Here is one complete row, as it sits in the file:
 
 ```csv
-"Content Topic","What the Piece Covers","Format","Search Intent","Target Prompts"
-"Coworking desks in Indiranagar: what a 20 person team actually pays","Breaks down real monthly per desk pricing bands in Indiranagar, what is bundled at each band, what a private cabin adds, and the lock in terms teams get caught by. Carries a comparison table by band and links to the offer.","Cost breakdown","Commercial","which coworking spaces in Bengaluru suit a 20 person team | how much does a private office for 20 people cost in Indiranagar | is a managed office cheaper than coworking for a 20 person team"
+"Content Topic","What the Piece Covers","Content Type","Keyword Volume","AI Search Volume","Cost Per Click","Keyword Difficulty","Target Prompts","Query Volume","Query Intent"
+"Coworking desks in Indiranagar: what a 20 person team actually pays","Breaks down real monthly per desk pricing bands in Indiranagar, what is bundled at each band, what a private cabin adds, and the lock in terms teams get caught by. Carries a comparison table by band and links to the offer.","Cost breakdown","1,900","320","INR 68","34","which coworking spaces in Bengaluru suit a 20 person team | how much does a private office for 20 people cost in Indiranagar | is a managed office cheaper than coworking for a 20 person team","210","Commercial"
 ```
 
 Read as a table, the same row is:
@@ -42,9 +55,14 @@ Read as a table, the same row is:
 |---|---|
 | Content Topic | Coworking desks in Indiranagar: what a 20 person team actually pays |
 | What the Piece Covers | Breaks down real monthly per desk pricing bands, what is bundled at each band, what a private cabin adds, and the lock in terms teams get caught by. |
-| Format | Cost breakdown |
-| Search Intent | Commercial |
+| Content Type | Cost breakdown |
+| Keyword Volume | 1,900 |
+| AI Search Volume | 320 |
+| Cost Per Click | INR 68 |
+| Keyword Difficulty | 34 |
 | Target Prompts | three prompts in one cell, separated as described below |
+| Query Volume | 210 |
+| Query Intent | Commercial |
 
 ### Target Prompts holds several prompts in one cell
 
@@ -76,7 +94,7 @@ A row is incomplete when it is missing its topic, what it covers, or its target 
 
 An incomplete row still shows in the sheet and still counts on the tab, under the **Incomplete rows** tile, which names exactly which fields are missing. You cannot select it for writing, and the engine refuses it at the API boundary rather than twenty minutes into a run.
 
-A blank Format or a blank volume column never makes a row incomplete. That is a sheet that did not plan one.
+A blank Content Type, or a blank volume, cost or difficulty figure, never makes a row incomplete. That is a sheet that had no live figure to put there, and a blank says so honestly.
 
 ## Two ways to get a roadmap
 
@@ -88,7 +106,7 @@ Press **Upload roadmap** on the empty state, or **Upload month** in the toolbar.
 
 The file has to be a `.csv`, and the limit is 2 MB. A file with any other extension is refused in the browser before it uploads. Exports from Excel and Google Sheets are read correctly, including files that carry a byte order mark.
 
-An upload is refused when the file is empty, when it has a header row and no data rows under it, or when it has fewer than five columns. Every refusal from the engine comes back as the engine's own sentence, naming what was wrong.
+An upload is refused when the file is empty, when it has a header row and no data rows under it, when it has fewer than ten columns, or when columns 1, 2 and 8 are not headed `Content Topic`, `What the Piece Covers` and `Target Prompts`. Every refusal from the engine comes back as the engine's own sentence, naming what was wrong and quoting the header row your sheet needs.
 
 ### Generate one with AI instead
 

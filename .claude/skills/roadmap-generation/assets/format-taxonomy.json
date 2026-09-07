@@ -1,0 +1,47 @@
+{
+  "_comment": [
+    "The Content Type column takes ONE value from `formats`, spelled exactly. It is column 3 of",
+    "the house sheet and it reaches the blog writer under its own header, so the value is an",
+    "instruction about the shape of the piece and not a label on it: a Comparison anchor is a",
+    "different article from an FAQ (entity), and a writer handed the wrong one writes the wrong",
+    "piece.",
+    "",
+    "`vertical_examples` is NOT a menu. The skill derives one or two category-specific formats",
+    "from what the site scrape actually found, and these are examples of the SHAPE such a",
+    "format takes. A derived value is legal in the Content Type column; a value invented to",
+    "dress up a generic piece is not."
+  ],
+  "formats": [
+    "FAQ (entity)",
+    "Hub listicle",
+    "Listicle",
+    "Comparison anchor",
+    "Comparison",
+    "Explainer",
+    "How-to",
+    "Buyer's guide",
+    "Cost breakdown",
+    "Case study",
+    "Data study",
+    "Alternatives page",
+    "Checklist",
+    "Glossary",
+    "PR outreach"
+  ],
+  "vertical_examples": {
+    "apparel, fashion, interiors": "Styling guide",
+    "hospitality, travel": "Itinerary guide, Area guide",
+    "real estate": "Locality guide",
+    "healthcare": "Treatment guide",
+    "b2b industrial": "Spec selection guide",
+    "food and beverage": "Menu guide",
+    "edtech": "Curriculum guide"
+  },
+  "structural_quotas": {
+    "_comment": "Counted across the WHOLE sheet, kept rows included on a rewrite.",
+    "Hub listicle": "exactly 1",
+    "Comparison anchor": "exactly 1, where the category supports honest multi-way comparison",
+    "FAQ (entity)": "exactly 1, navigational",
+    "PR outreach": "0 to 1, and only against a genuine data asset. Most roadmaps have zero."
+  }
+}

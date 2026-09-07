@@ -121,18 +121,26 @@ export function ThemeCard({ theme }: { theme: ThemeTerm[] }) {
  * What each column DOES, by position. Nothing here is decoration: this is the engine's actual
  * contract and it is invisible in any header text.
  *
+ * The house sheet is ten columns and only three of them are binding: 1 Content Topic,
+ * 2 What the Piece Covers, 8 Target Prompts. Columns 4 to 7 and 9 to 10 ARE the justification,
+ * the live figures that argue the row to the client, and they carry the same role as column 3:
+ * guidance handed to the writer under its own header, never a fact the draft may cite. There is
+ * no prose Justification column beside them, because a sentence explaining a number belongs next
+ * to the number it explains, and a column whose content is an argument about the other columns
+ * goes stale the moment any of them is re-pulled. Prompts sit at 8 rather than 5 so those figures
+ * stay together between the scope and the prompts.
+ *
  * There is no "ignored" case any more and there must never be one again. The factory used to
  * read three columns and drop the rest, so this map marked the other columns Ignored and greyed
- * them out. It now registers EVERY column: 1, 2 and 5 are the binding brief, found by position,
- * and every other column is handed to the writer under its own header as guidance, which is how
- * a Format of "Comparison anchor" reaches the agent that acts on it. A column labelled Ignored
- * in this preview while its value was steering the draft would be the worst kind of wrong: a
- * confident, specific lie about the operator's own file.
+ * them out. It now registers EVERY column, which is how a Content Type of "Comparison anchor"
+ * reaches the agent that acts on it. A column labelled Ignored in this preview while its value
+ * was steering the draft would be the worst kind of wrong: a confident, specific lie about the
+ * operator's own file.
  */
 function roleOf(index: number): string {
   if (index === 0) return "Topic";
   if (index === 1) return "Scope";
-  if (index === 4) return "Target prompts";
+  if (index === 7) return "Target prompts";
   return "Guidance";
 }
 
@@ -282,8 +290,9 @@ export function SheetGrid({
                 {row.map((cell, cellIndex) => (
                   <td
                     key={cellIndex}
-                    // Target prompts arrive newline separated inside one quoted cell, so the
-                    // newlines are content and collapsing them would misrepresent the file.
+                    // Target prompts arrive several to one quoted cell, newline separated on an
+                    // operator's sheet and " | " joined on a generated one, so those newlines are
+                    // content and collapsing them would misrepresent the file.
                     // Every cell reads at full contrast: half of them used to be dimmed to say
                     // the engine threw them away, and the engine no longer does.
                     className="machine max-w-80 border-b border-l border-border px-3 py-2 align-top text-xs whitespace-pre-line wrap-break-word text-foreground"

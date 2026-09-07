@@ -1752,12 +1752,15 @@ def _agent_definitions():
             "dossier, never the reverse, and the rubric is the public standard.\n"
             "Read <out_dir>/roadmap-row.md EVERY iteration, including 2, 3 and 4. It is the "
             "brief: the topic, its scope, the BINDING target prompts, and every other column "
-            "under the sheet's own header. Follow the Format and the Search Intent it names, "
+            "under the sheet's own header. Follow the Content Type and the Query Intent it names, "
             "because a Comparison anchor is a different piece from an FAQ (entity) and Commercial "
             "intent frames differently from Informational. It is GUIDANCE about the shape of the "
-            "piece and the frame of its language: a volume or an estimate there shapes which "
-            "phrasing an H2 reaches for, it NEVER appears in the draft, it can NEVER be cited, "
-            "and nothing in it overrides canonical-facts.md.\n"
+            "piece and the frame of its language: a keyword volume, an AI search volume, a query "
+            "volume, a cost per click or a difficulty score there shapes which phrasing an H2 "
+            "reaches for, none of it EVER appears in the draft, none of it can EVER be cited, and "
+            "nothing in it overrides canonical-facts.md. Those figures ARE the row's "
+            "justification, pulled to argue its slot on the sheet to the operator and the client. "
+            "That is a case for planning the piece and it is not evidence for anything in it.\n"
             "Follow the operator's custom instructions as a MAJOR priority, ABOVE house style and "
             "roadmap guidance and NEVER above canonical-facts.md, and never as licence to invent a "
             "source or URL: clients/<slug>/custom-instructions.md (the brand's standing "
@@ -1855,12 +1858,18 @@ def _roadmap_brief(row):
     was the whole delivery mechanism until this file existed, and a fresh writer invents
     whatever it is not handed.
 
-    Columns 1, 2 and 5 are found by position. EVERY other column the sheet carries is forwarded
+    Columns 1, 2 and 9 are found by position. EVERY other column the sheet carries is forwarded
     under its own header, because the sheet plans real instructions the writer was never told: a
     "Comparison anchor" is a different piece from an "FAQ (entity)", and Commercial intent frames
-    differently from Informational. They are labelled, never positional: position 3 is "Format"
-    on a generated sheet and "Approx. Volume (IN/mo)" on an operator's, so naming them by
-    position would tell a writer its format was ~1200.
+    differently from Informational. They are labelled, never positional: position 3 is "Content
+    Type" on a generated sheet and "Approx. Volume (IN/mo)" on an operator's, so naming them by
+    position would tell a writer its content type was ~1200.
+
+    That labelling is what makes the ten-column sheet free here. The contract grew from six
+    columns to ten, adding the six live data points that argue a row to the client, and not one
+    line of this function changed for it: they arrive as extras, under their own headers, exactly
+    as Format and Search Intent always did. The caveat below is the half that did have to grow,
+    because a Cost Per Click reads far more like a citable statistic than a Format ever did.
     """
     prompts = "\n".join(f'- {p}' for p in row.get("prompts") or []) or "- (none provided)"
     extras = row.get("extras") or []
@@ -1871,9 +1880,16 @@ From the roadmap row, under the sheet's own headers. These are GUIDANCE about th
 piece and the frame of its language, and the writer follows them:
 {extra_lines}
 
-None of the above is a fact, a source, or a statistic. A volume or an estimate here shapes which
-phrasing an H2 reaches for; it NEVER appears in the draft and it can NEVER be cited. Nothing here
-overrides canonical-facts.md.
+None of the above is a fact, a source, or a statistic, and the numbers are the ones most likely
+to be mistaken for one. A keyword volume, an AI search volume, a query volume, a cost per click
+and a keyword difficulty are PLANNING metadata: they were pulled to decide whether this row
+deserved a slot on the sheet, they shape which phrasing an H2 reaches for, and they NEVER appear
+in the draft and can NEVER be cited. Those figures ARE this row's justification, and being the
+argument that won it its slot is exactly what stops them being evidence for anything IN it: they
+are addressed to the operator and the client, about the sheet, not to the reader, about the
+subject. A query intent is the same kind of thing, a live classification of the PRIMARY target
+prompt that frames the language and is never a claim about the market. A claim in the draft still
+needs its own fetched source. Nothing here overrides canonical-facts.md.
 """
         if extras
         else ""
@@ -2345,7 +2361,9 @@ def _write_roadmap_brief(out_dir, row):
     Same mechanism as session-instructions.md and answers.json, and for the same reason: an
     input that exists only inside the lead's prompt reaches an agent only if the lead retypes
     it. The extras are the half most easily dropped, because the lead has no use for them
-    itself, and a writer that never hears "Format: Comparison anchor" writes a different piece.
+    itself, and a writer that never hears "Content Type: Comparison anchor" writes a different
+    piece. There are eight of them on the current sheet rather than three, so the half most
+    easily dropped is now most of the row.
 
     It does NOT delete on an absent row, which is where it parts from _write_session_instructions.
     That file is cleared because a prior run's operator instruction leaking into this one is the
