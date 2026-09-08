@@ -120,11 +120,23 @@ The dialog asks for two things:
 There is no website field. The session always researches the brand's own website as recorded on its brand record, and the dialog names that website so you can see which one it will read. If the brand has no `http://` or `https://` website on file, the dialog says so in an amber note and the **Add New Month Roadmap** button inside it stays disabled until you add the website in the brand's settings.
 
 !!! danger "This press costs real money and real quota"
-    It starts one long research session against live Firecrawl and DataForSEO data, and it spends your Claude subscription quota. The dialog states this immediately above the button. The session runs in the engine, so refreshing the page, closing the tab, or opening it somewhere else does not stop it and does not lose it.
+    It starts one long research session against live data, and it spends your Claude subscription quota. The dialog states this immediately above the button. The session runs in the engine, so refreshing the page, closing the tab, or opening it somewhere else does not stop it and does not lose it.
 
 While it runs, the tab shows a card reading **Generating a content roadmap** with an elapsed clock. There is no progress bar and no percentage anywhere on this job, and that is deliberate: it is one session making an unknown number of tool calls, so the clock is the only honest number. The brand's **Overview** carries the same running line, with a button reading **Open the Content Roadmap tab**, so you do not press generate a second time.
 
-When it lands, the card reads **Roadmap generated** and carries **What the agent reported**: what it pulled, what it cut, which uploaded resources it could read, what yielded no text, and any row it refused to plan because the brand's canonical facts forbid the claim. Read it. That report is often worth more than the sheet.
+#### What the session reads
+
+Firecrawl and DataForSEO are always there: Firecrawl reads the brand's own site and its competitors, DataForSEO supplies every figure in the sheet. Where the machine also has an **SEO Gets** key, the session gets that too, and it is the most valuable input of the three. SEO Gets reports the brand's own Search Console data: the queries it already ranks just off the money, and what moved since last month. Everything else in the pull is inferred from the outside, so a topic that comes from there is one the brand has already proved it can rank for, and the piece finishes a job rather than starting one. The report says when a row came from that.
+
+Nothing else is connected to a roadmap run. The analytics tools on the [Analysis](analysis.md) tab stay there, because a roadmap decides which pages to write and none of them speak to that question.
+
+#### Every proposed topic is checked against what the brand already published
+
+Before it writes the sheet, the session reads the brand's whole blog archive, not a sample, and scores every topic it is considering against every post already on the site and against every other row it is proposing. A topic that overlaps an existing post splits the brand's own signal and wastes the slot, so it is dropped, reshaped until the difference is real, or kept with the difference stated. The same check covers earlier months, so Month 3 cannot re-propose what Month 1 already planned.
+
+The report tells you how many rows this killed or reshaped. That number is the proof the check ran, and a run that always reports zero is worth asking about.
+
+When it lands, the card reads **Roadmap generated** and carries **What the agent reported**: the commercial and topical split it chose and the evidence for it, how much of the site it read, how many rows the overlap check removed, which figures came back blank and why, what it cut, which uploaded resources it could read, what yielded no text, and any row it refused to plan because the brand's canonical facts forbid the claim. Read it. That report is often worth more than the sheet.
 
 If the session breaks instead, the card turns red and reads **The roadmap generation failed**, with the engine's own sentence about what broke. The report, where there is one, is still underneath it.
 

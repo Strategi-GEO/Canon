@@ -42,7 +42,7 @@ You see this in three places on the page:
 - Its whole section is absent from the page and from the PDF.
 
 !!! info "Connecting a tool is a setup job on the machine"
-    There is no screen in the app for connecting Search Console, GA4, Bing, Clarity or SEO Gets. Their keys live in the engine's own configuration on the machine, and the analysis run is the only session handed them, so they never reach a blog session. If a tool you expect reads **Not connected**, ask whoever set the machine up. The next analysis you run picks it up.
+    There is no screen in the app for connecting Search Console, GA4, Bing, Clarity or SEO Gets. Their keys live in the engine's own configuration on the machine, and no blog session is ever handed them. Analysis gets all six. SEO Gets is also handed to a [roadmap generation](roadmap.md#generate-one-with-ai-instead), which uses its striking distance and query movement to decide what is worth writing next; the other five reach analysis alone. If a tool you expect reads **Not connected**, ask whoever set the machine up. The next analysis you run picks it up.
 
 ## Running this month's analysis
 
