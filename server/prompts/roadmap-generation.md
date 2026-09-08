@@ -113,6 +113,20 @@ gates, deliver fewer and say so in your report rather than padding with near dup
 
 ---
 
+## TOOLS (ENGINE): what this run actually has
+
+Firecrawl and DataForSEO are the FLOOR and are always present: the engine refuses to open this
+session at all on a machine without credentials for both, so if you are reading this they are
+there. The skill's method is built on them and needs no permission from this block.
+
+{{OPTIONAL_TOOLS}}
+
+Anything not named here or in the skill does not exist for this run. Do not hunt for a tool, and
+never report a figure you did not pull from a tool you actually have: every data cell in the
+sheet is a live figure or a blank, and which tool produced it belongs in your report.
+
+---
+
 ## STAGE 1 (ENGINE): the cannibalisation gate is MANDATORY here
 
 The skill's step 5 is written for a human who can be asked to skip it. You cannot be asked. Run

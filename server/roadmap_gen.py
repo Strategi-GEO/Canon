@@ -292,6 +292,69 @@ def start_rewrite_job(client_slug, brand_url, month, payload, row_indices, feedb
 # The prompt
 # ---------------------------------------------------------------------------
 
+def _optional_mcp_servers():
+    """Research MCP servers this machine has a key for, beyond the firecrawl+dataforseo floor.
+
+    Same mechanism as `analysis_gen._optional_mcp_servers` and read through `db.config_value` for
+    the same reason: RULE 1 keeps server/.env out of os.environ and out of agent_env, so an
+    agent-facing MCP credential is routed into ONE session's mcp_servers rather than the
+    environment. These MERGE with the project .mcp.json floor because strict_mcp_config stays
+    False; they are never written into that file, so blog research, write and eval sessions do
+    not spawn them.
+
+    SEO GETS IS HERE AND CLARITY IS NOT, and the line between them is what the tool measures.
+    SEO Gets reports striking-distance queries and query movement: the terms this brand ALREADY
+    ranks just off the money, and what moved since last month. That is the single most direct
+    "what should we publish next" signal any tool in this building produces, and it is the one
+    input a roadmap could previously only approximate from competitor intersections. Clarity
+    measures rage clicks, scroll depth and session recordings, which describe how a page behaves
+    once someone is on it; a roadmap chooses which pages to write and cannot act on any of it, so
+    attaching it would spend a tool budget on data with no decision behind it. Bing Webmaster is
+    left out on a different ground: it has no MCP at all (analysis reaches it by REST through
+    Bash), and its query data is the same shape SEO Gets already supplies here.
+
+    An absent key means no server, which means the session simply does not have the tool. That is
+    graceful degradation, not a failure: the skill is told what it has and plans from the rest.
+    """
+    servers = {}
+    seogets = db.config_value("SEOGETS_API_KEY")
+    if seogets:
+        servers["seogets"] = {
+            "type": "http",
+            "url": "https://app.seogets.com/mcp",
+            "headers": {"Authorization": f"Bearer {seogets}"},
+        }
+    return servers
+
+
+def optional_tools_note(servers):
+    """One paragraph naming the EXTRA research tools this session actually has.
+
+    It exists for the reason `resource_note` exists: an agent told to use a tool that is not
+    there either burns turns hunting for it or, worse, reports a finding it never measured. The
+    floor (Firecrawl and DataForSEO) is named by the skill itself and is always present, because
+    the runner refuses the session outright without it. Everything here is conditional, so the
+    prompt has to say which way the condition fell for THIS run.
+    """
+    if "seogets" not in servers:
+        return (
+            "No optional research tools are connected for this run, so Firecrawl and DataForSEO "
+            "are the whole of your evidence. Do not look for an SEO Gets tool and do not treat "
+            "its absence as a fact about the brand."
+        )
+    return (
+        "**SEO Gets is connected (`mcp__seogets__*`) and you should use it.** It reports this "
+        "brand's own Search Console data, which is evidence no competitor-derived figure can "
+        "replace: the STRIKING DISTANCE queries it already ranks just off the money, and the "
+        "QUERY MOVEMENT since last month. Pull both before you write titles. A striking-distance "
+        "query is the strongest row a roadmap can carry, because the brand has already proved it "
+        "can rank for that ground and the piece is finishing a job rather than starting one, so "
+        "say so in the report when a row comes from there. A brand SEO Gets holds no property "
+        "for returns nothing, which is ordinary for a new client and is not an error: say the "
+        "tool returned no data and plan from the rest."
+    )
+
+
 def resource_note(client_slug):
     """One sentence naming what is actually in clients/<slug>/Resources/.
 
@@ -506,6 +569,9 @@ def build_prompt(client_slug, brand_url, piece_count, notes, rewrite_block="",
         "ROADMAP_PATH": str(roadmap_path or roadmap.roadmap_path(client_slug)),
         "RESOURCE_NOTE": resource_note(client_slug),
         "EXISTING_TOPICS": existing_topics_block(client_slug),
+        # Which OPTIONAL research tools this run actually has. Computed from the same function
+        # that attaches them, so the prompt can never claim a tool the session was not given.
+        "OPTIONAL_TOOLS": optional_tools_note(_optional_mcp_servers()),
         # "" on a fresh generation, so the substituted prompt is byte-for-byte what it was
         # before rewrites existed. Non-empty only when start_rewrite_job built the block.
         "REWRITE_BLOCK": rewrite_block,
@@ -616,6 +682,39 @@ def _save_report(client_slug, job):
         pass
 
 
+def _exact_contract_error(columns):
+    """The generated sheet must be the house ten columns EXACTLY. Returns a message, or None.
+
+    THIS IS STRICTER THAN THE UPLOAD PARSER, DELIBERATELY, AND THE ASYMMETRY IS THE POINT.
+    `roadmap.parse_csv` checks the width and the three BINDING headers and leaves the other seven
+    labels alone, because an operator's own sheet is theirs: they may call the demand figure
+    "Est. Searches" and the engine hands the writer the header they typed. That leniency is
+    correct for a file a person uploaded and wrong for a file THIS ENGINE just wrote. Here we
+    control the writer, so "close enough" has no reason to exist: a generated sheet headed
+    `Format` and `MSV` would parse, land, and quietly teach the next operator that those are the
+    column names, and an eleventh column would ride into every writer's brief as guidance nobody
+    planned.
+
+    It is checked HERE rather than in the parser for that same reason: moving it into
+    `roadmap.parse_csv` would apply it to uploads too and refuse the operator sheets the
+    labelled-extras rule exists to accept.
+
+    Case-insensitive on the label text and exact on the ORDER and the COUNT. Case is the one
+    thing a spreadsheet round trip changes on its own; order and count are what the positional
+    mapping rests on.
+    """
+    want = [c.casefold() for c in roadmap.COLUMNS]
+    got = [c.strip().casefold() for c in columns]
+    if got == want:
+        return None
+    if len(got) != len(want):
+        return (f"it has {len(got)} column(s) and the contract is exactly {len(want)}: "
+                f"{', '.join(roadmap.COLUMNS)}")
+    wrong = [f"column {i + 1} should be {roadmap.COLUMNS[i]!r} but reads {columns[i].strip()!r}"
+             for i, (a, b) in enumerate(zip(got, want)) if a != b]
+    return f"its header does not match the contract: {'; '.join(wrong)}"
+
+
 def _validate_written(client_slug):
     """Parse the file the session claims to have written. Returns (rows, error).
 
@@ -658,6 +757,19 @@ def _validate_written(client_slug):
         return None, (
             "the session wrote a roadmap with a header row and no data rows, so it was "
             "deleted and the brand still has no roadmap"
+        )
+
+    # Every sheet Canon GENERATES is the house ten, exactly. build_roadmap.py writes that order
+    # for the session, so reaching this branch means the session hand-wrote the CSV instead of
+    # running the script the prompt mandates, and the sheet it produced is not the one the
+    # operator was promised.
+    contract = _exact_contract_error(payload["columns"])
+    if contract:
+        path.unlink(missing_ok=True)
+        return None, (
+            f"the session wrote a roadmap that is not the house column contract, so it was "
+            f"deleted and the brand still has no roadmap: {contract}. Run "
+            f"build_roadmap.py rather than writing the CSV by hand; it writes the order."
         )
     return rows, None
 
@@ -877,9 +989,16 @@ async def generate_roadmap(client_slug, brand_url, piece_count, notes, rewrite_b
         # whatever the prompt still happens to say. `setting_sources=["project"]` above is the
         # other half of this: it is what makes .claude/skills/ visible at all.
         allowed_tools=[
-            "mcp__firecrawl", "mcp__dataforseo", "Read", "Write", "Glob", "Bash", "Skill",
+            "mcp__firecrawl", "mcp__dataforseo", "mcp__seogets",
+            "Read", "Write", "Glob", "Bash", "Skill",
         ],
-        mcp_servers=servers,
+        # The project floor MERGED with whatever optional research MCP this machine holds a key
+        # for. strict_mcp_config stays False, so .mcp.json's firecrawl and dataforseo still load
+        # and these ride alongside for THIS session only. `mcp__seogets` is named above even on a
+        # machine with no key: allowed_tools is a permission list, not a manifest, so naming a
+        # server that did not spawn costs nothing, while leaving it off a machine that DID spawn
+        # it would put the session in front of a prompt no operator is there to answer.
+        mcp_servers={**servers, **_optional_mcp_servers()},
         max_turns=MAX_TURNS,
         model=os.environ.get("GEO_MODEL") or None,
         # The CLI subprocess needs PATH and every MCP credential named by ${VAR} in .mcp.json.

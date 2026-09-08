@@ -72,6 +72,8 @@ Every row in the final roadmap has to connect back to something on this list. A 
 
 Endpoints, parameters and what each metric is actually good for: read `references/dataforseo-playbook.md`. Do not guess parameter shapes: read the schema the MCP server gives for the endpoint, then call it.
 
+Firecrawl and DataForSEO are always present. Anything else is conditional on the machine holding a key for it, so use the tool a step names only when the run has told you it is connected, and never report a figure from a tool you do not have.
+
 **Every one of the six data-point columns is a live figure or a blank cell, and there is no third option.** They are the argument the client reads, so a number nobody pulled is worse than no number at all: a blank says "we could not measure this", and a guess says "we measured this" untruthfully, and nobody downstream can tell them apart afterwards.
 
 The minimum viable pull, in this order:
@@ -84,6 +86,12 @@ The minimum viable pull, in this order:
 6. **Citation landscape**: `ai_opt_llm_ment_top_domains` and `ai_opt_llm_ment_top_pages` on the category keywords. This tells you which domains and which *page shapes* get pulled into answers in this category. Match the roadmap's format mix to what actually gets cited.
 7. **Client standing**: `ai_opt_llm_ment_agg_metrics` with the client domain as target, and again with the two or three real competitors. Absence is the single strongest argument for a topical-authority skew, and it is the line the client will quote back to you.
 8. **Competitor set**: `dataforseo_labs_google_competitors_domain` or `dataforseo_labs_google_serp_competitors` to confirm who the competitors actually are, then `dataforseo_labs_google_domain_intersection` to find the queries competitors win and the client has nothing for.
+
+9. **The brand's own Search Console data, when SEO Gets is connected** (`mcp__seogets__*`, and the run tells you whether it is): pull STRIKING DISTANCE, the queries this brand already ranks just off the money, and QUERY MOVEMENT since last month. Everything in steps 1 to 8 is inferred from the outside, from competitors and from category demand; this is the brand's own measured performance, so where the two disagree this one wins about THIS brand.
+
+   **A striking-distance query is the strongest row a roadmap can carry.** The brand has already proved it can rank on that ground, so the piece finishes a job rather than starting one, and it converts sooner than any greenfield row in the sheet. Weigh those first when you allocate the count, and name the source in the report when a row comes from there. Query movement is the other half: a term that is climbing deserves reinforcement, and one that is falling is either a rewrite job (not this skill's) or a signal the ground is going.
+
+   A brand SEO Gets holds no property for returns nothing. That is ordinary for a new client and is not an error: say the tool returned no data and plan from the rest.
 
 Optional, when the category warrants it: `kw_data_dfs_trends_explore` for seasonality, `ai_optimization_llm_response` or `ai_optimization_chat_gpt_scraper` to see a real answer for a category question.
 
