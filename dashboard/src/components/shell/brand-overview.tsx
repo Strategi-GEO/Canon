@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { DiscoveryCard } from "@/components/discovery/discovery-card";
 import { api } from "@/lib/api";
 import { brandHref } from "@/lib/orgs-context";
 import { useRoadmap } from "@/lib/use-roadmap";
@@ -145,6 +146,11 @@ export function BrandOverview({ orgSlug, brand }: { orgSlug: string; brand: Clie
           />
           <ResourcesSummary orgSlug={orgSlug} client={client} />
           <FactsCard client={client} />
+          {/* Beside the fact base deliberately: this card is about what the fact base is
+              MISSING, and the two read together. A pointer only, never a control, because
+              generating spends real quota and sending puts model-written text in front of a
+              client, so both presses belong on the tab where the questions are readable. */}
+          <DiscoveryCard orgSlug={orgSlug} brandSlug={client.slug} />
         </div>
       </div>
     </div>

@@ -48,7 +48,24 @@ the client says about itself, in its own words, and much of it appears nowhere o
 1. Read `{{CLIENT_DIR}}/client.md`: the market, the language, the industry, the domain.
 2. Read `{{CLIENT_DIR}}/gates.json`: `entity_names` is the set of names the writers are permitted to
    use. Note it. If the brand presents under other names elsewhere, that is a finding for §7.
-3. Read EVERY file in `{{CLIENT_DIR}}/Resources/`. All of them, all the way through.
+3. Read `{{CLIENT_DIR}}/client-answers.md`. **Read it before the Resources, and treat it as the
+   strongest thing in this stage.** It is what the brand answered directly, in its own portal,
+   about the things its website never stated: a price band, a capacity, an award and its year, a
+   claim it wants nobody to make. Those answers rank WITH this file you are writing and above any
+   internal document, so where an answer settles something, it is settled.
+
+   Three limits on it, and they are absolute:
+   - **An answer is NOT a source and can never become a citation.** It can tell you a figure is
+     confirmed or a claim is wrong. A fact that needs a citation still needs a fetched source, and
+     an answered fact with no source belongs in §9 with its attribution wording, not in §1 or §2.
+   - **An unanswered question is not a fact about the brand.** Silence means nobody answered. It
+     never means no.
+   - **Where an answer contradicts what you fetch in STAGE 2, that is a §7 conflict**, recorded
+     with both sides and a resolution, never quietly resolved in the answer's favour.
+
+   The file is always present and is often EMPTY, which means the brand has answered nothing yet.
+   That is an ordinary state and not a setup problem: read it, find nothing, move on.
+4. Read EVERY file in `{{CLIENT_DIR}}/Resources/`. All of them, all the way through.
 
 **A file that uploaded is not automatically a file you can read.** Image-only PDFs yield no
 extractable text. You have a shell: use it. `pdftotext` on a PDF, and if it returns nothing, say so.

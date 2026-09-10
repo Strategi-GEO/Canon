@@ -250,6 +250,24 @@ CLIENT_WRITES = {
     # [name] child.
     "portal_resource_add",
     "portal_resource_remove",
+    # Discovery questions (040): the client reads the questions the operator SENT them, and saves
+    # one answer at a time. portal_answer_discovery is a genuine client write and the only one in
+    # this feature; portal_discovery_questions writes nothing and is here for the same reason
+    # report_months is, because the scan rejects any unvetted portal_ function.
+    #
+    # WHAT WAS VETTED. Both scope through org_membership + org_members exactly as the blog and
+    # channel doors do, and both filter on sent_at, so a DRAFT question the operator has not
+    # released is not merely unlabelled on the client wire, it is absent. The write additionally
+    # gates on role in ('admin','commenter') and resolves the question through client_id, so a
+    # question id belonging to another brand matches no row and answers NOTFOUND rather than
+    # writing across the tenancy boundary.
+    #
+    # NEITHER IS A CLIENT_WRITE_DOOR. That set names the doors whose disappearance is a
+    # regression, and it is the blog and channel review loop: answering, suggesting, approving.
+    # Discovery holds nothing. No article waits on these answers and no terminal status turns on
+    # them, so a deployment that never calls them is degraded, not broken.
+    "portal_discovery_questions",
+    "portal_answer_discovery",
     # The one client READ that goes through a definer function rather than a base-table select.
     # client_reports has RLS on and every authenticated grant revoked (see 020_client_reports.sql),
     # so the portal cannot read it directly at all: report_months is the only door, and it returns

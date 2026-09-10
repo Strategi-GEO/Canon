@@ -13,6 +13,7 @@ import {
   Recycle,
   Settings,
   Telescope,
+  MessageCircleQuestion,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { Org } from "@/types";
@@ -37,6 +38,10 @@ export const BRAND_NAV: NavItem[] = [
   // Before Blogs, because it comes before it: the roadmap is the input the New tab picks from,
   // and with no roadmap that tab has nothing to offer but a link back to here.
   { section: "/roadmap", label: "Content Roadmap", icon: MapIcon },
+  // Discovery questions, directly under the roadmap because it is the same kind of act: setting
+  // up what gets written rather than reviewing what was. The questions are DRAFTS until the
+  // operator presses Send, so this row is a review bench and not a mailbox.
+  { section: "/questions", label: "Questions", icon: MessageCircleQuestion },
   // ONE ENTRY, NOT TWO. Create Blogs was its own section and is now the Blogs page's New tab:
   // picking a topic and reading what came of it were two nav rows describing one pipeline, and an
   // operator moved between them constantly. /create still resolves, as a redirect to ?tab=new,

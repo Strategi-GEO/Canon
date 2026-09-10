@@ -6,6 +6,7 @@ import type {
   PortalBlogDetail,
   PortalChannelDetail,
   PortalChannelList,
+  PortalDiscovery,
   PortalReports,
   PortalRoadmap,
   SuggestBody,
@@ -173,6 +174,22 @@ export const api = {
   /** The brand's shared monthly reports, read-only. Empty `months` when nothing is shared yet. */
   reports: (brand: string, signal?: AbortSignal) =>
     request<PortalReports>(`/api/reports/${encodeURIComponent(brand)}`, { signal }),
+
+  /** The discovery questions the team has SENT this brand, with anything already saved. */
+  discovery: (brand: string, signal?: AbortSignal) =>
+    request<PortalDiscovery>(`/api/discovery/${encodeURIComponent(brand)}`, { signal }),
+
+  /**
+   * Save ONE discovery answer. Blank clears it.
+   *
+   * One question per call because the form saves as the client types: a whole-form submit would
+   * make a forty-question form all-or-nothing, which is the shape that gets abandoned.
+   */
+  answerDiscovery: (brand: string, id: string, answer: string) =>
+    request<{ id: string; answered: boolean }>(
+      `/api/discovery/${encodeURIComponent(brand)}/answer`,
+      { method: "POST", body: { id, answer } },
+    ),
 
   // No resource methods here: resources are admin-only (migration 024). A client never lists,
   // downloads, uploads or deletes a file, so the portal carries no wire for it.

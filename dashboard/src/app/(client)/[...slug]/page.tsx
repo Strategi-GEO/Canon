@@ -8,6 +8,7 @@ import { usePortal } from "@/portal/portal-context";
 import { BlogDetail, BlogsLibrary, BrandOverview, OrgChooser } from "@/portal/views";
 import { ChannelLibraryView, ChannelPostDetailView } from "@/portal/channel-views";
 import type { RepurposeChannel } from "@/types";
+import { QuestionsView } from "@/portal/questions-view";
 import { RoadmapView } from "@/portal/roadmap-view";
 import { ReportsView } from "@/portal/reports-view";
 import { detailText } from "@/portal/api";
@@ -116,6 +117,12 @@ export default function ClientCatchAll() {
   }
   if (route.section === "/roadmap") {
     return <RoadmapView org={route.org} brand={route.brand} />;
+  }
+  // No org prop: the discovery form reads only its own brand's sent questions and links nowhere.
+  // Keyed on the brand so switching brand remounts fresh rather than showing one brand's answers
+  // in another brand's boxes while the next load lands.
+  if (route.section === "/questions") {
+    return <QuestionsView key={route.brand} brand={route.brand} />;
   }
   // No org prop: the reports view reads only its own brand's shared reports and links nowhere
   // into the blog library.

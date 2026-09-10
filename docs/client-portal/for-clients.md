@@ -24,6 +24,7 @@ Down the left side, each brand has these:
 |---|---|
 | **Overview** | Where the brand stands, in three numbers, with your most recent articles |
 | **Content Roadmap** | The topics planned for you, and how many are written |
+| **Questions** | Things about your brand our research could not answer. Nothing here is required |
 | **Blogs** | Every article, in three stages |
 | **LinkedIn**, **Medium**, **Bluesky**, **X** | Short posts made from your articles, one tab each |
 | **Reports** | Your monthly performance report |
@@ -60,6 +61,25 @@ After that the article goes back to the team, and your answers stay on the page 
 
 !!! note "Nothing is lost while you think"
     An article waits as long as it needs to. It does not expire, and it does not go out without your answer.
+
+## Answering questions about your brand
+
+The **Questions** tab holds things we could not learn from your website: a price you never
+published, how many people you can seat, which year an award was from.
+
+Your answers go straight into the fact base every article for you is written against, so a figure
+you confirm here is one we can state with confidence later, instead of writing that it varies.
+
+**Nothing here is required, and nothing is waiting on it.** There is no submit button. Answer what
+you can, skip what you cannot, and leave the rest for whoever on your team knows it. Your answers
+save as you type, so you can close the tab and come back.
+
+If you are no longer sure of an answer you gave, clear the box. A withdrawn answer is better for us
+than one you are not confident about.
+
+!!! note "This is not the same as the questions that hold an article"
+    An article held under **Needs answers** is waiting on you and will not go out until you reply.
+    The **Questions** tab is not: it makes future articles better, and no article is stuck behind it.
 
 ## Reading an article
 
