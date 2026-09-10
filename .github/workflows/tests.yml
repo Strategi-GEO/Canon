@@ -183,3 +183,8 @@ jobs:
           # comment, because wiring a hold to the new table would stop a brand shipping over an
           # OPTIONAL form with nothing in any log to say why.
           python tests/discovery_check.py
+          # The boundary median. It bends first-score-is-final, which is the most heavily
+          # argued rule in the contract, so the branches are pinned rather than trusted: a
+          # confirmation must never move a score two auditors agreed on, never re-audit a
+          # held blog, and never cost a topic its verdict when a session dies.
+          python tests/median_check.py

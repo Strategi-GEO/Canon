@@ -288,6 +288,46 @@ blog below a bar it had already cleared. Because gates and the link pass both ru
 the scored artifact IS the shipped artifact, and the ONLY thing that touches the draft after
 the eval is an operator answer arriving.
 
+**THE ENGINE MEDIAN-CONFIRMS A SCORE THAT LANDS NEAR THE BAR, AND THAT IS NOT THE RE-EVAL
+FORBIDDEN ABOVE.** Where the final score sits inside `runner.MEDIAN_BAND` (86 to 92 inclusive),
+`runner._confirm_boundary_score` takes a SECOND audit of the SAME BYTES. Two audits on the same
+side of 90 settle it and the ORIGINAL score is kept untouched. Only a genuine split, one above
+and one below, buys a THIRD, and only then does the median of the three decide.
+
+**THE PARAGRAPH ABOVE IS WHAT LICENSES THIS, NOT AN EXCEPTION TO IT.** Its stated ground is that
+a confirmatory re-eval "re-rolls a stateless auditor whose score varies by several points on an
+identical draft, and it can strand a blog below a bar it had already cleared". Every word of that
+is true of ONE re-roll, which replaces a reading with another reading of equal noise. A MEDIAN is
+the opposite operation: it discards the outlier, so it is strictly MORE stable than the single
+score it replaces, and it cannot strand a blog two of three auditors put above the bar. The rule's
+own reasoning is the argument for this, which is why the band is narrow and the arithmetic is
+fixed rather than a judgement call.
+
+**THE 4-ITERATION LOOP DOES NOT ALREADY COVER THIS, and that is the thing a reader gets wrong.**
+Each round scores a DIFFERENT draft: a fresh writer applies the fix list, then a fresh evaluator
+scores the new bytes. So a move from 88 to 91 confounds the draft improving with the grader
+rolling differently, and nothing can separate them. This scores the SAME BYTES with no writer
+between, which is the only arrangement in which a difference means grader noise and nothing else.
+The loop's final score is also always ONE roll: when it ends the best draft is restored, and that
+draft's number was taken once, at the moment the verdict is decided.
+
+**THE ENGINE OWNS IT AND THE LEAD IS NOT INVOLVED.** It runs in `run_topic` AFTER
+`_install_best_draft` and `_keep_prior_run_if_higher`, so the audit is of the bytes that actually
+ship, and BEFORE `_enforce_terminal_status`, so the settled number is the one the resolver reads.
+Agent E must still SCORE ONCE per dispatch and must never append a corrected score of its own: a
+second opinion an auditor gives itself is a re-roll, and this is the engine asking a fresh auditor
+instead. Four refusals, all no-ops that keep the original score: outside the band, a CURRENT
+question on disk (a hold ignores the score, so refining it buys nothing), a dead audit session,
+and `GEO_MEDIAN_CONFIRM=0`.
+
+**THE EVAL AND THE SCORE MOVE TOGETHER, ALWAYS.** Each audit writes its own `eval.md`, and
+whichever audit produced the median has ITS file installed. The engine never edits an auditor's
+document and never records a number no auditor wrote. That is the same artifact-set rule
+`_install_best_draft` and the stop-path restore already keep, and it is required rather than tidy:
+the record binds its score to `eval.md` (`sync._score_from_eval`), so a median recorded only in
+the status feed would ship a blog whose header and whose audit describe different readings.
+`tests/median_check.py` pins every branch.
+
 Route fixes by the Area the eval assigns: **Sourcing** goes back to Agent R as a bounded
 top-up for that one claim; **Structure, Draft, Mechanics** go to Agent W. "Add a source"
 NEVER routes to the writer alone; the writer has no authority to invent a citation or URL.
