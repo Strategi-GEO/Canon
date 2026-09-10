@@ -56,6 +56,8 @@ import type {
   UpdateClientBody,
   UploadBlogResult,
   Client,
+  DiscoveryJob,
+  DiscoverySet,
 } from "@/types";
 
 /**
@@ -101,6 +103,18 @@ function describe(status: number, detail: unknown): string {
     }
     if (Array.isArray(first?.missing)) {
       return `Row is missing: ${first.missing.join(", ")}`;
+    }
+  }
+  // A REFUSAL THAT CARRIES STRUCTURE STILL CARRIES A SENTENCE. Several engine routes raise
+  // `detail={"detail": "<why>", "job": {...}}` so a second tab can attach to the run already in
+  // flight: roadmap/generate does it, and so does discovery/generate. Without this clause every
+  // one of those 409s reached the operator as "Request failed with status 409", which names the
+  // status and hides the only part that tells them what to do. Read the nested sentence and let
+  // `body` keep carrying the job for the pages that want it.
+  if (detail !== null && typeof detail === "object") {
+    const nested = (detail as { detail?: unknown }).detail;
+    if (typeof nested === "string" && nested.trim() !== "") {
+      return nested;
     }
   }
   return `Request failed with status ${status}`;
@@ -490,6 +504,56 @@ export const api = {
    */
   clearFactsGeneration: (slug: string) =>
     request<null>(`/api/clients/${slug}/facts/generate`, { method: "DELETE" }),
+
+  // ---- Discovery questions -------------------------------------------------
+  // What the crawl could not learn, asked of the person who knows. Questions land as DRAFTS and
+  // are invisible to the client until sendDiscovery: a model writing straight to a client is the
+  // one thing every other outward-facing surface here refuses.
+
+  /** Every question this brand holds, drafts, sent and answered alike, plus the live job. */
+  discovery: (slug: string, signal?: AbortSignal) =>
+    request<DiscoverySet>(`/api/clients/${slug}/discovery`, { signal }),
+
+  /**
+   * Starts a generation. 202: the ENGINE owns the session, the browser only watches, so a
+   * refresh cannot abort work the operator has already paid for. 409 when one is already
+   * running, when the fact base build is running (the questions read that file), or when a blog
+   * run is live for the brand.
+   */
+  generateDiscovery: (slug: string) =>
+    request<DiscoveryJob>(`/api/clients/${slug}/discovery/generate`, { method: "POST" }),
+
+  /** The running or settled generation job. 404 when there has never been one. */
+  discoveryJob: (slug: string, signal?: AbortSignal) =>
+    request<DiscoveryJob>(`/api/clients/${slug}/discovery/generate`, { signal }),
+
+  /** Forgets a SETTLED job. 409 while it runs. */
+  clearDiscoveryJob: (slug: string) =>
+    request<null>(`/api/clients/${slug}/discovery/generate`, { method: "DELETE" }),
+
+  /**
+   * Releases every DRAFT to the client's portal. This is the review gate, and it releases the
+   * SET: a client answering a form that grows underneath them cannot tell what is left.
+   */
+  sendDiscovery: (slug: string) =>
+    request<DiscoverySet & { sent: number }>(`/api/clients/${slug}/discovery/send`, {
+      method: "POST",
+    }),
+
+  /**
+   * Fixes the wording. 409 once ANSWERED: the client answered THOSE words, and rewriting the
+   * question afterwards makes the record assert a pairing that never happened.
+   */
+  editDiscoveryQuestion: (slug: string, id: string, body: { question?: string; why?: string }) =>
+    request<DiscoverySet>(`/api/clients/${slug}/discovery/${id}`, { method: "PATCH", body }),
+
+  /** Drops one question. Allowed after sending, 409 once answered. */
+  deleteDiscoveryQuestion: (slug: string, id: string) =>
+    request<null>(`/api/clients/${slug}/discovery/${id}`, { method: "DELETE" }),
+
+  /** Clears every question for the brand, answers included. The operator's reset. */
+  clearDiscovery: (slug: string) =>
+    request<null>(`/api/clients/${slug}/discovery`, { method: "DELETE" }),
 
   /**
    * Deletes the brand's canonical-facts.md entirely: the file, its report, and the record.

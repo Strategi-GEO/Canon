@@ -2,7 +2,9 @@
 
 The full scoring reference. Read this every time the skill runs.
 
-Structure: 8 hard gates (binary, auto-fail) and 12 graded dimensions (0 to 3, weighted, normalised to 100).
+Structure: 9 hard gates (binary, auto-fail) and 14 graded dimensions (0 to 3, weighted, normalised to 100).
+
+The weights total 30, so the maximum weighted score is 90 and the normalisation is `round(weighted_total / 90 * 100)`. The house bar of 90 therefore sits at exactly 81 of the 90 available points. Those numbers are load-bearing: `CLAUDE.md` derives the whole ship band from them, and an earlier version of this line said 8 gates and 12 dimensions, which reconciles with nothing in this file.
 
 Scoring meaning for the 0 to 3 scale: 0 is absent or broken, 1 is present but weak, 2 is solid and meets the house standard, 3 is exemplary.
 
@@ -32,7 +34,7 @@ Any single gate failure rejects the piece regardless of graded score. If the cli
 
 ## Graded dimensions
 
-Twelve dimensions in four buckets. Score each 0 to 3, multiply by weight, sum, normalise to 100.
+Fourteen dimensions in four buckets, with weights totalling 30. Score each 0 to 3, multiply by weight, sum, normalise to 100.
 
 ### Bucket A: Extractability
 

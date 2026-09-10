@@ -158,14 +158,14 @@ def test_transport_stdio_without_credentials():
         except runner.RunnerConfigError as exc:
             message = str(exc)
             check("a blog session is refused when the credentials are unset", True)
-            check("the refusal NAMES every missing variable",
-                  all(name in message for name in STDIO_CRED_VARS), message)
+            check("the refusal NAMES every missing FETCH variable",
+                  all(name in message for name in runner._FETCH_CRED_VARS), message)
             check("and says the config file's presence proves nothing",
                   "checked into the repo" in message, message)
 
         ok, reason = runner.check_real_mode_ready()
         check("check_real_mode_ready reports not ready, so a run is refused at submit time",
-              not ok and "research credentials" in reason, reason)
+              not ok and "cannot fetch" in reason, reason)
 
         try:
             servers = runner._resolve_mcp_servers(research=False)
@@ -174,20 +174,35 @@ def test_transport_stdio_without_credentials():
         except runner.RunnerConfigError as exc:
             check("a repurpose session still resolves, because it fetches nothing", False, str(exc))
 
-    # ONE CREDENTIAL SHORT IS STILL A REFUSAL, exactly as the http arm already holds for a half
-    # configured transport: dataforseo alone cannot fetch a page.
+    # THE TWO CREDENTIAL GROUPS ARE NOT THE SAME KIND OF THING, and this pair of checks is where
+    # that is pinned. The refusal exists because a session that cannot FETCH invents sources; that
+    # argument is entirely about Firecrawl. DataForSEO fetches nothing, and this contract says its
+    # only contribution, keyword volume, "is NEVER a reason to drop the prompt". Refusing over it
+    # blocked every blog on the machine in exchange for H2 phrasing, and said "could not fetch a
+    # single page" while Firecrawl was working.
     with no_mcp_env(), env(FIRECRAWL_API_KEY="fc-test"):
         try:
-            runner._resolve_mcp_servers()
-            check("one credential present is still a refusal", False, "no exception raised")
+            servers = runner._resolve_mcp_servers()
+            check("FETCH alone is enough to run: DataForSEO no longer blocks a blog",
+                  servers == {}, repr(servers))
         except runner.RunnerConfigError as exc:
-            check("one credential present is still a refusal, naming only what is missing",
-                  "DATAFORSEO_USERNAME" in str(exc) and "FIRECRAWL_API_KEY" not in str(exc),
+            check("FETCH alone is enough to run: DataForSEO no longer blocks a blog", False,
                   str(exc))
+        ok, reason = runner.check_real_mode_ready()
+        check("and submit time agrees", ok, reason)
+
+    # THE CONVERSE STILL REFUSES, which is what stops this being a way to run with no tools at all.
+    with no_mcp_env(), env(DATAFORSEO_USERNAME="u", DATAFORSEO_PASSWORD="p"):
+        try:
+            runner._resolve_mcp_servers()
+            check("keyword credentials alone are still a refusal", False, "no exception raised")
+        except runner.RunnerConfigError as exc:
+            check("keyword credentials alone are still a refusal, naming the fetch key",
+                  "FIRECRAWL_API_KEY" in str(exc), str(exc))
 
     # A BLANK VALUE IS NOT A VALUE. An empty var is how a half written .env or a cleared secret
     # arrives, and a bare `in os.environ` would call it present.
-    with no_mcp_env(), env(**{name: "   " for name in STDIO_CRED_VARS}):
+    with no_mcp_env(), env(**{name: "   " for name in runner._FETCH_CRED_VARS}):
         try:
             runner._resolve_mcp_servers()
             check("a blank credential is treated as missing", False, "no exception raised")

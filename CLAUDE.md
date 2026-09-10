@@ -100,7 +100,7 @@ awaits the cancellation it just requested, so it hangs in the same place still h
 and it charges every slow blog for the sins of a stuck one. PROGRESS IS THE HEARTBEAT instead,
 because the engine already emits one: `status.jsonl` is append only, so its size is a monotonic
 liveness signal costing one `stat()`. A blog is healthy while that file grows, for as long as it
-likes; it is wedged when the file has not grown in `GEO_STALL_TIMEOUT` (default 45 minutes, longer
+likes; it is wedged when the file has not grown in `GEO_STALL_TIMEOUT` (default 7200 seconds, two hours, floored at 300, longer
 than any stage a real session has ever run). `runner._sweep_slots` then cancels ONCE, and if the
 slot is still held two minutes later it RECLAIMS the slot and writes the topic's terminal `failed`
 line, because a topic with no terminal line hangs its SSE stream forever. That reclaim deliberately
@@ -559,13 +559,26 @@ script is the authority on these rules:
   and an entry for a link you did not fetch is a fabricated verification, which is the one
   failure this gate exists to make impossible.
 
-**The engine REFUSES A RUN OUTRIGHT on a machine with no Firecrawl or DataForSEO credentials**,
-at dispatch, before a session opens (`runner._stdio_mcp_config_ok`). This is not a gate you can
-satisfy and it is not addressed to you: if you are running at all, the credentials were there.
-It exists because `.mcp.json` is checked into the repo, so its presence used to say "the research
-tools are available" on a machine that held no key at all, and every fetch came back 401 while the
-run looked ordinary. A repurpose session is exempt, because it rewrites an already shipped blog
-and fetches nothing.
+**The engine REFUSES A RUN OUTRIGHT on a machine that cannot FETCH**, at dispatch, before a
+session opens (`runner._stdio_mcp_config_ok`). This is not a gate you can satisfy and it is not
+addressed to you: if you are running at all, the credentials were there. It exists because
+`.mcp.json` is checked into the repo, so its presence used to say "the research tools are
+available" on a machine that held no key at all, and every fetch came back 401 while the run
+looked ordinary. A repurpose session is exempt, because it rewrites an already shipped blog and
+fetches nothing.
+
+**THE REFUSAL IS SCOPED TO FIRECRAWL, AND DATAFORSEO ONLY WARNS.** Every word of the argument
+above is about FETCHING: a session that cannot fetch invents sources, because the fetch-before-cite
+rule rests on an agent having working tools. DataForSEO fetches nothing. Its whole contribution is
+keyword validation, and this file already says what that is worth two sections up: null or low
+volume "is NEVER a reason to drop the prompt", and volume "shapes H2 phrasing". Refusing over it
+blocked every blog on the machine in exchange for phrasing hints, on a product whose premise is
+that AI-search prompts have no meaningful volume, and it did so behind a message reading "could
+not fetch a single page" while Firecrawl was present and working. Measured rather than assumed: on
+2026-09-05 DataForSEO was unreachable for an entire session, the fact base built anyway, recorded
+the absence in §8, and caught a live outlet the record had missed plus four redirecting URLs. A
+run with no keyword data is a degraded run and says so in the log; it is not a refused one, and
+the target prompts a blog must be cited for are BINDING from the roadmap row either way.
 
 ## Voice and topic discipline (every article)
 The register is the HOUSE DEFAULT and the engine stays brand-agnostic: a register is a SHAPE, and

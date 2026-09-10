@@ -152,9 +152,19 @@ machine.
 | `GEO_STALL_TIMEOUT` | `7200` (2 hours) | **shell only** | Seconds a slot may go without its `status.jsonl` growing before the watchdog cancels it and, two minutes later, reclaims the slot and writes the topic's terminal `failed` line. Floored at 300. A threshold shorter than a quota stall does not catch wedged sessions, it destroys rate-limited ones, and it does so to every brand at once. |
 | `GEO_ANSWERS_PICKUP` | `0` | **shell only** | `1` turns on the hands-off sweep that dispatches the answer-driven revise a client portal's answers are owed, at startup and every five minutes. OFF by default because the primary path is the operator's own click, so a person chooses the moment this machine's quota is spent. |
 
-`GEO_CONCURRENCY`, `GEO_STALL_TIMEOUT` and `GEO_ANSWERS_PICKUP` are not on `AGENT_ENV_ALLOW`
-and are never handed to an agent. The other `GEO_*` knobs are on it, which is also what makes
-them settable from `server/.env`.
+`AGENT_ENV_ALLOW` (`server/db.py`) lists exactly five of these: `GEO_MODEL`, `GEO_MAX_TURNS`,
+`GEO_MAX_BUDGET_USD`, `GEO_RETRIES` and `GEO_DASHBOARD_ORIGINS`. Those are the only ones an agent
+session ever sees, and the only ones `export_agent_credentials` lifts out of `server/.env` into
+`os.environ`. Every other knob here is invisible to an agent.
+
+**That allowlist is NOT what makes a knob settable from `server/.env`**, and an earlier version of
+this paragraph said it was. `GEO_MEDIAN_CONFIRM` is
+marked "either" and is not on that list: it reads `os.environ.get(NAME) or
+db.config_value(NAME)`, and `config_value` reads the parsed `server/.env` directly without
+exporting anything. The two mechanisms are independent, which is the point, because it means a
+knob can be configurable from the file WITHOUT widening what crosses into a Claude session by one
+variable. The three marked "shell only" (`GEO_CONCURRENCY` excepted, which reads both) do not
+consult `config_value` at all.
 
 ### MCP transports: stdio (default) or HTTP
 
@@ -174,6 +184,12 @@ picks the transport at dispatch:
    | `FIRECRAWL_API_URL` | either | firecrawl, for a self-hosted instance |
    | `DATAFORSEO_USERNAME` | either | dataforseo |
    | `DATAFORSEO_PASSWORD` | either | dataforseo |
+
+   **Firecrawl is REQUIRED and DataForSEO is not.** A run is refused only when it cannot FETCH,
+   because that is the failure that makes a session invent sources. DataForSEO supplies keyword
+   validation, which `CLAUDE.md` says "is NEVER a reason to drop the prompt" and which "shapes H2
+   phrasing"; without it the engine logs a warning and runs. It also costs the Analysis tab its
+   rankings section. `tests/config_check.py` pins both directions.
 
    **`.mcp.json` holds no secrets.** Every credential in it is written as `${VAR_NAME}`
    interpolation, which the Claude Code CLI expands from the environment at spawn time.

@@ -1545,7 +1545,30 @@ def _http_mcp_servers():
 # required one: it would hard-refuse every run on every machine that never set the optional var,
 # which is a worse failure than the one this check exists to catch. Three names, matching the env
 # blocks of the two servers MCP_SERVER_NAMES declares.
-_STDIO_CRED_VARS = ("FIRECRAWL_API_KEY", "DATAFORSEO_USERNAME", "DATAFORSEO_PASSWORD")
+#
+# THE TWO GROUPS ARE NOT INTERCHANGEABLE, AND TREATING THEM AS ONE REFUSED RUNS FOR NO REASON.
+# Every argument in _stdio_mcp_config_ok below is about FETCHING: "could not fetch a single page",
+# and the fetch-before-cite rule resting on an agent having working tools. All of that is
+# Firecrawl. DataForSEO fetches nothing. Its whole contribution is keyword validation, and this
+# contract already says what that is worth: "Null or low volume on a target prompt is EXPECTED for
+# AI-search-first pieces and is NEVER a reason to drop the prompt. Volume shapes H2 phrasing."
+#
+# So a missing DataForSEO used to block every blog on the machine in exchange for phrasing hints,
+# on a product whose premise is that AI-search prompts have no meaningful volume. It also produced
+# a refusal that was simply false: "a session could not fetch a single page", said on a machine
+# whose Firecrawl key was present and working.
+#
+# MEASURED, NOT ASSUMED. DataForSEO failed to connect for an entire session on 2026-09-05
+# (CONNECTION_CLOSED). The canonical-facts build ran anyway, recorded in §8 that STAGE 3 never
+# ran, and produced a 36,000 character fact base that caught a live outlet the record had missed
+# and four redirecting URLs that would have shipped as links. The tool was absent and the work was
+# good, which is the definition of a soft dependency.
+_FETCH_CRED_VARS = ("FIRECRAWL_API_KEY",)
+_KEYWORD_CRED_VARS = ("DATAFORSEO_USERNAME", "DATAFORSEO_PASSWORD")
+
+# Kept as the union, because it is what "the credentials .mcp.json interpolates" means and
+# tests/config_check.py clears exactly this set to build its no-credentials state.
+_STDIO_CRED_VARS = _FETCH_CRED_VARS + _KEYWORD_CRED_VARS
 
 
 def _stdio_mcp_config_ok():
@@ -1593,17 +1616,29 @@ def _stdio_mcp_config_ok():
             f"{MCP_CONFIG_PATH} does not declare {', '.join(missing)}; a session without "
             f"those tools would invent sources"
         )
-    blank = [name for name in _STDIO_CRED_VARS if not (os.environ.get(name) or "").strip()]
+    # THE FETCH CREDENTIALS ARE THE ONES WORTH REFUSING OVER. Everything this docstring argues
+    # is about a session that cannot fetch, so that is what is enforced here.
+    blank = [name for name in _FETCH_CRED_VARS if not (os.environ.get(name) or "").strip()]
     if blank:
         raise RunnerConfigError(
-            f"the engine has no research credentials, so a session could not fetch a single "
-            f"page: {', '.join(blank)} "
+            f"the engine cannot fetch a single page: {', '.join(blank)} "
             f"{'is' if len(blank) == 1 else 'are'} unset in this engine's environment. "
-            f"{MCP_CONFIG_PATH} interpolates them into the firecrawl and dataforseo servers, and "
-            f"it is checked into the repo, so its presence says nothing about whether this "
-            f"machine can fetch. Sign in to the app to provision them, or set them in "
-            f"server/.env beside the engine"
+            f"{MCP_CONFIG_PATH} interpolates them into the firecrawl server, and it is checked "
+            f"into the repo, so its presence says nothing about whether this machine can fetch. "
+            f"Sign in to the app to provision them, or set them in server/.env beside the engine"
         )
+    # DataForSEO WARNS AND NEVER REFUSES. A run without it loses keyword validation, which shapes
+    # H2 phrasing and nothing else, and the sessions record its absence themselves: the facts
+    # prompt writes it into §8 and §7, and a blog's target prompts are BINDING from the roadmap
+    # row rather than from any volume figure. Loud in the log, because a silently degraded run is
+    # the failure mode this whole function exists to prevent; not fatal, because a blog written
+    # from fetched sources with unvalidated phrasing is a blog, and no blog at all is not.
+    thin = [name for name in _KEYWORD_CRED_VARS if not (os.environ.get(name) or "").strip()]
+    if thin:
+        log.warning(
+            "no DataForSEO credentials (%s unset): sessions will run WITHOUT keyword validation. "
+            "Target prompts are binding from the roadmap row regardless, so this costs H2 phrasing "
+            "and the Analysis tab's rankings section, not the blog.", ", ".join(thin))
     return True
 
 

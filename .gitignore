@@ -53,3 +53,4 @@ Start Canon (installed).command
 
 # The mkdocs build output. The site is published by CI from docs/, never committed.
 site/
+portal-credentials-per-brand/
