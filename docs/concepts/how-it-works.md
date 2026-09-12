@@ -21,7 +21,9 @@ Those words are what you see in the **Stage** column of the **Queue** while a bl
 
 Every blog begins as one row on the brand's content roadmap. The row is the brief, and it carries three binding things: the **topic**, **what the piece covers**, and the **target prompts**, which are the exact questions in AI search this article has to be the answer to.
 
-Those target prompts are not decoration. The opening of the article answers the first one directly, the section headings are built from them, and the FAQ at the bottom has to cover every one of them. Anything else the sheet carries, a format or a search intent, is passed to the writer as guidance under its own column heading.
+Those target prompts are not decoration. The opening of the article answers the first one directly, the section headings are built from them, and the FAQ at the bottom has to cover every one of them.
+
+Every other column the sheet carries reaches the writer too, as guidance under its own column heading: the content type, the query intent, and the demand figures the row was planned against. A `Comparison anchor` is a different article from an `FAQ (entity)`, and `Commercial` intent frames its language differently from `Informational`, so the writer follows them. The figures are the exception that proves the rule: they shape which phrasing a heading reaches for and they never appear in the article, because they are the argument for writing the piece and not evidence for anything inside it.
 
 See [The Content Roadmap](../guide/roadmap.md) for how those rows get there.
 

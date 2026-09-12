@@ -20,16 +20,26 @@ const BORDER = "#D9DDE3";
 const STRIPE = "#F6F7F9";
 
 /** Header text drives the column width, because the header is the only stable name a column has:
- *  generated sheets add volume columns, operator sheets rename them, but "prompts" is always
- *  wide and "format" is always narrow. Unknown columns get a sensible middle width. */
+ *  a generated sheet writes the ten house headers and an operator renames them, but a prompts
+ *  cell is always prose and a difficulty is always a two-digit number. Unknown columns get a
+ *  sensible middle width.
+ *
+ *  The checks are substrings and the FIRST HIT WINS, so no rule keys on a word two headers share:
+ *  "content" would catch Content Topic and Content Type both, and "query" would catch Query
+ *  Volume and Query Intent both. Each rule matches the word that is unique to its column. The
+ *  three volume columns (Keyword Volume, AI Search Volume, Query Volume) deliberately share the
+ *  last rule, because each holds a bare number and a rule per column would be three ways to
+ *  spell 14. */
 function columnWidth(header: string): number {
   const h = header.toLowerCase();
   if (h.includes("prompt")) return 52;
   if (h.includes("cover")) return 44;
   if (h.includes("topic")) return 34;
+  if (h.includes("type")) return 18;
   if (h.includes("intent")) return 18;
-  if (h.includes("format")) return 18;
-  if (h.includes("volume") || h.includes("search") || h.includes("est")) return 14;
+  if (h.includes("difficulty")) return 14;
+  if (h.includes("cost")) return 12;
+  if (h.includes("volume")) return 14;
   return 26;
 }
 

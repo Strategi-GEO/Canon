@@ -362,7 +362,7 @@ geo-factory/
   server/
     runner.py               dispatch, concurrency, retry; the ONLY place concurrency lives
     app.py                  FastAPI glue: submit-time validation, SSE tailer, output reader
-    roadmap.py              CSV loading; headers detected by regex shape, operator can override
+    roadmap.py              CSV loading; the brief by position, every other column by header
   web/
     index.html              the entire UI, one file, served at /
   tests/
@@ -399,12 +399,22 @@ edits it.
 verbatim under `clients/<slug>/uploads/`. The engine reads it and writes nothing back to it,
 so the operator's file stays exactly the file they sent.
 
-`roadmap.csv` columns are **positional**: column 1 is the topic, column 2 is what the piece
-covers, column 5 is the target prompts. **Everything else is ignored**, including intent and
-volume: it is not stored, not passed to any agent, and never reaches a model's context. The
-first row is always treated as a header and skipped. There is no header detection and no
-column override, because operator sheets are positionally stable and matching on header text
-only invents ways to map the wrong column.
+`roadmap.csv` is ten columns and three of them are **positional**: column 1 is the topic,
+column 2 is what the piece covers, column 8 is the target prompts. **Every other column is
+registered, not ignored.** The content type, the query intent and the justification figures are
+stored, shown, and handed to the writer as labelled guidance under the header the sheet gave
+them, because the sheet plans real instructions about the shape and framing of the piece. Query
+Intent is a live search-intent classification of the row's PRIMARY target prompt, not an eyeball
+read of a cell holding three prompts of differing intent. None of them is ever a fact the draft
+may cite. There is no prose `Justification` column: the figures ARE the justification, because a
+sentence explaining a number belongs beside the number it explains, and a column whose content
+argues about the other columns goes stale the moment any of them is re-pulled. The first row is
+always treated as a header and skipped. There is no header detection and no column override
+deciding WHICH column is the topic, because operator sheets are positionally stable and matching
+on header text only invents ways to map the wrong column. The headers of the binding three are
+read once as a GUARD: a ten-wide sheet laid out to an older contract is exactly the right width
+and would otherwise parse in silence, so the upload is refused unless columns 1, 2 and 8 read
+`Content Topic`, `What the Piece Covers` and `Target Prompts`.
 
 Onboarding a client is the normal, real procedure: the four files above, a human-approved
 `canonical-facts.md` that passes preflight, and the full pipeline (research, write, gates,

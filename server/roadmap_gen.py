@@ -2,8 +2,12 @@
 
 This is the other way a brand gets a roadmap. The first is an operator upload; this one hands
 the whole job (read the site, pull demand data, pick the topics, write the sheet) to a single
-agent session driven by server/prompts/roadmap-generation.md. The prompt is the strategy and
-this module is the plumbing: nothing about how a roadmap is chosen lives in Python.
+agent session driven by server/prompts/roadmap-generation.md. Nothing about how a roadmap is
+chosen lives in Python, and it does not live in the prompt either any more: the prompt's first
+instruction is to invoke the `roadmap-generation` SKILL, which owns the method, and what the
+prompt keeps is the engine half (the client's own files, the earlier-month exclusions, the output
+path and the column contract). This module is the plumbing under both. The one thing that changed
+here for it is `Skill` on allowed_tools; see the note there for why leaving it off fails quietly.
 
 The SDK session is FILE-ONLY: it writes clients/<slug>/roadmap.csv (and its report lands
 beside it) on local disk, exactly as before. The RECORD is roadmap_sheets: after the session
@@ -35,13 +39,21 @@ from . import roadmap, runner
 
 PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "roadmap-generation.md"
 
-# Generous on purpose, and far above describe.py's 12. This prompt walks seven stages: read the
-# client's own files, map and scrape the site, pull competitor and demand data, pull the AI
-# layer, score, architect, then write. That is dozens of tool calls before a single row exists,
-# and each one costs a turn. A cap that ran out mid plan would not fail loudly: it would end
-# the session with the roadmap half decided and no CSV written, and the operator would pay for
-# the whole session to be told nothing was produced.
-MAX_TURNS = 200
+# Generous on purpose, and far above describe.py's 12. The session reads the client's own files,
+# maps and scrapes the site, pulls competitor and demand data, pulls the AI layer, scores,
+# architects, then writes. That is dozens of tool calls before a single row exists, and each one
+# costs a turn. A cap that ran out mid plan would not fail loudly: it would end the session with
+# the roadmap half decided and no CSV written, and the operator would pay for the whole session
+# to be told nothing was produced.
+#
+# It went from 200 to 300 when the roadmap-generation skill took over the method, and the two
+# reasons are both PER ITEM rather than flat. The skill's step 1 scrapes EVERY published post
+# instead of the three-to-five sample the old inline prompt took, because a cannibalisation gate
+# that has seen half the archive duplicates the other half. Its step 5 then runs one
+# firecrawl_search per proposed row. So the turn cost now scales with the client's archive and
+# with PIECE_COUNT, and a 40-post archive at 10 pieces spends most of 200 before the data pull
+# starts. Both are the right calls; the cap is what has to move to pay for them.
+MAX_TURNS = 300
 
 _PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
 
@@ -280,6 +292,69 @@ def start_rewrite_job(client_slug, brand_url, month, payload, row_indices, feedb
 # The prompt
 # ---------------------------------------------------------------------------
 
+def _optional_mcp_servers():
+    """Research MCP servers this machine has a key for, beyond the firecrawl+dataforseo floor.
+
+    Same mechanism as `analysis_gen._optional_mcp_servers` and read through `db.config_value` for
+    the same reason: RULE 1 keeps server/.env out of os.environ and out of agent_env, so an
+    agent-facing MCP credential is routed into ONE session's mcp_servers rather than the
+    environment. These MERGE with the project .mcp.json floor because strict_mcp_config stays
+    False; they are never written into that file, so blog research, write and eval sessions do
+    not spawn them.
+
+    SEO GETS IS HERE AND CLARITY IS NOT, and the line between them is what the tool measures.
+    SEO Gets reports striking-distance queries and query movement: the terms this brand ALREADY
+    ranks just off the money, and what moved since last month. That is the single most direct
+    "what should we publish next" signal any tool in this building produces, and it is the one
+    input a roadmap could previously only approximate from competitor intersections. Clarity
+    measures rage clicks, scroll depth and session recordings, which describe how a page behaves
+    once someone is on it; a roadmap chooses which pages to write and cannot act on any of it, so
+    attaching it would spend a tool budget on data with no decision behind it. Bing Webmaster is
+    left out on a different ground: it has no MCP at all (analysis reaches it by REST through
+    Bash), and its query data is the same shape SEO Gets already supplies here.
+
+    An absent key means no server, which means the session simply does not have the tool. That is
+    graceful degradation, not a failure: the skill is told what it has and plans from the rest.
+    """
+    servers = {}
+    seogets = db.config_value("SEOGETS_API_KEY")
+    if seogets:
+        servers["seogets"] = {
+            "type": "http",
+            "url": "https://app.seogets.com/mcp",
+            "headers": {"Authorization": f"Bearer {seogets}"},
+        }
+    return servers
+
+
+def optional_tools_note(servers):
+    """One paragraph naming the EXTRA research tools this session actually has.
+
+    It exists for the reason `resource_note` exists: an agent told to use a tool that is not
+    there either burns turns hunting for it or, worse, reports a finding it never measured. The
+    floor (Firecrawl and DataForSEO) is named by the skill itself and is always present, because
+    the runner refuses the session outright without it. Everything here is conditional, so the
+    prompt has to say which way the condition fell for THIS run.
+    """
+    if "seogets" not in servers:
+        return (
+            "No optional research tools are connected for this run, so Firecrawl and DataForSEO "
+            "are the whole of your evidence. Do not look for an SEO Gets tool and do not treat "
+            "its absence as a fact about the brand."
+        )
+    return (
+        "**SEO Gets is connected (`mcp__seogets__*`) and you should use it.** It reports this "
+        "brand's own Search Console data, which is evidence no competitor-derived figure can "
+        "replace: the STRIKING DISTANCE queries it already ranks just off the money, and the "
+        "QUERY MOVEMENT since last month. Pull both before you write titles. A striking-distance "
+        "query is the strongest row a roadmap can carry, because the brand has already proved it "
+        "can rank for that ground and the piece is finishing a job rather than starting one, so "
+        "say so in the report when a row comes from there. A brand SEO Gets holds no property "
+        "for returns nothing, which is ordinary for a new client and is not an error: say the "
+        "tool returned no data and plan from the rest."
+    )
+
+
 def resource_note(client_slug):
     """One sentence naming what is actually in clients/<slug>/Resources/.
 
@@ -332,9 +407,16 @@ def existing_topics_block(client_slug):
 
 
 def _format_of(row):
-    """The row's Format extra, if the sheet planned one. Labels are the sheet's own headers."""
+    """The row's Content Type extra, if the sheet planned one. Labels are the sheet's own headers.
+
+    Both spellings are accepted because both are on real sheets: the house header is "Content
+    Type" since the contract grew past six columns, and every roadmap generated before that
+    calls the same column "Format". Reading only the new name would silently empty the kept-rows
+    list in the rewrite block, which is what the structural quotas are counted against, so
+    a rewrite of an older sheet would be told it may plan a second hub listicle.
+    """
     for extra in row.get("extras", []):
-        if extra.get("label", "").strip().lower() == "format":
+        if extra.get("label", "").strip().lower() in ("content type", "format"):
             return extra.get("value", "").strip()
     return ""
 
@@ -353,7 +435,12 @@ def rewrite_block(month, payload, row_indices, feedback):
     n = len(rejected)
 
     rejected_lines = "\n".join(
-        f'- Row {row["index"] + 1}: "{row["topic"]}" — {row["covers"] or "(no scope given)"}'
+        # A colon, not an em dash. This block is the brief the session reads, and that same
+        # session is told a few paragraphs later that the house bans em and en dashes and that
+        # build_roadmap.py refuses a row carrying one. Handing it the banned character inside
+        # its own instructions is a small contradiction with a real cost: the rejected topics
+        # are the text it is most likely to echo back into a replacement row.
+        f'- Row {row["index"] + 1}: "{row["topic"]}": {row["covers"] or "(no scope given)"}'
         for row in rejected)
     kept_lines = "\n".join(
         f'- {f"[{_format_of(row)}] " if _format_of(row) else ""}"{row["topic"]}"'
@@ -365,12 +452,29 @@ def rewrite_block(month, payload, row_indices, feedback):
     # instead and was refused for it. So the contract the agent is given matches the one the
     # splice actually enforces there: width alone.
     if any(cell.strip() for cell in payload["columns"]):
+        # build_roadmap.py stamps the HOUSE header and takes no flag for another, so on a sheet
+        # whose labels are the operator's own it writes a file splice_sheet refuses outright. The
+        # session learns that only after a full research pass, which is the most expensive way
+        # there is to discover a header mismatch, so the block says it before the session starts.
+        # Every sheet widen_roadmaps.py migrated is one of these too: that script deliberately
+        # keeps an operator's own extra labels rather than stamping house names over them.
+        house = (
+            ""
+            if [cell.strip() for cell in payload["columns"]] == list(roadmap.COLUMNS)
+            else ("\n\n**This sheet's header is NOT the house header, so `build_roadmap.py` "
+                  "cannot write this file: it only ever stamps the house header and takes no "
+                  "flag for another one. Write the CSV yourself, under the header quoted above, "
+                  "cell for cell. Use `build_roadmap.py --check-only` to validate your rows if "
+                  "you like; a sheet it WRITES here is refused by the engine and the whole "
+                  "session is wasted.**")
+        )
         header_contract = (
             "**Header contract: row 1 of your file must be EXACTLY the current sheet's "
             "header, and your columns must match it:**\n\n"
             "```\n"
             f"{_csv_line(payload['columns'])}\n"
             "```"
+            f"{house}"
         )
     else:
         width = len(payload["columns"])
@@ -416,7 +520,9 @@ second the second, and so on:**
 topics must not duplicate or substantially overlap them OR the rejected topics above:**
 {kept_lines}
 
-**Stage 5's structural quotas count across the WHOLE sheet, kept rows included.** The kept
+**The structural quotas count across the WHOLE sheet, kept rows included.** They live in
+`.claude/skills/roadmap-generation/assets/format-taxonomy.json` under `structural_quotas`, which
+the skill reads: exactly one hub listicle, one comparison anchor, one FAQ (entity). The kept
 rows' formats are listed above: never plan a second hub listicle, comparison anchor or FAQ
 (entity) where a kept row already holds one. The intent mix likewise describes the whole
 sheet, so weigh what the kept rows already cover rather than reproducing the full ratio
@@ -463,6 +569,9 @@ def build_prompt(client_slug, brand_url, piece_count, notes, rewrite_block="",
         "ROADMAP_PATH": str(roadmap_path or roadmap.roadmap_path(client_slug)),
         "RESOURCE_NOTE": resource_note(client_slug),
         "EXISTING_TOPICS": existing_topics_block(client_slug),
+        # Which OPTIONAL research tools this run actually has. Computed from the same function
+        # that attaches them, so the prompt can never claim a tool the session was not given.
+        "OPTIONAL_TOOLS": optional_tools_note(_optional_mcp_servers()),
         # "" on a fresh generation, so the substituted prompt is byte-for-byte what it was
         # before rewrites existed. Non-empty only when start_rewrite_job built the block.
         "REWRITE_BLOCK": rewrite_block,
@@ -573,6 +682,39 @@ def _save_report(client_slug, job):
         pass
 
 
+def _exact_contract_error(columns):
+    """The generated sheet must be the house ten columns EXACTLY. Returns a message, or None.
+
+    THIS IS STRICTER THAN THE UPLOAD PARSER, DELIBERATELY, AND THE ASYMMETRY IS THE POINT.
+    `roadmap.parse_csv` checks the width and the three BINDING headers and leaves the other seven
+    labels alone, because an operator's own sheet is theirs: they may call the demand figure
+    "Est. Searches" and the engine hands the writer the header they typed. That leniency is
+    correct for a file a person uploaded and wrong for a file THIS ENGINE just wrote. Here we
+    control the writer, so "close enough" has no reason to exist: a generated sheet headed
+    `Format` and `MSV` would parse, land, and quietly teach the next operator that those are the
+    column names, and an eleventh column would ride into every writer's brief as guidance nobody
+    planned.
+
+    It is checked HERE rather than in the parser for that same reason: moving it into
+    `roadmap.parse_csv` would apply it to uploads too and refuse the operator sheets the
+    labelled-extras rule exists to accept.
+
+    Case-insensitive on the label text and exact on the ORDER and the COUNT. Case is the one
+    thing a spreadsheet round trip changes on its own; order and count are what the positional
+    mapping rests on.
+    """
+    want = [c.casefold() for c in roadmap.COLUMNS]
+    got = [c.strip().casefold() for c in columns]
+    if got == want:
+        return None
+    if len(got) != len(want):
+        return (f"it has {len(got)} column(s) and the contract is exactly {len(want)}: "
+                f"{', '.join(roadmap.COLUMNS)}")
+    wrong = [f"column {i + 1} should be {roadmap.COLUMNS[i]!r} but reads {columns[i].strip()!r}"
+             for i, (a, b) in enumerate(zip(got, want)) if a != b]
+    return f"its header does not match the contract: {'; '.join(wrong)}"
+
+
 def _validate_written(client_slug):
     """Parse the file the session claims to have written. Returns (rows, error).
 
@@ -615,6 +757,19 @@ def _validate_written(client_slug):
         return None, (
             "the session wrote a roadmap with a header row and no data rows, so it was "
             "deleted and the brand still has no roadmap"
+        )
+
+    # Every sheet Canon GENERATES is the house ten, exactly. build_roadmap.py writes that order
+    # for the session, so reaching this branch means the session hand-wrote the CSV instead of
+    # running the script the prompt mandates, and the sheet it produced is not the one the
+    # operator was promised.
+    contract = _exact_contract_error(payload["columns"])
+    if contract:
+        path.unlink(missing_ok=True)
+        return None, (
+            f"the session wrote a roadmap that is not the house column contract, so it was "
+            f"deleted and the brand still has no roadmap: {contract}. Run "
+            f"build_roadmap.py rather than writing the CSV by hand; it writes the order."
         )
     return rows, None
 
@@ -816,18 +971,34 @@ async def generate_roadmap(client_slug, brand_url, piece_count, notes, rewrite_b
         # used Bash nine times, so the restriction only ever existed in this comment. The real
         # deny list is `disallowed_tools`, and nothing here is on it.
         #
-        # Second, on the choice: the shell earns its place. That run used jq to read DataForSEO's
-        # deeply nested responses and python3 to check its own CSV against the output contract,
-        # five columns, three prompts a row, no em dashes, before returning. That is the
-        # difference between an agent claiming it verified the sheet and an agent that did, and
-        # the sheet it produced passed every contract check on the first attempt (the contract is
-        # six columns now: the volume column is column 6). Taking the
-        # shell away to satisfy a tidier tool list would buy nothing: a session that can Write
-        # roadmap.csv can already do anything a shell could do to that file.
+        # Second, on the choice: the shell earns its place, and it earns it harder now than it
+        # did. That first run used jq to read DataForSEO's deeply nested responses and python3 to
+        # check its own CSV against the output contract before returning, which is the difference
+        # between an agent claiming it verified the sheet and an agent that did. The skill then
+        # made both of those the documented path rather than a good habit: check_overlap.py IS
+        # the cannibalisation gate and build_roadmap.py IS what writes the sheet, so without a
+        # shell the session cannot run its own gate and cannot produce its own deliverable.
+        # Taking it away to satisfy a tidier tool list would buy nothing anyway: a session that
+        # can Write roadmap.csv can already do anything a shell could do to that file.
+        #
+        # SKILL IS ON THE LIST BECAUSE THE STRATEGY LIVES IN ONE. The prompt's first instruction
+        # is to invoke `roadmap-generation`, which carries the site read, the data pull, the
+        # cannibalisation gate and the column contract; the prompt keeps only the engine half.
+        # Leave Skill off and the session is told to run something it will be prompted for and
+        # nobody is there to answer, so it proceeds without the method and writes a roadmap from
+        # whatever the prompt still happens to say. `setting_sources=["project"]` above is the
+        # other half of this: it is what makes .claude/skills/ visible at all.
         allowed_tools=[
-            "mcp__firecrawl", "mcp__dataforseo", "Read", "Write", "Glob", "Bash",
+            "mcp__firecrawl", "mcp__dataforseo", "mcp__seogets",
+            "Read", "Write", "Glob", "Bash", "Skill",
         ],
-        mcp_servers=servers,
+        # The project floor MERGED with whatever optional research MCP this machine holds a key
+        # for. strict_mcp_config stays False, so .mcp.json's firecrawl and dataforseo still load
+        # and these ride alongside for THIS session only. `mcp__seogets` is named above even on a
+        # machine with no key: allowed_tools is a permission list, not a manifest, so naming a
+        # server that did not spawn costs nothing, while leaving it off a machine that DID spawn
+        # it would put the session in front of a prompt no operator is there to answer.
+        mcp_servers={**servers, **_optional_mcp_servers()},
         max_turns=MAX_TURNS,
         model=os.environ.get("GEO_MODEL") or None,
         # The CLI subprocess needs PATH and every MCP credential named by ${VAR} in .mcp.json.
@@ -844,7 +1015,7 @@ async def generate_roadmap(client_slug, brand_url, piece_count, notes, rewrite_b
                                    options=options):
             found = _final_text(message)
             if found:
-                # Keep the LAST text message. The prompt's Stage 7 says the agent's final
+                # Keep the LAST text message. The prompt's VERIFY THEN REPORT block says the final
                 # message IS the report; an earlier one is the model narrating a scrape.
                 text = found
     except ClaudeSDKError as exc:

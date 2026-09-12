@@ -449,19 +449,44 @@ No other fetch or search tool. If neither can confirm something, it is not a fac
 - Agent E: `geo-content-eval/references/rubric.md`, every run.
 
 ## The pipeline (per topic)
-Roadmap: `clients/<slug>/roadmap.csv`. The house sheet is five columns:
+Roadmap: `clients/<slug>/roadmap.csv`. The house sheet is ten columns:
 
 | Column | 0-indexed | Meaning | Reaches an agent as |
 |---|---|---|---|
 | 1 | 0 | **Content Topic** | the subject, BY POSITION |
 | 2 | 1 | **What the Piece Covers** | the scope, BY POSITION |
-| 3 | 2 | **Format** | an extra, BY ITS HEADER |
-| 4 | 3 | **Search Intent** | an extra, BY ITS HEADER |
-| 5 | 4 | **Target Prompts** | the prompts, BY POSITION |
+| 3 | 2 | **Content Type** | an extra, BY ITS HEADER |
+| 4 | 3 | **Keyword Volume** | an extra, BY ITS HEADER |
+| 5 | 4 | **AI Search Volume** | an extra, BY ITS HEADER |
+| 6 | 5 | **Cost Per Click** | an extra, BY ITS HEADER |
+| 7 | 6 | **Keyword Difficulty** | an extra, BY ITS HEADER |
+| 8 | 7 | **Target Prompts** | the prompts, BY POSITION |
+| 9 | 8 | **Query Volume** | an extra, BY ITS HEADER |
+| 10 | 9 | **Query Intent** | an extra, BY ITS HEADER |
 
-**Columns 1, 2 and 5 are read BY POSITION and only by position.** That mapping is frozen. There
+`server/roadmap.py` holds this contract as its `COLUMNS` tuple plus `COL_TOPIC`, `COL_COVERS`
+and `COL_PROMPTS`, and that module is the source of truth for it.
+
+**Columns 1, 2 and 8 are read BY POSITION and only by position.** That mapping is frozen. There
 is NO header-text detection deciding which column is the topic: sheets are positionally stable,
 so header text is noise there and matching on it only invents ways to map the wrong column.
+
+The sheet grew from six columns to ten so that the JUSTIFICATION, the live figures that argue a
+row to the client, travels with the row it argues for. Target Prompts moved from column 5 to
+column 8 to keep those data points together between the scope and the prompts. `Format` was
+renamed `Content Type` and `Search Intent` was renamed `Query Intent`, and `Est. Monthly Volume`
+was split into `Keyword Volume`, the Google MSV for the row's primary keyword, and `Query
+Volume`, the volume for its primary target prompt. `Query Intent` is a live
+`dataforseo_labs_search_intent` classification of the row's PRIMARY target prompt, never an
+eyeball read of the prompts cell, which is why it is not redundant with a cell that deliberately
+holds three prompts of differing intent.
+
+A PROSE `Justification` column was tried between Content Type and the figures, and it is
+REMOVED. "Justification" was the name of the GROUP of data-point columns, never a column of its
+own: the figures ARE the justification. A sentence explaining a number belongs next to the
+number it explains, and a column whose content is an argument about the other columns goes stale
+the moment any of them is re-pulled. The generation session's REPORT is where prose about them
+lives.
 
 **Every other column is REGISTERED, not dropped.** It is stored, shown, and passed to the
 writer, labelled with its own header text. This reversed an earlier rule that discarded them,
@@ -470,10 +495,10 @@ a `Comparison anchor` is written differently from an `FAQ (entity)`, and Commerc
 frames differently from Informational.
 
 **An extra is labelled by its HEADER, never by its position, and this distinction is the whole
-of the rule.** Position 3 is `Format` on a generated sheet, `Approx. Volume (IN/mo)` on one
-operator sheet and `Est. Searches` on another. Hardcoding "column 3 is the format" fed a writer
-`~1200` as its format. So the binding three are positional, the extras are labelled, and neither
-rule is allowed to borrow the other's mechanism.
+of the rule.** Position 3 is `Content Type` on a generated sheet, `Approx. Volume (IN/mo)` on one
+operator sheet and `Est. Searches` on another. Hardcoding "column 3 is the content type" fed a
+writer `~1200` as its content type. So the binding three are positional, the extras are labelled, and
+neither rule is allowed to borrow the other's mechanism.
 
 Parsing rules:
 - Parse with a real CSV parser; cells contain commas and newlines inside quotes.
@@ -484,12 +509,24 @@ Parsing rules:
   pipes, because `server/prompts/roadmap-generation.md` specifies pipes. On newlines alone a
   generated cell parsed as ONE run-on prompt, silently: the row kept working and the piece was
   written against the wrong query.
-- A CSV with fewer than 5 columns cannot satisfy this mapping. Reject the upload with a clear
-  message naming how many columns were found. Never silently map the wrong column.
+- A CSV with fewer than 10 columns cannot satisfy this mapping. Reject the upload with a clear
+  message naming how many columns were found and quoting the header row the sheet must carry.
+  Never silently map the wrong column.
+- **WIDTH ALONE STOPPED BEING ENOUGH WHEN THE CONTRACT GREW, so a header guard refuses the
+  sheet that width cannot catch.** A six-column sheet is refused loudly by width. A TEN-column
+  sheet laid out to an OLD contract is exactly the right width, so it parses in silence while
+  column 8, which the old sheet filled with something else, is read as the target prompts. The
+  guard reads the headers at positions 1, 2 and 8 and refuses the upload unless they are
+  `Content Topic`, `What the Piece Covers` and `Target Prompts`. It is a GUARD and not a lookup:
+  nothing is ever found by its name, and the seven extras' headers are never checked, because a
+  label is the half of the contract that is deliberately loose and checking it would refuse
+  sheets that are correct. There is ONE contract and old sheets are not dual-parsed: the refusal
+  names the fix.
 - A row missing topic, covers, or prompts is incomplete: show it, but do not let it be
-  selected, and name the missing fields. An extra is NEVER required: a blank Format is a sheet
-  that did not plan one, not an incomplete row. Reject a submitted incomplete row at the API
-  boundary with 422, never twenty minutes into a run.
+  selected, and name the missing fields. An extra is NEVER required: a blank Content Type is a
+  sheet that did not plan one, not an incomplete row, and a blank Cost Per Click is a figure no
+  live call supported. Reject a submitted incomplete row at the API boundary with 422, never
+  twenty minutes into a run.
 
 **The app never EDITS the operator's CSV.** No agent and no endpoint rewrites a row, a cell, or
 a status back into that file: progress lives only in `status.jsonl`. The app may CREATE the file
@@ -506,22 +543,25 @@ The row is the brief:
 - **Target Prompts** -> BINDING. The exact AI-search queries this piece must be cited for.
   The answer-first opening answers the primary target prompt; H2s map to these prompts; the
   FAQ covers every one of them, phrased verbatim somewhere liftable.
-- **Every extra column** -> handed to the writer verbatim, under its own header. `Format:
-  Comparison anchor` and `Search Intent: Commercial` are instructions about the shape of the
-  piece and the frame of its language, and the writer follows them.
+- **Every extra column** -> handed to the writer verbatim, under its own header. `Content Type:
+  Comparison anchor` and `Query Intent: Commercial` are instructions about the shape of the
+  piece and the frame of its language, and the writer follows them. The justification figures
+  ride along the same way, under their own headers.
 
 The whole row reaches the agents TWICE, by two mechanisms, and the second is what makes it
 reliable. It is in the lead's prompt, and the backend also lays it at
 `outputs/<slug>/<topic-slug>/roadmap-row.md`, which Agent R and Agent W read by path every
 iteration. Relay alone was the delivery mechanism until that file existed, and relay is exactly
-what fails on iteration 3: the lead has no use for `Format` itself, so it is the first thing a
-retyped dispatch drops, and a writer that never hears `Comparison anchor` writes a different
-piece. The lead still passes the brief in every dispatch. The file is the backstop, not the
-substitute. Agent E does NOT read it: its input set is closed by the hostile-isolation rule.
+what fails on iteration 3: the lead has no use for `Content Type` itself, so it is the first
+thing a retyped dispatch drops, and a writer that never hears `Comparison anchor` writes a
+different piece. The lead still passes the brief in every dispatch. The file is the backstop,
+not the substitute. Agent E does NOT read it: its input set is closed by the hostile-isolation
+rule.
 
-An extra is guidance, never a fact. `Approx. Volume (IN/mo): ~1200` shapes which phrasing an H2
-reaches for; it is NOT a statistic, it never appears in the draft, and it can never be cited.
-Nothing in an extra column is a source, and no extra overrides `canonical-facts.md`.
+An extra is guidance, never a fact. `Keyword Volume: 1,200` shapes which phrasing an H2 reaches
+for; it is NOT a statistic, it never appears in the draft, and it can never be cited. That holds
+for every justification figure on the row: they argue the topic to the client, and no draft
+repeats them. Nothing in an extra column is a source, and no extra overrides `canonical-facts.md`.
 
 ## Mechanical gates
 ```

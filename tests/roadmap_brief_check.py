@@ -3,10 +3,10 @@
 
 Every column the sheet carries used to reach the agents by relay alone: the lead had it in its
 prompt and had to retype it into each dispatch. The extras are the half a lead drops first,
-because it has no use for them itself, and a writer that never hears "Format: Comparison anchor"
-writes a different piece. roadmap-row.md is the backstop, so this pins that the file is written,
-that it carries the extras under the SHEET's own headers, and that both lead prompts still carry
-the same text.
+because it has no use for them itself, and a writer that never hears "Content Type: Comparison
+anchor" writes a different piece. roadmap-row.md is the backstop, so this pins that the file is
+written, that it carries the extras under the SHEET's own headers, and that both lead prompts
+still carry the same text.
 
   .venv/bin/python tests/roadmap_brief_check.py
 """
@@ -28,11 +28,15 @@ ROW = {
     "prompts": ["which weekend homes near bengaluru are worth it",
                 "how much does a plot near bengaluru cost"],
     "topic_slug": "weekend-homes-near-bengaluru",
-    # Position 3 is "Format" on a generated sheet and "Approx. Volume (IN/mo)" on an operator's,
-    # which is why extras carry their own label instead of a position.
-    "extras": [{"label": "Format", "value": "Comparison anchor"},
-               {"label": "Search Intent", "value": "Commercial"},
-               {"label": "Est. Monthly Volume", "value": "1,000 to 2,000"}],
+    # Position 3 is "Content Type" on a generated sheet and "Approx. Volume (IN/mo)" on an
+    # operator's, which is why extras carry their own label instead of a position. Cost Per Click
+    # is one of the six data points that ARE the row's justification, the ten-column contract
+    # carrying no prose column arguing about them: it reaches the writer under its own header like
+    # every other extra, and it is guidance, never a citable figure.
+    "extras": [{"label": "Content Type", "value": "Comparison anchor"},
+               {"label": "Query Intent", "value": "Commercial"},
+               {"label": "Keyword Volume", "value": "1,000 to 2,000"},
+               {"label": "Cost Per Click", "value": "1.20"}],
 }
 
 
@@ -60,7 +64,9 @@ def test_the_brief_carries_every_column():
 
 def test_a_sheet_with_no_extras_says_nothing_about_them():
     print("\ntest_a_sheet_with_no_extras_says_nothing_about_them")
-    # A blank Format is a sheet that did not plan one, not a row to annotate with an empty label.
+    # A blank Content Type is a sheet that did not plan one, not a row to annotate with an empty
+    # label. Same for a blank Cost Per Click: DataForSEO had no figure, and an empty label reads
+    # as one.
     brief = runner._roadmap_brief({**ROW, "extras": []})
     check("no guidance block appears", "under the sheet's own headers" not in brief, brief)
     check("the binding three still do", ROW["covers"] in brief)
@@ -74,13 +80,16 @@ def test_the_file_is_written_and_both_leads_carry_the_same_text():
         path = out_dir / "roadmap-row.md"
         check("roadmap-row.md exists", path.is_file())
         text = path.read_text(encoding="utf-8")
-        check("the file carries the Format extra", "Format: Comparison anchor" in text, text)
+        check("the file carries the Content Type extra",
+              "Content Type: Comparison anchor" in text, text)
+        check("and a justification figure reaches it under its own header",
+              "Cost Per Click: 1.20" in text, text)
 
         lead = runner._lead_prompt("blr-brewing", ROW, ROW["topic_slug"], str(out_dir))
         revise = runner._revise_lead_prompt("blr-brewing", ROW, ROW["topic_slug"], str(out_dir), 2)
         for name, prompt in (("first draft", lead), ("revise", revise)):
             check(f"the {name} lead still carries the extras itself",
-                  "Format: Comparison anchor" in prompt, prompt[:400])
+                  "Content Type: Comparison anchor" in prompt, prompt[:400])
             check(f"the {name} lead names the file as the backstop",
                   "roadmap-row.md" in prompt, prompt[:400])
 

@@ -422,7 +422,7 @@ function NoRoadmap({
           {brandName} has no content roadmap
         </p>
         <p className="mx-auto mt-2 max-w-md text-xs leading-relaxed text-muted-foreground">
-          The roadmap is the brief. The factory reads columns 1, 2 and 5: the topic, what the
+          The roadmap is the brief. The factory reads columns 1, 2 and 8: the topic, what the
           piece covers, and the target prompts it must be cited for. Every other column is
           passed to the writer as guidance, under its own header.
           Uploading only parses the sheet; nothing generates until you pick rows on Create Blogs.
