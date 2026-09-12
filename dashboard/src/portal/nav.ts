@@ -17,6 +17,7 @@ import {
   Cloud,
   Feather,
   FileText,
+  MessageCircleQuestion,
   LayoutDashboard,
   Map as MapIcon,
 } from "lucide-react";
@@ -40,6 +41,11 @@ export type NavItem = {
 export const BRAND_NAV: NavItem[] = [
   { section: "", label: "Overview", icon: LayoutDashboard },
   { section: "/roadmap", label: "Content Roadmap", icon: MapIcon },
+  // Discovery questions: what the crawl could not learn, asked of the person who knows. It sits
+  // directly under the roadmap because it is the same kind of act, setting up what gets written
+  // rather than reviewing what was. It holds NOTHING: no article waits on these answers, so a
+  // client who never opens this row loses nothing they would otherwise have had.
+  { section: "/questions", label: "Questions", icon: MessageCircleQuestion },
   { section: "/blogs", label: "Blogs", icon: FileText },
   // The distribution channels. Same section words and icons as the admin dashboard, so a client
   // reading over an operator's shoulder sees the same tabs. Each shows two sub-tabs, Ready to post
@@ -67,7 +73,7 @@ const RESERVED = new Set(["admin", "login", "api", "_next", "favicon.ico"]);
  */
 // "resources" is deliberately absent: it is not a client section (migration 024), so
 // /{brand}/resources resolves to not-found rather than a page.
-const SECTIONS = new Set(["blogs", "roadmap", "reports", "linkedin", "medium", "bluesky", "x"]);
+const SECTIONS = new Set(["blogs", "roadmap", "questions", "reports", "linkedin", "medium", "bluesky", "x"]);
 
 // Sections that carry a per-item detail URL, /{brand}/<section>/<topic>. Blogs open a single
 // article; every channel opens a single post. Every other section is a flat page, so a third

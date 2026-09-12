@@ -2719,4 +2719,170 @@ create index if not exists client_analyses_client on client_analyses (client_id)
 alter table client_analyses enable row level security;
 revoke all on client_analyses from authenticated, anon;
 
+-- ---------------------------------------------------------------------------
+-- Discovery questions (migration 040). Mirrored here for a fresh build; the migration is
+-- the applied artifact and this is the from-scratch copy of it.
+-- ---------------------------------------------------------------------------
+create table if not exists client_discovery_questions (
+  id         uuid primary key default gen_random_uuid(),
+  client_id  uuid not null references clients(id) on delete cascade,
+
+  -- 'general'      : the set any brand in this industry should be able to answer.
+  -- 'personalised' : written against THIS brand's own site, naming its own products and pages.
+  -- The split is what the operator reviews by, and what the portal groups the form by.
+  kind text not null check (kind in ('general', 'personalised')),
+
+  -- Free text, from the generating session: "Pricing", "Capacity", "Credentials". It is a LABEL
+  -- and not an enum on purpose. The themes worth asking about differ by industry, and an enum
+  -- here would either be wrong for the next vertical or be widened by every migration after this.
+  theme text not null default '' check (length(theme) <= 60),
+
+  question text not null check (btrim(question) <> '' and length(question) <= 400),
+
+  -- What answering it unblocks. The evaluator's form carries the same field, and it is the most
+  -- useful line on that screen: it tells the reader whether they are even the right person.
+  why text not null default '' check (length(why) <= 400),
+
+  sort_order int not null default 0,
+
+  -- Null until the operator releases it. The client-facing RPCs all filter on it.
+  sent_at timestamptz,
+
+  -- Null means unanswered, and unanswered is a PERMANENT, ORDINARY state here. '' is not a valid
+  -- answer (the check rejects it) so "they saved a blank" and "they never answered" cannot both
+  -- be true of one row; skipping is expressed by leaving the row alone, never by writing ''.
+  answer      text check (answer is null or btrim(answer) <> ''),
+  answered_at timestamptz,
+  answered_by text not null default '',
+
+  created_at timestamptz not null default now(),
+
+  -- answered_at and answer move together or the row lies about whether anybody replied.
+  constraint discovery_answer_stamped
+    check ((answer is null) = (answered_at is null))
+);
+
+create index if not exists client_discovery_client
+  on client_discovery_questions (client_id, kind, sort_order);
+
+-- Supabase grants every new public table to authenticated by default, so close it explicitly:
+-- nothing reads or writes this table over PostgREST except the definer functions below. The
+-- engine reaches it through the service connection, which RLS does not apply to.
+alter table client_discovery_questions enable row level security;
+revoke all on client_discovery_questions from authenticated, anon;
+
+-- ---------------------------------------------------------------------------
+-- Client read: the SENT questions for one brand, with whatever the client has already saved.
+--
+-- Returns the answers back deliberately. This form is answered over days, not in one sitting, so
+-- a client who returns must see what they already said rather than an empty box that reads like
+-- their work was lost. Never returns a draft: sent_at is the release gate.
+-- ---------------------------------------------------------------------------
+create or replace function portal_discovery_questions(p_brand text)
+returns jsonb
+language sql
+stable
+security definer
+set search_path to 'public'
+as $$
+  select coalesce(jsonb_agg(
+           jsonb_build_object(
+             'id', q.id,
+             'kind', q.kind,
+             'theme', q.theme,
+             'question', q.question,
+             'why', q.why,
+             'answer', q.answer,
+             'answered_at', q.answered_at)
+           order by q.kind, q.sort_order, q.created_at), '[]'::jsonb)
+  from client_discovery_questions q
+  join clients c on c.id = q.client_id
+  where c.slug = p_brand
+    and c.deleted_at is null
+    and q.sent_at is not null
+    and auth_can_read_client_slug(p_brand);
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Client write: save ONE answer.
+--
+-- One question per call, because the form saves as the client types. A whole-form submit would
+-- make a 40-question form all-or-nothing, which is the shape the evaluator's form has and the
+-- shape that gets abandoned. Re-answering overwrites: a client correcting themselves is not an
+-- error, and there is no revise downstream that a changed answer could invalidate.
+--
+-- A BLANK answer CLEARS the row rather than storing ''. Clearing is how a client takes back an
+-- answer they are no longer sure of, and an unsure answer withdrawn is strictly better for the
+-- fact base than one left standing.
+-- ---------------------------------------------------------------------------
+create or replace function portal_answer_discovery(
+  p_brand    text,
+  p_question uuid,
+  p_answer   text
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid       uuid := auth.uid();
+  v_email     text := coalesce(auth.jwt() ->> 'email', '');
+  v_is_admin  boolean;
+  v_is_member boolean;
+  v_cid       uuid;
+  v_answer    text := nullif(btrim(coalesce(p_answer, '')), '');
+  v_now       timestamptz := now();
+begin
+  if v_uid is null then
+    raise exception 'PORTAL:AUTH:not authenticated';
+  end if;
+
+  select c.id into v_cid
+  from clients c
+  where c.slug = p_brand and c.deleted_at is null;
+
+  v_is_admin := exists (select 1 from app_admins a where a.user_id = v_uid);
+  v_is_member := v_cid is not null and (
+      v_is_admin
+      or exists (
+          select 1 from org_membership m
+          join org_members om on om.org_slug = m.org_slug
+          where m.client_id = v_cid and om.user_id = v_uid));
+
+  if not v_is_member then
+    raise exception 'PORTAL:NOTFOUND:no questions to answer for this account';
+  end if;
+
+  if not (v_is_admin or exists (
+      select 1 from org_membership m
+      join org_members om on om.org_slug = m.org_slug
+      where m.client_id = v_cid and om.user_id = v_uid
+        and om.role in ('admin', 'commenter'))) then
+    raise exception 'PORTAL:ROLE:this account is not allowed to answer questions for this brand';
+  end if;
+
+  -- The client_id in the predicate is the tenancy check: a question id belonging to another
+  -- brand matches no row here and answers NOTFOUND rather than writing across the boundary.
+  -- sent_at is checked for the same reason the read filters on it: a draft was never asked.
+  update client_discovery_questions q
+     set answer      = v_answer,
+         answered_at = case when v_answer is null then null else v_now end,
+         answered_by = case when v_answer is null then '' else v_email end
+   where q.id = p_question
+     and q.client_id = v_cid
+     and q.sent_at is not null;
+
+  if not found then
+    raise exception 'PORTAL:NOTFOUND:that question is not on this brand''s form';
+  end if;
+
+  return jsonb_build_object('id', p_question, 'answered', v_answer is not null);
+end;
+$$;
+
+revoke all on function portal_discovery_questions(text) from public, anon;
+grant execute on function portal_discovery_questions(text) to authenticated;
+revoke all on function portal_answer_discovery(text, uuid, text) from public, anon;
+grant execute on function portal_answer_discovery(text, uuid, text) to authenticated;
+
 commit;

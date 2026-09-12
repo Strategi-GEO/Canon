@@ -47,7 +47,7 @@ from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse,
                                StreamingResponse)
 from pydantic import BaseModel
 
-from . import analysis_gen, auth, blog_edit, blog_upload, client_answers, db, describe, docx_export, facts_gen, ledger, notify, portal_login, report_gen, repurpose, roadmap, roadmap_gen, runner, sync
+from . import analysis_gen, auth, blog_edit, blog_upload, client_answers, db, describe, discovery, docx_export, facts_gen, ledger, notify, portal_login, report_gen, repurpose, roadmap, roadmap_gen, runner, sync
 # Aliased: many channel routes take a `channel` path param that would shadow the bare module.
 from . import channel as channel_mod
 # Aliased for the same reason clients is: "questions" is the natural name for the list of
@@ -1938,6 +1938,168 @@ async def api_delete_facts(slug: str, user: auth.Identity = Depends(auth.require
             detail=f"a blog run is live for {slug!r}; stop it before deleting the fact base",
         )
     facts_gen.delete_facts(slug)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Discovery questions
+#
+# What the crawl could not learn, asked of the person who knows. See server/discovery.py for why
+# this exists and what it deliberately is NOT: these questions hold nothing. No blog waits on
+# them, no terminal status turns on them, and a brand with every one unanswered generates exactly
+# as it does today. Nothing in this section writes a status line, and nothing may start to.
+#
+# ROUTE ORDER IS LOAD BEARING. /discovery/generate and /discovery/send are declared BEFORE
+# /discovery/{question_id}, because FastAPI matches in declaration order and a literal path
+# segment loses to a path parameter registered ahead of it: DELETE /discovery/generate would
+# otherwise be read as "delete the question whose id is the word generate".
+# ---------------------------------------------------------------------------
+
+@app.post("/api/clients/{slug}/discovery/generate", status_code=202)
+async def api_generate_discovery(slug: str,
+                                 user: auth.Identity = Depends(auth.require_admin)):
+    """Start a discovery question generation. Returns immediately; the engine owns the work.
+
+    202 for the reason every other generation route is 202: one long SDK session crawling a live
+    site, which the operator has already paid for by the time the browser could abort it.
+    """
+    _client_or_404(slug)
+    if discovery.job_running(slug):
+        raise HTTPException(status_code=409, detail={
+            "detail": f"a discovery generation for {slug!r} is already running; watch that one "
+                      f"rather than starting a second, which would spend a second session to "
+                      f"produce the same questions",
+            "job": _public_job(discovery.get_job(slug)),
+        })
+    if facts_gen.job_running(slug):
+        # Both sessions crawl the same domain through the same MCP servers, and the fact base is
+        # an INPUT to good questions: §9 is the richest source of things only a person can settle.
+        # Running them at once spends two sessions to produce a worse form.
+        raise HTTPException(
+            status_code=409,
+            detail=f"the canonical facts build for {slug!r} is still running; the questions read "
+                   f"that file, so let it land first",
+        )
+    if _client_has_live_run(slug):
+        # Same rule the describe route enforces: a session spent mid batch competes with the
+        # topics already in flight for the same quota and the same MCP servers.
+        raise HTTPException(
+            status_code=409,
+            detail=f"a run for {slug!r} is live; generate the questions after it finishes",
+        )
+    return _public_job(discovery.start_job(slug))
+
+
+@app.get("/api/clients/{slug}/discovery/generate")
+async def api_discovery_job(slug: str, user: auth.Identity = Depends(auth.require_user)):
+    """The current discovery generation job, or 404 when there has never been one."""
+    _client_or_404(slug, user)
+    job = discovery.get_job(slug)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"no discovery job for {slug!r}")
+    return _public_job(job)
+
+
+@app.delete("/api/clients/{slug}/discovery/generate", status_code=204)
+async def api_clear_discovery_job(slug: str,
+                                  user: auth.Identity = Depends(auth.require_admin)):
+    """Drop a settled job once the operator has read it. A RUNNING one is refused."""
+    _client_or_404(slug, user)
+    if discovery.job_running(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"the discovery generation for {slug!r} is still running; it can be cleared "
+                   f"once it finishes",
+        )
+    discovery.clear_job(slug)
+    return None
+
+
+@app.post("/api/clients/{slug}/discovery/send")
+async def api_send_discovery(slug: str, user: auth.Identity = Depends(auth.require_admin)):
+    """Release every draft question to the client's portal.
+
+    THE REVIEW GATE. Questions arrive from a model, and a model writing straight to a client is
+    the one thing every other outward-facing surface in this app refuses. Until this press they
+    are invisible to the client: portal_discovery_questions filters on sent_at.
+
+    Releasing the SET rather than one question at a time is deliberate. A client answering a form
+    that grows underneath them cannot tell what is left, and the operator reviewed the set.
+    """
+    _client_or_404(slug)
+    sent = discovery.send(slug)
+    if sent == 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"there are no draft questions for {slug!r} to send; generate some first, or "
+                   f"they have all been sent already",
+        )
+    return {"sent": sent, **discovery.list_questions(slug)}
+
+
+@app.get("/api/clients/{slug}/discovery")
+async def api_discovery(slug: str, user: auth.Identity = Depends(auth.require_user)):
+    """Every question this brand holds, drafts and answers included. The operator's review view."""
+    _client_or_404(slug, user)
+    return discovery.list_questions(slug)
+
+
+@app.delete("/api/clients/{slug}/discovery", status_code=204)
+async def api_clear_discovery(slug: str, user: auth.Identity = Depends(auth.require_admin)):
+    """Delete every question for this brand, answers included. The operator's reset.
+
+    A running generation is refused: it is about to write the rows this would delete.
+    """
+    _client_or_404(slug, user)
+    if discovery.job_running(slug):
+        raise HTTPException(
+            status_code=409,
+            detail=f"the discovery generation for {slug!r} is still running; clear it once the "
+                   f"questions have landed",
+        )
+    discovery.clear(slug)
+    return None
+
+
+class DiscoveryEdit(BaseModel):
+    question: str | None = None
+    why: str | None = None
+
+
+@app.patch("/api/clients/{slug}/discovery/{question_id}")
+async def api_edit_discovery(slug: str, question_id: str, body: DiscoveryEdit,
+                             user: auth.Identity = Depends(auth.require_admin)):
+    """Fix the wording before it goes out.
+
+    Refused once ANSWERED, in discovery.update_question, and the refusal is the point: the client
+    answered THOSE words, and rewriting the question afterwards makes the record assert a pairing
+    that never happened. It is the same reason an approved article is locked.
+    """
+    _client_or_404(slug)
+    if not discovery.update_question(slug, question_id, body.question, body.why):
+        raise HTTPException(
+            status_code=409,
+            detail="that question is not on this brand's form, or it has already been answered, "
+                   "and an answered question keeps the wording it was answered against",
+        )
+    return discovery.list_questions(slug)
+
+
+@app.delete("/api/clients/{slug}/discovery/{question_id}", status_code=204)
+async def api_delete_discovery_question(slug: str, question_id: str,
+                                        user: auth.Identity = Depends(auth.require_admin)):
+    """Drop one weak question. Allowed after sending, refused once answered.
+
+    Withdrawing a question the client has not reached yet is ordinary editing. Deleting one they
+    already answered discards something a person actually wrote, so it is refused.
+    """
+    _client_or_404(slug)
+    if not discovery.delete_question(slug, question_id):
+        raise HTTPException(
+            status_code=409,
+            detail="that question is not on this brand's form, or it has been answered; an "
+                   "answered question is kept because deleting it would discard the answer",
+        )
     return None
 
 

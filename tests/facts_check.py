@@ -21,10 +21,62 @@ from server import roadmap  # noqa: E402
 FAILURES = []
 CHECKS = [0]
 
-# The client the roadmap checks below read. It is the one this file already anchors on, and the
-# checks pull the topic out of its sheet rather than naming one, so nothing here is specific to a
-# brand: point this at any client carrying a roadmap.csv and the checks still mean the same thing.
-ROADMAP_CLIENT = "vacation-village"
+# The client the roadmap checks below read, DISCOVERED rather than named.
+#
+# This used to be the constant "vacation-village", and the comment beside it already said the
+# right thing: the checks pull the topic out of whatever sheet they are given, so nothing here is
+# specific to a brand. Naming one anyway made this suite depend on a brand keeping a roadmap
+# forever, and when that brand's sheet went the suite went red for a reason that had nothing to do
+# with facts_gen. A test that fails when the corpus changes is not testing the code.
+#
+# So: take the first brand that can actually exercise these checks, and fail loudly only when NO
+# brand can, which is the one condition that genuinely makes them unrunnable.
+def _pick_roadmap_client():
+    """(slug, rows) for a brand whose first row carries a topic and at least one target prompt."""
+    from server import db
+    try:
+        slugs = [r[0] for r in (db.q(
+            """select distinct c.slug
+                 from clients c
+                 join roadmap_sheets s on s.client_id = c.id
+                 join roadmap_rows r on r.sheet_id = s.id
+                where c.deleted_at is null and left(c.slug, 1) <> '_'
+                order by c.slug""", fetch="all") or [])]
+    except Exception:  # noqa: BLE001 - no record reachable is its own, clearer failure below
+        slugs = []
+    for slug in slugs:
+        try:
+            rows = roadmap.load_roadmap(slug)["rows"]
+        except (roadmap.RoadmapNotFound, roadmap.BadUpload):
+            continue
+        # The checks below read rows[0]'s topic and its first target prompt by name, so a sheet
+        # whose first row is incomplete cannot exercise them however valid it is otherwise.
+        if rows and rows[0].get("topic") and (rows[0].get("prompts") or []):
+            return slug, rows
+    return None, []
+
+
+def _any_client():
+    """Any live brand, for the checks that only need SOMETHING to build a prompt for.
+
+    Those checks assert properties of the PROMPT TEMPLATE, not of a sheet, so they do not care
+    which brand they read and must not go red because the one brand named here lost its roadmap.
+    """
+    from server import db
+    try:
+        row = db.q("""select slug from clients
+                       where deleted_at is null and left(slug, 1) <> '_'
+                       order by slug limit 1""", fetch="one")
+        return row[0] if row else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# Resolved ONCE at import, so the four template checks below keep reading a plain name and the
+# roadmap check gets the rows it needs from the same pass.
+ROADMAP_CLIENT, ROADMAP_ROWS = _pick_roadmap_client()
+if ROADMAP_CLIENT is None:
+    ROADMAP_CLIENT = _any_client()
 
 
 def check(name, condition, detail=""):
@@ -48,13 +100,14 @@ def test_facts_prompt_is_built_to_serve_the_roadmap():
     Sourcing rejection weeks later.
     """
     print("\ntest_facts_prompt_is_built_to_serve_the_roadmap")
-    try:
-        rows = roadmap.load_roadmap(ROADMAP_CLIENT)["rows"]
-    except (roadmap.RoadmapNotFound, roadmap.BadUpload) as exc:
-        check(f"{ROADMAP_CLIENT} has a readable roadmap.csv to check against", False, str(exc))
+    slug, rows = ROADMAP_CLIENT, ROADMAP_ROWS
+    if slug is None or not rows:
+        check("some brand has a usable roadmap to check the digest against", False,
+              "no brand in the record carries a sheet whose first row has a topic and a prompt")
         return
+    print(f"  (reading {slug}, {len(rows)} rows)")
 
-    prompt = facts_gen.build_prompt(ROADMAP_CLIENT)
+    prompt = facts_gen.build_prompt(slug)
 
     check("the prompt substitutes ROADMAP_DIGEST",
           "{{ROADMAP_DIGEST}}" not in prompt and "ROADMAP:" in prompt)

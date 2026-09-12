@@ -37,7 +37,7 @@ They never type either URL. Signing in routes them, and every link inside the po
 
 Down the left, a brand in the portal has eight rows:
 
-**Overview**, **Content Roadmap**, **Blogs**, **LinkedIn**, **Medium**, **Bluesky**, **X**, **Reports**.
+**Overview**, **Content Roadmap**, **Questions**, **Blogs**, **LinkedIn**, **Medium**, **Bluesky**, **X**, **Reports**.
 
 That is your own brand nav with every operator row taken out. There is no Create, no Repurpose, no Settings, and no Resources. A client never uploads, downloads or deletes a file, and the brand's fact base is yours alone.
 
@@ -52,6 +52,16 @@ When an organisation has several brands, a **Brand** picker sits above the nav a
     Read-only. Three tiles: **Topics on the roadmap**, **Shipped** and **Waiting on you**, plus a theme card. **Preview roadmap** opens the full sheet, month by month, exactly as your own preview dialog draws it.
 
     The client sees every column, target prompts included. There is no upload, no download and no delete.
+
+=== "Questions"
+
+    The discovery form: what our crawl could not learn about their brand, grouped by theme, with a
+    count answered against the total. Only questions an operator has SENT appear here; a draft is
+    filtered out by the database function the portal reads, so it is absent rather than unlabelled.
+
+    Nothing on it is required and nothing is held. There is no submit button, answers save as the
+    client types, and a blank answer clears the row. See [Discovery questions](../guide/questions.md)
+    for the operator half.
 
 === "Blogs"
 
@@ -112,6 +122,7 @@ The portal does not know which role the signed-in account holds, so a viewer see
 | **Send to client** on a channel post | The post on that channel's **Ready to post** sub-tab |
 | **Send to client** on a report | That month becomes pickable on **Reports** |
 | Upload or generate a roadmap | The topics on **Content Roadmap**, at once |
+| **Send to client** on the discovery questions | The set on **Questions**, grouped by theme |
 | **Publish** | The tag flips to **Published**, and where the site returns an address, a **View live article** button |
 
 Two things there are worth reading twice.

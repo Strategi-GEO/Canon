@@ -1582,3 +1582,62 @@ export type AnalysisGenJob = {
   error: string | null;
   has_pdf?: boolean;
 };
+
+// ---------------------------------------------------------------------------
+// Discovery questions
+// ---------------------------------------------------------------------------
+
+/**
+ * One discovery question on the ADMIN bench, where drafts are visible.
+ *
+ * `sent_at` null is the review gate: the question exists, the client cannot see it, and the
+ * operator has not released it. That field is absent from the portal's own type for the same
+ * reason, since portal_discovery_questions never returns an unsent row.
+ *
+ * `answer` null is an ordinary, permanent state. Nothing is held on these: no article waits, no
+ * terminal status turns on them, and a brand with every one unanswered generates exactly as it
+ * does today. That is the whole reason a form of twenty to fifty is defensible here while the
+ * evaluator's form is capped at five.
+ */
+export type DiscoveryQuestion = {
+  id: string;
+  /** 'general' is what any brand in the industry should answer; 'personalised' names this one. */
+  kind: "general" | "personalised";
+  theme: string;
+  question: string;
+  /** What answering it unblocks, in the client's terms. Empty where none was written. */
+  why: string;
+  sort_order: number;
+  sent_at: string | null;
+  answer: string | null;
+  answered_at: string | null;
+  answered_by: string;
+};
+
+export type DiscoveryJobState = "running" | "done" | "failed";
+
+/**
+ * One discovery generation, as the engine remembers it. Same shape and same honesty as
+ * FactsGenJob: no percentage, because it is one session making an unknown number of tool calls,
+ * so nothing on the wire could give a bar a denominator.
+ */
+export type DiscoveryJob = {
+  slug: string;
+  state: DiscoveryJobState;
+  /** Epoch seconds from the engine, so elapsed survives a refresh intact. */
+  started: number;
+  finished: number | null;
+  /** The agent's account of the gaps it found. Often worth more than the questions. */
+  report: string;
+  /** How many questions landed as drafts. */
+  landed: number;
+  error: string;
+};
+
+export type DiscoverySet = {
+  questions: DiscoveryQuestion[];
+  draft: number;
+  sent: number;
+  answered: number;
+  job: DiscoveryJob | null;
+};

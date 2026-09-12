@@ -148,12 +148,23 @@ machine.
 | `GEO_RETRIES` | `1` | either | Retries for a session that DIED without writing a status line. Not revise iterations, which the contract caps at 4. |
 | `GEO_DASHBOARD_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | either | Comma separated, and it REPLACES the default CORS list rather than adding to it. Set it whenever the dashboard is on another port, or its preflight is refused and every fetch plus the SSE run feed dies with nothing in the engine to turn. |
 | `GEO_CONCURRENCY` | `2` | either | Blog sessions in flight repo-wide, whichever door opened them: a Create-tab batch, a retry, a repurpose, an answer-driven revise. It saves no tokens per blog; it changes what you OWN when the usage limit lands. At 5-wide a real run produced twelve half-finished blogs and zero shipped. At 2-wide the same quota buys a handful of FINISHED blogs and leaves the rest untouched, and an untouched topic retries clean where a half-done one does not. Read through `db.config_value` as well as `os.environ`, because `TOPIC_SEMAPHORE` is built at MODULE IMPORT, before the startup export runs. Floored at 1 (a 0 admits nobody, forever, silently); a garbage value falls back to 2 rather than refusing to boot. |
+| `GEO_MEDIAN_CONFIRM` | `1` | either | `0` turns OFF the boundary median. On, a final score inside `runner.MEDIAN_BAND` (86 to 92) is confirmed by a SECOND audit of the same bytes; two audits on the same side of 90 settle it and the original score is kept, and only a genuine split buys a third and takes the median. It is not the confirmatory re-eval `CLAUDE.md` forbids: that rule's ground is that ONE re-roll is as noisy as the score it replaces, and a median discards the outlier instead. Costs one evaluator session on borderline blogs only, and nothing at all on a 94 or a 71. |
 | `GEO_STALL_TIMEOUT` | `7200` (2 hours) | **shell only** | Seconds a slot may go without its `status.jsonl` growing before the watchdog cancels it and, two minutes later, reclaims the slot and writes the topic's terminal `failed` line. Floored at 300. A threshold shorter than a quota stall does not catch wedged sessions, it destroys rate-limited ones, and it does so to every brand at once. |
 | `GEO_ANSWERS_PICKUP` | `0` | **shell only** | `1` turns on the hands-off sweep that dispatches the answer-driven revise a client portal's answers are owed, at startup and every five minutes. OFF by default because the primary path is the operator's own click, so a person chooses the moment this machine's quota is spent. |
 
-`GEO_CONCURRENCY`, `GEO_STALL_TIMEOUT` and `GEO_ANSWERS_PICKUP` are not on `AGENT_ENV_ALLOW`
-and are never handed to an agent. The other `GEO_*` knobs are on it, which is also what makes
-them settable from `server/.env`.
+`AGENT_ENV_ALLOW` (`server/db.py`) lists exactly five of these: `GEO_MODEL`, `GEO_MAX_TURNS`,
+`GEO_MAX_BUDGET_USD`, `GEO_RETRIES` and `GEO_DASHBOARD_ORIGINS`. Those are the only ones an agent
+session ever sees, and the only ones `export_agent_credentials` lifts out of `server/.env` into
+`os.environ`. Every other knob here is invisible to an agent.
+
+**That allowlist is NOT what makes a knob settable from `server/.env`**, and an earlier version of
+this paragraph said it was. `GEO_MEDIAN_CONFIRM` is
+marked "either" and is not on that list: it reads `os.environ.get(NAME) or
+db.config_value(NAME)`, and `config_value` reads the parsed `server/.env` directly without
+exporting anything. The two mechanisms are independent, which is the point, because it means a
+knob can be configurable from the file WITHOUT widening what crosses into a Claude session by one
+variable. The three marked "shell only" (`GEO_CONCURRENCY` excepted, which reads both) do not
+consult `config_value` at all.
 
 ### MCP transports: stdio (default) or HTTP
 
@@ -173,6 +184,12 @@ picks the transport at dispatch:
    | `FIRECRAWL_API_URL` | either | firecrawl, for a self-hosted instance |
    | `DATAFORSEO_USERNAME` | either | dataforseo |
    | `DATAFORSEO_PASSWORD` | either | dataforseo |
+
+   **Firecrawl is REQUIRED and DataForSEO is not.** A run is refused only when it cannot FETCH,
+   because that is the failure that makes a session invent sources. DataForSEO supplies keyword
+   validation, which `CLAUDE.md` says "is NEVER a reason to drop the prompt" and which "shapes H2
+   phrasing"; without it the engine logs a warning and runs. It also costs the Analysis tab its
+   rankings section. `tests/config_check.py` pins both directions.
 
    **`.mcp.json` holds no secrets.** Every credential in it is written as `${VAR_NAME}`
    interpolation, which the Claude Code CLI expands from the environment at spawn time.

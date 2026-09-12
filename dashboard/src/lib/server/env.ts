@@ -4,9 +4,17 @@
  * GoTrue and PostgREST with the ANON key plus the caller's own JWT, so RLS answers every
  * scoping question and a leaked deployment env cannot mutate anything.
  *
- * Read lazily, at request time, never at module scope: the LOCAL build runs with none of
- * these set (the browser talks to the FastAPI engine and these handlers are dead code), and
- * a module-scope read would make `next build` depend on deployment env.
+ * Read lazily, at request time, never at module scope: a module-scope read would make
+ * `next build` depend on deployment env.
+ *
+ * THESE HANDLERS ARE NOT DEAD CODE LOCALLY, and an earlier version of this comment said they
+ * were. Only the ADMIN surface talks to the FastAPI engine; the CLIENT PORTAL calls these
+ * handlers same-origin in every mode, so a local dashboard with no SUPABASE_ANON_KEY has a
+ * working admin side and a portal that answers 401 to everything. That failure used to be
+ * indistinguishable from a wrong password: login succeeded against the engine, the redirect to
+ * `/` asked THESE handlers who the caller was, they could not answer, and the app bounced back
+ * to `/login` with no error. `unauthenticated()` now separates the two. Local portal work needs
+ * dashboard/.env.local; see dashboard/.env.example.
  */
 
 export class MissingEnv extends Error {}

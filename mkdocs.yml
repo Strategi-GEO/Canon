@@ -95,6 +95,7 @@ nav:
       - What each status means: concepts/blog-states.md
   - Using Canon:
       - The Content Roadmap: guide/roadmap.md
+      - Discovery questions: guide/questions.md
       - The Blogs tab: guide/blogs.md
       - Reviewing and editing: guide/reviewing.md
       - Publishing: guide/publishing.md

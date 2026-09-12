@@ -1,5 +1,5 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
-import { supabaseAnonKey, supabaseUrl } from "@/lib/server/env";
+import { MissingEnv, supabaseAnonKey, supabaseUrl } from "@/lib/server/env";
 import { detail } from "@/lib/server/http";
 
 /**
@@ -77,8 +77,33 @@ export async function verifyRequest(request: Request): Promise<Verified | null> 
   }
 }
 
-/** The engine's one 401, word for word, so api.ts's redirect-to-login path behaves identically. */
+/**
+ * The engine's one 401, word for word, so api.ts's redirect-to-login path behaves identically.
+ *
+ * WITH ONE EXCEPTION, AND IT IS THE POINT OF THIS FUNCTION. verifyRequest returns null for every
+ * failure, deliberately, so the wire cannot become an oracle for why a token was refused. But
+ * "this server has no Supabase configuration" is not a fact about the caller's token at all, and
+ * answering 401 to it tells a signed-in person they are signed out. That is exactly what it did:
+ * a local dashboard with no SUPABASE_ANON_KEY let the operator log in against the engine, then
+ * bounced them back to /login with no error, for an hour, looking precisely like a wrong password.
+ *
+ * So the misconfiguration is checked HERE rather than in verifyRequest: this is the one funnel
+ * every route already calls, so no route signature changes and none can forget. A 503 also stops
+ * api.ts's redirect-to-login, which is correct, because sending someone to a login page cannot
+ * fix a server that is not configured.
+ */
 export function unauthenticated(): Response {
+  try {
+    supabaseUrl();
+    supabaseAnonKey();
+  } catch (cause) {
+    if (cause instanceof MissingEnv) {
+      return detail(503, `the client portal is not configured on this server (${cause.message}). ` +
+        "The portal's own API routes read Supabase directly, so they need SUPABASE_URL and " +
+        "SUPABASE_ANON_KEY in dashboard/.env.local. See dashboard/.env.example.");
+    }
+    throw cause;
+  }
   return detail(401, "authentication required");
 }
 

@@ -181,6 +181,34 @@ def materialize_client(slug):
     # written when the brand set none, so the agents find the file where the cards say it is and
     # read no instructions from it rather than failing to open it.
     (cdir / "custom-instructions.md").write_text(custom_instructions or "", encoding="utf-8")
+    # What the brand answered in its own portal, rendered for the agents that read by path.
+    #
+    # UNCONDITIONAL AND ALWAYS WRITTEN, empty string included, for exactly the reason
+    # description.md and custom-instructions.md are: a prompt that names a file by path and an
+    # agent that cannot open it spends turns hunting for it, and a session that decides the file
+    # "must be somewhere else" is a session about to infer its contents. An empty file is an
+    # ANSWER to whether anything is there.
+    #
+    # Record-wins with no disk-up path, unlike canonical-facts.md. That file is a human's editing
+    # surface so a hand-edit must be committed up; this one is a rendering of rows the client
+    # wrote in the portal, so a local edit is a local copy of somebody else's words and the
+    # record is right by construction.
+    #
+    # Local import: server/discovery.py imports runner, and runner imports sync at module scope,
+    # so a top-level import here closes that cycle. The call happens once per materialize, so the
+    # per-call import costs nothing measurable.
+    from . import discovery as _discovery
+    try:
+        answers_md = _discovery.answers_markdown(slug)
+    except Exception:  # noqa: BLE001
+        # Materialize runs immediately before an SDK session spawns. A failure to render an
+        # OPTIONAL context file must never take down a run that would otherwise be fine, so the
+        # file lands empty and the blog is written without it, which is the state every brand
+        # was in before this existed.
+        log.warning("materialize_client: could not render client answers for %s", slug,
+                    exc_info=True)
+        answers_md = ""
+    (cdir / "client-answers.md").write_text(answers_md, encoding="utf-8")
     # canonical-facts.md is the ONE file where disk wins over the record,
     # because the file IS the human's editing surface: the workflow is that a
     # person reviews and hand-edits it, and no dashboard editor exists for it.

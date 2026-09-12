@@ -177,3 +177,14 @@ jobs:
           # takes with it, and every case where it must take none.
           python tests/view_write_check.py
           python tests/brand_delete_check.py
+          # Discovery adds a SECOND question form to an app that already has one, and the two
+          # are opposites: the evaluator's holds a blog at any score and caps at 5, while these
+          # hold nothing and run to 50. This pins that difference in code rather than in a
+          # comment, because wiring a hold to the new table would stop a brand shipping over an
+          # OPTIONAL form with nothing in any log to say why.
+          python tests/discovery_check.py
+          # The boundary median. It bends first-score-is-final, which is the most heavily
+          # argued rule in the contract, so the branches are pinned rather than trusted: a
+          # confirmation must never move a score two auditors agreed on, never re-audit a
+          # held blog, and never cost a topic its verdict when a session dies.
+          python tests/median_check.py

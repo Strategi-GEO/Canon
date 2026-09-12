@@ -1545,7 +1545,30 @@ def _http_mcp_servers():
 # required one: it would hard-refuse every run on every machine that never set the optional var,
 # which is a worse failure than the one this check exists to catch. Three names, matching the env
 # blocks of the two servers MCP_SERVER_NAMES declares.
-_STDIO_CRED_VARS = ("FIRECRAWL_API_KEY", "DATAFORSEO_USERNAME", "DATAFORSEO_PASSWORD")
+#
+# THE TWO GROUPS ARE NOT INTERCHANGEABLE, AND TREATING THEM AS ONE REFUSED RUNS FOR NO REASON.
+# Every argument in _stdio_mcp_config_ok below is about FETCHING: "could not fetch a single page",
+# and the fetch-before-cite rule resting on an agent having working tools. All of that is
+# Firecrawl. DataForSEO fetches nothing. Its whole contribution is keyword validation, and this
+# contract already says what that is worth: "Null or low volume on a target prompt is EXPECTED for
+# AI-search-first pieces and is NEVER a reason to drop the prompt. Volume shapes H2 phrasing."
+#
+# So a missing DataForSEO used to block every blog on the machine in exchange for phrasing hints,
+# on a product whose premise is that AI-search prompts have no meaningful volume. It also produced
+# a refusal that was simply false: "a session could not fetch a single page", said on a machine
+# whose Firecrawl key was present and working.
+#
+# MEASURED, NOT ASSUMED. DataForSEO failed to connect for an entire session on 2026-09-05
+# (CONNECTION_CLOSED). The canonical-facts build ran anyway, recorded in §8 that STAGE 3 never
+# ran, and produced a 36,000 character fact base that caught a live outlet the record had missed
+# and four redirecting URLs that would have shipped as links. The tool was absent and the work was
+# good, which is the definition of a soft dependency.
+_FETCH_CRED_VARS = ("FIRECRAWL_API_KEY",)
+_KEYWORD_CRED_VARS = ("DATAFORSEO_USERNAME", "DATAFORSEO_PASSWORD")
+
+# Kept as the union, because it is what "the credentials .mcp.json interpolates" means and
+# tests/config_check.py clears exactly this set to build its no-credentials state.
+_STDIO_CRED_VARS = _FETCH_CRED_VARS + _KEYWORD_CRED_VARS
 
 
 def _stdio_mcp_config_ok():
@@ -1593,17 +1616,29 @@ def _stdio_mcp_config_ok():
             f"{MCP_CONFIG_PATH} does not declare {', '.join(missing)}; a session without "
             f"those tools would invent sources"
         )
-    blank = [name for name in _STDIO_CRED_VARS if not (os.environ.get(name) or "").strip()]
+    # THE FETCH CREDENTIALS ARE THE ONES WORTH REFUSING OVER. Everything this docstring argues
+    # is about a session that cannot fetch, so that is what is enforced here.
+    blank = [name for name in _FETCH_CRED_VARS if not (os.environ.get(name) or "").strip()]
     if blank:
         raise RunnerConfigError(
-            f"the engine has no research credentials, so a session could not fetch a single "
-            f"page: {', '.join(blank)} "
+            f"the engine cannot fetch a single page: {', '.join(blank)} "
             f"{'is' if len(blank) == 1 else 'are'} unset in this engine's environment. "
-            f"{MCP_CONFIG_PATH} interpolates them into the firecrawl and dataforseo servers, and "
-            f"it is checked into the repo, so its presence says nothing about whether this "
-            f"machine can fetch. Sign in to the app to provision them, or set them in "
-            f"server/.env beside the engine"
+            f"{MCP_CONFIG_PATH} interpolates them into the firecrawl server, and it is checked "
+            f"into the repo, so its presence says nothing about whether this machine can fetch. "
+            f"Sign in to the app to provision them, or set them in server/.env beside the engine"
         )
+    # DataForSEO WARNS AND NEVER REFUSES. A run without it loses keyword validation, which shapes
+    # H2 phrasing and nothing else, and the sessions record its absence themselves: the facts
+    # prompt writes it into §8 and §7, and a blog's target prompts are BINDING from the roadmap
+    # row rather than from any volume figure. Loud in the log, because a silently degraded run is
+    # the failure mode this whole function exists to prevent; not fatal, because a blog written
+    # from fetched sources with unvalidated phrasing is a blog, and no blog at all is not.
+    thin = [name for name in _KEYWORD_CRED_VARS if not (os.environ.get(name) or "").strip()]
+    if thin:
+        log.warning(
+            "no DataForSEO credentials (%s unset): sessions will run WITHOUT keyword validation. "
+            "Target prompts are binding from the roadmap row regardless, so this costs H2 phrasing "
+            "and the Analysis tab's rankings section, not the blog.", ", ".join(thin))
     return True
 
 
@@ -2782,6 +2817,21 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
     # worse one. No-op on first runs, ships, holds and stops. See _keep_prior_run_if_higher.
     _keep_prior_run_if_higher(client_slug, topic_slug, out_dir, baseline, prior_score,
                               root=run_dir_root)
+    # A SCORE NEAR THE BAR IS ONE ROLL OF A NOISY GRADER, so it is confirmed before it decides
+    # anything. Placed HERE deliberately: after both restores, so the audit is of the bytes that
+    # actually ship, and before the resolver, so the number it settles on is the number the
+    # resolver reads. A no-op outside the band, on a held blog, and when disabled. See
+    # _confirm_boundary_score for why a median is not the re-roll first-score-is-final forbids.
+    #
+    # NEVER FATAL. This refines a verdict the loop already reached; a topic must not lose its
+    # terminal line because a confirmation session died, so every failure path inside returns the
+    # original score and this one catches whatever escapes.
+    if _median_confirm_enabled():
+        try:
+            await _confirm_boundary_score(client_slug, topic_slug, out_dir, root=run_dir_root)
+        except Exception:  # noqa: BLE001
+            log.warning("median confirm failed for %s/%s; keeping the original score",
+                        client_slug, topic_slug, exc_info=True)
     # The lead's terminal claim is checked here, before the result is reported, because this is
     # where a topic's terminal line stops changing. A needs_review with no answerable question is
     # corrected to done or failed by its score and the override is recorded. See
@@ -2794,6 +2844,217 @@ async def run_topic(client_slug, row, *, run_dir_root=None, precheck_error=None)
     # _schedule_commit); the startup reconciler covers any window it loses.
     _schedule_commit(client_slug, topic_slug)
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Boundary confirmation: a median of audits, for the scores where one roll decides too much.
+#
+# WHY THIS EXISTS, AND WHY IT IS NOT THE RE-EVAL THE CONTRACT FORBIDS.
+#
+# The evaluator is stateless and its score moves several points on an IDENTICAL draft. The bar is
+# a cliff at 90. Together those mean a blog that lands near the bar is decided partly by the roll:
+# the recorded trajectories 72-89-88, 84-84-87 and 79-80 contain 88s and 89s that are plausibly
+# 91s on another draw, and nothing in the engine could tell the difference.
+#
+# The 4-iteration loop does NOT already cover this, and the reason is the thing a reader gets
+# wrong. Each round scores a DIFFERENT draft: a fresh writer applies the fix list, then a fresh
+# evaluator scores the new bytes. So when a score moves 88 -> 91 the change confounds two causes,
+# the draft improving and the grader rolling differently, and neither the engine nor the operator
+# can separate them. This scores the SAME BYTES again, with no writer between, which is the only
+# arrangement in which a difference means grader noise and nothing else.
+#
+# THE FIRST-SCORE-IS-FINAL RULE STANDS, and this is not an exception smuggled past it. That rule
+# forbids a CONFIRMATORY RE-EVAL on the stated ground that it "re-rolls a stateless auditor whose
+# score varies by several points on an identical draft, and it can strand a blog below a bar it
+# had already cleared". Every word of that is true of ONE re-roll, which replaces a reading with
+# another reading of equal noise. A MEDIAN is the opposite operation: it discards the outlier, so
+# it is strictly more stable than the single score it replaces, and it cannot strand a blog that
+# two of three auditors put above the bar. The rule's own reasoning is what licenses this, which
+# is why the band is narrow and the arithmetic is fixed rather than a judgement call.
+#
+# THE SECOND AUDIT USUALLY ENDS IT. Two scores on the same side of 90 agree about the only thing
+# the engine asks them, so the verdict is confirmed and the ORIGINAL score is kept untouched: no
+# blog's number moves because it was looked at twice. Only a genuine split, one above and one
+# below, buys a third audit, and only then does the median decide.
+#
+# COST IS BOUNDED AND FALLS WHERE THE UNCERTAINTY IS. A blog scoring 94 or 71 pays nothing. A
+# borderline blog pays one extra EVALUATOR session, which is the cheapest agent in the chain: no
+# research, no writer, no gates, no link pass. Today the only way to ask "was that 89 real" is
+# Retry, which buys four fresh rounds of the whole loop to answer a question one audit settles.
+# ---------------------------------------------------------------------------
+
+# The band, closed at both ends. 86 to 92 brackets the bar by roughly the evaluator's own observed
+# spread, so it covers the scores a re-roll could plausibly move across 90 and nothing else. Wider
+# would spend sessions on blogs whose verdict was never in doubt; narrower would miss the 88 that
+# is really a 91, which is the whole point.
+MEDIAN_BAND = (86, 92)
+
+# Off by setting it to 0. On by default because a feature that silently never runs is a feature
+# nobody benefits from, and the spend is one evaluator on a blog the operator has already paid a
+# full loop for.
+def _median_confirm_enabled():
+    # Same read order as GEO_CONCURRENCY: a shell export wins, then server/.env, then the
+    # default. Read at CALL time, so it is picked up without restarting the engine.
+    raw = (os.environ.get("GEO_MEDIAN_CONFIRM")
+           or db.config_value("GEO_MEDIAN_CONFIRM") or "1")
+    return str(raw).strip().lower() not in ("0", "false", "no", "off")
+
+
+def _eval_md_score(out_dir):
+    """The SCORE: NN in eval.md, or None.
+
+    THE RECORD BINDS ITS SCORE TO THIS FILE, not to the status feed (sync._score_from_eval), so
+    this is the number that actually ships and therefore the number a confirmation must be about.
+    Reading the feed instead would let this function confirm a score the record never uses.
+    """
+    path = Path(out_dir) / "eval.md"
+    if not path.is_file():
+        return None
+    m = re.search(r"^SCORE:\s*(\d{1,3})\s*$", path.read_text(encoding="utf-8"), re.M)
+    return int(m.group(1)) if m else None
+
+
+async def _one_confirmation_audit(client_slug, topic_slug, out_dir):
+    """Run ONE fresh evaluator over the draft on disk. Returns (score, eval_text) or (None, "").
+
+    Writes no status line and touches no other artifact: the engine owns the trail for this
+    phase, because these audits are the engine's question and not a stage the blog went through.
+    A subagent that announced itself here would put eval end lines carrying scores into the feed,
+    and the fold reads the LAST such line as the topic's score, so the feed would decide the
+    verdict before the median was computed.
+    """
+    try:
+        from claude_agent_sdk import ClaudeSDKError, query
+    except ImportError as exc:
+        log.warning("median confirm: SDK unavailable (%s)", exc)
+        return None, ""
+
+    eval_path = Path(out_dir) / "eval.md"
+    before = eval_path.read_text(encoding="utf-8") if eval_path.is_file() else None
+
+    prompt = (
+        "You are Agent E, a hostile auditor, scoring ONE finished GEO blog draft.\n"
+        f"Client slug: {client_slug}\nTopic slug: {topic_slug}\nOutput dir: {out_dir}\n\n"
+        "Your inputs are exactly these and nothing else:\n"
+        f"  {out_dir}/blog.md\n"
+        "  .claude/skills/geo-content-eval/references/rubric.md\n"
+        f"  clients/{client_slug}/canonical-facts.md\n"
+        f"  clients/{client_slug}/custom-instructions.md\n"
+        f"  {out_dir}/session-instructions.md WHEN IT EXISTS\n"
+        f"  {out_dir}/answers.json WHEN ONE EXISTS\n"
+        "NEVER read the dossier, the writer's reasoning, or any prior eval, INCLUDING the eval.md "
+        "already on disk. You are being asked for an INDEPENDENT reading of this draft, and a "
+        "reading anchored to someone else's number is not one: reading the previous score is the "
+        "single thing that would make this whole exercise worthless.\n\n"
+        "Run the geo-content-eval skill with the HOUSE band, which is BINARY: 90-100 SHIPS, below "
+        "90 REJECTS, and any hard-gate failure is a REJECT regardless of the graded score.\n\n"
+        f"Overwrite {out_dir}/eval.md with SCORE: NN on its own line near the top, plus the fix "
+        "list where every item carries an Area: Sourcing, Structure, Draft or Mechanics.\n\n"
+        "You MUST NOT touch blog.md, and you MUST NOT run .claude/status.py at all: the engine "
+        "owns the progress feed for this pass and will record the outcome itself.\n"
+        "Score once and stop."
+    )
+
+    try:
+        # research=False: an audit reads local files and fetches nothing, so it must not be
+        # refused on a machine without research credentials, exactly as a repurpose is not.
+        options = _session_options(research=False)
+        options.agents = None
+        async with aclosing(query(prompt=prompt, options=options)) as session:
+            async for _ in session:
+                pass
+    except (ClaudeSDKError, RunnerConfigError) as exc:
+        log.warning("median confirm: audit session failed (%s)", exc)
+        if before is not None:
+            eval_path.write_text(before, encoding="utf-8")
+        return None, ""
+
+    score = _eval_md_score(out_dir)
+    text = eval_path.read_text(encoding="utf-8") if eval_path.is_file() else ""
+    if score is None and before is not None:
+        # The session produced nothing usable. Put the original audit back rather than shipping a
+        # draft beside an eval that carries no score.
+        eval_path.write_text(before, encoding="utf-8")
+    return score, text
+
+
+async def _confirm_boundary_score(client_slug, topic_slug, out_dir, root=None):
+    """Median-confirm a score that landed near the bar. Returns the final score, or None.
+
+    Runs AFTER _install_best_draft, so it audits the bytes that actually ship, and BEFORE
+    _enforce_terminal_status, so the number it settles on is the one the resolver reads.
+
+    THE EVAL AND THE SCORE MOVE TOGETHER, ALWAYS. Each audit writes its own eval.md; whichever
+    audit produced the median has ITS file installed. The engine never edits an auditor's document
+    and never synthesises a number no auditor wrote, which is the same artifact-set rule
+    _install_best_draft and the stop-path restore both keep: a score describes an audit, and the
+    two are shipped as a pair or not at all.
+    """
+    out_dir = Path(out_dir)
+    first = _eval_md_score(out_dir)
+    lo, hi = MEDIAN_BAND
+    if first is None or not (lo <= first <= hi):
+        return first
+
+    # A CURRENT QUESTION HOLDS THE BLOG AT ANY SCORE, so the number decides nothing here and a
+    # confirmation would spend a session to refine an input the resolver is about to ignore.
+    try:
+        if _questions_state(client_slug, topic_slug, root=root) == "current":
+            return first
+    except Exception:  # noqa: BLE001 - a form we cannot read is not a reason to skip the audit
+        log.debug("median confirm: could not read the question form", exc_info=True)
+
+    eval_path = out_dir / "eval.md"
+    audits = {first: eval_path.read_text(encoding="utf-8") if eval_path.is_file() else ""}
+
+    log.info("median confirm: %s/%s scored %s, inside %s; taking a second audit",
+             client_slug, topic_slug, first, MEDIAN_BAND)
+    second, second_text = await _one_confirmation_audit(client_slug, topic_slug, out_dir)
+    if second is None:
+        eval_path.write_text(audits[first], encoding="utf-8")
+        return first
+
+    # AGREEMENT ENDS IT, AND THE ORIGINAL NUMBER SURVIVES. Two audits on the same side of the bar
+    # answer the only question the engine asks them. Recording the second score instead would move
+    # a blog's number for no reason beyond having looked twice.
+    if (second >= SHIP_SCORE) == (first >= SHIP_SCORE):
+        eval_path.write_text(audits[first], encoding="utf-8")
+        log.info("median confirm: %s/%s confirmed at %s (second audit %s, same side of %s)",
+                 client_slug, topic_slug, first, second, SHIP_SCORE)
+        _status_module().append_status(
+            str(out_dir), topic_slug, stage="eval", event="end", iter=_last_iter(out_dir),
+            score=first, status="running",
+            note=f"boundary confirmed: second audit scored {second}, same side of {SHIP_SCORE}")
+        return first
+
+    audits[second] = second_text
+    log.info("median confirm: %s/%s split (%s vs %s); taking a third audit",
+             client_slug, topic_slug, first, second)
+    third, third_text = await _one_confirmation_audit(client_slug, topic_slug, out_dir)
+    if third is None:
+        eval_path.write_text(audits[first], encoding="utf-8")
+        return first
+    audits[third] = third_text
+
+    median = sorted((first, second, third))[1]
+    eval_path.write_text(audits[median], encoding="utf-8")
+    log.info("median confirm: %s/%s audits %s -> median %s",
+             client_slug, topic_slug, sorted((first, second, third)), median)
+    _status_module().append_status(
+        str(out_dir), topic_slug, stage="eval", event="end", iter=_last_iter(out_dir),
+        score=median, status="running",
+        note=f"boundary median of {sorted((first, second, third))} on one unchanged draft")
+    return median
+
+
+def _last_iter(out_dir):
+    """The iteration the loop finished on, so a confirmation line joins that round rather than
+    inventing a new one. No audit here is an iteration: the draft never changed."""
+    try:
+        lines = _read_status(out_dir)
+        return max((int(l.get("iter") or 1) for l in lines), default=1)
+    except Exception:  # noqa: BLE001
+        return 1
 
 
 # ---------------------------------------------------------------------------

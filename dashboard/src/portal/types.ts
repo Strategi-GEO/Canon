@@ -380,3 +380,26 @@ export type PortalReports = {
   current_month: string;
   months: PortalMonthReport[];
 };
+
+/**
+ * One discovery question as a client reads it. There is no `sent_at` here because the RPC only
+ * ever returns sent rows: a draft is invisible on this wire, not marked as one.
+ *
+ * `answer` null means unanswered, and unanswered is an ORDINARY, PERMANENT state. Nothing is
+ * required, nothing is held, and no article waits on any of these. That is the whole reason a
+ * form of twenty to fifty is defensible here and a form of five is the cap on the evaluator's.
+ */
+export type DiscoveryQuestion = {
+  id: string;
+  kind: "general" | "personalised";
+  theme: string;
+  question: string;
+  /** What answering it unblocks, in the client's terms. Empty where none was written. */
+  why: string;
+  answer: string | null;
+  answered_at: string | null;
+};
+
+export type PortalDiscovery = {
+  questions: DiscoveryQuestion[];
+};
